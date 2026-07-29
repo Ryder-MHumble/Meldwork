@@ -244,6 +244,19 @@ test('groups and messages persist without exposing executable paths', async (t) 
   assert.equal('executable' in workspace.snapshot().agents[0], false)
 })
 
+test('a failed run-start notification does not leave an active run behind', (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  workspace.on('changed', () => { throw new Error('listener failed') })
+
+  assert.throws(
+    () => workspace.beginRun('group-id', 'manual', ['codex'], 'thread-id'),
+    { message: 'listener failed' },
+  )
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+})
+
 test('workspace loading allowlists local group and message fields', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -564,32 +577,386 @@ test('all failed agents reject with an aggregate error after recording failures'
   )
 })
 
-test('automatic dialogue alternates agents for a bounded number of turns', async (t) => {
+test('automatic dialogue continues complete rounds until every Agent agrees', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const replies = [
+    'Codex still has one edge case.\n[[ROUNDRELAY_CONSENSUS:continue]]',
+    'Hermes agrees that clarification is needed.\n[[ROUNDRELAY_CONSENSUS:continue]]',
+    'Codex accepts the current conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+    'Hermes accepts the current conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+  ]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: replies[calls.length - 1],
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
   })
   const root = workspace.addMessage(group.id, 'user', '讨论本地 Agent 架构')
-  workspace.startAuto({ groupId: group.id, maxTurns: 3 })
+  workspace.startAuto({ groupId: group.id, maxRounds: 4 })
   await workspace.activeRuns.get(group.id).promise
 
-  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex'])
-  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', '', 'codex-session'])
-  assert.equal(workspace.snapshot().messages.length, 4)
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
+    '', '', 'codex-session', 'hermes-session',
+  ])
+  assert.equal(calls.every(call => call.prompt.includes('[[ROUNDRELAY_CONSENSUS:agree]]')), true)
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent')
       .map(message => message.threadRootId),
-    [root.id, root.id, root.id],
+    [root.id, root.id, root.id, root.id],
   )
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => message.content),
+    [
+      'Codex still has one edge case.',
+      'Hermes agrees that clarification is needed.',
+      'Codex accepts the current conclusion.',
+      'Hermes accepts the current conclusion.',
+    ],
+  )
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+})
+
+test('automatic dialogue requires one final standalone consensus marker', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const replies = [
+    [
+      'Codex quoted [[ROUNDRELAY_CONSENSUS:agree]] but still has a reservation.',
+      '[[ROUNDRELAY_CONSENSUS:agree]]',
+    ].join('\n'),
+    'Hermes accepts the current conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+    'Codex has resolved the reservation.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+    'Hermes confirms the final conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+  ]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: replies[calls.length - 1],
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '严格共识', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '避免引用标记造成误判')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.content.includes('[[ROUNDRELAY_CONSENSUS:')
+  )), false)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.autoRoundLimit'
+  )), false)
+})
+
+test('automatic dialogue does not count an incomplete Agent turn as agreement', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees.\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+      completed: calls.length !== 1,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '完整回复', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '截断回复不能作为共识')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.autoRoundLimit'
+  )), false)
+})
+
+test('stopping automatic dialogue cancels the active round without a limit message', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let activeSignal
+  let secondRoundStarted
+  const secondRound = new Promise(resolve => { secondRoundStarted = resolve })
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length < 3) {
+      return {
+        text: `${agent.kind} continue\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+        sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+      }
+    }
+    activeSignal = runOptions.signal
+    secondRoundStarted()
+    await new Promise((resolve, reject) => {
+      if (runOptions.signal.aborted) {
+        reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        return
+      }
+      runOptions.signal.addEventListener(
+        'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
+      )
+    })
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '停止自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '讨论到手动停止为止')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 4 })
+  const pending = workspace.activeRuns.get(group.id).promise
+  await secondRound
+
+  assert.equal(workspace.stop(group.id), true)
+  await pending
+
+  assert.equal(activeSignal.aborted, true)
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex'])
+  assert.equal(workspace.stop(group.id), false)
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    ['system.autoRoundLimit', 'system.autoTimeout'].includes(message.system?.key)
+  )), false)
+})
+
+test('automatic dialogue isolates duplicate failures and retries every Agent next round', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let hermesAttempts = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes' && hermesAttempts++ < 2) {
+      throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    }
+    const consensus = calls.length >= 7 ? 'agree' : 'continue'
+    return {
+      text: `${agent.kind} reply\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '失败恢复', agentKinds: ['codex', 'hermes', 'workbuddy'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', '继续讨论直至共识')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 3 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'workbuddy',
+    'codex', 'hermes', 'workbuddy',
+    'codex', 'hermes', 'workbuddy',
+  ])
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'system')
+      .map(message => ({
+        agentKind: message.agentKind,
+        content: message.content,
+        threadRootId: message.threadRootId,
+        system: message.system,
+      })),
+    [{
+      agentKind: 'hermes',
+      content: 'Hermes failed: LOCAL_AGENT_PROCESS_FAILED',
+      threadRootId: root.id,
+      system: {
+        key: 'system.agentCallFailed',
+        params: { agent: 'Hermes', reason: 'LOCAL_AGENT_PROCESS_FAILED' },
+      },
+    }],
+  )
+})
+
+test('automatic dialogue resumes a session captured before a failed turn', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let kimiAttempts = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'kimi' && kimiAttempts++ === 0) {
+      await runOptions.onSessionRef('kimi-created-before-failure')
+      throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    }
+    return {
+      text: `${agent.kind} reply\n[[ROUNDRELAY_CONSENSUS:${calls.length > 2 ? 'agree' : 'continue'}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '失败后复用会话', agentKinds: ['kimi', 'codex'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', '失败重试不能创建新会话')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['kimi', 'codex', 'kimi', 'codex'])
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(calls[2].runOptions.sessionRef, 'kimi-created-before-failure')
+  assert.equal(
+    workspace.state.sessions[workspace.sessionKey(group.id, 'kimi', root.id)],
+    'kimi-created-before-failure',
+  )
+})
+
+test('automatic dialogue defaults to three rounds and hides consensus markers at the cap', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} has not agreed.\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '安全上限', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', '讨论一个无法快速收敛的问题')
+
+  const started = workspace.startAuto({ groupId: group.id })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(started, { started: true, maxRounds: 3 })
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'codex', 'hermes', 'codex', 'hermes',
+  ])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.content.includes('[[ROUNDRELAY_CONSENSUS:')
+  )), false)
+  const limit = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.autoRoundLimit'
+  ))
+  assert.equal(limit.threadRootId, root.id)
+  assert.deepEqual(limit.system.params, { rounds: 3 })
+})
+
+test('automatic dialogue accepts legacy maxTurns as a round limit', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} continue\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '旧参数', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '兼容旧参数')
+
+  const started = workspace.startAuto({ groupId: group.id, maxTurns: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(started, { started: true, maxRounds: 2 })
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+})
+
+test('automatic dialogue aborts the active Agent at the total runtime limit', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.autoRunTimeoutMs = 20
+  let activeSignal
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    activeSignal = runOptions.signal
+    await new Promise((resolve, reject) => {
+      if (runOptions.signal.aborted) {
+        reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        return
+      }
+      runOptions.signal.addEventListener(
+        'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
+      )
+    })
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '运行时限', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', '讨论不能无限占用本地进程')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 8 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(activeSignal.aborted, true)
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex'])
+  const timeout = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.autoTimeout'
+  ))
+  assert.equal(timeout.threadRootId, root.id)
+  assert.deepEqual(timeout.system.params, {})
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.autoRoundLimit'
+  )), false)
+})
+
+test('automatic dialogue contains unexpected orchestration errors with a stable system message', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '异常兜底', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', '内部异常不能形成未处理拒绝')
+  const emitChanged = workspace.emitChanged.bind(workspace)
+  let emitCount = 0
+  workspace.emitChanged = () => {
+    emitCount += 1
+    if (emitCount === 2) throw new Error(`/private/workspace/${group.id}`)
+    emitChanged()
+  }
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await new Promise(resolve => setImmediate(resolve))
+
+  const stopped = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.autoStopped'
+  ))
+  assert.equal(stopped.threadRootId, root.id)
+  assert.equal(stopped.content, 'Automatic discussion stopped: LOCAL_AGENT_UNKNOWN_FAILURE')
+  assert.deepEqual(stopped.system.params, { reason: 'LOCAL_AGENT_UNKNOWN_FAILURE' })
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
 })
 
 test('automatic dialogue requires a topic root and accepts an explicit one', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => ({
+    text: `${agent.kind} agrees.\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+    sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+  })
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
@@ -597,11 +964,11 @@ test('automatic dialogue requires a topic root and accepts an explicit one', asy
   })
 
   assert.throws(
-    () => workspace.startAuto({ groupId: group.id, maxTurns: 2 }),
+    () => workspace.startAuto({ groupId: group.id, maxRounds: 1 }),
     { message: 'LOCAL_AUTO_THREAD_REQUIRED' },
   )
 
-  workspace.startAuto({ groupId: group.id, maxTurns: 2, threadRootId: 'topic-root' })
+  workspace.startAuto({ groupId: group.id, maxRounds: 1, threadRootId: 'topic-root' })
   await workspace.activeRuns.get(group.id).promise
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent')

@@ -550,7 +550,6 @@ class AgentInstaller extends EventEmitter {
 }
 
 module.exports = {
-  AGENT_CATALOG,
   AgentInstaller,
   defaultFindCommand,
   defaultRunProcess,

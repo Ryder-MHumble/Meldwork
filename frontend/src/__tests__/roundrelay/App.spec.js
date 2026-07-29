@@ -22,18 +22,25 @@ function baseSnapshot() {
 
 function createBridge() {
   const state = baseSnapshot()
+  let workspaceChanged = null
+  const snapshot = value => structuredClone(value || state)
   const workspace = {
-    get: vi.fn(async () => state),
-    refreshAgents: vi.fn(async () => state),
+    get: vi.fn(async () => snapshot()),
+    refreshAgents: vi.fn(async () => snapshot()),
     createGroup: vi.fn(async input => ({ id: 'group-1', createdAt: '2026-07-29T08:00:00Z', ...input })),
     updateGroup: vi.fn(async () => ({})),
-    deleteGroup: vi.fn(async () => state),
-    send: vi.fn(async () => state),
+    deleteGroup: vi.fn(async () => snapshot()),
+    send: vi.fn(async () => snapshot()),
     startAuto: vi.fn(async () => ({ started: true })),
     stop: vi.fn(async () => true),
     pickDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
     defaultDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
-    onChanged: vi.fn(() => vi.fn()),
+    onChanged: vi.fn((callback) => {
+      workspaceChanged = callback
+      return vi.fn(() => {
+        if (workspaceChanged === callback) workspaceChanged = null
+      })
+    }),
   }
   const agentInstaller = {
     catalog: vi.fn(async () => ({
@@ -67,7 +74,13 @@ function createBridge() {
     save: vi.fn(async input => ({ ...input, configured: true, encryptionAvailable: true })),
     delete: vi.fn(async () => ({ configured: false, encryptionAvailable: true })),
   }
-  return { bridge: { localWorkspace: workspace, agentInstaller, localAgentProvider }, state }
+  return {
+    bridge: { localWorkspace: workspace, agentInstaller, localAgentProvider },
+    state,
+    emitWorkspaceChanged(value = state) {
+      workspaceChanged?.(snapshot(value))
+    },
+  }
 }
 
 async function mountApp(configure = () => {}) {
@@ -189,6 +202,90 @@ describe('RoundRelay workbench', () => {
     await wrapper.findAll('.brand-actions button')[0].trigger('click')
     expect(wrapper.get('.conversation-link').text()).toContain('Agent 群聊')
     expect(wrapper.get('.system-message').text()).toContain('Hermes 调用失败：Agent 执行已停止。')
+    wrapper.unmount()
+  })
+
+  it('preserves selected targets across equivalent structured-clone snapshots', async () => {
+    const { wrapper, emitWorkspaceChanged } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.findAll('.target-chip')[1].trigger('click')
+    expect(wrapper.findAll('.target-chip')[0].classes()).toContain('selected')
+    expect(wrapper.findAll('.target-chip')[1].classes()).not.toContain('selected')
+
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.findAll('.target-chip')[0].classes()).toContain('selected')
+    expect(wrapper.findAll('.target-chip')[1].classes()).not.toContain('selected')
+    wrapper.unmount()
+  })
+
+  it('starts automatic discussion with max rounds and the latest root message', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'root-1',
+          groupId: 'group-1',
+          role: 'user',
+          content: 'First topic',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'reply-1',
+          groupId: 'group-1',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'First reply',
+          threadRootId: 'root-1',
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'root-2',
+          groupId: 'group-1',
+          role: 'user',
+          content: 'Latest topic',
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const roundSelect = wrapper.get('.auto-controls select')
+    expect(roundSelect.element.value).toBe('3')
+    expect(wrapper.findAll('.auto-controls option').map(option => Number(option.element.value)))
+      .toEqual([1, 2, 3, 4, 6])
+
+    await wrapper.get('.auto-controls button').trigger('click')
+
+    expect(bridge.localWorkspace.startAuto).toHaveBeenCalledWith({
+      groupId: 'group-1',
+      maxRounds: 3,
+      threadRootId: 'root-2',
+    })
     wrapper.unmount()
   })
 

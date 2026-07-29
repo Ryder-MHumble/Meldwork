@@ -2,6 +2,8 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 
+const { atomicWritePrivateFile } = require('./private-file.cjs')
+
 const OPENCLAW_PROVIDER_ID = 'roundrelay-desktop'
 const READ_ONLY_TOOLS = [
   'read', 'web_search', 'web_fetch', 'memory_search', 'memory_get', 'session_status',
@@ -25,31 +27,6 @@ function normalizeProvider(input) {
     throw new Error('OPENCLAW_PROVIDER_INVALID')
   }
   return { apiKey, baseUrl, model }
-}
-
-function atomicWrite(filename, contents) {
-  const directory = path.dirname(filename)
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-  const temporary = path.join(
-    directory,
-    `.${path.basename(filename)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`,
-  )
-  let descriptor
-  try {
-    descriptor = fs.openSync(temporary, 'wx', 0o600)
-    fs.writeFileSync(descriptor, contents, 'utf8')
-    fs.fsyncSync(descriptor)
-    fs.closeSync(descriptor)
-    descriptor = undefined
-    fs.renameSync(temporary, filename)
-    fs.chmodSync(filename, 0o600)
-  } catch (error) {
-    if (descriptor !== undefined) {
-      try { fs.closeSync(descriptor) } catch { /* already closed */ }
-    }
-    try { fs.unlinkSync(temporary) } catch { /* absent or already renamed */ }
-    throw error
-  }
 }
 
 function managedOpenClawOptions({
@@ -111,7 +88,7 @@ function managedOpenClawOptions({
   const contents = `${JSON.stringify(config, null, 2)}\n`
   let current = ''
   try { current = fs.readFileSync(configPath, 'utf8') } catch { /* first use */ }
-  if (current !== contents) atomicWrite(configPath, contents)
+  if (current !== contents) atomicWritePrivateFile(configPath, contents)
 
   return {
     env: {
@@ -124,4 +101,4 @@ function managedOpenClawOptions({
   }
 }
 
-module.exports = { managedOpenClawOptions, normalizeProvider }
+module.exports = { managedOpenClawOptions }

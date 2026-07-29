@@ -78,12 +78,13 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 
 **Precondition:** A group has at least two Agents and a persisted user topic root.
 
-1. The user starts automatic discussion and chooses a bounded turn count.
-2. `LocalWorkspace` alternates Agents sequentially for 2 to 12 turns.
-3. Each turn uses the same local prompt/invocation path as a manual message.
-4. The user can stop the group, which aborts the active process tree.
-5. On application quit, main cancels an active installer, aborts all Agent runs, waits for settlement, then exits.
+1. The user starts automatic discussion and chooses a bounded round count; the default is three and the hard cap is twelve.
+2. `LocalWorkspace` invokes every group Agent once per complete round, preserving a separate native session for each Agent and topic.
+3. Each Agent must end with one internal consensus marker. The marker is removed before persistence, and the run stops early only when every Agent completes and agrees in the same round.
+4. A failed Agent is recorded once per stable failure, while later Agents and later bounded rounds continue.
+5. The user can stop the group, and a 30-minute total runtime limit also aborts the active process tree.
+6. On application quit, main cancels an active installer, aborts all Agent runs, waits for settlement, then exits.
 
 **Deny cases:** Missing topic root, fewer than two Agents, or another active run.
 
-**State/side effects:** Local messages and sessions are updated. There is no timer, recurring schedule, unattended cron trigger, or retry daemon.
+**State/side effects:** Local messages and sessions are updated. There is a per-run safety timer, but no recurring schedule, unattended cron trigger, or retry daemon.

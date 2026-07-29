@@ -16,7 +16,7 @@ export const AGENTS = Object.freeze([
 
 const BY_KIND = new Map(AGENTS.map(agent => [agent.kind, agent]))
 
-export function agentProfile(kind) {
+function agentProfile(kind) {
   return BY_KIND.get(kind) || { kind, label: kind || 'Agent', logo: '', providerMode: 'native' }
 }
 

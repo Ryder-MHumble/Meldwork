@@ -89,6 +89,13 @@ function requireDesktopRenderer(event) {
   }
 }
 
+function registerTrustedHandle(channel, handler) {
+  ipcMain.handle(channel, (event, ...args) => {
+    requireDesktopRenderer(event)
+    return handler(...args)
+  })
+}
+
 function isAllowedExternalUrl(value) {
   try {
     const target = new URL(value)
@@ -178,7 +185,7 @@ function createWorkspace() {
       }
       return resolveNativeCredentialState(kind, { executable: agent?.executable })
     },
-    sharedProviderReady: kind => SHARED_PROVIDER_KINDS.has(kind) && providerStatus().configured,
+    sharedProviderReady: kind => SHARED_PROVIDER_KINDS.has(kind) && providerStore.status().configured,
     runAgent: async (agent, prompt, workdir, options = {}) => {
       const injected = providerOptions(agent.kind, {
         ...options,
@@ -235,16 +242,6 @@ function initializeWorkspace() {
   return next
 }
 
-async function activateWorkspace() {
-  const next = initializeWorkspace()
-  await next.refreshAgents()
-  return next
-}
-
-function providerStatus(options) {
-  return providerStore.status(options)
-}
-
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -293,91 +290,73 @@ function createWindow() {
 }
 
 function registerIpc() {
-  ipcMain.handle('local-workspace:get', (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:get', () => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.snapshot()
   })
-  ipcMain.handle('local-workspace:refresh-agents', async (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:refresh-agents', async () => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     workspace.clearRuntimeCredentialFailures()
     installer.invalidateDetectionCache()
     return refreshLocalAgentState()
   })
-  ipcMain.handle('local-workspace:create-group', (event, input) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:create-group', (input) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.createGroup(input || {})
   })
-  ipcMain.handle('local-workspace:update-group', (event, groupId, input) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:update-group', (groupId, input) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.updateGroup(String(groupId || ''), input || {})
   })
-  ipcMain.handle('local-workspace:delete-group', (event, groupId) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:delete-group', (groupId) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     workspace.deleteGroup(String(groupId || ''))
     return workspace.snapshot()
   })
-  ipcMain.handle('local-workspace:send', async (event, input) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:send', async (input) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.sendMessage(input || {})
   })
-  ipcMain.handle('local-workspace:start-auto', (event, input) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:start-auto', (input) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.startAuto(input || {})
   })
-  ipcMain.handle('local-workspace:stop', (event, groupId) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:stop', (groupId) => {
     if (!workspace) return false
     return workspace.stop(String(groupId || ''))
   })
-  ipcMain.handle('local-workspace:pick-directory', async (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:pick-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
     })
     return result.canceled ? '' : result.filePaths[0]
   })
-  ipcMain.handle('local-workspace:default-directory', (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-workspace:default-directory', () => {
     return app.getPath('documents')
   })
-  ipcMain.handle('local-agent-installer:catalog', async (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-installer:catalog', async () => {
     return localAgentCatalog()
   })
-  ipcMain.handle('local-agent-installer:state', (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-installer:state', () => {
     return installer.state()
   })
-  ipcMain.handle('local-agent-installer:start', (event, kind) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-installer:start', (kind) => {
     return installer.start(String(kind || ''))
   })
-  ipcMain.handle('local-agent-installer:cancel', (event, taskId) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-installer:cancel', (taskId) => {
     return installer.cancel(String(taskId || ''))
   })
-  ipcMain.handle('local-agent-installer:set-sidebar-visibility', (event, kind, visible) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-installer:set-sidebar-visibility', (kind, visible) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.setSidebarVisibility(String(kind || ''), visible === true)
   })
-  ipcMain.handle('local-agent-provider:status', (event) => {
-    requireDesktopRenderer(event)
-    return providerStatus()
+  registerTrustedHandle('local-agent-provider:status', () => {
+    return providerStore.status()
   })
-  ipcMain.handle('local-agent-provider:probe', (event) => {
-    requireDesktopRenderer(event)
-    return providerStatus({ probeEncryption: true })
+  registerTrustedHandle('local-agent-provider:probe', () => {
+    return providerStore.status({ probeEncryption: true })
   })
-  ipcMain.handle('local-agent-provider:save', async (event, input) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-provider:save', async (input) => {
     const result = providerStore.save({
       apiKey: input?.apiKey,
       provider: input?.provider,
@@ -387,8 +366,7 @@ function registerIpc() {
     await refreshLocalAgentState()
     return result
   })
-  ipcMain.handle('local-agent-provider:delete', async (event) => {
-    requireDesktopRenderer(event)
+  registerTrustedHandle('local-agent-provider:delete', async () => {
     const result = providerStore.delete()
     await refreshLocalAgentState()
     return result
@@ -446,12 +424,6 @@ app.on('before-quit', (event) => {
 })
 
 module.exports = {
-  activateWorkspace,
-  isAllowedExternalUrl,
-  isAllowedLocalNavigation,
   isTrustedLocalRenderer,
   isTrustedLocalWebContents,
-  providerOptionsFor,
-  providerStatus,
-  workspaceStoragePath,
 }

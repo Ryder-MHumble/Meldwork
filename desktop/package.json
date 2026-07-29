@@ -13,6 +13,10 @@
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "npm run build:frontend && electron-builder --mac dmg zip"
   },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "0.23.0",
+    "zod": "4.4.3"
+  },
   "devDependencies": {
     "electron": "39.8.5",
     "electron-builder": "26.15.3"

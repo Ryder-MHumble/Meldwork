@@ -1,6 +1,6 @@
-const crypto = require('node:crypto')
 const fs = require('node:fs')
-const path = require('node:path')
+
+const { atomicWritePrivateFile } = require('./private-file.cjs')
 
 const STORE_VERSION = 1
 const EMPTY_METADATA = Object.freeze({ provider: '', baseUrl: '', model: '' })
@@ -101,7 +101,7 @@ class ProviderStore {
       throw new Error('PROVIDER_ENCRYPTION_FAILED')
     }
 
-    this.atomicWrite(JSON.stringify({
+    atomicWritePrivateFile(this.storagePath, JSON.stringify({
       version: STORE_VERSION,
       ...metadata,
       encrypted: encrypted.toString('base64'),
@@ -162,34 +162,6 @@ class ProviderStore {
     }
     return { ...normalizeMetadata(payload), encrypted: payload.encrypted }
   }
-
-  atomicWrite(contents) {
-    const directory = path.dirname(this.storagePath)
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 })
-    const temporaryPath = path.join(
-      directory,
-      `.${path.basename(this.storagePath)}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`,
-    )
-    let descriptor
-    try {
-      descriptor = fs.openSync(temporaryPath, 'wx', 0o600)
-      fs.writeFileSync(descriptor, contents, 'utf8')
-      fs.fsyncSync(descriptor)
-      fs.closeSync(descriptor)
-      descriptor = undefined
-      fs.renameSync(temporaryPath, this.storagePath)
-      fs.chmodSync(this.storagePath, 0o600)
-    } catch (error) {
-      if (descriptor !== undefined) {
-        try { fs.closeSync(descriptor) } catch { /* already closed */ }
-      }
-      try { fs.unlinkSync(temporaryPath) } catch { /* absent or already renamed */ }
-      throw error
-    }
-  }
 }
 
-module.exports = {
-  ProviderStore,
-  normalizeMetadata,
-}
+module.exports = { ProviderStore }

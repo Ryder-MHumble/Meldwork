@@ -31,10 +31,12 @@ async function readWhenReady(filename, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
-      return fs.readFileSync(filename, 'utf8')
+      const value = fs.readFileSync(filename, 'utf8')
+      if (value) return value
     } catch {
-      await new Promise(resolve => setTimeout(resolve, 20))
+      // Wait for the writer to create the file.
     }
+    await new Promise(resolve => setTimeout(resolve, 20))
   }
   throw new Error(`Timed out waiting for ${filename}`)
 }
@@ -276,19 +278,24 @@ test('WorkBuddy JSON output returns the final reply and session id', () => {
   })
 })
 
-test('Kimi uses stream JSON prompt mode and resumes its native session', () => {
+test('Kimi uses ACP plan mode by default and prompt mode only after write authorization', () => {
   const chat = invocation('kimi', '/tmp/kimi', '/tmp/work')
-  assert.deepEqual(chat.args, ['--output-format', 'stream-json', '--plan', '--prompt'])
-  assert.equal(chat.promptArg, true)
+  assert.deepEqual(chat.args, ['acp'])
+  assert.equal(chat.acpMode, 'plan')
+  assert.equal(chat.promptArg, undefined)
 
-  const resumed = invocation('kimi', '/tmp/kimi', '/tmp/work', 'kimi-session', {
+  const resumed = invocation('kimi', '/tmp/kimi', '/tmp/work', 'kimi-session')
+  assert.deepEqual(resumed.args, ['acp'])
+  assert.equal(resumed.acpMode, 'plan')
+
+  const writable = invocation('kimi', '/tmp/kimi', '/tmp/work', 'kimi-session', {
     sandbox: 'workspace-write',
   })
-  assert.deepEqual(resumed.args, [
+  assert.deepEqual(writable.args, [
     '--output-format', 'stream-json', '--session', 'kimi-session', '--prompt',
   ])
-  assert.equal(resumed.args.includes('--plan'), false)
-  assert.equal(resumed.args.includes('--auto'), false)
+  assert.equal(writable.args.includes('--plan'), false)
+  assert.equal(writable.args.includes('--auto'), false)
 })
 
 test('Kimi stream JSON output returns assistant text and the native session id', () => {
@@ -306,6 +313,392 @@ test('Kimi stream JSON output returns assistant text and the native session id',
     text: '第一段\n第二段',
     sessionRef: '64741dae-cecb-4540-9356-6dc10a5cca47',
   })
+})
+
+test('Kimi ACP plan mode creates and resumes sessions while reporting incomplete turns', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-'))
+  const workdir = fs.realpathSync(directory)
+  const lifecycleFile = path.join(directory, 'lifecycle.log')
+  const cli = executable(directory, 'kimi-acp.cjs', `
+const fs = require('node:fs')
+if (process.argv.includes('--prompt')) {
+  process.stderr.write('legacy prompt mode used')
+  process.exit(2)
+}
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const record = value => fs.appendFileSync(process.env.ROUNDRELAY_TEST_LIFECYCLE_FILE, value + '\\n')
+process.on('SIGTERM', () => {
+  record('sigterm')
+  process.exit(0)
+})
+input.on('close', () => record('stdin-close'))
+let setup = ''
+let sessionId = ''
+let mode = ''
+let promptRequest = null
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    setup = 'new'
+    sessionId = process.env.ROUNDRELAY_TEST_SECRET || 'kimi-acp-session'
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/resume') {
+    setup = 'resume'
+    sessionId = message.params.sessionId
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/set_mode') {
+    if (message.params.sessionId !== sessionId) process.exit(3)
+    mode = message.params.modeId
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    if (message.params.sessionId !== sessionId) process.exit(4)
+    promptRequest = message
+    send({
+      jsonrpc: '2.0', id: 99, method: 'session/request_permission',
+      params: { sessionId, toolCall: { toolCallId: 'tool-1', title: 'write' }, options: [] },
+    })
+  } else if (message.id === 99) {
+    const text = [
+      setup,
+      mode,
+      message.result.outcome.outcome,
+      promptRequest.params.prompt[0].text,
+      process.cwd(),
+    ].join('|')
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId,
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+      },
+    })
+    const stopReason = promptRequest.params.prompt[0].text === 'cancelled prompt'
+      ? 'cancelled'
+      : 'end_turn'
+    send({ jsonrpc: '2.0', id: promptRequest.id, result: { stopReason } })
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const env = { ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile }
+  const createdSessionRefs = []
+
+  const created = await runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'first prompt',
+    workdir,
+    { env, onSessionRef: sessionRef => createdSessionRefs.push(sessionRef) },
+  )
+  assert.equal(created.text, `new|plan|cancelled|first prompt|${workdir}`)
+  assert.equal(created.sessionRef, 'kimi-acp-session')
+  assert.equal(created.completed, true)
+  assert.deepEqual(createdSessionRefs, ['kimi-acp-session'])
+
+  const resumedSessionRefs = []
+  const resumed = await runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'next prompt',
+    workdir,
+    {
+      sessionRef: created.sessionRef,
+      env,
+      onSessionRef: sessionRef => resumedSessionRefs.push(sessionRef),
+    },
+  )
+  assert.equal(resumed.text, `resume|plan|cancelled|next prompt|${workdir}`)
+  assert.equal(resumed.sessionRef, 'kimi-acp-session')
+  assert.deepEqual(resumedSessionRefs, ['kimi-acp-session'])
+
+  const cancelled = await runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'cancelled prompt',
+    workdir,
+    { sessionRef: created.sessionRef, env },
+  )
+  assert.equal(cancelled.text, `resume|plan|cancelled|cancelled prompt|${workdir}`)
+  assert.equal(cancelled.completed, false)
+
+  const privateSessionRefs = []
+  const privateSessionId = 'private-session-reference'
+  const privateSession = await runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'private session prompt',
+    workdir,
+    {
+      env: { ...env, ROUNDRELAY_TEST_SECRET: privateSessionId },
+      onSessionRef: sessionRef => privateSessionRefs.push(sessionRef),
+    },
+  )
+  assert.equal(privateSession.text, `new|plan|cancelled|private session prompt|${workdir}`)
+  assert.equal(privateSession.sessionRef, '')
+  assert.deepEqual(privateSessionRefs, [])
+  assert.deepEqual(
+    fs.readFileSync(lifecycleFile, 'utf8').trim().split('\n'),
+    ['stdin-close', 'stdin-close', 'stdin-close', 'stdin-close'],
+  )
+})
+
+test('Kimi ACP preserves new sessions across failures and keeps diagnostics private', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-session-ref-'))
+  const promptFailureCli = executable(directory, 'kimi-acp-prompt-failure.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'kimi-prompt-failure-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send({
+      jsonrpc: '2.0', id: message.id,
+      error: {
+        code: -32000,
+        message: 'prompt failed in /private/roundrelay-agent with ' + process.env.ROUNDRELAY_TEST_SECRET,
+      },
+    })
+  }
+})
+`)
+  const processExitCli = executable(directory, 'kimi-acp-process-exit.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'kimi-process-exit-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    process.stderr.write('process exited after creating the session')
+    process.exit(7)
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const promptFailureSessionRefs = []
+  const secret = 'private-provider-secret'
+  await assert.rejects(
+    runAgent(
+      { kind: 'kimi', executable: promptFailureCli, name: 'Kimi' },
+      'fail prompt',
+      directory,
+      {
+        env: { ROUNDRELAY_TEST_SECRET: secret },
+        onSessionRef: sessionRef => promptFailureSessionRefs.push(sessionRef),
+      },
+    ),
+    (error) => {
+      assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
+      assert.match(error.diagnostic, /prompt failed in \/private\/roundrelay-agent with \[redacted\]/)
+      assert.equal(error.diagnostic.includes(secret), false)
+      assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
+      assert.doesNotMatch(error.message, /private|redacted|secret/i)
+      return true
+    },
+  )
+  assert.deepEqual(promptFailureSessionRefs, ['kimi-prompt-failure-session'])
+
+  const processExitSessionRefs = []
+  await assert.rejects(
+    runAgent(
+      { kind: 'kimi', executable: processExitCli, name: 'Kimi' },
+      'exit during prompt',
+      directory,
+      { onSessionRef: sessionRef => processExitSessionRefs.push(sessionRef) },
+    ),
+    (error) => {
+      assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
+      assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
+      return true
+    },
+  )
+  assert.deepEqual(processExitSessionRefs, ['kimi-process-exit-session'])
+})
+
+test('Kimi ACP rejects unsafe protocol input without logging secret-bearing messages', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-invalid-'))
+  const secret = 'private-kimi-transport-secret'
+  const cli = executable(directory, 'kimi-acp-invalid.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'kimi-invalid-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    if (process.env.ROUNDRELAY_TEST_CASE === 'malformed') {
+      process.stdout.write('{"secret":"' + process.env.ROUNDRELAY_TEST_SECRET + '"\\n')
+    } else {
+      send({
+        jsonrpc: '2.0', method: 'unsupported/client_method',
+        params: { secret: process.env.ROUNDRELAY_TEST_SECRET },
+      })
+    }
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const logged = []
+  const originalConsoleError = console.error
+  console.error = (...args) => logged.push(args.map(String).join(' '))
+  t.after(() => { console.error = originalConsoleError })
+
+  for (const testCase of ['malformed', 'unsupported']) {
+    await assert.rejects(
+      runAgent(
+        { kind: 'kimi', executable: cli, name: 'Kimi' },
+        'validate transport',
+        directory,
+        { env: { ROUNDRELAY_TEST_CASE: testCase, ROUNDRELAY_TEST_SECRET: secret } },
+      ),
+      (error) => {
+        assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
+        assert.equal(error.diagnostic.includes(secret), false)
+        assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
+        return true
+      },
+    )
+  }
+
+  assert.deepEqual(logged, [])
+})
+
+test('Kimi ACP bounds unframed input, cumulative reply text, and total protocol traffic', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-limits-'))
+  const cli = executable(directory, 'kimi-acp-limits.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'kimi-limit-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    const testCase = process.env.ROUNDRELAY_TEST_CASE
+    if (testCase === 'line') {
+      process.stdout.write('x'.repeat(1024 * 1024 + 1))
+      return
+    }
+    const update = testCase === 'reply' ? 'agent_message_chunk' : 'agent_thought_chunk'
+    const size = testCase === 'reply' ? 512 * 1024 : 960 * 1024
+    const count = testCase === 'reply' ? 21 : 18
+    const text = 'x'.repeat(size)
+    for (let index = 0; index < count; index += 1) {
+      send({
+        jsonrpc: '2.0', method: 'session/update',
+        params: {
+          sessionId: 'kimi-limit-session',
+          update: { sessionUpdate: update, content: { type: 'text', text } },
+        },
+      })
+    }
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  for (const [testCase, diagnostic] of [
+    ['line', /line limit/],
+    ['reply', /output limit/],
+    ['total', /total limit/],
+  ]) {
+    await assert.rejects(
+      runAgent(
+        { kind: 'kimi', executable: cli, name: 'Kimi' },
+        'validate bounds',
+        directory,
+        { env: { ROUNDRELAY_TEST_CASE: testCase } },
+      ),
+      (error) => {
+        assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
+        assert.match(error.diagnostic, diagnostic)
+        return true
+      },
+    )
+  }
+})
+
+test('Kimi ACP cancellation notifies the session and terminates the child process', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-abort-'))
+  const readyFile = path.join(directory, 'ready')
+  const cancelFile = path.join(directory, 'cancel.json')
+  const lifecycleFile = path.join(directory, 'lifecycle.log')
+  const cli = executable(directory, 'kimi-acp-abort.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+const record = value => fs.appendFileSync(process.env.ROUNDRELAY_TEST_LIFECYCLE_FILE, value + '\\n')
+process.on('SIGTERM', () => record('sigterm'))
+input.on('close', () => record('stdin-close'))
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'kimi-cancel-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_READY_FILE, String(process.pid))
+  } else if (message.method === 'session/cancel') {
+    record('cancel')
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_CANCEL_FILE, JSON.stringify(message.params))
+  }
+})
+setInterval(() => {}, 1000)
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const controller = new AbortController()
+  const outcome = runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'keep discussing',
+    directory,
+    {
+      signal: controller.signal,
+      env: {
+        ROUNDRELAY_TEST_READY_FILE: readyFile,
+        ROUNDRELAY_TEST_CANCEL_FILE: cancelFile,
+        ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile,
+      },
+    },
+  ).then(value => ({ value }), error => ({ error }))
+  const pid = Number(await readWhenReady(readyFile))
+
+  controller.abort()
+
+  const result = await within(outcome)
+  assert.equal(result.error?.message, 'LOCAL_AGENT_EXECUTION_STOPPED')
+  assert.deepEqual(await readJsonWhenReady(cancelFile), { sessionId: 'kimi-cancel-session' })
+  await waitForExit(pid)
+  assert.deepEqual(
+    fs.readFileSync(lifecycleFile, 'utf8').trim().split('\n'),
+    ['cancel', 'stdin-close', 'sigterm'],
+  )
 })
 
 test('Claude uses JSON output and resumes its native session', () => {
@@ -425,6 +818,7 @@ test('supported local CLIs run in the selected workdir and return native session
     },
     {
       kind: 'kimi',
+      options: { sandbox: 'workspace-write' },
       source: `process.stdout.write([
         JSON.stringify({ role: 'assistant', content: process.cwd() }),
         JSON.stringify({ type: 'session.resume_hint', session_id: 'kimi-session' }),
@@ -464,6 +858,7 @@ test('supported local CLIs run in the selected workdir and return native session
       { kind: fixture.kind, executable: cli, name: fixture.kind },
       'hello',
       workdir,
+      fixture.options,
     )
     assert.equal(result.text, workdir, fixture.kind)
     assert.equal(result.sessionRef, `${fixture.kind}-session`, fixture.kind)

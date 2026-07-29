@@ -14,6 +14,9 @@ const AGENT_LABELS = {
   gemini: 'Gemini',
   opencode: 'OpenCode',
 }
+const AUTO_CONSENSUS_MARKER = /\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\]/gi
+const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\][ \t]*$/i
+const DEFAULT_AUTO_RUN_TIMEOUT_MS = 30 * 60 * 1000
 
 function emptyState() {
   return {
@@ -37,6 +40,18 @@ function cleanText(value, limit = 20000) {
 
 function cleanInline(value, limit = 80) {
   return cleanText(value, limit).replace(/[\n\r\[\]`]/g, ' ').replace(/\s+/g, ' ')
+}
+
+function parseAutoReply(value) {
+  const raw = String(value || '').trim()
+  const finalMarker = raw.match(AUTO_FINAL_CONSENSUS_MARKER)
+  const markerCount = raw.match(AUTO_CONSENSUS_MARKER)?.length || 0
+  const text = raw.replace(AUTO_CONSENSUS_MARKER, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+  const consensus = markerCount === 1
+    && finalMarker?.[1].toLowerCase() === 'agree'
+  return { text, consensus }
 }
 
 function normalizeSystemParams(input) {
@@ -119,6 +134,10 @@ class LocalWorkspace extends EventEmitter {
     this.runAgentFn = options.runAgent
     this.credentialStateFn = options.credentialState || (async () => ({ state: 'unknown', source: 'unverified' }))
     this.sharedProviderReadyFn = options.sharedProviderReady || (() => false)
+    this.autoRunTimeoutMs = Number.isFinite(options.autoRunTimeoutMs)
+      && options.autoRunTimeoutMs > 0
+      ? options.autoRunTimeoutMs
+      : DEFAULT_AUTO_RUN_TIMEOUT_MS
     this.now = options.now || (() => new Date().toISOString())
     this.createId = options.createId || randomUUID
     this.detectedAgents = []
@@ -186,6 +205,43 @@ class LocalWorkspace extends EventEmitter {
 
   emitChanged() {
     this.emit('changed', this.snapshot())
+  }
+
+  beginRun(groupId, mode, targetKinds, threadRootId) {
+    const controller = new AbortController()
+    controller.mode = mode
+    controller.targetKinds = [...targetKinds]
+    controller.completedKinds = []
+    controller.currentKind = ''
+    controller.threadRootId = threadRootId
+    controller.startedAt = Date.now()
+    controller.stopReason = ''
+    this.activeRuns.set(groupId, controller)
+    try {
+      this.emitChanged()
+    } catch (error) {
+      this.activeRuns.delete(groupId)
+      throw error
+    }
+    return controller
+  }
+
+  recordAgentFailure(groupId, kind, error, threadRootId, reportedFailures = null) {
+    const label = AGENT_LABELS[kind] || kind
+    const reason = cleanText(error?.message || error, 2000) || 'LOCAL_AGENT_UNKNOWN_FAILURE'
+    const failureKey = `${kind}:${reason}`
+    if (!reportedFailures || !reportedFailures.has(failureKey)) {
+      reportedFailures?.add(failureKey)
+      this.addMessage(
+        groupId,
+        'system',
+        `${label} failed: ${reason}`,
+        kind,
+        threadRootId,
+        { key: 'system.agentCallFailed', params: { agent: label, reason } },
+      )
+    }
+    return { label, reason }
   }
 
   async refreshAgents() {
@@ -408,6 +464,13 @@ class LocalWorkspace extends EventEmitter {
     return stored
   }
 
+  persistSessionRef(key, sessionRef) {
+    const next = String(sessionRef || '')
+    if (!next || next === this.state.sessions[key]) return
+    this.state.sessions[key] = next
+    this.save()
+  }
+
   recentTranscript(groupId, threadRootId = '') {
     const root = cleanText(threadRootId, 100)
     return this.state.messages
@@ -425,7 +488,11 @@ class LocalWorkspace extends EventEmitter {
   promptFor(group, kind, mode, threadRootId = '') {
     const label = AGENT_LABELS[kind] || kind
     const instruction = mode === 'auto'
-      ? 'Read the most recent messages, respond directly to the previous participant, and advance the discussion. Do not speak for other Agents.'
+      ? [
+          'Read the most recent messages, respond directly to the previous participant, and advance the discussion. Do not speak for other Agents.',
+          'End your reply with exactly one standalone line: [[ROUNDRELAY_CONSENSUS:agree]] or [[ROUNDRELAY_CONSENSUS:continue]].',
+          'Use agree only when you fully accept the current shared conclusion and add no new proposal, condition, or reservation. Otherwise use continue.',
+        ].join('\n')
       : 'Respond directly to the user and account for the other participants\' views. Do not speak for other Agents.'
     return [
       `You are participating in the local "${group.name || 'RoundRelay group'}" conversation as ${label}. Reply in the language used by the user unless they request another language.`,
@@ -447,6 +514,7 @@ class LocalWorkspace extends EventEmitter {
         group.workdir,
         {
           sessionRef: this.sessionRef(group, kind, threadRootId),
+          onSessionRef: sessionRef => this.persistSessionRef(key, sessionRef),
           signal,
           sandbox: group.allowWrite ? 'workspace-write' : undefined,
         },
@@ -456,11 +524,13 @@ class LocalWorkspace extends EventEmitter {
       if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
       throw error
     }
-    if (result.sessionRef && result.sessionRef !== this.state.sessions[key]) {
-      this.state.sessions[key] = result.sessionRef
-      this.save()
-    }
-    return this.addMessage(group.id, 'agent', result.text, kind, threadRootId)
+    this.persistSessionRef(key, result.sessionRef)
+    const reply = mode === 'auto'
+      ? parseAutoReply(result.text)
+      : { text: result.text, consensus: false }
+    if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')
+    const message = this.addMessage(group.id, 'agent', reply.text, kind, threadRootId)
+    return { message, consensus: reply.consensus && result.completed !== false }
   }
 
   async sendMessage(input) {
@@ -475,15 +545,7 @@ class LocalWorkspace extends EventEmitter {
     const userMessage = this.addMessage(group.id, 'user', text, '', inputThreadRootId)
     const threadRootId = inputThreadRootId
       || (group.agentKinds.length > 1 ? userMessage.id : '')
-    const controller = new AbortController()
-    controller.mode = 'manual'
-    controller.targetKinds = targetKinds
-    controller.completedKinds = []
-    controller.currentKind = ''
-    controller.threadRootId = threadRootId
-    controller.startedAt = Date.now()
-    this.activeRuns.set(group.id, controller)
-    this.emitChanged()
+    const controller = this.beginRun(group.id, 'manual', targetKinds, threadRootId)
     const promise = (async () => {
       try {
         const failures = []
@@ -495,17 +557,10 @@ class LocalWorkspace extends EventEmitter {
             await this.invokeAgent(group, kind, 'manual', controller.signal, threadRootId)
             successCount += 1
           } catch (error) {
-            const label = AGENT_LABELS[kind] || kind
-            const reason = cleanText(error?.message || error, 2000) || 'LOCAL_AGENT_UNKNOWN_FAILURE'
-            failures.push(`${label}: ${reason}`)
-            this.addMessage(
-              group.id,
-              'system',
-              `${label} failed: ${reason}`,
-              kind,
-              threadRootId,
-              { key: 'system.agentCallFailed', params: { agent: label, reason } },
+            const { label, reason } = this.recordAgentFailure(
+              group.id, kind, error, threadRootId,
             )
+            failures.push(`${label}: ${reason}`)
           }
           controller.completedKinds.push(kind)
           controller.currentKind = ''
@@ -530,53 +585,104 @@ class LocalWorkspace extends EventEmitter {
     const group = this.getGroup(input.groupId)
     if (this.activeRuns.has(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
     if (group.agentKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
-    const maxTurns = Math.max(2, Math.min(12, Number(input.maxTurns) || 4))
+    const requestedRounds = Number(input.maxRounds ?? input.maxTurns)
+    const maxRounds = Math.max(1, Math.min(12, requestedRounds || 3))
     const latestRoot = this.state.messages.findLast(message => (
       message.groupId === group.id && message.role === 'user' && !message.threadRootId
     ))
     const threadRootId = cleanText(input.threadRootId, 100) || latestRoot?.id || ''
     if (!threadRootId) throw new Error('LOCAL_AUTO_THREAD_REQUIRED')
-    const controller = new AbortController()
-    controller.mode = 'auto'
-    controller.targetKinds = group.agentKinds
-    controller.completedKinds = []
-    controller.currentKind = ''
-    controller.threadRootId = threadRootId
-    controller.startedAt = Date.now()
-    this.activeRuns.set(group.id, controller)
-    this.emitChanged()
+    const controller = this.beginRun(group.id, 'auto', group.agentKinds, threadRootId)
+    const timeout = setTimeout(() => {
+      if (controller.signal.aborted) return
+      controller.stopReason = 'timeout'
+      controller.abort()
+    }, this.autoRunTimeoutMs)
     const promise = (async () => {
       try {
-        for (let index = 0; index < maxTurns && !controller.signal.aborted; index += 1) {
-          const kind = group.agentKinds[index % group.agentKinds.length]
-          controller.currentKind = kind
-          this.emitChanged()
-          await this.invokeAgent(group, kind, 'auto', controller.signal, threadRootId)
+        let consensusReached = false
+        const reportedFailures = new Set()
+        for (let round = 0; round < maxRounds && !controller.signal.aborted; round += 1) {
+          let agreements = 0
+          let successes = 0
+          controller.completedKinds = []
+          for (const kind of controller.targetKinds) {
+            if (controller.signal.aborted) break
+            controller.currentKind = kind
+            this.emitChanged()
+            try {
+              const result = await this.invokeAgent(
+                group, kind, 'auto', controller.signal, threadRootId,
+              )
+              successes += 1
+              if (result.consensus) agreements += 1
+            } catch (error) {
+              if (controller.signal.aborted) break
+              this.recordAgentFailure(
+                group.id, kind, error, threadRootId, reportedFailures,
+              )
+            }
+            controller.completedKinds.push(kind)
+            controller.currentKind = ''
+            this.emitChanged()
+          }
+          if (controller.signal.aborted) break
+          if (successes === controller.targetKinds.length
+              && agreements === controller.targetKinds.length) {
+            consensusReached = true
+            break
+          }
         }
-      } catch (error) {
-        if (!controller.signal.aborted) {
-          const reason = cleanText(error?.message || error, 2000) || 'LOCAL_AGENT_UNKNOWN_FAILURE'
+        if (controller.stopReason === 'timeout') {
           this.addMessage(
             group.id,
             'system',
-            `Automatic discussion stopped: ${reason}`,
+            'Automatic discussion reached its runtime limit without consensus.',
             '',
             threadRootId,
-            { key: 'system.autoStopped', params: { reason } },
+            { key: 'system.autoTimeout', params: {} },
+          )
+        } else if (!controller.signal.aborted && !consensusReached) {
+          this.addMessage(
+            group.id,
+            'system',
+            `Automatic discussion reached the ${maxRounds}-round safety limit without consensus.`,
+            '',
+            threadRootId,
+            { key: 'system.autoRoundLimit', params: { rounds: maxRounds } },
           )
         }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          const rawReason = cleanText(error?.message || error, 2000)
+          const reason = /^[A-Z][A-Z0-9_]+$/.test(rawReason)
+            ? rawReason
+            : 'LOCAL_AGENT_UNKNOWN_FAILURE'
+          try {
+            this.addMessage(
+              group.id,
+              'system',
+              `Automatic discussion stopped: ${reason}`,
+              '',
+              threadRootId,
+              { key: 'system.autoStopped', params: { reason } },
+            )
+          } catch { /* persistence failures cannot be reported through the same store */ }
+        }
       } finally {
+        clearTimeout(timeout)
         this.activeRuns.delete(group.id)
         this.emitChanged()
       }
     })()
     controller.promise = promise
-    return { started: true, maxTurns }
+    return { started: true, maxRounds }
   }
 
   stop(groupId) {
     const controller = this.activeRuns.get(groupId)
     if (!controller) return false
+    controller.stopReason ||= 'user'
     controller.abort()
     return true
   }
@@ -584,6 +690,7 @@ class LocalWorkspace extends EventEmitter {
   async stopAll() {
     const pending = []
     for (const controller of this.activeRuns.values()) {
+      controller.stopReason ||= 'shutdown'
       controller.abort()
       if (controller.promise) pending.push(controller.promise)
     }
@@ -591,4 +698,4 @@ class LocalWorkspace extends EventEmitter {
   }
 }
 
-module.exports = { LocalWorkspace, emptyState }
+module.exports = { LocalWorkspace }

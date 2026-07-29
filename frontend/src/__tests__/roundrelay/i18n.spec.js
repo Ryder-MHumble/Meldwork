@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  DESKTOP_ERROR_MESSAGE_KEYS,
   messageKeys,
   setLocale,
   t,
@@ -18,6 +19,43 @@ describe('RoundRelay i18n', () => {
 
     setLocale('zh')
     expect(t('home.readyCount', { ready: 3, installed: 5 })).toBe('3 个可用，5 个已安装')
+  })
+
+  it('maps every stable desktop error code from direct and wrapped errors', () => {
+    for (const language of ['en', 'zh']) {
+      setLocale(language)
+      for (const [code, key] of Object.entries(DESKTOP_ERROR_MESSAGE_KEYS)) {
+        expect(translateError({ code }), code).toBe(t(key))
+        expect(translateError(new Error(`Error invoking remote method: Error: ${code}`)), code).toBe(t(key))
+      }
+    }
+  })
+
+  it('covers every renderer-facing installer and Provider error code', () => {
+    const expectedCodes = [
+      'INSTALL_AGENT_ALREADY_INSTALLED',
+      'INSTALL_AGENT_BUSY',
+      'INSTALL_AGENT_COMMAND_BLOCKED',
+      'INSTALL_AGENT_DOWNLOAD_BLOCKED',
+      'INSTALL_AGENT_DOWNLOAD_FAILED',
+      'INSTALL_AGENT_FAILED',
+      'INSTALL_AGENT_NODE_REQUIRED',
+      'INSTALL_AGENT_PLATFORM_UNSUPPORTED',
+      'INSTALL_AGENT_PROCESS_FAILED',
+      'INSTALL_AGENT_UNSUPPORTED',
+      'INSTALL_AGENT_VERIFY_FAILED',
+      'PROVIDER_CREDENTIAL_REQUIRED',
+      'PROVIDER_CREDENTIAL_UNAVAILABLE',
+      'PROVIDER_ENCRYPTION_FAILED',
+      'PROVIDER_ENCRYPTION_UNAVAILABLE',
+      'PROVIDER_INSECURE_BASE_URL',
+      'PROVIDER_INVALID_CREDENTIAL',
+      'PROVIDER_INVALID_METADATA',
+      'PROVIDER_STORAGE_PATH_REQUIRED',
+      'OPENCLAW_PROVIDER_INVALID',
+    ]
+
+    expect(expectedCodes.filter(code => !DESKTOP_ERROR_MESSAGE_KEYS[code])).toEqual([])
   })
 
   it('maps stable desktop errors and localizes system message parameters', () => {
@@ -56,5 +94,32 @@ describe('RoundRelay i18n', () => {
       .toBe('Hermes 调用失败：请先登录该 Agent 或完成凭据配置后再试。')
     expect(translateSystemMessage(systemMessage('LOCAL_AGENT_PROCESS_FAILED')))
       .toBe('Hermes 调用失败：Agent 进程在任务完成前执行失败。')
+  })
+
+  it('localizes automatic discussion limits and falls back for unknown system keys', () => {
+    const roundLimit = {
+      content: 'Automatic discussion reached its round limit.',
+      system: { key: 'system.autoRoundLimit', params: { rounds: 3 } },
+    }
+    const timeout = {
+      content: 'Automatic discussion reached its total runtime limit.',
+      system: { key: 'system.autoTimeout', params: {} },
+    }
+    const unknown = {
+      content: 'Readable fallback from the desktop process.',
+      system: { key: 'system.futureMessage', params: {} },
+    }
+
+    setLocale('en')
+    expect(translateSystemMessage(roundLimit))
+      .toBe('Automatic discussion reached the 3-round limit without reaching consensus.')
+    expect(translateSystemMessage(timeout))
+      .toBe('Automatic discussion reached the total runtime limit without reaching consensus.')
+    expect(translateSystemMessage(unknown)).toBe(unknown.content)
+
+    setLocale('zh')
+    expect(translateSystemMessage(roundLimit)).toBe('自动讨论已达到 3 轮上限，尚未达成共识。')
+    expect(translateSystemMessage(timeout)).toBe('自动讨论已达到总运行时长上限，尚未达成共识。')
+    expect(translateSystemMessage(unknown)).toBe(unknown.content)
   })
 })

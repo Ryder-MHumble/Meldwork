@@ -2,6 +2,7 @@ const { execFile, spawn } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { Readable, Writable } = require('node:stream')
 const { promisify } = require('node:util')
 
 const execFileAsync = promisify(execFile)
@@ -23,6 +24,10 @@ const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const CODEX_SANDBOXES = new Set(['read-only', 'workspace-write'])
 const TERMINATE_GRACE_MS = 500
 const KILL_SETTLE_MS = 500
+const ACP_CANCEL_GRACE_MS = 250
+const ACP_MAX_LINE_BYTES = 1024 * 1024
+const ACP_MAX_INPUT_BYTES = 16 * 1024 * 1024
+const ACP_MAX_REPLY_BYTES = 10 * 1024 * 1024
 const DEFAULT_WINDOWS_PATHEXT = ['.COM', '.EXE', '.BAT', '.CMD']
 const VERSION_LINE = /\bv?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?\b/
 const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
@@ -48,6 +53,7 @@ const OPENCODE_READ_ONLY_PERMISSION = JSON.stringify({
   webfetch: 'allow',
   websearch: 'allow',
 })
+let acpSdkPromise
 
 function envValue(env, name) {
   const match = Object.keys(env).find(key => key.toLowerCase() === name.toLowerCase())
@@ -426,11 +432,17 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'kimi') {
+    if (options.sandbox !== 'workspace-write') {
+      return {
+        command: executable,
+        args: ['acp'],
+        acpMode: 'plan',
+      }
+    }
     return {
       command: executable,
       args: [
         '--output-format', 'stream-json',
-        ...(options.sandbox === 'workspace-write' ? [] : ['--plan']),
         ...(sessionRef ? ['--session', sessionRef] : []),
         '--prompt',
       ],
@@ -710,19 +722,141 @@ function normalizeOutput(kind, stdout, sessionRef = '') {
   return { text: String(stdout || '').trim(), sessionRef }
 }
 
-async function runAgent(agent, prompt, workdir, options = {}) {
-  if (options.signal?.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
-  const platform = options.platform || process.platform
-  const spawnFn = options.spawnFn || spawn
-  const sessionRef = String(options.sessionRef || '')
-  const spec = invocation(agent.kind, agent.executable, workdir, sessionRef, {
-    sandbox: options.sandbox,
-    provider: options.provider,
+function loadAcpSdk() {
+  acpSdkPromise ||= Promise.all([
+    import('@agentclientprotocol/sdk'),
+    import('@agentclientprotocol/sdk/dist/schema/zod.gen.js'),
+  ]).then(([sdk, validators]) => ({ ...sdk, validators }))
+  return acpSdkPromise
+}
+
+function acpTransportError(diagnostic) {
+  return agentExecutionError('LOCAL_AGENT_PROCESS_FAILED', diagnostic)
+}
+
+function validateAcpInboundMessage(message, validators, replyState) {
+  if (!message || typeof message !== 'object' || Array.isArray(message)
+      || message.jsonrpc !== '2.0') {
+    throw acpTransportError('Kimi ACP returned an invalid protocol message.')
+  }
+
+  const hasId = Object.hasOwn(message, 'id')
+  if (typeof message.method === 'string') {
+    if (message.method === 'session/update' && !hasId) {
+      const parsed = validators.zSessionNotification.safeParse(message.params)
+      if (!parsed.success) {
+        throw acpTransportError('Kimi ACP returned invalid session update parameters.')
+      }
+      const update = parsed.data.update
+      if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+        replyState.bytes += Buffer.byteLength(update.content.text, 'utf8')
+        if (replyState.bytes > ACP_MAX_REPLY_BYTES) {
+          throw acpTransportError('Kimi ACP reply exceeded the safe output limit.')
+        }
+      }
+      return message
+    }
+    if (message.method === 'session/request_permission' && hasId) {
+      const validId = typeof message.id === 'string'
+        || (Number.isInteger(message.id) && message.id >= 0)
+      if (!validId || !validators.zRequestPermissionRequest.safeParse(message.params).success) {
+        throw acpTransportError('Kimi ACP returned an invalid permission request.')
+      }
+      return message
+    }
+    throw acpTransportError('Kimi ACP requested an unsupported client method.')
+  }
+
+  if (!Number.isInteger(message.id) || message.id < 0) {
+    throw acpTransportError('Kimi ACP returned an invalid response identifier.')
+  }
+  const hasResult = Object.hasOwn(message, 'result')
+  const hasError = Object.hasOwn(message, 'error')
+  if (hasResult === hasError) {
+    throw acpTransportError('Kimi ACP returned an invalid response payload.')
+  }
+  if (hasError) {
+    const error = message.error
+    if (!error || typeof error !== 'object' || Array.isArray(error)
+        || !Number.isFinite(error.code) || typeof error.message !== 'string') {
+      throw acpTransportError('Kimi ACP returned an invalid error response.')
+    }
+  }
+  return message
+}
+
+function boundedAcpStream(output, input, validators) {
+  const textEncoder = new TextEncoder()
+  const replyState = { bytes: 0 }
+  const readable = new ReadableStream({
+    async start(controller) {
+      const reader = input.getReader()
+      let pending = Buffer.alloc(0)
+      let inputBytes = 0
+      const parseLine = (line) => {
+        const text = line.toString('utf8').trim()
+        if (!text) return
+        let message
+        try {
+          message = JSON.parse(text)
+        } catch {
+          throw acpTransportError('Kimi ACP returned malformed JSON.')
+        }
+        controller.enqueue(validateAcpInboundMessage(message, validators, replyState))
+      }
+      const append = (left, right) => {
+        const size = left.length + right.length
+        if (size > ACP_MAX_LINE_BYTES) {
+          throw acpTransportError('Kimi ACP message exceeded the safe line limit.')
+        }
+        return left.length ? Buffer.concat([left, right], size) : Buffer.from(right)
+      }
+      try {
+        while (true) {
+          const { value, done } = await reader.read()
+          if (done) break
+          if (!value?.byteLength) continue
+          const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
+          inputBytes += chunk.length
+          if (inputBytes > ACP_MAX_INPUT_BYTES) {
+            throw acpTransportError('Kimi ACP input exceeded the safe total limit.')
+          }
+          let offset = 0
+          while (offset < chunk.length) {
+            const newline = chunk.indexOf(0x0a, offset)
+            if (newline === -1) {
+              pending = append(pending, chunk.subarray(offset))
+              break
+            }
+            const line = append(pending, chunk.subarray(offset, newline))
+            pending = Buffer.alloc(0)
+            parseLine(line)
+            offset = newline + 1
+          }
+        }
+        if (pending.length) parseLine(pending)
+        controller.close()
+      } catch (error) {
+        controller.error(error)
+      } finally {
+        reader.releaseLock()
+      }
+    },
   })
-  const args = [...spec.args]
-  if (spec.promptArg) args.push(prompt)
-  if (spec.suffixArgs) args.push(...spec.suffixArgs)
-  const prepared = prepareCommand(spec.command, args, { platform })
+  const writable = new WritableStream({
+    async write(message) {
+      const writer = output.getWriter()
+      try {
+        await writer.write(textEncoder.encode(`${JSON.stringify(message)}\n`))
+      } finally {
+        writer.releaseLock()
+      }
+    },
+  })
+  return { readable, writable }
+}
+
+function childEnvironment(agent, workdir, options, platform) {
   const hermesSafetyEnv = agent.kind === 'hermes'
     ? { HERMES_EXEC_ASK: '1', HERMES_YOLO_MODE: '' }
     : {}
@@ -733,7 +867,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   const openClawWorkspaceEnv = agent.kind === 'openclaw'
     ? { OPENCLAW_WORKSPACE_DIR: path.resolve(workdir) }
     : {}
-  const childEnv = {
+  return {
     ...systemChildEnvironment(process.env, platform),
     ...options.env,
     ...hermesSafetyEnv,
@@ -741,6 +875,269 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     ...openClawWorkspaceEnv,
     PATH: searchPath({ platform }),
   }
+}
+
+function permissionRejection(options) {
+  return (options || []).find(option => (
+    ['reject_once', 'reject_always'].includes(option.kind)
+      || /reject|deny/i.test(`${option.optionId || ''} ${option.name || ''}`)
+  ))
+}
+
+function destroyChildPipes(child) {
+  for (const stream of [child.stdin, child.stdout, child.stderr]) {
+    if (!stream?.destroyed) stream?.destroy()
+  }
+}
+
+async function terminateChild(child, platform, spawnFn) {
+  if (child.exitCode != null || child.signalCode != null) return
+  await new Promise((resolve) => {
+    let settled = false
+    let forceKillTimeout
+    let forceSettleTimeout
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clearTimeout(forceKillTimeout)
+      clearTimeout(forceSettleTimeout)
+      child.removeListener('close', finish)
+      child.removeListener('error', finish)
+      resolve()
+    }
+    child.once('close', finish)
+    child.once('error', finish)
+    if (platform === 'win32' && child.pid) {
+      const killer = spawnFn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
+        stdio: 'ignore', windowsHide: true,
+      })
+      killer.on('error', () => {})
+      killer.unref()
+      forceSettleTimeout = setTimeout(finish, TERMINATE_GRACE_MS + KILL_SETTLE_MS)
+      return
+    }
+    const signalTree = (signal) => {
+      if (child.pid) {
+        try {
+          process.kill(-child.pid, signal)
+          return
+        } catch { /* fall back to the direct child */ }
+      }
+      try {
+        child.kill(signal)
+      } catch { /* the process has already exited */ }
+    }
+    signalTree('SIGTERM')
+    forceKillTimeout = setTimeout(() => signalTree('SIGKILL'), TERMINATE_GRACE_MS)
+    forceSettleTimeout = setTimeout(finish, TERMINATE_GRACE_MS + KILL_SETTLE_MS)
+  })
+}
+
+async function settleWithin(promise, timeoutMs) {
+  let timeout
+  await Promise.race([
+    Promise.resolve(promise).catch(() => {}),
+    new Promise((resolve) => {
+      timeout = setTimeout(resolve, timeoutMs)
+      timeout.unref?.()
+    }),
+  ])
+  clearTimeout(timeout)
+}
+
+async function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode != null || child.signalCode != null) return true
+  return new Promise((resolve) => {
+    let timeout
+    const finish = (exited) => {
+      clearTimeout(timeout)
+      child.removeListener('close', onExit)
+      child.removeListener('error', onExit)
+      resolve(exited)
+    }
+    const onExit = () => finish(true)
+    child.once('close', onExit)
+    child.once('error', onExit)
+    timeout = setTimeout(() => finish(false), timeoutMs)
+    timeout.unref?.()
+  })
+}
+
+async function closeAcpChild(child, platform, spawnFn) {
+  if (child.exitCode != null || child.signalCode != null) return
+  if (!child.stdin?.destroyed && !child.stdin?.writableEnded) {
+    try { child.stdin.end() } catch { /* the process has already closed its input */ }
+  }
+  if (await waitForChildExit(child, TERMINATE_GRACE_MS)) return
+  await terminateChild(child, platform, spawnFn)
+  destroyChildPipes(child)
+}
+
+function acpProtocolError(error, childEnv) {
+  if (/^LOCAL_AGENT_[A-Z_]+$/.test(String(error?.message || ''))) return error
+  const detail = redactChildSecrets(error?.diagnostic || error?.message || error, childEnv).trim()
+  return detail
+    ? failedAgentProcessError(detail)
+    : agentExecutionError('LOCAL_AGENT_PROCESS_FAILED')
+}
+
+async function runKimiAcp(agent, prompt, workdir, options, spec) {
+  const platform = options.platform || process.platform
+  const spawnFn = options.spawnFn || spawn
+  const prepared = prepareCommand(spec.command, spec.args, { platform })
+  const childEnv = childEnvironment(agent, workdir, options, platform)
+  let sdk
+  try {
+    sdk = await loadAcpSdk()
+  } catch (error) {
+    throw acpProtocolError(error, childEnv)
+  }
+  if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+
+  let child
+  try {
+    child = spawnFn(prepared.command, prepared.args, {
+      cwd: workdir,
+      env: childEnv,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      detached: platform !== 'win32',
+      windowsHide: true,
+    })
+  } catch (error) {
+    throw agentExecutionError(
+      'LOCAL_AGENT_SPAWN_FAILED',
+      redactChildSecrets(error?.message || error, childEnv),
+    )
+  }
+
+  const { ClientSideConnection, PROTOCOL_VERSION, validators } = sdk
+  const stderr = []
+  let stderrBytes = 0
+  let connection
+  let sessionRef = String(options.sessionRef || '')
+  let ending = false
+  let abortRequested = false
+  let cancelPromise = Promise.resolve()
+  let stopPromise
+  let rejectAbort
+  let timeout
+  const reply = []
+  const abortPromise = new Promise((_, reject) => { rejectAbort = reject })
+  const stopChild = () => {
+    stopPromise ||= closeAcpChild(child, platform, spawnFn)
+    return stopPromise
+  }
+  const abort = () => {
+    if (ending || abortRequested) return
+    abortRequested = true
+    if (connection && sessionRef) {
+      try {
+        cancelPromise = Promise.resolve(connection.cancel({ sessionId: sessionRef }))
+          .catch(() => {})
+      } catch { /* the ACP stream has already closed */ }
+    }
+    rejectAbort(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
+  }
+  const childFailure = new Promise((_, reject) => {
+    child.once('error', (error) => {
+      reject(abortRequested
+        ? agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+        : agentExecutionError(
+            'LOCAL_AGENT_SPAWN_FAILED',
+            redactChildSecrets(error?.message || error, childEnv),
+          ))
+    })
+    child.once('close', () => {
+      if (ending) return
+      if (abortRequested) {
+        reject(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
+        return
+      }
+      const detail = redactChildSecrets(Buffer.concat(stderr).toString('utf8').trim(), childEnv)
+      reject(failedAgentProcessError(detail))
+    })
+  })
+  child.stderr.on('data', (chunk) => {
+    stderrBytes += chunk.length
+    if (stderrBytes <= 1024 * 1024) stderr.push(chunk)
+  })
+  timeout = setTimeout(abort, 2 * 60 * 60 * 1000)
+  if (options.signal?.aborted) abort()
+  else options.signal?.addEventListener('abort', abort, { once: true })
+
+  const client = {
+    async requestPermission(params) {
+      const denied = permissionRejection(params.options)
+      return denied
+        ? { outcome: { outcome: 'selected', optionId: denied.optionId } }
+        : { outcome: { outcome: 'cancelled' } }
+    },
+    async sessionUpdate(params) {
+      const update = params.update
+      if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+        reply.push(update.content.text)
+      }
+    },
+  }
+  const protocol = (async () => {
+    const stream = boundedAcpStream(
+      Writable.toWeb(child.stdin),
+      Readable.toWeb(child.stdout),
+      validators,
+    )
+    connection = new ClientSideConnection(() => client, stream)
+    await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
+    if (sessionRef) {
+      await connection.resumeSession({ sessionId: sessionRef, cwd: workdir, mcpServers: [] })
+    } else {
+      const session = await connection.newSession({ cwd: workdir, mcpServers: [] })
+      sessionRef = session.sessionId
+    }
+    const safeSessionRef = redactChildSecrets(sessionRef, childEnv)
+    const publicSessionRef = safeSessionRef.includes('[redacted]') ? '' : safeSessionRef
+    if (publicSessionRef && typeof options.onSessionRef === 'function') {
+      await options.onSessionRef(publicSessionRef)
+    }
+    await connection.setSessionMode({ sessionId: sessionRef, modeId: spec.acpMode })
+    const promptResult = await connection.prompt({
+      sessionId: sessionRef,
+      prompt: [{ type: 'text', text: prompt }],
+    })
+    const text = redactChildSecrets(reply.join('').trim(), childEnv)
+    if (!text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
+    return {
+      text,
+      sessionRef: publicSessionRef,
+      completed: promptResult?.stopReason === 'end_turn',
+    }
+  })().catch((error) => { throw acpProtocolError(error, childEnv) })
+
+  try {
+    return await Promise.race([protocol, abortPromise, childFailure])
+  } finally {
+    ending = true
+    clearTimeout(timeout)
+    options.signal?.removeEventListener('abort', abort)
+    if (abortRequested) await settleWithin(cancelPromise, ACP_CANCEL_GRACE_MS)
+    await stopChild()
+  }
+}
+
+async function runAgent(agent, prompt, workdir, options = {}) {
+  if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  const platform = options.platform || process.platform
+  const spawnFn = options.spawnFn || spawn
+  const sessionRef = String(options.sessionRef || '')
+  const spec = invocation(agent.kind, agent.executable, workdir, sessionRef, {
+    sandbox: options.sandbox,
+    provider: options.provider,
+  })
+  if (spec.acpMode) return runKimiAcp(agent, prompt, workdir, options, spec)
+  const args = [...spec.args]
+  if (spec.promptArg) args.push(prompt)
+  if (spec.suffixArgs) args.push(...spec.suffixArgs)
+  const prepared = prepareCommand(spec.command, args, { platform })
+  const childEnv = childEnvironment(agent, workdir, options, platform)
   return await new Promise((resolve, reject) => {
     let child
     try {

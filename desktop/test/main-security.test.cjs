@@ -12,6 +12,27 @@ const PROVIDER_METADATA = Object.freeze({
   baseUrl: 'https://api.example.com/v1',
   model: 'example-model',
 })
+const LOCAL_IPC_CHANNELS = Object.freeze([
+  'local-workspace:get',
+  'local-workspace:refresh-agents',
+  'local-workspace:create-group',
+  'local-workspace:update-group',
+  'local-workspace:delete-group',
+  'local-workspace:send',
+  'local-workspace:start-auto',
+  'local-workspace:stop',
+  'local-workspace:pick-directory',
+  'local-workspace:default-directory',
+  'local-agent-installer:catalog',
+  'local-agent-installer:state',
+  'local-agent-installer:start',
+  'local-agent-installer:cancel',
+  'local-agent-installer:set-sidebar-visibility',
+  'local-agent-provider:status',
+  'local-agent-provider:probe',
+  'local-agent-provider:save',
+  'local-agent-provider:delete',
+])
 
 let nextRoutingId = 1
 
@@ -312,6 +333,30 @@ test('local desktop authorization requires the current main frame and exact fron
     trusted.sender,
     frontend,
   ), false)
+})
+
+test('every local IPC handler rejects an untrusted renderer before dispatch', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ipc-security-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+
+  assert.deepEqual([...harness.ipcHandlers.keys()], LOCAL_IPC_CHANNELS)
+  const trustedEvent = harness.event()
+  const untrustedEvent = {
+    sender: trustedEvent.sender,
+    senderFrame: {
+      ...trustedEvent.senderFrame,
+      routingId: trustedEvent.senderFrame.routingId + 1,
+    },
+  }
+  for (const channel of LOCAL_IPC_CHANNELS) {
+    await assert.rejects(
+      async () => harness.ipcHandlers.get(channel)(untrustedEvent),
+      { message: 'DESKTOP_CLIENT_ACCESS_DENIED' },
+      channel,
+    )
+  }
 })
 
 test('ready activates one fixed local workspace and loads the bundled frontend', async (t) => {

@@ -6,16 +6,18 @@ Last verified on 2026-07-29 using macOS arm64 and Node.js 20.19 or newer.
 
 | Check | Evidence | Result |
 | --- | --- | --- |
-| Frontend unit suite | `npm --prefix frontend test` | 4 files, 13/13 tests passed |
-| Desktop unit suite | `npm --prefix desktop test` | 133/133 tests passed |
+| Frontend unit suite | `npm --prefix frontend test` | 5 files, 20/20 tests passed |
+| Desktop unit suite | `npm --prefix desktop test` | 151/151 tests passed |
 | Renderer builds | `npm --prefix frontend run build` and `npm --prefix frontend run build:desktop` | Both Vite builds passed |
 | macOS distribution | `npm --prefix desktop run dist` | arm64 `.app`, DMG, and ZIP produced |
+| Production dependency audit | `npm --prefix desktop audit --omit=dev` and `npm --prefix frontend audit --omit=dev` | 0 known vulnerabilities in both production dependency sets |
+| ACP runtime packaging | Inspect and extract packaged `app.asar`, then dynamically import its production modules | `@agentclientprotocol/sdk` 0.23.0, `zod` 4.4.3, the ACP client, and both inbound Zod validators loaded successfully |
 | Packaged renderer smoke | Launch packaged `.app`, attach through local CDP, inspect DOM and screenshots | 9 Agent cards and all 10 visible images loaded; light/dark themes and 980x680 Chinese view had zero horizontal overflow |
 | Logo packaging | Inspect source PNGs, generated `icon.icns`, and packaged asar | 1024px RGBA app/product icon plus 64px RGBA favicon present; removed Skill module absent |
 | Idle startup network | Inspect the RoundRelay process tree with `lsof` after disconnecting CDP | No established TCP or UDP connection; only the explicitly enabled loopback CDP listener remained |
 | Empty-store secure-storage behavior | Unit tests plus a one-second process sample | No `SecItemCopyMatching`, `SecKeychain`, `CSSM_Decrypt`, or decrypt call observed without a stored Provider |
 | macOS signature | `codesign --verify --deep --strict` | Passed with ad-hoc signature; `spctl` rejection is expected until Developer ID signing/notarization exists |
-| Distribution hashes | SHA-256 | DMG `dcfe2bde89508580da15f17bc45e16780b1bfedca61c472947e10d7fb2f3d8df`; ZIP `89f0ff8a241eb1d88e417925d95418bfdf23f5a1b615d06bbfb79b0de08b4ab6` |
+| Distribution hashes | SHA-256 | DMG `20e12abb9d11e630587088c09e4e23abf5efcd27394bc265785f64c7fd6f7267`; ZIP `f640dc269d37efebdc56eac81820ceaf431b2c742b55bf1edf2cf32a9d379ba4` |
 
 ## Automated Coverage
 
@@ -25,15 +27,15 @@ Last verified on 2026-07-29 using macOS arm64 and Node.js 20.19 or newer.
 | Renderer bridge normalization | Uses only `window.roundrelayDesktop` services and normalizes missing data | `frontend/src/__tests__/roundrelay/desktop.spec.js` | Passed locally |
 | Renderer i18n | Chinese/English keys and interpolation remain consistent | `frontend/src/__tests__/roundrelay/i18n.spec.js` | Passed locally |
 | Renderer CSP and assets | Entry point keeps self-only/default restrictions, denies unsafe surfaces, and uses relative packaged assets | `frontend/src/__tests__/roundrelay/security.spec.js` | Passed locally |
-| Main-frame IPC authorization | Exact local frontend main frame is accepted; other frames/paths are denied | `desktop/test/main-security.test.cjs` | Passed locally |
+| Main-frame IPC authorization | All registered local channels accept only the exact frontend main frame; other frames/paths are denied before dispatch | `desktop/test/main-security.test.cjs` | Passed locally |
 | Electron navigation and lifecycle | Loads bundled frontend, denies in-window remote navigation, serializes refresh, and waits on quit cleanup | `desktop/test/main-security.test.cjs` | Passed locally |
 | Narrow preload API | Local document gets only named workspace/installer/Provider methods; non-local document gets no privileged API | `desktop/test/preload-security.test.cjs` | Passed locally |
 | Packaged Electron hardening | Fuses disable Node/runtime injection and require ASAR integrity | `desktop/test/package-security.test.cjs` | Passed locally |
 | Provider secret storage | Complete payload required; URL constrained; key encrypted; failures/corruption fail closed; delete works | `desktop/test/provider-store.test.cjs` | Passed locally |
 | Agent readiness | Detects native credentials without returning values and scopes forwarded credential variables by Agent | `desktop/test/local-agent-readiness.test.cjs` | Passed locally |
 | Installer allowlist and lifecycle | Fixed recipes, URL/command rejection, environment filtering, verification, cancellation, and single-task behavior | `desktop/test/agent-installer.test.cjs` | Passed locally |
-| CLI invocation safety | Per-Agent read-only/write arguments, session parsing, environment scoping, secret redaction, and process-tree cancellation | `desktop/test/cli-adapters.test.cjs` | Passed locally |
-| Workspace state and automation | Explicit persisted-field allowlists, path stripping, topic/session isolation, write authorization, partial failures, and bounded auto turns | `desktop/test/local-workspace.test.cjs` | Passed locally |
+| CLI invocation safety | Per-Agent read-only/write arguments, Kimi ACP lifecycle, session parsing, environment scoping, secret redaction, and process-tree cancellation | `desktop/test/cli-adapters.test.cjs` | Passed locally |
+| Workspace state and automation | Explicit persisted-field allowlists, path stripping, topic/session isolation, early session persistence, write authorization, failure isolation, complete rounds, strict consensus, and runtime bounds | `desktop/test/local-workspace.test.cjs` | Passed locally |
 | Managed OpenClaw | Isolated paths, key absent from config, immutable permission config, invalid scopes fail closed | `desktop/test/openclaw-runtime.test.cjs` | Passed locally |
 | macOS packaging transform | Removes unused permission declarations, sets Electron fuses, and applies ad-hoc signing | `desktop/test/after-pack.test.cjs` | Passed locally |
 

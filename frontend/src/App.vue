@@ -245,10 +245,9 @@
                       <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
                       <time>{{ formatTime(message.createdAt) }}</time>
                     </div>
-                    <div
+                    <MarkdownMessage
                       v-if="message.role === 'agent'"
-                      class="message-content markdown-body"
-                      v-html="renderMessage(message.content)"
+                      :content="message.content"
                     />
                     <div v-else class="message-content plain-message">{{ message.content }}</div>
                   </div>
@@ -290,9 +289,9 @@
               />
               <div class="composer-actions">
                 <div v-if="activeGroup.agentKinds.length >= 2" class="auto-controls">
-                  <select v-model.number="autoTurns" :disabled="Boolean(activeRun)" :aria-label="t('composer.auto')">
-                    <option v-for="count in [4, 6, 8, 12]" :key="count" :value="count">
-                      {{ t('composer.autoTurns', { count }) }}
+                  <select v-model.number="maxRounds" :disabled="Boolean(activeRun)" :aria-label="t('composer.auto')">
+                    <option v-for="count in [1, 2, 3, 4, 6]" :key="count" :value="count">
+                      {{ t('composer.autoRounds', { count }) }}
                     </option>
                   </select>
                   <button
@@ -546,8 +545,6 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import DOMPurify from 'dompurify'
-import { marked } from 'marked'
 import {
   AddOutline,
   ChatbubbleEllipsesOutline,
@@ -572,6 +569,7 @@ import {
   TrashOutline,
   WarningOutline,
 } from '@vicons/ionicons5'
+import MarkdownMessage from './components/MarkdownMessage.vue'
 import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
 import { desktopApi, emptySnapshot, errorCode, normalizeSnapshot } from './desktop.js'
 import { locale, setLocale, t, translateError, translateSystemMessage } from './i18n.js'
@@ -590,7 +588,7 @@ const saving = ref(false)
 const modal = ref('')
 const draft = ref('')
 const targetKinds = ref([])
-const autoTurns = ref(6)
+const maxRounds = ref(3)
 const formError = ref('')
 const deleteArmed = ref(false)
 const providerRemoveArmed = ref(false)
@@ -626,6 +624,10 @@ const groupGroups = computed(() => snapshot.value.groups
   .filter(group => group.conversationType !== 'direct')
   .sort(sortByUpdated))
 const activeGroup = computed(() => snapshot.value.groups.find(group => group.id === selectedGroupId.value) || null)
+const activeGroupMemberSignature = computed(() => {
+  const group = activeGroup.value
+  return group ? [group.id, ...group.agentKinds].join('\u0000') : ''
+})
 const activeMessages = computed(() => snapshot.value.messages.filter(message => message.groupId === selectedGroupId.value))
 const activeRun = computed(() => snapshot.value.runs.find(run => run.groupId === selectedGroupId.value) || null)
 
@@ -713,10 +715,6 @@ function formatTime(value) {
   return new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en', {
     hour: '2-digit', minute: '2-digit',
   }).format(date)
-}
-
-function renderMessage(content) {
-  return DOMPurify.sanitize(marked.parse(String(content || ''), { breaks: true, gfm: true }))
 }
 
 function providerModeLabel(mode) {
@@ -925,13 +923,19 @@ async function sendMessage() {
 
 async function startAutoDiscussion() {
   if (!activeGroup.value || activeRun.value) return
-  const hasTopic = activeMessages.value.some(message => message.role === 'user' && !message.threadRootId)
-  if (!hasTopic) {
+  const latestRootMessage = activeMessages.value.findLast(
+    message => message.role === 'user' && !message.threadRootId,
+  )
+  if (!latestRootMessage) {
     notify(t('composer.autoNeedsMessage'))
     return
   }
   try {
-    await workspace.value.startAuto({ groupId: activeGroup.value.id, maxTurns: autoTurns.value })
+    await workspace.value.startAuto({
+      groupId: activeGroup.value.id,
+      maxRounds: maxRounds.value,
+      threadRootId: latestRootMessage.id,
+    })
   } catch (error) {
     showError(error)
   }
@@ -1106,7 +1110,8 @@ watch(modal, (value, previous) => {
     history.back()
   }
 })
-watch(activeGroup, (group) => {
+watch(activeGroupMemberSignature, () => {
+  const group = activeGroup.value
   targetKinds.value = group ? [...group.agentKinds] : []
   void scrollToLatest()
 })

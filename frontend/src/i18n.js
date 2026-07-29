@@ -52,7 +52,7 @@ const messages = {
     'composer.send': 'Send',
     'composer.stop': 'Stop',
     'composer.auto': 'Auto discussion',
-    'composer.autoTurns': '{count} turns',
+    'composer.autoRounds': '{count} rounds',
     'composer.autoNeedsMessage': 'Send a topic before starting an automatic discussion.',
     'composer.selectTarget': 'Select at least one Agent.',
     'composer.messageRequired': 'Enter a message.',
@@ -121,6 +121,8 @@ const messages = {
     'common.more': 'More options',
     'system.agentCallFailed': '{agent} failed: {reason}',
     'system.autoStopped': 'Automatic discussion stopped: {reason}',
+    'system.autoRoundLimit': 'Automatic discussion reached the {rounds}-round limit without reaching consensus.',
+    'system.autoTimeout': 'Automatic discussion reached the total runtime limit without reaching consensus.',
     'error.generic': 'The operation could not be completed.',
     'error.bridge': 'The local desktop bridge is unavailable.',
     'error.workspaceUnavailable': 'The local workspace is unavailable.',
@@ -129,6 +131,12 @@ const messages = {
     'error.installBusy': 'Another Agent installation is already running.',
     'error.installNode': 'Install Node.js and npm first.',
     'error.installUnsupported': 'Automatic installation is not supported on this system.',
+    'error.installDownloadBlocked': 'The official Agent installer download was blocked by the security policy.',
+    'error.installDownloadFailed': 'The Agent installer could not be downloaded.',
+    'error.installCommandBlocked': 'The Agent installer command was blocked by the security policy.',
+    'error.installProcessFailed': 'The Agent installer exited before completing.',
+    'error.installAlreadyInstalled': 'This Agent is already installed. Refresh the Agent list.',
+    'error.installFailed': 'The Agent installation failed.',
     'error.installVerify': 'The installer finished, but the CLI was not detected.',
     'error.providerEncryption': 'The Provider key could not be encrypted.',
     'error.providerMetadata': 'Check the Provider name, URL, and model.',
@@ -202,7 +210,7 @@ const messages = {
     'composer.send': '发送',
     'composer.stop': '停止',
     'composer.auto': '自动讨论',
-    'composer.autoTurns': '{count} 轮',
+    'composer.autoRounds': '{count} 轮',
     'composer.autoNeedsMessage': '请先发送讨论主题，再开始自动讨论。',
     'composer.selectTarget': '请至少选择一个 Agent。',
     'composer.messageRequired': '请输入消息。',
@@ -271,6 +279,8 @@ const messages = {
     'common.more': '更多操作',
     'system.agentCallFailed': '{agent} 调用失败：{reason}',
     'system.autoStopped': '自动讨论已停止：{reason}',
+    'system.autoRoundLimit': '自动讨论已达到 {rounds} 轮上限，尚未达成共识。',
+    'system.autoTimeout': '自动讨论已达到总运行时长上限，尚未达成共识。',
     'error.generic': '操作未能完成。',
     'error.bridge': '本地桌面桥接不可用。',
     'error.workspaceUnavailable': '本地工作台不可用。',
@@ -279,6 +289,12 @@ const messages = {
     'error.installBusy': '已有另一个 Agent 安装任务正在运行。',
     'error.installNode': '请先安装 Node.js 与 npm。',
     'error.installUnsupported': '当前系统不支持自动安装。',
+    'error.installDownloadBlocked': '出于安全限制，无法下载该 Agent 的官方安装程序。',
+    'error.installDownloadFailed': '无法下载该 Agent 的安装程序。',
+    'error.installCommandBlocked': '出于安全限制，无法运行该 Agent 的安装命令。',
+    'error.installProcessFailed': 'Agent 安装程序在完成前退出。',
+    'error.installAlreadyInstalled': '该 Agent 已安装，请刷新列表。',
+    'error.installFailed': 'Agent 安装失败。',
     'error.installVerify': '安装程序已结束，但仍未检测到 CLI。',
     'error.providerEncryption': 'Provider Key 加密失败。',
     'error.providerMetadata': '请检查 Provider 名称、地址和模型。',
@@ -331,38 +347,63 @@ export function messageKeys(language) {
   return Object.keys(messages[language] || {}).sort()
 }
 
+export const DESKTOP_ERROR_MESSAGE_KEYS = Object.freeze({
+  LOCAL_WORKSPACE_UNAVAILABLE: 'error.workspaceUnavailable',
+  LOCAL_GROUP_AGENT_REQUIRED: 'error.groupAgentRequired',
+  LOCAL_GROUP_NOT_FOUND: 'error.groupNotFound',
+  INSTALL_AGENT_BUSY: 'error.installBusy',
+  INSTALL_AGENT_NODE_REQUIRED: 'error.installNode',
+  INSTALL_AGENT_PLATFORM_UNSUPPORTED: 'error.installUnsupported',
+  INSTALL_AGENT_UNSUPPORTED: 'error.installUnsupported',
+  INSTALL_AGENT_DOWNLOAD_BLOCKED: 'error.installDownloadBlocked',
+  INSTALL_AGENT_DOWNLOAD_FAILED: 'error.installDownloadFailed',
+  INSTALL_AGENT_COMMAND_BLOCKED: 'error.installCommandBlocked',
+  INSTALL_AGENT_PROCESS_FAILED: 'error.installProcessFailed',
+  INSTALL_AGENT_ALREADY_INSTALLED: 'error.installAlreadyInstalled',
+  INSTALL_AGENT_FAILED: 'error.installFailed',
+  INSTALL_AGENT_VERIFY_FAILED: 'error.installVerify',
+  PROVIDER_CREDENTIAL_REQUIRED: 'error.providerRequired',
+  PROVIDER_ENCRYPTION_FAILED: 'error.providerEncryption',
+  PROVIDER_ENCRYPTION_UNAVAILABLE: 'error.providerEncryption',
+  PROVIDER_INVALID_CREDENTIAL: 'error.providerEncryption',
+  PROVIDER_CREDENTIAL_UNAVAILABLE: 'error.providerEncryption',
+  PROVIDER_INVALID_METADATA: 'error.providerMetadata',
+  PROVIDER_INSECURE_BASE_URL: 'error.providerMetadata',
+  PROVIDER_STORAGE_PATH_REQUIRED: 'error.generic',
+  OPENCLAW_PROVIDER_INVALID: 'error.providerMetadata',
+  LOCAL_GROUP_RUNNING: 'error.groupRunning',
+  LOCAL_MESSAGE_REQUIRED: 'error.messageRequired',
+  LOCAL_MESSAGE_TARGET_REQUIRED: 'error.messageTargetRequired',
+  LOCAL_AGENT_NOT_INSTALLED: 'error.agentUnavailable',
+  LOCAL_AGENT_UNAVAILABLE: 'error.agentUnavailable',
+  LOCAL_AGENT_ALL_CALLS_FAILED: 'error.allAgentsFailed',
+  LOCAL_AUTO_AGENT_COUNT: 'error.autoAgentCount',
+  LOCAL_AUTO_THREAD_REQUIRED: 'error.autoThreadRequired',
+  LOCAL_AGENT_EXECUTION_STOPPED: 'error.executionStopped',
+  LOCAL_CLI_WRAPPER_UNSUPPORTED: 'error.cliWrapperUnsupported',
+  CODEX_SANDBOX_UNSUPPORTED: 'error.codexSandboxUnsupported',
+  LOCAL_AGENT_KIND_UNSUPPORTED: 'error.agentKindUnsupported',
+  LOCAL_AGENT_AUTH_REQUIRED: 'error.agentAuthRequired',
+  LOCAL_AGENT_PROCESS_FAILED: 'error.agentProcessFailed',
+  LOCAL_AGENT_EXITED: 'error.agentExited',
+  LOCAL_AGENT_EMPTY_RESPONSE: 'error.agentEmptyResponse',
+  LOCAL_AGENT_UNKNOWN_FAILURE: 'error.agentUnknownFailure',
+  LOCAL_AGENT_SPAWN_FAILED: 'error.agentSpawnFailed',
+})
+
+const LEGACY_ERROR_PATTERNS = [
+  [/Desktop workspace is unavailable/i, 'error.workspaceUnavailable'],
+  [/PROVIDER_ENCRYPTION/i, 'error.providerEncryption'],
+  [/active run/i, 'error.groupRunning'],
+]
+
 function translatedErrorKey(error) {
-  const raw = String(error?.code || error?.message || error || '')
-  const mappings = [
-    [/Desktop workspace is unavailable|LOCAL_WORKSPACE_UNAVAILABLE/i, 'error.workspaceUnavailable'],
-    [/LOCAL_GROUP_AGENT_REQUIRED/i, 'error.groupAgentRequired'],
-    [/LOCAL_GROUP_NOT_FOUND/i, 'error.groupNotFound'],
-    [/INSTALL_AGENT_BUSY/i, 'error.installBusy'],
-    [/INSTALL_AGENT_NODE_REQUIRED/i, 'error.installNode'],
-    [/INSTALL_AGENT_PLATFORM_UNSUPPORTED|INSTALL_AGENT_UNSUPPORTED/i, 'error.installUnsupported'],
-    [/INSTALL_AGENT_VERIFY_FAILED/i, 'error.installVerify'],
-    [/PROVIDER_CREDENTIAL_REQUIRED/i, 'error.providerRequired'],
-    [/PROVIDER_ENCRYPTION|PROVIDER_INVALID_CREDENTIAL|PROVIDER_CREDENTIAL_UNAVAILABLE/i, 'error.providerEncryption'],
-    [/PROVIDER_INVALID_METADATA|PROVIDER_INSECURE_BASE_URL/i, 'error.providerMetadata'],
-    [/LOCAL_GROUP_RUNNING|active run/i, 'error.groupRunning'],
-    [/LOCAL_MESSAGE_REQUIRED/i, 'error.messageRequired'],
-    [/LOCAL_MESSAGE_TARGET_REQUIRED/i, 'error.messageTargetRequired'],
-    [/LOCAL_AGENT_NOT_INSTALLED|LOCAL_AGENT_UNAVAILABLE/i, 'error.agentUnavailable'],
-    [/LOCAL_AGENT_ALL_CALLS_FAILED/i, 'error.allAgentsFailed'],
-    [/LOCAL_AUTO_AGENT_COUNT/i, 'error.autoAgentCount'],
-    [/LOCAL_AUTO_THREAD_REQUIRED/i, 'error.autoThreadRequired'],
-    [/LOCAL_AGENT_EXECUTION_STOPPED/i, 'error.executionStopped'],
-    [/LOCAL_CLI_WRAPPER_UNSUPPORTED/i, 'error.cliWrapperUnsupported'],
-    [/CODEX_SANDBOX_UNSUPPORTED/i, 'error.codexSandboxUnsupported'],
-    [/LOCAL_AGENT_KIND_UNSUPPORTED/i, 'error.agentKindUnsupported'],
-    [/LOCAL_AGENT_AUTH_REQUIRED/i, 'error.agentAuthRequired'],
-    [/LOCAL_AGENT_PROCESS_FAILED/i, 'error.agentProcessFailed'],
-    [/LOCAL_AGENT_EXITED/i, 'error.agentExited'],
-    [/LOCAL_AGENT_EMPTY_RESPONSE/i, 'error.agentEmptyResponse'],
-    [/LOCAL_AGENT_UNKNOWN_FAILURE/i, 'error.agentUnknownFailure'],
-    [/LOCAL_AGENT_SPAWN_FAILED/i, 'error.agentSpawnFailed'],
-  ]
-  return mappings.find(([pattern]) => pattern.test(raw))?.[1] || ''
+  const raw = String(error?.code || error?.message || error || '').trim()
+  const codes = raw.toUpperCase().match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || []
+  for (const code of codes) {
+    if (DESKTOP_ERROR_MESSAGE_KEYS[code]) return DESKTOP_ERROR_MESSAGE_KEYS[code]
+  }
+  return LEGACY_ERROR_PATTERNS.find(([pattern]) => pattern.test(raw))?.[1] || ''
 }
 
 export function translateError(error) {
@@ -372,7 +413,8 @@ export function translateError(error) {
 
 export function translateSystemMessage(message) {
   const key = String(message?.system?.key || '')
-  if (!key) return String(message?.content || '')
+  const hasTranslation = Object.hasOwn(messages[locale.value] || {}, key) || Object.hasOwn(messages.en, key)
+  if (!key || !hasTranslation) return String(message?.content || '')
   const params = { ...(message.system?.params || {}) }
   const reasonKey = translatedErrorKey(params.reason)
   if (reasonKey) params.reason = t(reasonKey)

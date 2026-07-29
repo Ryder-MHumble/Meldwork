@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { desktopApi, installerApi, providerApi, workspaceApi } from '../../desktop.js'
+import { desktopApi } from '../../desktop.js'
 
 afterEach(() => {
   delete window.roundrelayDesktop
 })
 
 describe('desktop bridge access', () => {
-  it('reads the RoundRelay preload bridge and its narrow services', () => {
+  it('reads the RoundRelay preload bridge', () => {
     const bridge = {
       localWorkspace: { get() {} },
       agentInstaller: { catalog() {} },
@@ -15,8 +15,5 @@ describe('desktop bridge access', () => {
     window.roundrelayDesktop = bridge
 
     expect(desktopApi()).toBe(bridge)
-    expect(workspaceApi()).toBe(bridge.localWorkspace)
-    expect(installerApi()).toBe(bridge.agentInstaller)
-    expect(providerApi()).toBe(bridge.localAgentProvider)
   })
 })

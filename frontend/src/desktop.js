@@ -2,18 +2,6 @@ export function desktopApi() {
   return typeof window !== 'undefined' ? window.roundrelayDesktop || null : null
 }
 
-export function workspaceApi() {
-  return desktopApi()?.localWorkspace || null
-}
-
-export function installerApi() {
-  return desktopApi()?.agentInstaller || null
-}
-
-export function providerApi() {
-  return desktopApi()?.localAgentProvider || null
-}
-
 export function emptySnapshot() {
   return { agents: [], groups: [], messages: [], runningGroupIds: [], runs: [] }
 }
