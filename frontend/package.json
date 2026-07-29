@@ -1,0 +1,32 @@
+{
+  "name": "roundrelay-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "RoundRelay local-first multi-Agent conversation workspace",
+  "author": "Ryder-MHumble",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:desktop": "vite build --mode desktop",
+    "preview": "vite preview",
+    "test": "vitest run src/__tests__/roundrelay/*.spec.js",
+    "test:watch": "vitest src/__tests__/roundrelay/*.spec.js"
+  },
+  "dependencies": {
+    "@vicons/ionicons5": "^0.12.0",
+    "dompurify": "^3.4.11",
+    "marked": "^9.0.0",
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/test-utils": "^2.4.11",
+    "jsdom": "^29.1.1",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10"
+  }
+}

@@ -1,0 +1,240 @@
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import App from '../../App.vue'
+import { AGENTS } from '../../catalog.js'
+import { setLocale } from '../../i18n.js'
+
+function baseSnapshot() {
+  return {
+    agents: AGENTS.slice(0, 2).map(agent => ({
+      kind: agent.kind,
+      installed: true,
+      available: true,
+      credentialState: 'ready',
+      version: '1.0.0',
+    })),
+    groups: [],
+    messages: [],
+    runningGroupIds: [],
+    runs: [],
+  }
+}
+
+function createBridge() {
+  const state = baseSnapshot()
+  const workspace = {
+    get: vi.fn(async () => state),
+    refreshAgents: vi.fn(async () => state),
+    createGroup: vi.fn(async input => ({ id: 'group-1', createdAt: '2026-07-29T08:00:00Z', ...input })),
+    updateGroup: vi.fn(async () => ({})),
+    deleteGroup: vi.fn(async () => state),
+    send: vi.fn(async () => state),
+    startAuto: vi.fn(async () => ({ started: true })),
+    stop: vi.fn(async () => true),
+    pickDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
+    defaultDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
+    onChanged: vi.fn(() => vi.fn()),
+  }
+  const agentInstaller = {
+    catalog: vi.fn(async () => ({
+      platform: 'darwin',
+      agents: AGENTS.map(agent => ({
+        kind: agent.kind,
+        installed: true,
+        installSupported: true,
+      })),
+    })),
+    state: vi.fn(async () => ({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })),
+    start: vi.fn(async kind => ({ taskId: 'install-1', kind, phase: 'checking', canCancel: true })),
+    cancel: vi.fn(async () => true),
+    onChanged: vi.fn(() => vi.fn()),
+  }
+  const localAgentProvider = {
+    status: vi.fn(async () => ({
+      provider: '',
+      baseUrl: '',
+      model: '',
+      configured: false,
+      encryptionAvailable: true,
+    })),
+    probe: vi.fn(async () => ({
+      provider: '',
+      baseUrl: '',
+      model: '',
+      configured: false,
+      encryptionAvailable: true,
+    })),
+    save: vi.fn(async input => ({ ...input, configured: true, encryptionAvailable: true })),
+    delete: vi.fn(async () => ({ configured: false, encryptionAvailable: true })),
+  }
+  return { bridge: { localWorkspace: workspace, agentInstaller, localAgentProvider }, state }
+}
+
+async function mountApp(configure = () => {}) {
+  const fixture = createBridge()
+  configure(fixture)
+  window.roundrelayDesktop = fixture.bridge
+  const wrapper = mount(App, { attachTo: document.body })
+  await flushPromises()
+  return { wrapper, ...fixture }
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem('roundrelay-theme', 'light')
+  setLocale('en')
+})
+
+afterEach(() => {
+  delete window.roundrelayDesktop
+  document.body.className = ''
+  document.body.innerHTML = ''
+  vi.restoreAllMocks()
+})
+
+describe('RoundRelay workbench', () => {
+  it('uses non-probing Provider status at boot and probes only when the panel opens', async () => {
+    const { wrapper, bridge } = await mountApp()
+
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(1)
+    expect(bridge.localAgentProvider.probe).not.toHaveBeenCalled()
+    await wrapper.findAll('.sidebar-footer button')[1].trigger('click')
+    await flushPromises()
+    expect(bridge.localAgentProvider.probe).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('shows an existing Provider as configured after boot', async () => {
+    const { wrapper } = await mountApp(({ bridge }) => {
+      bridge.localAgentProvider.status.mockResolvedValueOnce({
+        provider: 'Local gateway',
+        baseUrl: 'https://gateway.example/v1',
+        model: 'roundrelay-model',
+        configured: true,
+        encryptionAvailable: true,
+      })
+    })
+
+    expect(wrapper.find('.sidebar-footer .footer-status.ready').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('shows all nine Agents and switches language and theme', async () => {
+    const { wrapper } = await mountApp()
+
+    expect(wrapper.findAll('.agent-card')).toHaveLength(9)
+    expect(wrapper.get('.home-header h1').text()).toBe('Local Agents')
+
+    const controls = wrapper.findAll('.brand-actions button')
+    await controls[0].trigger('click')
+    expect(wrapper.get('.home-header h1').text()).toBe('本地 Agent')
+
+    await controls[1].trigger('click')
+    expect(document.documentElement.dataset.theme).toBe('dark')
+    wrapper.unmount()
+  })
+
+  it('saves the exact Provider payload exposed by preload', async () => {
+    const { wrapper, bridge } = await mountApp()
+
+    await wrapper.findAll('.sidebar-footer button')[1].trigger('click')
+    await flushPromises()
+    const inputs = wrapper.findAll('.form-stack input')
+    await inputs[0].setValue('Local gateway')
+    await inputs[1].setValue('https://gateway.example/v1')
+    await inputs[2].setValue('roundrelay-model')
+    await inputs[3].setValue('secret-key')
+    await wrapper.get('form.form-stack').trigger('submit')
+    await flushPromises()
+
+    expect(bridge.localAgentProvider.save).toHaveBeenCalledWith({
+      provider: 'Local gateway',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'roundrelay-model',
+      apiKey: 'secret-key',
+    })
+    wrapper.unmount()
+  })
+
+  it('localizes default group names and structured system messages at render time', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        name: '',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'message-1',
+        groupId: 'group-1',
+        role: 'system',
+        agentKind: 'hermes',
+        content: 'Hermes failed: LOCAL_AGENT_EXECUTION_STOPPED',
+        system: {
+          key: 'system.agentCallFailed',
+          params: { agent: 'Hermes', reason: 'LOCAL_AGENT_EXECUTION_STOPPED' },
+        },
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    expect(wrapper.get('.conversation-link').text()).toContain('Agent group')
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.system-message').text()).toContain('Hermes failed: Agent execution stopped.')
+
+    await wrapper.findAll('.brand-actions button')[0].trigger('click')
+    expect(wrapper.get('.conversation-link').text()).toContain('Agent 群聊')
+    expect(wrapper.get('.system-message').text()).toContain('Hermes 调用失败：Agent 执行已停止。')
+    wrapper.unmount()
+  })
+
+  it('creates direct chats and local Agent groups', async () => {
+    const { wrapper, bridge, state } = await mountApp()
+
+    const directGroup = {
+      id: 'direct-codex',
+      conversationType: 'direct',
+      directAgentKind: 'codex',
+      name: 'Codex',
+      agentKinds: ['codex'],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt: '2026-07-29T08:00:00Z',
+    }
+    bridge.localWorkspace.createGroup.mockResolvedValueOnce(directGroup)
+    bridge.localWorkspace.get.mockImplementation(async () => ({ ...state, groups: [directGroup] }))
+
+    await wrapper.findAll('.agent-card')[0].get('.agent-card-actions button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.createGroup).toHaveBeenCalledWith({
+      conversationType: 'direct',
+      directAgentKind: 'codex',
+      name: 'Codex',
+      agentKinds: ['codex'],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+    })
+
+    await wrapper.get('.new-group-button').trigger('click')
+    await flushPromises()
+    const groupInputs = wrapper.findAll('.form-stack input:not([type="checkbox"])')
+    await groupInputs[0].setValue('Local review')
+    await groupInputs[1].setValue('Review the implementation')
+    await wrapper.get('form.form-stack').trigger('submit')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.createGroup).toHaveBeenLastCalledWith(expect.objectContaining({
+      name: 'Local review',
+      topic: 'Review the implementation',
+      agentKinds: ['codex', 'hermes'],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+    }))
+    wrapper.unmount()
+  })
+})

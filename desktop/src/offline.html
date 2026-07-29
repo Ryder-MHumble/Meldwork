@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+  <title>RoundRelay</title>
+  <style>
+    :root {
+      color: #1a3a5c;
+      background: #f7f8fa;
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 32px;
+    }
+    main {
+      width: min(100%, 560px);
+      padding: 28px;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 18px;
+      color: #9f2f2d;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .status-mark {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #c64b47;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: 28px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0;
+      color: #666;
+      font-size: 15px;
+      line-height: 1.7;
+    }
+    .error-code {
+      margin-top: 20px;
+      padding: 12px 14px;
+      overflow-wrap: anywhere;
+      background: #f7f8fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      color: #333;
+      font: 13px/1.5 "SFMono-Regular", Consolas, monospace;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="status"><span class="status-mark"></span><span id="status"></span></div>
+    <h1 id="title"></h1>
+    <p id="message"></p>
+    <div class="error-code" id="error-code"></div>
+  </main>
+  <script>
+    const messages = {
+      zh: {
+        status: '本地界面加载失败',
+        title: '无法打开 RoundRelay',
+        message: '桌面界面文件未能加载。请重新启动应用；开发环境请先完成桌面前端构建。',
+        code: '错误代码',
+      },
+      en: {
+        status: 'Local interface failed to load',
+        title: 'RoundRelay could not open',
+        message: 'The desktop interface could not be loaded. Restart the app; in development, build the desktop frontend first.',
+        code: 'Error code',
+      },
+    }
+    const locale = navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'en'
+    const copy = messages[locale]
+    document.documentElement.lang = locale === 'zh' ? 'zh-CN' : 'en'
+    document.title = copy.title
+    document.querySelector('#status').textContent = copy.status
+    document.querySelector('#title').textContent = copy.title
+    document.querySelector('#message').textContent = copy.message
+    document.querySelector('#error-code').textContent = `${copy.code}: ${new URLSearchParams(location.search).get('code') || 'UNKNOWN'}`
+  </script>
+</body>
+</html>

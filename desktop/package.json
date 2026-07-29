@@ -1,0 +1,42 @@
+{
+  "name": "roundrelay-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A local-first desktop workspace for multi-Agent conversations and relay workflows",
+  "author": "Ryder-MHumble",
+  "license": "UNLICENSED",
+  "main": "src/main.cjs",
+  "scripts": {
+    "build:frontend": "npm --prefix ../frontend run build:desktop",
+    "dev": "npm run build:frontend && electron .",
+    "test": "node --test test/*.test.cjs",
+    "pack": "npm run build:frontend && electron-builder --dir",
+    "dist": "npm run build:frontend && electron-builder --mac dmg zip"
+  },
+  "devDependencies": {
+    "electron": "39.8.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.roundrelay.desktop",
+    "productName": "RoundRelay",
+    "artifactName": "RoundRelay-${version}-${arch}.${ext}",
+    "afterPack": "scripts/after-pack.cjs",
+    "files": [
+      "src/**/*",
+      "package.json",
+      {
+        "from": "../frontend/dist",
+        "to": "frontend"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "../frontend/public/logos/roundrelay-app.png",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}
