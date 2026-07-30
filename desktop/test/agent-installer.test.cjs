@@ -87,8 +87,8 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   const result = await service.catalog()
   assert.equal(result.platform, 'darwin')
   assert.deepEqual(result.agents.map(agent => agent.kind), [
-    'hermes', 'openclaw', 'workbuddy', 'kimi', 'codex', 'claude', 'qwen',
-    'gemini', 'opencode',
+    'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'codex', 'claude',
+    'gemini', 'opencode', 'qwen',
   ])
   assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').installed, true)
   assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').providerCompatible, true)
@@ -203,6 +203,7 @@ test('recipes are fixed by Agent and platform', () => {
     workbuddy: '@tencent-ai/codebuddy-code@2.115.0',
     gemini: '@google/gemini-cli@latest',
     opencode: 'opencode-ai@latest',
+    mimo: '@mimo-ai/cli@latest',
   }
   for (const platform of ['darwin', 'win32']) {
     for (const [kind, packageName] of Object.entries(npmPackages)) {

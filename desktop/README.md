@@ -1,6 +1,6 @@
-# RoundRelay 桌面客户端
+# Meldwork 桌面客户端
 
-RoundRelay 是完全本地运行的 Electron 客户端。它直接加载仓库中的桌面前端，在 Electron
+Meldwork 是完全本地运行的 Electron 客户端。它直接加载仓库中的桌面前端，在 Electron
 主进程中检测和调用本机 Agent CLI，不需要登录、JWT、远端平台、Docker 或云端服务。
 
 本地群聊、消息、群组配置和 CLI 会话引用保存在 Electron 用户数据目录。渲染进程只通过
@@ -14,10 +14,11 @@ API Key 或任意 Shell 执行能力。
 - OpenClaw
 - WorkBuddy
 - Kimi Code
+- MiMo Code
 - Claude Code
-- Qwen Code
 - Gemini CLI
 - OpenCode
+- Qwen Code
 
 Agent 管理面板提供经过白名单约束的安装入口。安装命令和下载地址由主进程固定，不会根据页面
 输入执行任意命令。对支持强制权限模式的 Agent，群聊级工作目录写入默认关闭，只有用户明确
@@ -76,13 +77,14 @@ OpenClaw、WorkBuddy 和 Qwen 使用；其他 Agent 沿用各自的本机鉴权�
 | OpenClaw | `openclaw` | npm：`openclaw@latest` | npm：`openclaw@latest` | 支持，使用客户端隔离的托管配置 |
 | WorkBuddy | `codebuddy` | npm：`@tencent-ai/codebuddy-code@2.115.0` | npm：`@tencent-ai/codebuddy-code@2.115.0` | 实验性支持 |
 | Kimi Code | `kimi` | 官方 `install.sh` | 官方 `install.ps1` | 不注入；沿用 Kimi 本机配置 |
+| MiMo Code | `mimo` | npm：`@mimo-ai/cli@latest` | npm：`@mimo-ai/cli@latest` | 不注入；沿用 MiMo 本机配置，Meldwork 固定使用只读 `plan` Agent |
 | Claude Code | `claude` | npm：`@anthropic-ai/claude-code@latest` | npm：`@anthropic-ai/claude-code@latest` | 不注入；沿用 Claude 本机配置 |
-| Qwen Code | `qwen` | npm：`@qwen-code/qwen-code@latest` | npm：`@qwen-code/qwen-code@latest` | 支持 |
 | Gemini CLI | `gemini` | npm：`@google/gemini-cli@latest` | npm：`@google/gemini-cli@latest` | 不注入；沿用 Gemini 本机配置 |
 | OpenCode | `opencode` | npm：`opencode-ai@latest` | npm：`opencode-ai@latest` | 不注入；沿用 OpenCode 本机配置 |
+| Qwen Code | `qwen` | npm：`@qwen-code/qwen-code@latest` | npm：`@qwen-code/qwen-code@latest` | 支持 |
 
 macOS 会在当前 `PATH` 之外搜索 Volta、pnpm、fnm、asdf、mise、bun、
-`~/.local/bin`、`~/.kimi-code/bin`、Homebrew 等常见目录。Windows 会额外搜索用户 npm、
+`~/.local/bin`、`~/.kimi-code/bin`、`~/.mimocode/bin`、Homebrew 等常见目录。Windows 会额外搜索用户 npm、
 WindowsApps、Node.js、WorkBuddy、Chocolatey 和 Scoop 目录，并按 `PATHEXT` 解析命令。
 
 Hermes 和 Kimi 的安装脚本来自固定 HTTPS 白名单地址；客户端不内置脚本副本，因此离线环境

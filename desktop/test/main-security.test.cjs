@@ -647,7 +647,7 @@ test('run completion uses sanitized renderer events and a localized background n
   assert.equal(harness.notificationInstances.length, 1)
   const notification = harness.notificationInstances[0]
   assert.deepEqual(notification.input, {
-    title: 'RoundRelay',
+    title: 'Meldwork',
     body: '会话运行已结束',
   })
   assert.equal(notification.showCount, 1)
@@ -687,7 +687,7 @@ test('a completion notification restores a closed window and opens its local gro
 
   assert.equal(harness.notificationInstances.length, 1)
   assert.deepEqual(harness.notificationInstances[0].input, {
-    title: 'RoundRelay',
+    title: 'Meldwork',
     body: 'Conversation run finished',
   })
   assert.equal(originalWindow.webContents.sent.length, 0)

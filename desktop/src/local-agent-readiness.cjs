@@ -15,6 +15,7 @@ const CREDENTIAL_ENV_KEYS = Object.freeze({
   openclaw: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'],
   workbuddy: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
   kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
+  mimo: [],
   claude: ['ANTHROPIC_API_KEY'],
   qwen: ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
@@ -136,6 +137,7 @@ function claudeAuthState(output) {
 }
 
 async function resolveNativeCredentialState(kind, options = {}) {
+  if (kind === 'mimo') return { state: 'ready', source: 'native-cli' }
   const current = nativeCredentialState(kind, options)
   if (kind !== 'claude' || !options.executable
       || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current

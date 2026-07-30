@@ -1,51 +1,52 @@
 <p align="center">
-  <img src="frontend/public/logos/roundrelay.png" alt="RoundRelay" width="160">
+  <img src="frontend/public/logos/meldwork-mark.svg" alt="Meldwork" width="132">
 </p>
 
-# RoundRelay
+# Meldwork
 
-Repository: `roundrelay`
+**Put your local agents to work, together.**
 
-RoundRelay is a local-first desktop workspace for bringing multiple local AI Agent CLIs into one conversation. It discovers the Agent CLIs already available on your computer, lets you organize them into persistent groups, and coordinates their work without requiring a hosted orchestration service.
+Meldwork is a local-first desktop workspace where multiple AI Agent CLIs can collaborate on the same task. It discovers the Agents already available on your computer, keeps their conversations and native sessions persistent, and coordinates manual or bounded automatic discussions without requiring a hosted orchestration service.
 
-The name combines repeated discussion rounds with explicit handoffs: different local Agents inherit, challenge, and advance the same task while the user keeps control of the shared context.
-Its Relay Fold mark turns that handoff into a folded ribbon: separate paths meet, change direction, and continue as one recognizable `R` without implying that collaboration is limited to three Agents.
+The long-term product direction is open-source multi-agent collaboration. This repository is still `UNLICENSED`; the public open-source launch must not happen until a project license is selected and added.
 
-The first release has a strict boundary: Agent execution, orchestration, groups, and conversation state stay on the user's machine. Network access is limited to explicit user actions: model providers, guided installer downloads, and credential-free HTTPS links opened in the operating-system browser. RoundRelay does not support remote participants or cloud channels.
+## Why Meldwork
+
+- **One workspace for different Agents.** Bring Codex, Claude Code, Kimi Code, MiMo Code, and other local CLIs into direct or group conversations.
+- **Persistent collaborative context.** Continue the same task with one native session per Agent and conversation; resumed prompts add only the group messages that Agent has not already seen.
+- **Local orchestration with explicit boundaries.** Agent execution, groups, messages, and orchestration stay on the user's machine. Provider traffic still follows each selected Agent's configuration.
+- **Narrow desktop security boundary.** The renderer never receives executable paths, provider credentials, unrestricted shell access, attachment paths, or native session references.
 
 ## Core Capabilities
 
-- Discover installed Agent CLIs without exposing their executable paths to the renderer.
-- Guide first-run users through a three-step carousel while the desktop client completes local Agent detection.
-- Create persistent local Agent groups and continue conversations across app restarts.
-- Bring heterogeneous local Agents into one manual or bounded automatic discussion, with each Agent keeping its own native session reference.
-- Reference validated local Skills with `@` and route each selection only to its intended Agent.
-- Attach PNG or JPEG images through the system picker or clipboard paste, with per-Agent capability checks before any run starts.
-- Run Agent turns through a constrained Electron bridge instead of giving the web UI shell access.
-- Request read-only/plan modes by default where the Agent adapter can enforce them, with explicit write opt-in; adapters without an enforceable mode are labeled as Agent-managed permissions.
+- Discover installed Agent CLIs without exposing executable paths to the renderer.
+- Create multiple persistent direct conversations per Agent, then rename or delete each local conversation independently.
+- Run one response at a time or an automatic discussion with a user-selected 1-10 round limit (6 by default).
+- Preserve one logical native session per Agent and conversation, with automatic migration from older topic-scoped references.
+- Show per-Agent queued/running/completed state, automatic round progress, background direct-chat completion markers, and local desktop notifications.
+- Reference validated local Skills with `@` and attach PNG or JPEG images with capability checks.
+- Request read-only modes by default where an Agent can enforce them, with explicit write opt-in only when the adapter can preserve the workspace boundary.
 - Install supported missing Agents through fixed, allowlisted flows.
-- Configure compatible OpenAI-style providers with credentials protected by the operating system.
-- Keep all participants, groups, and conversation history on the local device.
+- Store compatible provider credentials with operating-system-backed secure storage.
 
 ## Supported Agents
 
-| Agent | Local detection | Guided installation | Provider behavior |
+| Agent | Local detection | Guided installation | Provider and permission behavior |
 | --- | --- | --- | --- |
-| Codex | Yes | macOS and Windows | Uses its own Responses-compatible configuration |
-| Hermes | Yes | macOS and Windows | Supports an OpenAI-compatible provider |
-| OpenClaw | Yes | macOS and Windows | Supports a managed OpenAI-compatible provider |
-| WorkBuddy | Yes | macOS and Windows | Experimental OpenAI-compatible provider support |
-| Kimi Code | Yes | macOS and Windows | Uses its existing local configuration |
+| Codex | Yes | macOS and Windows | Uses its existing Responses-compatible configuration |
+| Hermes | Yes | macOS and Windows | Supports a shared OpenAI-compatible Provider |
+| OpenClaw | Yes | macOS and Windows | Supports a managed OpenAI-compatible Provider |
+| WorkBuddy | Yes | macOS and Windows | Experimental shared Provider support |
+| Kimi Code | Yes | macOS and Windows | Uses its native configuration and ACP plan mode for read-only work |
+| MiMo Code | Yes | macOS and Windows | Uses native configuration; Meldwork invokes the `plan` Agent and does not enable the global permission-bypass flag |
 | Claude Code | Yes | macOS and Windows | Uses its existing Anthropic-compatible configuration |
-| Qwen Code | Yes | macOS and Windows | Supports an OpenAI-compatible provider |
-| Gemini CLI | Yes | macOS and Windows | Uses its existing local authentication and provider settings |
-| OpenCode | Yes | macOS and Windows | Uses its existing local provider settings |
+| Gemini CLI | Yes | macOS and Windows | Uses its existing authentication and Provider settings |
+| OpenCode | Yes | macOS and Windows | Uses its existing Provider settings |
+| Qwen Code | Yes | macOS and Windows | Supports a shared OpenAI-compatible Provider |
 
-Agent availability still depends on each upstream CLI, operating-system support, authentication requirements, and version compatibility. Guided installers execute only fixed, allowlisted package names or download URLs.
+Availability still depends on each upstream CLI, operating-system support, authentication, model configuration, and version compatibility.
 
 ## Privacy And Architecture
-
-RoundRelay consists of a Vue frontend and an Electron desktop shell:
 
 ```text
 Vue renderer
@@ -59,62 +60,35 @@ Electron main process
     `-- user-authorized provider and installer network access
 ```
 
-The Electron main process owns filesystem paths, child processes, Agent configuration, and persistence. The renderer receives a deliberately narrow API surface and does not receive raw executable paths, attachment paths, native Agent session references, or provider secrets. Skill results contain sanitized coordinates and display names; attachment messages contain safe metadata, while bounded previews are requested separately by attachment ID.
+The Electron main process owns filesystem paths, child processes, Agent configuration, and persistence. Provider credentials use Electron `safeStorage`; if operating-system encryption is unavailable, Meldwork refuses to persist them in plaintext. Conversations and participants remain local. Network activity occurs only through the selected Agent or Provider, guided installer downloads, or explicit external links.
 
-Local workspace data and imported image copies are stored under Electron's per-user application-data directory. Provider credentials use Electron `safeStorage`; if operating-system encryption is unavailable, RoundRelay refuses to persist them in plaintext. RoundRelay does not create cloud channels or connect remote participants. Network activity occurs only when the user configures a model provider, invokes an Agent that uses its own provider, starts a guided installation, or explicitly opens a credential-free HTTPS link in the operating-system browser.
+Internal compatibility identifiers such as `window.roundrelayDesktop`, existing storage filenames, and `com.roundrelay.desktop` are intentionally retained during the brand transition so current local data and the preload contract continue to work.
 
 ## Development
 
-Prerequisites:
-
-- Node.js 20.19 or newer for repository scripts and CI; the desktop runtime uses the Node.js version bundled with Electron
-- npm
-- macOS for the currently configured release packaging targets
-
-Install dependencies:
+Prerequisites: Node.js 20.19 or newer, npm, and macOS for the currently configured release packaging targets.
 
 ```bash
 npm --prefix frontend ci
 npm --prefix desktop ci
-```
 
-Run the renderer-only development preview:
-
-```bash
+# Renderer-only preview
 npm --prefix frontend run dev
-```
 
-The browser preview cannot execute Agents because it intentionally has no Electron bridge. It is a UI development surface, not a supported web or PWA product.
-
-Run the Electron application:
-
-```bash
+# Electron desktop application
 npm --prefix desktop run dev
 ```
 
-The desktop command builds the frontend in desktop mode before starting Electron.
+The browser preview cannot execute Agents because it intentionally has no Electron bridge.
 
 ## Tests And Builds
 
 ```bash
-# Frontend unit tests
 npm --prefix frontend test
-
-# Static renderer validation and the Electron renderer build
 npm --prefix frontend run build
 npm --prefix frontend run build:desktop
-
-# Electron main-process and bridge tests
 npm --prefix desktop test
-
-# Unpacked desktop package validation
 npm --prefix desktop run pack
-```
-
-For a macOS release build:
-
-```bash
-npm --prefix desktop run dist
 ```
 
 Generated packages are written to `desktop/dist/` and are not committed.
@@ -122,18 +96,16 @@ Generated packages are written to `desktop/dist/` and are not committed.
 ## Repository Layout
 
 ```text
-frontend/   Vue renderer bundled into Electron, plus a bridge-free UI preview
-desktop/    Electron main process, preload bridge, local Agent runtime, and tests
-documentation/  Architecture, permissions, variables, flows, automation, and test map
-.github/    Continuous integration workflows
+frontend/       Vue renderer and product assets
+desktop/        Electron main process, preload bridge, Agent runtime, and tests
+documentation/  Architecture, security, workflows, and launch material
+.github/         Continuous integration workflows
 ```
 
-The review entry point is [`documentation/architecture.md`](documentation/architecture.md).
+The architecture review entry point is [`documentation/architecture.md`](documentation/architecture.md). Draft launch messaging lives in [`documentation/launch-kit.md`](documentation/launch-kit.md).
 
-## Project Status
+## Release Status
 
-RoundRelay is under active private development. Local Agent discovery, first-run onboarding, persistent direct/group conversations, guarded heterogeneous-Agent execution, `@` Skill references, image picker/paste attachments, provider storage, frontend tests, desktop tests, and macOS package generation are implemented. Real-Agent image/Skill compatibility still requires a target-device matrix, and Windows discovery and installation paths require release-device validation before a supported Windows distribution is declared.
+Meldwork is under active development. Local discovery, persistent direct/group conversations, guarded heterogeneous-Agent execution, automatic discussion, `@` Skill references, image attachments, provider storage, frontend tests, desktop tests, and macOS package generation are implemented.
 
-Current macOS packages use ad-hoc signing for local validation. A public distribution still requires an Apple Developer ID and notarization.
-
-There is currently no public release or open-source license.
+Before a public open-source release, the project still needs a selected license, real-device Windows validation, a target-device Agent compatibility matrix, and signed/notarized macOS distribution.

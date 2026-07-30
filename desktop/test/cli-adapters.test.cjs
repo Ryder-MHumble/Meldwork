@@ -13,6 +13,7 @@ const {
   parseCodexOutput,
   parseGeminiOutput,
   parseKimiOutput,
+  parseMimoOutput,
   parseOpenCodeOutput,
   parseWorkBuddyOutput,
   prepareCommand,
@@ -1030,6 +1031,32 @@ test('Claude uses JSON output and resumes its native session', () => {
   assert.equal(spec.promptArg, true)
 })
 
+test('MiMo uses its read-only plan Agent and resumes its native session', () => {
+  const spec = invocation('mimo', '/tmp/mimo', '/tmp/work', 'mimo-session', {
+    sandbox: 'workspace-write',
+  })
+  assert.deepEqual(spec.args, [
+    'run', '--pure', '--agent', 'plan', '--format', 'json', '--dir', '/tmp/work',
+    '--session', 'mimo-session',
+  ])
+  assert.equal(spec.promptArg, true)
+})
+
+test('MiMo JSON output returns final text and session id', () => {
+  const raw = [
+    JSON.stringify({
+      type: 'text', sessionID: 'mimo-session',
+      part: { type: 'text', text: 'MiMo reply' },
+    }),
+  ].join('\n')
+  assert.deepEqual(parseMimoOutput(raw), {
+    text: 'MiMo reply', sessionRef: 'mimo-session', error: '',
+  })
+  assert.deepEqual(normalizeOutput('mimo', raw), {
+    text: 'MiMo reply', sessionRef: 'mimo-session', error: '',
+  })
+})
+
 test('Claude JSON output returns the final reply and session id', () => {
   const raw = JSON.stringify({
     type: 'result', result: 'Claude reply', session_id: 'claude-session',
@@ -1405,6 +1432,7 @@ test('nonzero CLI exits without diagnostics retain the stable exited code', asyn
 test('search path includes common user CLI locations', () => {
   assert.match(searchPath(), /\.local\/bin/)
   assert.match(searchPath(), /\.kimi-code\/bin/)
+  assert.match(searchPath(), /\.mimocode\/bin/)
 })
 
 test('macOS Finder cold starts include common Node version manager paths', () => {

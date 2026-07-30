@@ -1,8 +1,8 @@
 {
-  "name": "roundrelay-desktop",
+  "name": "meldwork-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "A local-first desktop workspace for multi-Agent conversations and relay workflows",
+  "description": "A local-first desktop workspace for multi-Agent collaboration",
   "author": "Ryder-MHumble",
   "license": "UNLICENSED",
   "main": "src/main.cjs",
@@ -23,8 +23,8 @@
   },
   "build": {
     "appId": "com.roundrelay.desktop",
-    "productName": "RoundRelay",
-    "artifactName": "RoundRelay-${version}-${arch}.${ext}",
+    "productName": "Meldwork",
+    "artifactName": "Meldwork-${version}-${arch}.${ext}",
     "afterPack": "scripts/after-pack.cjs",
     "files": [
       "src/**/*",
@@ -36,7 +36,7 @@
     ],
     "mac": {
       "category": "public.app-category.productivity",
-      "icon": "../frontend/public/logos/roundrelay-app.png",
+      "icon": "../frontend/public/logos/meldwork-app.png",
       "target": [
         "dmg",
         "zip"

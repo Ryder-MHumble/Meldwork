@@ -2,7 +2,7 @@
 
 ## Identity Model
 
-RoundRelay has no login, account, role, claim, tenant, server session, or database authorization layer. The local OS user who launches the application is the only human actor.
+Meldwork has no login, account, role, claim, tenant, server session, or database authorization layer. The local OS user who launches the application is the only human actor.
 
 Authorization is process-bound:
 
@@ -16,7 +16,7 @@ Authorization is process-bound:
 | Resource / operation | Local user through trusted renderer | Other document/frame | Agent child process | Enforcement |
 | --- | --- | --- | --- | --- |
 | Read sanitized workspace snapshot | Allowed | Denied | No IPC access | `requireDesktopRenderer`; `LocalWorkspace.snapshot` removes executable paths |
-| Create/update/delete RoundRelay conversations and messages | Allowed | Denied | No direct state-file API | Named IPC handlers plus `LocalWorkspace` validation; renderer cannot address CLI-native sessions |
+| Create/update/delete Meldwork conversations and messages | Allowed | Denied | No direct state-file API | Named IPC handlers plus `LocalWorkspace` validation; renderer cannot address CLI-native sessions |
 | Receive active/terminal run state | Sanitized events only | Denied | N/A | Main allowlists conversation IDs, Agent kinds, status, topic ID, and timestamps; no native session IDs, internal paths, credentials, or message text |
 | Create operating-system notifications | Not directly allowed | Denied | N/A | Main creates notifications only from trusted terminal run events; renderer cannot supply notification content |
 | Select a working directory | Allowed through OS dialog | Denied | Receives selected path only at invocation | Main-owned `dialog.showOpenDialog` |
@@ -43,13 +43,13 @@ Node integration, webviews, insecure content, and renderer permission requests a
 
 ## Filesystem Permissions
 
-- RoundRelay state is written only by main.
+- Meldwork state is written only by main.
 - Provider and managed OpenClaw secret-bearing files use atomic writes and mode `0600`; their directories use mode `0700` where created by those modules.
 - Imported PNG/JPEG copies live under the Electron user-data attachment directory. The root/entry directories use mode `0700`, files use `0600`, metadata carries a SHA-256 checksum, and symlink/path escape or tampering fails closed.
 - Conversation data is local JSON and is not application-encrypted.
 - Agent executable paths, native session IDs, native session storage paths, attachment paths, Skill paths, preview payloads, and credential material are stripped from renderer snapshots and lifecycle events. User-selected conversation workdirs are intentionally returned for display and editing.
 - Main scans known per-Agent Skill roots and reads only bounded Skill manifest prefixes for catalog metadata. The renderer cannot request an arbitrary directory or file.
-- Agent filesystem access is scoped to the selected working directory by RoundRelay arguments/configuration where the upstream CLI supports it.
+- Agent filesystem access is scoped to the selected working directory by Meldwork arguments/configuration where the upstream CLI supports it.
 
 ## Process And Network Permissions
 
@@ -65,6 +65,6 @@ Node integration, webviews, insecure content, and renderer permission requests a
 ## Explicit Limitations
 
 - There is no per-user permission separation inside the app because there is no account model.
-- An Agent process runs with the operating-system permissions of the local user. RoundRelay permission flags reduce capability but are not an OS sandbox.
+- An Agent process runs with the operating-system permissions of the local user. Meldwork permission flags reduce capability but are not an OS sandbox.
 - Imported images are private local copies but are not application-encrypted; when sent, their contents may reach the selected Agent's configured model Provider.
 - Installer approval authorizes an external system modification. Package/script integrity is not currently pinned.

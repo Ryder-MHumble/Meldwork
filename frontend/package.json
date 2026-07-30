@@ -1,8 +1,8 @@
 {
-  "name": "roundrelay-frontend",
+  "name": "meldwork-frontend",
   "version": "0.1.0",
   "private": true,
-  "description": "RoundRelay local-first multi-Agent conversation workspace",
+  "description": "Meldwork local-first multi-Agent collaboration workspace",
   "author": "Ryder-MHumble",
   "license": "UNLICENSED",
   "engines": {

@@ -39,6 +39,10 @@ const AGENT_CATALOG = Object.freeze([
     providerSupport: 'native-config',
   },
   {
+    kind: 'mimo', label: 'MiMo Code', recommended: false, providerCompatible: false,
+    providerSupport: 'native-config',
+  },
+  {
     kind: 'codex', label: 'Codex', recommended: false, providerCompatible: false,
     providerSupport: 'responses-required',
   },
@@ -47,16 +51,16 @@ const AGENT_CATALOG = Object.freeze([
     providerSupport: 'anthropic-required',
   },
   {
-    kind: 'qwen', label: 'Qwen Code', recommended: false, providerCompatible: true,
-    providerSupport: 'supported',
-  },
-  {
     kind: 'gemini', label: 'Gemini CLI', recommended: false, providerCompatible: false,
     providerSupport: 'native-config',
   },
   {
     kind: 'opencode', label: 'OpenCode', recommended: false, providerCompatible: false,
     providerSupport: 'native-config',
+  },
+  {
+    kind: 'qwen', label: 'Qwen Code', recommended: false, providerCompatible: true,
+    providerSupport: 'supported',
   },
 ])
 
@@ -101,6 +105,7 @@ function installRecipe(kind, platform) {
     workbuddy: '@tencent-ai/codebuddy-code@2.115.0',
     gemini: '@google/gemini-cli@latest',
     opencode: 'opencode-ai@latest',
+    mimo: '@mimo-ai/cli@latest',
   }
   return packages[kind] ? { type: 'npm', packageName: packages[kind] } : null
 }

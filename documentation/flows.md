@@ -1,10 +1,10 @@
 # Security And Side-Effect Flows
 
-RoundRelay has one human actor: the local desktop user. There are no accounts, roles, claims, tenants, or server-side authorization checks. Protected operations are authorized by the Electron main process accepting IPC only from the exact bundled renderer main frame.
+Meldwork has one human actor: the local desktop user. There are no accounts, roles, claims, tenants, or server-side authorization checks. Protected operations are authorized by the Electron main process accepting IPC only from the exact bundled renderer main frame.
 
 ## 1. Application Startup
 
-**Precondition:** The local user launches RoundRelay.
+**Precondition:** The local user launches Meldwork.
 
 1. Electron main creates `ProviderStore`, `AttachmentStore`, and `LocalWorkspace` under `app.getPath('userData')`, plus a `LocalSkillCatalog` rooted at `app.getPath('home')`.
 2. Main registers IPC handlers, creates a sandboxed `BrowserWindow`, and loads the bundled frontend with `loadFile`.
@@ -16,7 +16,7 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 
 **Deny case:** IPC from a different frame, web contents instance, protocol, or file path fails `requireDesktopRenderer`.
 
-**State/side effects:** Reads local Agent/Skill configuration and RoundRelay data, removes only confirmed orphan attachment entries, and writes a non-secret onboarding preference after dismissal; it does not contact an application server.
+**State/side effects:** Reads local Agent/Skill configuration and Meldwork data, removes only confirmed orphan attachment entries, and writes a non-secret onboarding preference after dismissal; it does not contact an application server.
 
 ## 2. Save Or Remove A Provider
 
@@ -48,19 +48,20 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 
 **External side effects:** Network download and global CLI installation. Current recipes are allowlisted but not cryptographically pinned.
 
-## 4. Manage RoundRelay Conversations
+## 4. Manage Meldwork Conversations
 
 **Precondition:** At least one detected Agent is available. The user selects a working directory.
 
-1. The sidebar groups direct conversations under each available Agent and may create more than one RoundRelay conversation for the same Agent.
-2. Renderer sends the RoundRelay conversation name/topic, Agent kinds, user-selected directory, and `allowWrite`.
-3. Main validates the renderer and delegates create, select, rename, update, or delete operations to `LocalWorkspace` using a RoundRelay-owned conversation ID.
-4. `LocalWorkspace` keeps only available Agent kinds, resolves the directory, stores `allowWrite` as an explicit boolean, and isolates native session-reference mappings by conversation, Agent, and topic.
-5. The workspace file is updated and a sanitized snapshot is emitted to the trusted renderer.
+1. The sidebar groups direct conversations under each available Agent and may create more than one Meldwork conversation for the same Agent.
+2. Renderer sends the Meldwork conversation name/topic, Agent kinds, user-selected directory, and `allowWrite`.
+3. Main validates the renderer and delegates create, select, rename, update, or delete operations to `LocalWorkspace` using a Meldwork-owned conversation ID.
+4. `LocalWorkspace` keeps only available Agent kinds, resolves the directory, stores `allowWrite` as an explicit boolean, and isolates native session-reference mappings by conversation and Agent.
+5. Older topic-scoped references are migrated once: the current topic is preferred, otherwise the most recently active valid topic is selected, then the legacy keys are removed. Changing the working directory clears that conversation's native session mappings.
+6. The workspace file is updated and a sanitized snapshot is emitted to the trusted renderer.
 
 **Deny cases:** No available Agent, invalid group ID, or attempts to enable an unavailable Agent.
 
-**State/side effects:** Writes local conversation configuration. Deleting a conversation removes its RoundRelay messages and native session-reference mapping and is denied while that conversation is running. It does not delete any CLI-native session or history from the CLI's own storage.
+**State/side effects:** Writes local conversation configuration. Deleting a conversation removes its Meldwork messages and native session-reference mapping and is denied while that conversation is running. It does not delete any CLI-native session or history from the CLI's own storage.
 
 ## 5. Select Skills And Import Images
 
@@ -83,13 +84,13 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 **Precondition:** The conversation is not already running and at least one selected target belongs to the group.
 
 1. `LocalWorkspace` persists the user message and creates a cancellable run.
-2. It builds a bounded prompt from the local topic transcript and includes only the selected Skill hints assigned to that Agent.
+2. It builds a bounded prompt from stable group-level user constraints and the recent group transcript. When the same native session is resumed, only messages after that Agent's previous final reply are added, together with Skill hints assigned to that Agent.
 3. Main resolves the Agent executable and attachment paths internally, selects Provider/native credential environment, and invokes the CLI in the group working directory. Codex, Hermes, and OpenCode receive images through their validated native arguments; Hermes also receives selected Skill slugs through `--skills`.
 4. CLI adapters apply per-Agent read-only or write-enabled arguments. Child processes receive an allowlisted system environment plus only current-Agent credentials.
 5. Main emits sanitized active progress. Hermes process details are bounded and kept separate from the final answer; a pre-run message-ID watermark prevents an earlier turn from being selected as the current result.
 6. Normalized final Agent text is stored as message content, while native session references remain main-only. For Hermes, a post-watermark non-empty `assistant` row with `finish_reason` `stop` or `length` overrides process output. When the watermark or final lookup is unavailable, locked, incompatible, or empty, the ANSI-stripped official `--quiet` stdout is used as the fallback; `tool_calls` rows are never selected. A newly reported Hermes session reference is persisted before this lookup, including when the database path cannot provide a result.
 7. Failures are recorded as diagnostic system messages. One failed Agent does not cancel successful Agents; when every Agent fails after the user message has been persisted, the send resolves as an accepted failed run so the renderer does not restore and duplicate the committed draft or attachments.
-8. On terminal state, main emits a best-effort sanitized run event. When the window is unfocused it also creates a content-free operating-system notification whose click action focuses the app and opens the RoundRelay conversation; shutdown suppresses these notifications.
+8. On terminal state, main emits a best-effort sanitized run event. When the window is unfocused it also creates a content-free operating-system notification whose click action focuses the app and opens the Meldwork conversation; shutdown suppresses these notifications.
 
 **Deny cases:** Empty text and no image, target outside the group, unavailable Agent, concurrent run, invalid Skill/attachment context, invalid sandbox, or authentication failure.
 
@@ -100,8 +101,8 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 **Precondition:** A group has at least two Agents and a persisted user topic root.
 
 1. Before creating a run, `LocalWorkspace` checks the root message's entire image set against every group Agent. If any Agent cannot receive the same set, the discussion is rejected before any process starts.
-2. The user chooses a bounded round count; the default is three and the hard cap is twelve.
-3. `LocalWorkspace` invokes every group Agent once per complete round, preserving a main-only native session reference for each Agent and topic. Root images are delivered once to each Agent; a failed delivery is retried on that Agent's next attempt instead of silently dropping context. Root Skill selections are revalidated and remain scoped to their target Agent on every attempt.
+2. The user chooses a bounded round count; the default is six and the hard cap is ten.
+3. `LocalWorkspace` invokes every group Agent once per complete round, preserving one main-only native session reference for each conversation and Agent. The topic root remains a visual and run-lifecycle boundary, not a native-session boundary. Root images are delivered once to each Agent; a failed delivery is retried on that Agent's next attempt instead of silently dropping context. Root Skill selections are revalidated and remain scoped to their target Agent on every attempt.
 4. Each Agent must end with one internal consensus marker. The marker is removed before persistence, and the run stops early only when every Agent completes and agrees in the same round.
 5. A failed Agent is recorded once per stable failure, while later Agents and later bounded rounds continue. Active progress and terminal state are emitted separately from message history.
 6. The user can stop the group, and a 30-minute total runtime limit also aborts the active process tree.
@@ -110,7 +111,7 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 
 **State/side effects:** Final messages, bounded execution metadata, and main-only session-reference mappings are updated. Active and terminal run events remain transient. There is a per-run safety timer, but no recurring schedule, unattended cron trigger, or retry daemon.
 
-“Equal context” here means every Agent can receive the same root image set before the run is allowed. Discussion remains sequential, so later Agents in a round can see earlier replies; native sessions and selected Skills also remain Agent-specific.
+“Equal context” here means every Agent can receive the same root image set before the run is allowed. Discussion remains sequential, so later Agents in a round can see earlier replies; native sessions remain conversation-and-Agent-specific, while selected Skills remain Agent-specific.
 
 ## 8. Shutdown IPC Gate
 

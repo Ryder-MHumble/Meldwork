@@ -1,7 +1,7 @@
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const path = require('node:path')
-const { createHash, randomUUID } = require('node:crypto')
+const { randomUUID } = require('node:crypto')
 
 const AGENT_LABELS = {
   codex: 'Codex',
@@ -9,6 +9,7 @@ const AGENT_LABELS = {
   openclaw: 'OpenClaw',
   workbuddy: 'WorkBuddy',
   kimi: 'Kimi',
+  mimo: 'MiMo',
   claude: 'Claude',
   qwen: 'Qwen',
   gemini: 'Gemini',
@@ -17,9 +18,15 @@ const AGENT_LABELS = {
 const AUTO_CONSENSUS_MARKER = /\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\]/gi
 const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\][ \t]*$/i
 const DEFAULT_AUTO_RUN_TIMEOUT_MS = 30 * 60 * 1000
+const DEFAULT_AUTO_ROUNDS = 6
+const MAX_AUTO_ROUNDS = 10
 const MAX_MESSAGE_ATTACHMENTS = 4
 const MAX_SKILL_HINTS = 4
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+const STABLE_USER_TURNS_PER_EDGE = 3
+const STABLE_USER_TURN_TEXT_LIMIT = 700
+const RECENT_TRANSCRIPT_MESSAGE_LIMIT = 20
+const RECENT_TRANSCRIPT_TEXT_LIMIT = 12000
 const ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const RUN_STATUSES = new Set([
@@ -67,6 +74,24 @@ function cleanElapsedMs(value) {
   return Number.isFinite(value) && value >= 0
     ? Math.min(Number.MAX_SAFE_INTEGER, Math.round(value))
     : null
+}
+
+function normalizeAutoRounds(value) {
+  const requested = Number(value)
+  if (!Number.isFinite(requested) || requested <= 0) return DEFAULT_AUTO_ROUNDS
+  return Math.max(1, Math.min(MAX_AUTO_ROUNDS, Math.floor(requested)))
+}
+
+function cleanRunMaxRounds(value) {
+  const requested = Number(value)
+  if (!Number.isFinite(requested) || requested <= 0) return 0
+  return Math.max(1, Math.min(MAX_AUTO_ROUNDS, Math.floor(requested)))
+}
+
+function cleanCurrentRound(value, maxRounds) {
+  const requested = Number(value)
+  if (!Number.isFinite(requested) || requested <= 0 || !maxRounds) return 0
+  return Math.max(1, Math.min(maxRounds, Math.floor(requested)))
 }
 
 function parseAutoReply(value) {
@@ -279,17 +304,24 @@ class LocalWorkspace extends EventEmitter {
       groups: this.state.groups,
       messages: this.state.messages,
       runningGroupIds: runEntries.map(([groupId]) => groupId),
-      runs: runEntries.map(([groupId, run, phase]) => ({
-        groupId,
-        phase,
-        mode: run.mode || 'manual',
-        targetKinds: run.targetKinds || [],
-        completedKinds: run.completedKinds || [],
-        currentKind: run.currentKind || '',
-        progress: cleanProgressSteps(run.progress),
-        threadRootId: run.threadRootId || '',
-        startedAt: run.startedAt || Date.now(),
-      })),
+      runs: runEntries.map(([groupId, run, phase]) => {
+        const mode = run.mode === 'auto' ? 'auto' : 'manual'
+        const maxRounds = mode === 'auto' ? cleanRunMaxRounds(run.maxRounds) : 0
+        return {
+          groupId,
+          phase,
+          mode,
+          targetKinds: run.targetKinds || [],
+          completedKinds: run.completedKinds || [],
+          failedKinds: run.failedKinds || [],
+          currentKind: run.currentKind || '',
+          currentRound: cleanCurrentRound(run.currentRound, maxRounds),
+          maxRounds,
+          progress: cleanProgressSteps(run.progress),
+          threadRootId: run.threadRootId || '',
+          startedAt: run.startedAt || Date.now(),
+        }
+      }),
     }
   }
 
@@ -297,7 +329,7 @@ class LocalWorkspace extends EventEmitter {
     this.emit('changed', this.snapshot())
   }
 
-  createRunController(mode, targetKinds, threadRootId) {
+  createRunController(mode, targetKinds, threadRootId, maxRounds = 0) {
     const controller = new AbortController()
     let done = false
     let resolveDone
@@ -310,9 +342,12 @@ class LocalWorkspace extends EventEmitter {
     controller.mode = mode
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
+    controller.failedKinds = []
     controller.currentKind = ''
     controller.progress = []
     controller.threadRootId = threadRootId
+    controller.currentRound = 0
+    controller.maxRounds = mode === 'auto' ? cleanRunMaxRounds(maxRounds) : 0
     controller.startedAt = Date.now()
     controller.stopReason = ''
     return controller
@@ -322,10 +357,10 @@ class LocalWorkspace extends EventEmitter {
     return this.preparingRuns.has(groupId) || this.activeRuns.has(groupId)
   }
 
-  reserveRun(groupId, mode, targetKinds, threadRootId = '') {
+  reserveRun(groupId, mode, targetKinds, threadRootId = '', maxRounds = 0) {
     if (this.shuttingDown) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-    const controller = this.createRunController(mode, targetKinds, threadRootId)
+    const controller = this.createRunController(mode, targetKinds, threadRootId, maxRounds)
     this.preparingRuns.set(groupId, controller)
     try {
       this.emitChanged()
@@ -349,7 +384,7 @@ class LocalWorkspace extends EventEmitter {
     return true
   }
 
-  beginRun(groupId, mode, targetKinds, threadRootId, reservation = null) {
+  beginRun(groupId, mode, targetKinds, threadRootId, reservation = null, maxRounds = 0) {
     if (this.shuttingDown) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     let controller = reservation
     if (controller) {
@@ -360,14 +395,19 @@ class LocalWorkspace extends EventEmitter {
       this.preparingRuns.delete(groupId)
     } else {
       if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-      controller = this.createRunController(mode, targetKinds, threadRootId)
+      controller = this.createRunController(mode, targetKinds, threadRootId, maxRounds)
     }
     controller.mode = mode
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
+    controller.failedKinds = []
     controller.currentKind = ''
     controller.progress = []
     controller.threadRootId = threadRootId
+    controller.currentRound = 0
+    controller.maxRounds = mode === 'auto'
+      ? cleanRunMaxRounds(maxRounds || controller.maxRounds)
+      : 0
     controller.startedAt = Date.now()
     controller.stopReason = ''
     this.activeRuns.set(groupId, controller)
@@ -555,7 +595,15 @@ class LocalWorkspace extends EventEmitter {
     if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
     if (input.name != null) group.name = cleanText(input.name, 60) || group.name
     if (input.topic != null) group.topic = cleanText(input.topic, 200)
-    if (input.workdir != null) group.workdir = path.resolve(cleanText(input.workdir, 1000))
+    if (input.workdir != null) {
+      const nextWorkdir = path.resolve(cleanText(input.workdir, 1000))
+      if (nextWorkdir !== group.workdir) {
+        group.workdir = nextWorkdir
+        for (const key of Object.keys(this.state.sessions)) {
+          if (key.startsWith(`${group.id}:`)) delete this.state.sessions[key]
+        }
+      }
+    }
     if (input.allowWrite != null) group.allowWrite = input.allowWrite === true
     if (input.agentKinds != null) {
       const available = new Set(this.detectedAgents.filter(agent => agent.available).map(agent => agent.kind))
@@ -632,34 +680,77 @@ class LocalWorkspace extends EventEmitter {
     return message
   }
 
-  sessionKey(groupId, kind, threadRootId = '') {
-    const root = cleanText(threadRootId, 100)
-    return root ? `${groupId}:${kind}:thread:${root}` : `${groupId}:${kind}`
+  sessionKey(groupId, kind) {
+    return `${groupId}:${kind}`
   }
 
   sessionRef(group, kind, threadRootId = '') {
-    const key = this.sessionKey(group.id, kind, threadRootId)
-    let stored = String(this.state.sessions[key] || '')
-    if (kind === 'hermes' && /^roundrelay-[a-zA-Z0-9]+-hermes$/.test(stored)) {
-      delete this.state.sessions[key]
-      this.save()
-      stored = ''
+    const key = this.sessionKey(group.id, kind)
+    const legacyPrefix = `${group.id}:${kind}:thread:`
+    let stateChanged = false
+    const validStoredRef = (candidateKey) => {
+      let candidate = String(this.state.sessions[candidateKey] || '')
+      if (kind === 'hermes' && /^roundrelay-[a-zA-Z0-9]+-hermes$/.test(candidate)) {
+        delete this.state.sessions[candidateKey]
+        stateChanged = true
+        candidate = ''
+      }
+      if (kind === 'openclaw' && candidate && !candidate.startsWith('agent:main:desktop-')) {
+        delete this.state.sessions[candidateKey]
+        stateChanged = true
+        candidate = ''
+      }
+      return candidate
     }
-    if (kind === 'openclaw' && stored && !stored.startsWith('agent:main:desktop-')) {
-      delete this.state.sessions[key]
-      this.save()
-      stored = ''
+
+    const currentLegacyKey = threadRootId
+      ? `${legacyPrefix}${cleanText(threadRootId, 100)}`
+      : ''
+    const legacyKeys = Object.keys(this.state.sessions).filter(candidate => (
+      candidate.startsWith(legacyPrefix)
+    ))
+    const legacyActivity = legacyKey => {
+      const rootId = legacyKey.slice(legacyPrefix.length)
+      for (let index = this.state.messages.length - 1; index >= 0; index -= 1) {
+        const message = this.state.messages[index]
+        if (message.groupId !== group.id) continue
+        if (message.id === rootId || message.threadRootId === rootId) return index
+      }
+      return -1
+    }
+    const orderedLegacyKeys = [
+      ...(currentLegacyKey && legacyKeys.includes(currentLegacyKey) ? [currentLegacyKey] : []),
+      ...legacyKeys
+        .filter(candidate => candidate !== currentLegacyKey)
+        .sort((left, right) => (
+          legacyActivity(right) - legacyActivity(left) || left.localeCompare(right)
+        )),
+    ]
+
+    let stored = validStoredRef(key)
+    if (!stored) {
+      for (const legacyKey of orderedLegacyKeys) {
+        const legacyRef = validStoredRef(legacyKey)
+        if (!legacyRef) continue
+        this.state.sessions[key] = legacyRef
+        stateChanged = true
+        stored = legacyRef
+        break
+      }
+    }
+    for (const legacyKey of legacyKeys) {
+      if (!Object.hasOwn(this.state.sessions, legacyKey)) continue
+      delete this.state.sessions[legacyKey]
+      stateChanged = true
     }
     if (!stored && kind === 'openclaw') {
       const groupScope = group.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)
-      const threadScope = threadRootId
-        ? `-${createHash('sha256').update(String(threadRootId)).digest('hex').slice(0, 12)}`
-        : ''
-      const stableId = `roundrelay-${groupScope}${threadScope}-${kind}`
+      const stableId = `roundrelay-${groupScope}-${kind}`
       this.state.sessions[key] = `agent:main:desktop-${stableId}`
-      this.save()
+      stateChanged = true
       stored = this.state.sessions[key]
     }
+    if (stateChanged) this.save()
     return stored
   }
 
@@ -670,26 +761,62 @@ class LocalWorkspace extends EventEmitter {
     this.save()
   }
 
-  recentTranscript(groupId, threadRootId = '') {
-    const root = cleanText(threadRootId, 100)
-    return this.state.messages
-      .filter(message => message.groupId === groupId && (
-        root
-          ? String(message.id) === root || String(message.threadRootId || '') === root
-          : !message.threadRootId
-      ))
-      .slice(-16)
-      .map((message) => {
-        const attachmentNote = message.attachments?.length
-          ? `[Attached images: ${message.attachments.map(item => item.name).join(', ')}]`
-          : ''
-        return `${message.senderName}: ${[message.content, attachmentNote].filter(Boolean).join(' ')}`
-      })
-      .join('\n')
-      .slice(-12000)
+  promptMessageText(message, limit = 20000) {
+    const attachmentNote = message.attachments?.length
+      ? `[Attached images: ${message.attachments.map(item => item.name).join(', ')}]`
+      : ''
+    return cleanText([message.content, attachmentNote].filter(Boolean).join(' '), limit)
   }
 
-  promptFor(group, kind, mode, threadRootId = '', skillHints = []) {
+  stableUserInstructions(groupId, threadRootId = '') {
+    const userMessages = this.state.messages.filter(message => (
+      message.groupId === groupId && message.role === 'user'
+    ))
+    const selected = [
+      ...userMessages.slice(0, STABLE_USER_TURNS_PER_EDGE),
+      ...userMessages.slice(-STABLE_USER_TURNS_PER_EDGE),
+    ]
+    const currentRoot = cleanText(threadRootId, 100)
+    if (currentRoot) {
+      const rootMessage = userMessages.find(message => message.id === currentRoot)
+      if (rootMessage) selected.push(rootMessage)
+    }
+    const seen = new Set()
+    return selected
+      .filter((message) => {
+        if (seen.has(message.id)) return false
+        seen.add(message.id)
+        return true
+      })
+      .map(message => `- ${this.promptMessageText(message, STABLE_USER_TURN_TEXT_LIMIT)}`)
+      .filter(line => line !== '- ')
+      .join('\n')
+  }
+
+  recentTranscript(groupId, afterAgentKind = '') {
+    let afterIndex = -1
+    if (afterAgentKind) {
+      for (let index = this.state.messages.length - 1; index >= 0; index -= 1) {
+        const message = this.state.messages[index]
+        if (message.groupId === groupId && message.role === 'agent'
+            && message.agentKind === afterAgentKind) {
+          afterIndex = index
+          break
+        }
+      }
+    }
+    return this.state.messages
+      .filter((message, index) => (
+        index > afterIndex && message.groupId === groupId
+          && ['user', 'agent'].includes(message.role)
+      ))
+      .slice(-RECENT_TRANSCRIPT_MESSAGE_LIMIT)
+      .map(message => `${message.senderName}: ${this.promptMessageText(message)}`)
+      .join('\n')
+      .slice(-RECENT_TRANSCRIPT_TEXT_LIMIT)
+  }
+
+  promptFor(group, kind, mode, threadRootId = '', skillHints = [], transcriptAfterKind = '') {
     const label = AGENT_LABELS[kind] || kind
     const instruction = mode === 'auto'
       ? [
@@ -699,10 +826,13 @@ class LocalWorkspace extends EventEmitter {
         ].join('\n')
       : 'Respond directly to the user and account for the other participants\' views. Do not speak for other Agents.'
     return [
-      `You are participating in the local "${group.name || 'RoundRelay group'}" conversation as ${label}. Reply in the language used by the user unless they request another language.`,
+      `You are participating in the local "${group.name || 'Meldwork group'}" conversation as ${label}. Reply in the language used by the user unless they request another language.`,
+      `Group topic: ${cleanText(group.topic, 200) || '(not specified)'}`,
       instruction,
-      'Recent conversation:',
-      this.recentTranscript(group.id, threadRootId),
+      'Stable user instructions and constraints:',
+      this.stableUserInstructions(group.id, threadRootId) || '(none)',
+      'Recent conversation across the group:',
+      this.recentTranscript(group.id, transcriptAfterKind) || '(none)',
       skillHintsPrompt(skillHints),
     ].filter(Boolean).join('\n')
   }
@@ -710,7 +840,12 @@ class LocalWorkspace extends EventEmitter {
   async invokeAgent(group, kind, mode, signal, threadRootId = '', context = {}) {
     const agent = this.detectedAgents.find(item => item.kind === kind && item.available)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
-    const key = this.sessionKey(group.id, kind, threadRootId)
+    const key = this.sessionKey(group.id, kind)
+    const storedSessionRef = String(this.state.sessions[key] || '')
+    const sessionRef = this.sessionRef(
+      group, kind, context.sessionThreadRootId || threadRootId,
+    )
+    const transcriptAfterKind = storedSessionRef && storedSessionRef === sessionRef ? kind : ''
     const startedAt = Date.now()
     const activeRun = this.activeRuns.get(group.id)
     const onProgress = (step) => {
@@ -722,10 +857,12 @@ class LocalWorkspace extends EventEmitter {
     try {
       result = await this.runAgentFn(
         agent,
-        this.promptFor(group, kind, mode, threadRootId, context.skillHints || []),
+        this.promptFor(
+          group, kind, mode, threadRootId, context.skillHints || [], transcriptAfterKind,
+        ),
         group.workdir,
         {
-          sessionRef: this.sessionRef(group, kind, threadRootId),
+          sessionRef,
           onSessionRef: sessionRef => this.persistSessionRef(key, sessionRef),
           signal,
           sandbox: group.allowWrite ? 'workspace-write' : undefined,
@@ -784,141 +921,44 @@ class LocalWorkspace extends EventEmitter {
     })
   }
 
-  async sendMessage(input) {
-    const group = this.getGroup(input.groupId)
-    if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
+  async preflightMessage(targetKinds, input, reservation) {
     const text = cleanText(input.text)
-    const requested = input.targetKinds?.length ? input.targetKinds : group.agentKinds
-    const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
-    if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
-    if (input.skillHints != null && !Array.isArray(input.skillHints)) {
-      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+    const attachments = await this.resolveAttachments(input.attachments || [])
+    if (reservation.signal.aborted || this.shuttingDown) {
+      throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     }
-    const requestedSkillHints = input.skillHints || []
-    if (requestedSkillHints.length > MAX_SKILL_HINTS) throw new Error('LOCAL_SKILL_LIMIT')
-    if (requestedSkillHints.some(skill => !targetKinds.includes(String(skill?.targetKind || '')))) {
-      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+    if (!text && !attachments.length) throw new Error('LOCAL_MESSAGE_REQUIRED')
+    for (const kind of targetKinds) {
+      const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
+      if (attachments.length && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
+      if (attachments.length > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
     }
-    const inputThreadRootId = cleanText(input.threadRootId, 100)
-    const reservation = this.reserveRun(
-      group.id, 'manual', targetKinds, inputThreadRootId,
-    )
-    const promise = (async () => {
-      let controller = null
-      let successCount = 0
-      let runStatus = 'failed'
-      try {
-        const attachments = await this.resolveAttachments(input.attachments || [])
-        if (reservation.signal.aborted || this.shuttingDown) {
-          throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
-        }
-        if (!text && !attachments.length) throw new Error('LOCAL_MESSAGE_REQUIRED')
-        for (const kind of targetKinds) {
-          const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
-          if (attachments.length && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
-          if (attachments.length > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
-        }
 
-        const skillHintsByKind = new Map()
-        for (const kind of targetKinds) {
-          const scoped = requestedSkillHints.filter(skill => skill?.targetKind === kind)
-          const validated = await this.validateSkillSelectionsFn(kind, scoped)
-          if (reservation.signal.aborted || this.shuttingDown) {
-            throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
-          }
-          if (!Array.isArray(validated) || validated.some(skill => skill?.targetKind !== kind)) {
-            throw new Error('LOCAL_SKILL_SELECTION_INVALID')
-          }
-          skillHintsByKind.set(kind, validated)
-        }
-        const skillHints = targetKinds.flatMap(kind => skillHintsByKind.get(kind) || [])
-        controller = this.beginRun(
-          group.id, 'manual', targetKinds, inputThreadRootId, reservation,
-        )
-        if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
-        const userMessage = this.addMessage(
-          group.id,
-          'user',
-          text,
-          '',
-          inputThreadRootId,
-          null,
-          {
-            attachments: attachments.map(({ path: _path, ...metadata }) => metadata),
-            skillHints,
-          },
-        )
-        const threadRootId = inputThreadRootId
-          || (group.agentKinds.length > 1 ? userMessage.id : '')
-        controller.threadRootId = threadRootId
-        for (const kind of targetKinds) {
-          if (controller.signal.aborted) break
-          controller.currentKind = kind
-          controller.progress = []
-          this.emitChanged()
-          try {
-            await this.invokeAgent(group, kind, 'manual', controller.signal, threadRootId, {
-              skillHints: skillHintsByKind.get(kind) || [],
-              attachments: attachments.map(attachment => attachment.path),
-            })
-            successCount += 1
-          } catch (error) {
-            if (controller.signal.aborted) break
-            this.recordAgentFailure(group.id, kind, error, threadRootId)
-          }
-          controller.completedKinds.push(kind)
-          controller.currentKind = ''
-          controller.progress = []
-          this.emitChanged()
-        }
-        if (controller.signal.aborted) {
-          runStatus = 'stopped'
-          return this.snapshot()
-        }
-        if (!successCount) {
-          return this.snapshot()
-        }
-        runStatus = successCount === targetKinds.length ? 'completed' : 'partial'
-        return this.snapshot()
-      } finally {
-        if (controller) {
-          controller.currentKind = ''
-          controller.progress = []
-          if (controller.signal.aborted) runStatus = 'stopped'
-          else if (runStatus === 'failed' && successCount > 0) runStatus = 'partial'
-          this.finishRun(group.id, controller, runStatus)
-        } else {
-          this.releasePreparation(group.id, reservation)
-        }
+    const requestedSkillHints = input.skillHints || []
+    const skillHintsByKind = new Map()
+    for (const kind of targetKinds) {
+      const scoped = requestedSkillHints.filter(skill => skill?.targetKind === kind)
+      const validated = await this.validateSkillSelectionsFn(kind, scoped)
+      if (reservation.signal.aborted || this.shuttingDown) {
+        throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
       }
-    })()
-    reservation.promise = promise
-    return await promise
+      if (!Array.isArray(validated) || validated.some(skill => skill?.targetKind !== kind)) {
+        throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+      }
+      skillHintsByKind.set(kind, validated)
+    }
+    return {
+      text,
+      attachments,
+      skillHintsByKind,
+      skillHints: targetKinds.flatMap(kind => skillHintsByKind.get(kind) || []),
+    }
   }
 
-  startAuto(input) {
-    const group = this.getGroup(input.groupId)
-    if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
-    if (group.agentKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
-    const requestedRounds = Number(input.maxRounds ?? input.maxTurns)
-    const maxRounds = Math.max(1, Math.min(12, requestedRounds || 3))
-    const latestRoot = this.state.messages.findLast(message => (
-      message.groupId === group.id && message.role === 'user' && !message.threadRootId
-    ))
-    const threadRootId = cleanText(input.threadRootId, 100) || latestRoot?.id || ''
-    if (!threadRootId) throw new Error('LOCAL_AUTO_THREAD_REQUIRED')
-    const rootMessage = this.state.messages.find(message => (
-      message.id === threadRootId && message.groupId === group.id && message.role === 'user'
-    ))
-    const rootAttachmentCount = Array.isArray(rootMessage?.attachments)
-      ? rootMessage.attachments.length
-      : 0
-    for (const kind of group.agentKinds) {
-      const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
-      if (rootAttachmentCount && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
-      if (rootAttachmentCount > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
-    }
-    const controller = this.beginRun(group.id, 'auto', group.agentKinds, threadRootId)
+  startAutoRunner(group, threadRootId, maxRounds, reservation = null, preparedContext = null) {
+    const controller = this.beginRun(
+      group.id, 'auto', group.agentKinds, threadRootId, reservation, maxRounds,
+    )
     const timeout = setTimeout(() => {
       if (controller.signal.aborted) return
       controller.stopReason = 'timeout'
@@ -928,24 +968,31 @@ class LocalWorkspace extends EventEmitter {
       let runStatus = 'failed'
       let totalSuccesses = 0
       try {
-        const rootAttachments = await this.resolveAttachments(rootMessage?.attachments || [])
-        const rootSkillsByKind = new Map()
-        for (const kind of controller.targetKinds) {
-          const scoped = (rootMessage?.skillHints || []).filter(skill => skill.targetKind === kind)
-          if (!scoped.length) {
-            rootSkillsByKind.set(kind, [])
-            continue
-          }
-          try {
-            const validated = await this.validateSkillSelectionsFn(kind, scoped)
-            rootSkillsByKind.set(
-              kind,
-              Array.isArray(validated) && validated.every(skill => skill?.targetKind === kind)
-                ? validated
-                : [],
-            )
-          } catch {
-            rootSkillsByKind.set(kind, [])
+        let rootAttachments = preparedContext?.attachments
+        let rootSkillsByKind = preparedContext?.skillHintsByKind
+        if (!rootAttachments || !rootSkillsByKind) {
+          const rootMessage = this.state.messages.find(message => (
+            message.id === threadRootId && message.groupId === group.id && message.role === 'user'
+          ))
+          rootAttachments = await this.resolveAttachments(rootMessage?.attachments || [])
+          rootSkillsByKind = new Map()
+          for (const kind of controller.targetKinds) {
+            const scoped = (rootMessage?.skillHints || []).filter(skill => skill.targetKind === kind)
+            if (!scoped.length) {
+              rootSkillsByKind.set(kind, [])
+              continue
+            }
+            try {
+              const validated = await this.validateSkillSelectionsFn(kind, scoped)
+              rootSkillsByKind.set(
+                kind,
+                Array.isArray(validated) && validated.every(skill => skill?.targetKind === kind)
+                  ? validated
+                  : [],
+              )
+            } catch {
+              rootSkillsByKind.set(kind, [])
+            }
           }
         }
         const attachmentRecipients = new Set()
@@ -954,7 +1001,10 @@ class LocalWorkspace extends EventEmitter {
         for (let round = 0; round < maxRounds && !controller.signal.aborted; round += 1) {
           let agreements = 0
           let successes = 0
+          controller.currentRound = round + 1
           controller.completedKinds = []
+          controller.failedKinds = []
+          this.emitChanged()
           for (const kind of controller.targetKinds) {
             if (controller.signal.aborted) break
             controller.currentKind = kind
@@ -978,6 +1028,7 @@ class LocalWorkspace extends EventEmitter {
               this.recordAgentFailure(
                 group.id, kind, error, threadRootId, reportedFailures,
               )
+              controller.failedKinds.push(kind)
             }
             controller.completedKinds.push(kind)
             controller.currentKind = ''
@@ -1045,6 +1096,165 @@ class LocalWorkspace extends EventEmitter {
       }
     })()
     controller.promise = promise
+    return controller
+  }
+
+  async sendMessage(input) {
+    const group = this.getGroup(input.groupId)
+    if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
+    const mode = input.mode === 'auto' && group.conversationType !== 'direct'
+      ? 'auto'
+      : 'manual'
+    if (mode === 'auto' && group.agentKinds.length < 2) {
+      throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    }
+    const requested = mode === 'auto'
+      ? group.agentKinds
+      : (input.targetKinds?.length ? input.targetKinds : group.agentKinds)
+    const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
+    if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    if (mode === 'auto' && targetKinds.some(kind => (
+      !this.detectedAgents.some(agent => agent.kind === kind && agent.available)
+    ))) {
+      throw new Error('LOCAL_AGENT_UNAVAILABLE')
+    }
+    if (input.skillHints != null && !Array.isArray(input.skillHints)) {
+      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+    }
+    const requestedSkillHints = input.skillHints || []
+    if (requestedSkillHints.length > MAX_SKILL_HINTS) throw new Error('LOCAL_SKILL_LIMIT')
+    if (requestedSkillHints.some(skill => !targetKinds.includes(String(skill?.targetKind || '')))) {
+      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+    }
+    const maxRounds = mode === 'auto'
+      ? normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
+      : 0
+    const requestedThreadRootId = mode === 'manual' ? cleanText(input.threadRootId, 100) : ''
+    const reservation = this.reserveRun(group.id, mode, targetKinds, '', maxRounds)
+    const promise = (async () => {
+      let controller = null
+      let autoStarted = false
+      let successCount = 0
+      let runStatus = 'failed'
+      try {
+        const prepared = await this.preflightMessage(targetKinds, input, reservation)
+        if (mode === 'auto') {
+          const previousUpdatedAt = group.updatedAt
+          const userMessage = this.addMessage(
+            group.id,
+            'user',
+            prepared.text,
+            '',
+            '',
+            null,
+            {
+              attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
+              skillHints: prepared.skillHints,
+            },
+          )
+          try {
+            controller = this.startAutoRunner(
+              group, userMessage.id, maxRounds, reservation, prepared,
+            )
+          } catch (error) {
+            const messageIndex = this.state.messages.findIndex(message => message === userMessage)
+            if (messageIndex >= 0) {
+              this.state.messages.splice(messageIndex, 1)
+              group.updatedAt = previousUpdatedAt
+              this.save()
+              try { this.emitChanged() } catch { /* preserve the run-start failure */ }
+            }
+            throw error
+          }
+          autoStarted = true
+          return { started: true, maxRounds, threadRootId: userMessage.id }
+        }
+
+        controller = this.beginRun(group.id, 'manual', targetKinds, '', reservation)
+        if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+        const userMessage = this.addMessage(
+          group.id,
+          'user',
+          prepared.text,
+          '',
+          '',
+          null,
+          {
+            attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
+            skillHints: prepared.skillHints,
+          },
+        )
+        const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
+        controller.threadRootId = threadRootId
+        for (const kind of targetKinds) {
+          if (controller.signal.aborted) break
+          controller.currentKind = kind
+          controller.progress = []
+          this.emitChanged()
+          try {
+            await this.invokeAgent(group, kind, 'manual', controller.signal, threadRootId, {
+              skillHints: prepared.skillHintsByKind.get(kind) || [],
+              attachments: prepared.attachments.map(attachment => attachment.path),
+              sessionThreadRootId: requestedThreadRootId || threadRootId,
+            })
+            successCount += 1
+          } catch (error) {
+            if (controller.signal.aborted) break
+            this.recordAgentFailure(group.id, kind, error, threadRootId)
+            controller.failedKinds.push(kind)
+          }
+          controller.completedKinds.push(kind)
+          controller.currentKind = ''
+          controller.progress = []
+          this.emitChanged()
+        }
+        if (controller.signal.aborted) {
+          runStatus = 'stopped'
+          return this.snapshot()
+        }
+        if (!successCount) return this.snapshot()
+        runStatus = successCount === targetKinds.length ? 'completed' : 'partial'
+        return this.snapshot()
+      } finally {
+        if (mode === 'auto') {
+          if (!autoStarted) this.releasePreparation(group.id, reservation)
+        } else if (controller) {
+          controller.currentKind = ''
+          controller.progress = []
+          if (controller.signal.aborted) runStatus = 'stopped'
+          else if (runStatus === 'failed' && successCount > 0) runStatus = 'partial'
+          this.finishRun(group.id, controller, runStatus)
+        } else {
+          this.releasePreparation(group.id, reservation)
+        }
+      }
+    })()
+    reservation.promise = promise
+    return await promise
+  }
+
+  startAuto(input) {
+    const group = this.getGroup(input.groupId)
+    if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
+    if (group.agentKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    const maxRounds = normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
+    const latestRoot = this.state.messages.findLast(message => (
+      message.groupId === group.id && message.role === 'user' && !message.threadRootId
+    ))
+    const threadRootId = cleanText(input.threadRootId, 100) || latestRoot?.id || ''
+    if (!threadRootId) throw new Error('LOCAL_AUTO_THREAD_REQUIRED')
+    const rootMessage = this.state.messages.find(message => (
+      message.id === threadRootId && message.groupId === group.id && message.role === 'user'
+    ))
+    const rootAttachmentCount = Array.isArray(rootMessage?.attachments)
+      ? rootMessage.attachments.length
+      : 0
+    for (const kind of group.agentKinds) {
+      const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
+      if (rootAttachmentCount && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
+      if (rootAttachmentCount > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
+    }
+    this.startAutoRunner(group, threadRootId, maxRounds)
     return { started: true, maxRounds }
   }
 

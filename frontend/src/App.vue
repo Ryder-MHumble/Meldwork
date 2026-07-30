@@ -1,13 +1,13 @@
 <template>
-  <main class="app-shell" :data-theme="theme">
+  <main class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }" :data-theme="theme">
     <section v-if="booting" class="boot-state" aria-live="polite">
-      <img class="boot-logo" :src="productLogo" alt="RoundRelay" />
+      <img class="boot-logo" :src="productAppIcon" alt="Meldwork" />
       <p>{{ t('app.loading') }}</p>
       <div class="skeleton-line" />
     </section>
 
     <section v-else-if="bridgeMissing" class="bridge-state">
-      <img class="bridge-logo" :src="productLogo" alt="RoundRelay" />
+      <img class="bridge-logo" :src="productAppIcon" alt="Meldwork" />
       <h1>{{ t('app.desktopRequired') }}</h1>
       <p>{{ t('app.desktopRequiredDetail') }}</p>
     </section>
@@ -15,41 +15,32 @@
     <template v-else>
       <aside
         class="sidebar"
+        :class="{ collapsed: sidebarCollapsed }"
         :inert="blockingOverlayOpen ? '' : undefined"
         :aria-hidden="blockingOverlayOpen ? 'true' : undefined"
       >
         <header class="brand-row">
-          <button class="brand-button" type="button" @click="goHome">
-            <img :src="productLogo" alt="" />
+          <button class="brand-button" type="button" title="Meldwork" @click="goHome">
+            <img :src="productMark" alt="" />
             <span>
-              <strong>RoundRelay</strong>
+              <strong>Meldwork</strong>
               <small>{{ t('app.localWorkspace') }}</small>
             </span>
           </button>
-          <div class="brand-actions">
-            <button
-              class="icon-button"
-              type="button"
-              :title="t('common.languageTarget')"
-              :aria-label="t('common.language')"
-              @click="toggleLocale"
-            >
-              <LanguageOutline />
-            </button>
-            <button
-              class="icon-button"
-              type="button"
-              :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-              :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-              @click="toggleTheme"
-            >
-              <SunnyOutline v-if="theme === 'dark'" />
-              <MoonOutline v-else />
-            </button>
-          </div>
+          <button
+            class="icon-button sidebar-toggle"
+            type="button"
+            :title="sidebarCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
+            :aria-label="sidebarCollapsed ? t('nav.expandSidebar') : t('nav.collapseSidebar')"
+            :aria-expanded="sidebarCollapsed ? 'false' : 'true'"
+            @click="sidebarCollapsed = !sidebarCollapsed"
+          >
+            <ChevronForwardOutline v-if="sidebarCollapsed" />
+            <ChevronBackOutline v-else />
+          </button>
         </header>
 
-        <button class="new-group-button" type="button" @click="openNewGroup">
+        <button class="new-group-button" type="button" :title="t('nav.newGroup')" @click="openNewGroup">
           <AddOutline />
           <span>{{ t('nav.newGroup') }}</span>
         </button>
@@ -65,6 +56,7 @@
                 <button
                   class="sidebar-agent-main"
                   type="button"
+                  :title="agent.label"
                   :disabled="isDirectCreationPending(agent.kind)"
                   @click="openDirect(agent)"
                 >
@@ -138,7 +130,7 @@
             <p v-if="!sidebarAgents.length" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
           </section>
 
-          <section class="nav-section">
+          <section class="nav-section group-nav-section">
             <div class="nav-heading">
               <span>{{ t('nav.groups') }}</span>
               <PeopleOutline />
@@ -162,12 +154,12 @@
         </nav>
 
         <footer class="sidebar-footer">
-          <button type="button" @click="openAgentManager">
+          <button type="button" :title="t('nav.agents')" @click="openAgentManager">
             <TerminalOutline />
             <span>{{ t('nav.agents') }}</span>
             <span class="footer-count">{{ readyCount }}/{{ AGENTS.length }}</span>
           </button>
-          <button type="button" @click="openProvider">
+          <button type="button" :title="t('nav.provider')" @click="openProvider">
             <KeyOutline />
             <span>{{ t('nav.provider') }}</span>
             <CheckmarkCircleOutline v-if="providerStatus.configured" class="footer-status ready" />
@@ -196,6 +188,27 @@
                 <SettingsOutline />
                 <span>{{ t('home.manage') }}</span>
               </button>
+              <div class="workspace-preferences">
+                <button
+                  class="icon-button"
+                  type="button"
+                  :title="t('common.languageTarget')"
+                  :aria-label="t('common.language')"
+                  @click="toggleLocale"
+                >
+                  <LanguageOutline />
+                </button>
+                <button
+                  class="icon-button"
+                  type="button"
+                  :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
+                  :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
+                  @click="toggleTheme"
+                >
+                  <SunnyOutline v-if="theme === 'dark'" />
+                  <MoonOutline v-else />
+                </button>
+              </div>
             </div>
           </header>
 
@@ -252,7 +265,7 @@
         </section>
 
         <section v-else class="conversation-pane">
-          <header class="conversation-header">
+          <header class="conversation-header" :class="{ 'editing-title': inlineTitleEditing }">
             <div class="conversation-identity">
               <div v-if="activeGroup.conversationType === 'direct'" class="conversation-avatar single">
                 <img :src="agentLogo(activeGroup.directAgentKind)" alt="" />
@@ -265,8 +278,49 @@
                   alt=""
                 />
               </div>
-              <div>
-                <h1>{{ groupName(activeGroup) }}</h1>
+              <div class="conversation-title-block">
+                <form v-if="inlineTitleEditing" class="inline-title-form" @submit.prevent="saveInlineTitle">
+                  <input
+                    ref="inlineTitleInput"
+                    v-model="inlineTitleDraft"
+                    :aria-label="t('settings.conversationName')"
+                    :placeholder="groupName(activeGroup)"
+                    :disabled="saving"
+                    maxlength="60"
+                    @keydown.esc.stop.prevent="cancelInlineTitleEdit"
+                  />
+                  <button
+                    type="submit"
+                    :title="t('common.save')"
+                    :aria-label="t('common.save')"
+                    :disabled="saving"
+                  >
+                    <CheckmarkCircleOutline />
+                  </button>
+                  <button
+                    type="button"
+                    :title="t('common.cancel')"
+                    :aria-label="t('common.cancel')"
+                    :disabled="saving"
+                    @click="cancelInlineTitleEdit"
+                  >
+                    <CloseOutline />
+                  </button>
+                </form>
+                <h1 v-else>
+                  <button
+                    ref="inlineTitleButton"
+                    class="conversation-title-button"
+                    type="button"
+                    :title="t('conversation.renameTitle')"
+                    :aria-label="t('conversation.renameTitle')"
+                    :disabled="Boolean(activeRun) || sending || saving"
+                    @click="beginInlineTitleEdit"
+                  >
+                    <span>{{ groupName(activeGroup) }}</span>
+                    <PencilOutline />
+                  </button>
+                </h1>
                 <p class="conversation-capabilities">
                   <span>{{ activeGroup.conversationType === 'direct' ? t('conversation.direct') : t('conversation.members', { count: activeGroup.agentKinds.length }) }}</span>
                   <span class="meta-separator">/</span>
@@ -296,17 +350,6 @@
                 <span>{{ compactPath(activeGroup.workdir) }}</span>
               </button>
               <button
-                v-if="activeGroup.conversationType === 'direct'"
-                class="icon-button"
-                type="button"
-                :title="t('nav.renameDirect', { name: groupName(activeGroup) })"
-                :aria-label="t('nav.renameDirect', { name: groupName(activeGroup) })"
-                :disabled="Boolean(activeRun) || sending"
-                @click="openDirectRename(activeGroup)"
-              >
-                <PencilOutline />
-              </button>
-              <button
                 class="icon-button"
                 type="button"
                 :title="t('conversation.settings')"
@@ -316,6 +359,27 @@
               >
                 <SettingsOutline />
               </button>
+              <div class="workspace-preferences">
+                <button
+                  class="icon-button"
+                  type="button"
+                  :title="t('common.languageTarget')"
+                  :aria-label="t('common.language')"
+                  @click="toggleLocale"
+                >
+                  <LanguageOutline />
+                </button>
+                <button
+                  class="icon-button"
+                  type="button"
+                  :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
+                  :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
+                  @click="toggleTheme"
+                >
+                  <SunnyOutline v-if="theme === 'dark'" />
+                  <MoonOutline v-else />
+                </button>
+              </div>
             </div>
           </header>
 
@@ -331,21 +395,43 @@
               <p v-else>{{ t('conversation.emptyGroup') }}</p>
             </section>
 
-            <div v-else class="message-list">
-              <article
-                v-for="message in timelineMessages"
-                :key="message.id"
-                :id="messageElementId(message.id)"
-                class="message-row"
-                :class="[
-                  message.role,
-                  {
-                    'topic-root': isTopicRoot(message),
-                    'topic-reply': Boolean(message.threadRootId),
-                    'active-topic': isActiveRunTopic(message),
-                  },
-                ]"
-              >
+            <div v-else class="message-stage">
+              <nav class="turn-rail" :aria-label="t('conversation.turnRail')">
+                <button
+                  v-for="turn in turnRailItems"
+                  :key="turn.id"
+                  type="button"
+                  :class="{ active: activeTurnRailId === turn.id }"
+                  :data-status="turn.status"
+                  :title="turnRailLabel(turn)"
+                  :aria-label="turnRailLabel(turn)"
+                  :aria-current="activeTurnRailId === turn.id ? 'true' : undefined"
+                  @click="focusTurn(turn.id)"
+                >
+                  <span aria-hidden="true" />
+                  <span class="turn-rail-tooltip" aria-hidden="true">
+                    {{ turnRailLabel(turn) }}
+                  </span>
+                </button>
+              </nav>
+
+              <div class="message-list">
+                <article
+                  v-for="message in timelineMessages"
+                  :key="message.id"
+                  :id="messageElementId(message.id)"
+                  class="message-row"
+                  :data-agent-kind="message.role === 'agent' ? message.agentKind : undefined"
+                  :class="[
+                    message.role,
+                    {
+                      'topic-root': isTopicRoot(message),
+                      'topic-reply': Boolean(messageThreadRootId(message)),
+                      'active-topic': isActiveRunTopic(message),
+                      copied: isMessageCopied(message.id),
+                    },
+                  ]"
+                >
                 <template v-if="message.role === 'system'">
                   <div class="system-message">
                     <WarningOutline />
@@ -385,11 +471,30 @@
                         @click="toggleTopic(message.id)"
                       >
                         <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
-                        {{ t('conversation.topicReplies', { count: topicReplyCount(message.id) }) }}
+                        {{ topicReplyLabel(topicReplyCount(message.id)) }}
+                      </button>
+                      <button
+                        v-if="message.content"
+                        class="message-copy-button"
+                        type="button"
+                        :title="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                        :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                        @click.stop="copyMessageContent(message, $event, true)"
+                        @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                        @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                      >
+                        <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                        <CopyOutline v-else />
                       </button>
                     </div>
                     <template v-if="message.role === 'agent'">
-                      <MarkdownMessage :content="message.content" />
+                      <div
+                        class="message-copy-surface"
+                        :class="{ copied: isMessageCopied(message.id) }"
+                        @click="copyMessageContent(message, $event)"
+                      >
+                        <MarkdownMessage :content="message.content" />
+                      </div>
                       <details v-if="messageExecutionSteps(message).length" class="execution-details">
                         <summary>
                           <TerminalOutline />
@@ -406,7 +511,14 @@
                       </details>
                     </template>
                     <template v-else>
-                      <div v-if="message.content" class="message-content plain-message">{{ message.content }}</div>
+                      <div
+                        v-if="message.content"
+                        class="message-content plain-message message-copy-surface"
+                        :class="{ copied: isMessageCopied(message.id) }"
+                        @click="copyMessageContent(message, $event)"
+                      >
+                        {{ message.content }}
+                      </div>
                       <div v-if="messageSkills(message).length" class="message-skill-list">
                         <span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
                           @{{ skill.name || skill.slug }}
@@ -436,82 +548,74 @@
                 </template>
               </article>
 
-              <section
-                v-if="activeRun"
-                class="run-status-panel"
-                :class="activeGroup.conversationType === 'direct' ? 'direct' : 'group'"
-                aria-live="polite"
-              >
-                <header class="run-status-header">
-                  <div v-if="activeGroup.conversationType === 'direct'" class="direct-run-indicator" aria-hidden="true">
-                    <img :src="agentLogo(activeRun.currentKind || activeGroup.directAgentKind)" alt="" />
-                    <div class="typing-bars"><span /><span /><span /></div>
-                  </div>
-                  <div v-else class="relay-run-indicator" aria-hidden="true">
-                    <img
-                      v-for="kind in runTargetKinds.slice(0, 4)"
+                <section
+                  v-if="activeRun"
+                  class="run-status-panel"
+                  :class="activeGroup.conversationType === 'direct' ? 'direct' : 'group'"
+                  aria-live="polite"
+                >
+                  <header class="run-status-header">
+                    <div v-if="activeGroup.conversationType === 'direct'" class="direct-run-indicator" aria-hidden="true">
+                      <img :src="agentLogo(activeRun.currentKind || activeGroup.directAgentKind)" alt="" />
+                      <div class="typing-bars"><span /><span /><span /></div>
+                    </div>
+                    <div v-else class="relay-run-indicator" aria-hidden="true">
+                      <img
+                        v-for="kind in runTargetKinds.slice(0, 4)"
+                        :key="kind"
+                        :src="agentLogo(kind)"
+                        alt=""
+                        :class="{
+                          current: runAgentStatus(kind) === 'running',
+                          completed: runAgentStatus(kind) === 'completed',
+                          failed: runAgentStatus(kind) === 'failed',
+                        }"
+                      />
+                    </div>
+                    <div>
+                      <strong>{{ activeRunLabel }}</strong>
+                      <span v-if="activeRunTopicRootId">{{ t('conversation.activeTopic') }}</span>
+                      <span v-if="runRoundProgress" class="run-round-progress">
+                        {{ t('run.roundProgress', runRoundProgress) }}
+                      </span>
+                    </div>
+                  </header>
+                  <div
+                    v-if="activeGroup.conversationType !== 'direct'"
+                    class="run-agent-list"
+                    :aria-label="t('run.agents')"
+                  >
+                    <div
+                      v-for="(kind, index) in runTargetKinds"
                       :key="kind"
-                      :src="agentLogo(kind)"
-                      alt=""
-                      :class="{
-                        current: activeRun.currentKind === kind,
-                        completed: runCompletedKinds.includes(kind),
-                      }"
-                    />
+                      class="run-agent-row"
+                      :data-status="runAgentStatus(kind)"
+                      :style="{ '--reveal-index': index }"
+                    >
+                      <img :src="agentLogo(kind)" alt="" />
+                      <strong>{{ agentLabel(kind) }}</strong>
+                      <small :class="runAgentStatus(kind)">{{ runStatusLabel(runAgentStatus(kind)) }}</small>
+                    </div>
                   </div>
-                  <div>
-                    <strong>{{ activeRunLabel }}</strong>
-                    <span v-if="activeRun.threadRootId">{{ t('conversation.activeTopic') }}</span>
-                  </div>
-                </header>
-                <div class="run-progress-summary">
-                  <span>
-                    <small>{{ t('run.current') }}</small>
-                    <strong>{{ runCurrentLabel }}</strong>
-                  </span>
-                  <span>
-                    <small>{{ t('run.queued') }}</small>
-                    <strong>{{ runQueuedCount }}</strong>
-                  </span>
-                  <span>
-                    <small>{{ t('run.completed') }}</small>
-                    <strong>{{ runCompletedKinds.length }}/{{ runTargetKinds.length }}</strong>
-                  </span>
-                </div>
-                <details v-if="activeRunProgress.length" class="execution-details run-progress-details">
-                  <summary>
-                    <TerminalOutline />
-                    <span>{{ t('run.progress') }}</span>
-                    <small>{{ activeRunProgress.length }}</small>
-                  </summary>
-                  <ol>
-                    <li v-for="(step, index) in activeRunProgress" :key="`${step.title}-${index}`">
-                      <span>{{ localizedStepTitle(step, index) }}</span>
-                      <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
-                    </li>
-                  </ol>
-                </details>
-              </section>
+                  <details v-if="activeRunProgress.length" class="execution-details run-progress-details">
+                    <summary>
+                      <TerminalOutline />
+                      <span>{{ t('run.progress') }}</span>
+                      <small>{{ activeRunProgress.length }}</small>
+                    </summary>
+                    <ol>
+                      <li v-for="(step, index) in activeRunProgress" :key="`${step.title}-${index}`">
+                        <span>{{ localizedStepTitle(step, index) }}</span>
+                        <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
+                      </li>
+                    </ol>
+                  </details>
+                </section>
+              </div>
             </div>
           </div>
 
           <footer class="composer-zone">
-            <div v-if="activeGroup.conversationType !== 'direct'" class="target-row">
-              <span>{{ t('composer.targets') }}</span>
-              <button
-                v-for="kind in activeGroup.agentKinds"
-                :key="kind"
-                class="target-chip"
-                :class="{ selected: targetKinds.includes(kind) }"
-                type="button"
-                :disabled="Boolean(activeRun) || sending"
-                @click="toggleTarget(kind)"
-              >
-                <img :src="agentLogo(kind)" alt="" />
-                {{ agentLabel(kind) }}
-              </button>
-            </div>
-
             <div class="composer-shell">
               <section
                 v-if="skillMenuOpen"
@@ -548,6 +652,80 @@
               </section>
 
               <div class="composer-box">
+                <div v-if="activeGroup.conversationType !== 'direct'" class="composer-context-row">
+                  <div class="mode-segmented" role="group" :aria-label="t('composer.responseMode')">
+                    <button
+                      type="button"
+                      data-mode="manual"
+                      :class="{ active: discussionMode === 'manual' }"
+                      :aria-pressed="discussionMode === 'manual'"
+                      :disabled="Boolean(activeRun) || sending"
+                      @click="discussionMode = 'manual'"
+                    >
+                      {{ t('composer.manual') }}
+                    </button>
+                    <button
+                      type="button"
+                      data-mode="auto"
+                      :class="{ active: discussionMode === 'auto' }"
+                      :aria-pressed="discussionMode === 'auto'"
+                      :disabled="Boolean(activeRun) || sending"
+                      @click="discussionMode = 'auto'"
+                    >
+                      {{ t('composer.auto') }}
+                    </button>
+                  </div>
+
+                  <div class="target-row">
+                    <span>{{ t('composer.targets') }}</span>
+                    <div class="target-avatar-stack" role="group" :aria-label="t('composer.targets')">
+                      <button
+                        v-for="kind in activeGroup.agentKinds"
+                        :key="kind"
+                        class="target-chip"
+                        :class="{ selected: isComposerTargetSelected(kind) }"
+                        type="button"
+                        :title="agentLabel(kind)"
+                        :aria-label="discussionMode === 'auto'
+                          ? t('composer.autoTarget', { agent: agentLabel(kind) })
+                          : t(isComposerTargetSelected(kind) ? 'composer.removeTarget' : 'composer.addTarget', { agent: agentLabel(kind) })"
+                        :aria-pressed="isComposerTargetSelected(kind)"
+                        :disabled="Boolean(activeRun) || sending || discussionMode === 'auto'"
+                        @click="toggleTarget(kind)"
+                      >
+                        <img :src="agentLogo(kind)" alt="" />
+                        <span class="visually-hidden">{{ agentLabel(kind) }}</span>
+                        <CheckmarkCircleOutline v-if="isComposerTargetSelected(kind)" class="target-selected-mark" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div v-if="discussionMode === 'auto'" class="round-stepper">
+                    <span>{{ t('composer.maxRounds') }}</span>
+                    <button
+                      type="button"
+                      class="round-stepper-decrease"
+                      :title="t('composer.decreaseRounds')"
+                      :aria-label="t('composer.decreaseRounds')"
+                      :disabled="Boolean(activeRun) || sending || maxRounds <= 1"
+                      @click="adjustMaxRounds(-1)"
+                    >
+                      <RemoveOutline />
+                    </button>
+                    <output aria-live="polite">{{ t('composer.autoRounds', { count: maxRounds }) }}</output>
+                    <button
+                      type="button"
+                      class="round-stepper-increase"
+                      :title="t('composer.increaseRounds')"
+                      :aria-label="t('composer.increaseRounds')"
+                      :disabled="Boolean(activeRun) || sending || maxRounds >= 10"
+                      @click="adjustMaxRounds(1)"
+                    >
+                      <AddOutline />
+                    </button>
+                  </div>
+                </div>
+
                 <div v-if="composerAttachments.length" class="composer-attachment-list">
                   <article v-for="attachment in composerAttachments" :key="attachment.id" class="composer-attachment">
                     <img :src="attachment.previewDataUrl" :alt="attachment.name" />
@@ -619,29 +797,14 @@
                   </div>
 
                   <div class="composer-run-actions">
-                    <div v-if="activeGroup.agentKinds.length >= 2" class="auto-controls">
-                      <select v-model.number="maxRounds" :disabled="Boolean(activeRun) || sending" :aria-label="t('composer.auto')">
-                        <option v-for="count in [1, 2, 3, 4, 6]" :key="count" :value="count">
-                          {{ t('composer.autoRounds', { count }) }}
-                        </option>
-                      </select>
-                      <button
-                        class="secondary-button compact"
-                        type="button"
-                        :disabled="Boolean(activeRun) || sending"
-                        @click="startAutoDiscussion"
-                      >
-                        <PlayOutline />
-                        {{ t('composer.auto') }}
-                      </button>
-                    </div>
                     <button v-if="activeRun" class="stop-button" type="button" @click="stopRun">
                       <StopCircleOutline />
                       {{ t('composer.stop') }}
                     </button>
                     <button v-else class="send-button" type="button" :disabled="!canSendMessage || sending" @click="sendMessage">
-                      <SendOutline />
-                      <span>{{ t('composer.send') }}</span>
+                      <PlayOutline v-if="composerMode === 'auto'" />
+                      <SendOutline v-else />
+                      <span>{{ sendButtonLabel }}</span>
                     </button>
                   </div>
                 </div>
@@ -702,10 +865,18 @@
                 <ChevronForwardOutline />
               </button>
             </div>
-            <button class="primary-button onboarding-primary" type="button" :disabled="onboardingDetecting" @click="completeOnboarding">
-              <RefreshOutline v-if="onboardingDetecting" class="spinning" />
-              <CheckmarkCircleOutline v-else />
-              {{ onboardingDetecting ? t('onboarding.detecting') : t('onboarding.start') }}
+            <button
+              class="primary-button onboarding-primary"
+              type="button"
+              :disabled="onboardingOnLastSlide && onboardingDetecting"
+              @click="advanceOnboarding"
+            >
+              <RefreshOutline v-if="onboardingOnLastSlide && onboardingDetecting" class="spinning" />
+              <CheckmarkCircleOutline v-else-if="onboardingOnLastSlide" />
+              <ChevronForwardOutline v-else />
+              {{ onboardingOnLastSlide
+                ? (onboardingDetecting ? t('onboarding.detecting') : t('onboarding.start'))
+                : t('onboarding.continue') }}
             </button>
           </footer>
         </section>
@@ -991,6 +1162,7 @@ import {
   ChevronForwardOutline,
   CloseCircleOutline,
   CloseOutline,
+  CopyOutline,
   DownloadOutline,
   FolderOpenOutline,
   KeyOutline,
@@ -1001,6 +1173,7 @@ import {
   PersonOutline,
   PlayOutline,
   RefreshOutline,
+  RemoveOutline,
   SendOutline,
   SettingsOutline,
   StopCircleOutline,
@@ -1020,14 +1193,20 @@ const ONBOARDING_KEY = 'roundrelay-onboarding-seen-v1'
 const MAX_SKILLS = 4
 const MAX_ATTACHMENTS = 4
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+const COMPOSER_INPUT_MIN_HEIGHT = 58
+const COMPOSER_INPUT_MAX_HEIGHT = 180
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
+const RUN_FINISHED_STATUSES = new Set([
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
+])
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
-  'codex', 'workbuddy', 'kimi', 'claude', 'qwen', 'gemini', 'opencode',
+  'codex', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini', 'opencode',
 ])
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
 const providerStatus = ref({ provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true })
 const selectedGroupId = ref('')
+const sidebarCollapsed = ref(false)
 const defaultDirectory = ref('')
 const booting = ref(true)
 const bridgeMissing = ref(false)
@@ -1049,7 +1228,8 @@ const composerContextVersion = ref(0)
 const onboardingVisible = ref(false)
 const onboardingIndex = ref(0)
 const onboardingDetecting = ref(false)
-const maxRounds = ref(3)
+const discussionMode = ref('auto')
+const maxRounds = ref(6)
 const formError = ref('')
 const deleteArmed = ref(false)
 const providerRemoveArmed = ref(false)
@@ -1058,15 +1238,23 @@ const focusedAgentKind = ref('')
 const toastMessage = ref('')
 const settingsIntent = ref('settings')
 const agentSkillStats = ref({})
+const inlineTitleEditing = ref(false)
+const inlineTitleDraft = ref('')
+const activeTurnId = ref('')
+const copiedMessageIds = ref(new Set())
 const collapsedTopicIds = ref(new Set())
 const dismissedSystemMessageIds = ref(new Set())
 const finishedDirectGroupIds = ref(new Set())
+const runFinishedTurnStatuses = ref(new Map())
 const messageScroller = ref(null)
 const composerInput = ref(null)
+const inlineTitleInput = ref(null)
+const inlineTitleButton = ref(null)
 const settingsNameInput = ref(null)
 const onboardingDialog = ref(null)
 const modalDialog = ref(null)
 let toastTimer = null
+const copiedMessageTimers = new Map()
 let skillLoadToken = 0
 let agentSkillStatsToken = 0
 let attachmentImportSequence = 0
@@ -1103,10 +1291,11 @@ function initialTheme() {
 }
 
 const theme = ref(initialTheme())
-const productLogo = computed(() => publicAsset('logos/roundrelay.png'))
+const productMark = computed(() => publicAsset('logos/meldwork-mark.svg'))
+const productAppIcon = computed(() => publicAsset('logos/meldwork-app.png'))
 const onboardingSlides = computed(() => [
   {
-    image: publicAsset('onboarding/discover-local-agents.png'),
+    image: publicAsset('onboarding/discover-local-agents-meldwork.png'),
     title: t('onboarding.discoverTitle'),
     body: t('onboarding.discoverBody'),
   },
@@ -1122,6 +1311,8 @@ const onboardingSlides = computed(() => [
   },
 ])
 const onboardingSlide = computed(() => onboardingSlides.value[onboardingIndex.value] || onboardingSlides.value[0])
+const onboardingLastIndex = computed(() => Math.max(0, onboardingSlides.value.length - 1))
+const onboardingOnLastSlide = computed(() => onboardingIndex.value === onboardingLastIndex.value)
 
 const directGroups = computed(() => snapshot.value.groups
   .filter(group => group.conversationType === 'direct')
@@ -1135,14 +1326,42 @@ const activeGroupMemberSignature = computed(() => {
   return group ? [group.id, ...group.agentKinds].join('\u0000') : ''
 })
 const activeMessages = computed(() => snapshot.value.messages.filter(message => message.groupId === selectedGroupId.value))
+const topLevelUserMessages = computed(() => activeMessages.value.filter(
+  message => message.role === 'user' && !message.threadRootId,
+))
+const messageThreadRootIds = computed(() => {
+  const roots = new Map()
+  let latestRootId = ''
+  const direct = activeGroup.value?.conversationType === 'direct'
+  for (const message of activeMessages.value) {
+    if (message.role === 'user' && !message.threadRootId) {
+      latestRootId = message.id
+      continue
+    }
+    if (message.threadRootId) {
+      roots.set(message.id, message.threadRootId)
+      continue
+    }
+    if (direct && latestRootId && (message.role === 'agent' || isAgentFailureMessage(message))) {
+      roots.set(message.id, latestRootId)
+    }
+  }
+  return roots
+})
 const topicReplyCounts = computed(() => {
   const counts = new Map()
   for (const message of activeMessages.value) {
-    if (!message.threadRootId) continue
-    counts.set(message.threadRootId, (counts.get(message.threadRootId) || 0) + 1)
+    if (message.role !== 'agent') continue
+    const rootId = messageThreadRootId(message)
+    if (!rootId) continue
+    counts.set(rootId, (counts.get(rootId) || 0) + 1)
   }
   return counts
 })
+const failedTopicIds = computed(() => new Set(activeMessages.value
+  .filter(isAgentFailureMessage)
+  .map(messageThreadRootId)
+  .filter(Boolean)))
 const messageTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en', {
   hour: '2-digit', minute: '2-digit',
 }))
@@ -1151,18 +1370,21 @@ const navTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value ===
 }))
 const activeRun = computed(() => snapshot.value.runs.find(run => run.groupId === selectedGroupId.value) || null)
 const activeRunProgress = computed(() => Array.isArray(activeRun.value?.progress) ? activeRun.value.progress.slice(0, 8) : [])
-const runTargetKinds = computed(() => [...new Set(activeRun.value?.targetKinds || [])])
+const runTargetKinds = computed(() => {
+  if (!activeRun.value) return []
+  const targets = Array.isArray(activeRun.value.targetKinds) && activeRun.value.targetKinds.length
+    ? activeRun.value.targetKinds
+    : activeGroup.value?.agentKinds || []
+  return [...new Set(targets)]
+})
 const runCompletedKinds = computed(() => {
   const targets = new Set(runTargetKinds.value)
   return [...new Set(activeRun.value?.completedKinds || [])].filter(kind => targets.has(kind))
 })
-const runQueuedCount = computed(() => {
-  const completed = new Set(runCompletedKinds.value)
-  return runTargetKinds.value.filter(kind => kind !== activeRun.value?.currentKind && !completed.has(kind)).length
+const runFailedKinds = computed(() => {
+  const targets = new Set(runTargetKinds.value)
+  return [...new Set(activeRun.value?.failedKinds || [])].filter(kind => targets.has(kind))
 })
-const runCurrentLabel = computed(() => (
-  activeRun.value?.currentKind ? agentLabel(activeRun.value.currentKind) : t('run.status.running')
-))
 const activeRunLabel = computed(() => {
   if (!activeRun.value || !activeGroup.value) return ''
   if (activeGroup.value.conversationType === 'direct') {
@@ -1172,19 +1394,54 @@ const activeRunLabel = computed(() => {
   }
   return t('conversation.groupWorking')
 })
+const activeRunTopicRootId = computed(() => {
+  if (activeRun.value?.threadRootId) return activeRun.value.threadRootId
+  if (activeGroup.value?.conversationType !== 'direct') return ''
+  return topLevelUserMessages.value.at(-1)?.id || ''
+})
+const runRoundProgress = computed(() => {
+  const current = Number(activeRun.value?.currentRound)
+  const max = Number(activeRun.value?.maxRounds)
+  if (!Number.isInteger(current) || current < 1 || !Number.isInteger(max) || max < current) return null
+  return { current, max }
+})
+const turnRailItems = computed(() => topLevelUserMessages.value.map((message) => {
+  const replyCount = topicReplyCount(message.id)
+  const finishedStatus = runFinishedTurnStatus(message.id)
+  return {
+    id: message.id,
+    query: String(message.content || '').trim().replace(/\s+/g, ' ').slice(0, 56) || t('conversation.attachmentTurn'),
+    time: formatTime(message.createdAt),
+    replyCount,
+    status: activeRunTopicRootId.value === message.id
+      ? 'running'
+      : finishedStatus || (replyCount > 0
+        ? 'completed'
+        : failedTopicIds.value.has(message.id) ? 'failed' : 'pending'),
+  }
+}))
+const activeTurnRailId = computed(() => (
+  activeRunTopicRootId.value || activeTurnId.value || turnRailItems.value.at(-1)?.id || ''
+))
 const activeRunTopicSignature = computed(() => {
-  if (!activeRun.value?.threadRootId) return ''
-  return `${activeRun.value.groupId}\u0000${activeRun.value.threadRootId}`
+  if (!activeRunTopicRootId.value) return ''
+  return `${activeRun.value?.groupId || ''}\u0000${activeRunTopicRootId.value}`
 })
 const timelineMessages = computed(() => activeMessages.value.filter((message) => {
   if (dismissedSystemMessageIds.value.has(message.id)) return false
-  return !message.threadRootId || isTopicExpanded(message.threadRootId)
+  const rootId = messageThreadRootId(message)
+  return !rootId || isTopicExpanded(rootId)
 }))
 const composerTargetKinds = computed(() => {
   const group = activeGroup.value
   if (!group) return []
-  return group.conversationType === 'direct' ? [...group.agentKinds] : [...targetKinds.value]
+  if (group.conversationType === 'direct' || discussionMode.value === 'auto') return [...group.agentKinds]
+  return [...targetKinds.value]
 })
+const composerMode = computed(() => (
+  activeGroup.value?.conversationType === 'direct' ? 'manual' : discussionMode.value
+))
+const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
 const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
 const currentSkillTrigger = computed(() => parseSkillTrigger(draft.value))
 const filteredSkillOptions = computed(() => {
@@ -1254,6 +1511,7 @@ const attachmentActionLabel = computed(() => {
 })
 const canSendMessage = computed(() => (
   composerTargetsReady.value
+  && (composerMode.value !== 'auto' || composerTargetKinds.value.length >= 2)
   && !importingAttachment.value
   && composerAttachments.value.length <= composerImageLimit.value
   && Boolean(draft.value.trim() || composerAttachments.value.length)
@@ -1363,6 +1621,18 @@ function topicReplyCount(rootId) {
   return topicReplyCounts.value.get(rootId) || 0
 }
 
+function topicReplyLabel(count) {
+  return t(count === 1 ? 'conversation.topicReply' : 'conversation.topicReplies', { count })
+}
+
+function isAgentFailureMessage(message) {
+  return message?.role === 'system' && message?.system?.key === 'system.agentCallFailed'
+}
+
+function messageThreadRootId(message) {
+  return message?.threadRootId || messageThreadRootIds.value.get(message?.id) || ''
+}
+
 function isTopicRoot(message) {
   return message?.role === 'user' && !message.threadRootId && topicReplyCount(message.id) > 0
 }
@@ -1380,21 +1650,40 @@ function toggleTopic(rootId) {
 
 function topicToggleLabel(rootId) {
   const count = topicReplyCount(rootId)
-  return t(isTopicExpanded(rootId) ? 'conversation.collapseTopic' : 'conversation.expandTopic', { count })
+  return t(isTopicExpanded(rootId) ? 'conversation.collapseTopic' : 'conversation.expandTopic', {
+    replies: topicReplyLabel(count),
+  })
+}
+
+function runFinishedTurnKey(groupId, rootId) {
+  return `${String(groupId || '')}\u0000${String(rootId || '')}`
+}
+
+function runFinishedTurnStatus(rootId) {
+  return runFinishedTurnStatuses.value.get(runFinishedTurnKey(selectedGroupId.value, rootId)) || ''
+}
+
+function turnRailLabel(turn) {
+  return t('conversation.turnRailLabel', {
+    query: turn.query,
+    time: turn.time || t('conversation.timeUnknown'),
+    replies: topicReplyLabel(turn.replyCount),
+    status: runStatusLabel(turn.status),
+  })
 }
 
 function isActiveRunTopic(message) {
-  const rootId = activeRun.value?.threadRootId
-  return Boolean(rootId && (message?.id === rootId || message?.threadRootId === rootId))
+  const rootId = activeRunTopicRootId.value
+  return Boolean(rootId && (message?.id === rootId || messageThreadRootId(message) === rootId))
 }
 
 function messageElementId(id) {
   return `message-${String(id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`
 }
 
-async function focusRunTopic() {
-  const rootId = activeRun.value?.threadRootId
+async function focusTurn(rootId) {
   if (!rootId) return
+  activeTurnId.value = rootId
   if (!isTopicExpanded(rootId)) {
     const next = new Set(collapsedTopicIds.value)
     next.delete(rootId)
@@ -1408,6 +1697,10 @@ async function focusRunTopic() {
       ? 'auto'
       : 'smooth',
   })
+}
+
+async function focusRunTopic() {
+  await focusTurn(activeRunTopicRootId.value)
 }
 
 function messageExecutionSteps(message) {
@@ -1437,15 +1730,35 @@ function localizedStepTitle(step, index) {
 function runStatusLabel(status) {
   const normalized = String(status || '').trim().toLowerCase()
   if (normalized === 'in_progress') return t('run.status.running')
-  const known = ['pending', 'queued', 'running', 'completed', 'succeeded', 'failed', 'skipped']
-  return t(`run.status.${known.includes(normalized) ? normalized : 'unknown'}`)
+  const key = {
+    pending: 'pending',
+    queued: 'queued',
+    running: 'running',
+    completed: 'completed',
+    succeeded: 'succeeded',
+    failed: 'failed',
+    skipped: 'skipped',
+    partial: 'partial',
+    stopped: 'stopped',
+    timeout: 'timeout',
+    'round-limit': 'roundLimit',
+  }[normalized] || 'unknown'
+  return t(`run.status.${key}`)
 }
 
 function runStatusTone(status) {
   const normalized = String(status || '').trim().toLowerCase()
   if (['completed', 'succeeded'].includes(normalized)) return 'completed'
-  if (normalized === 'failed') return 'failed'
+  if (['failed', 'timeout'].includes(normalized)) return 'failed'
+  if (['partial', 'round-limit'].includes(normalized)) return 'partial'
   if (['running', 'in_progress'].includes(normalized)) return 'running'
+  return 'queued'
+}
+
+function runAgentStatus(kind) {
+  if (runFailedKinds.value.includes(kind)) return 'failed'
+  if (activeRun.value?.currentKind === kind) return 'running'
+  if (runCompletedKinds.value.includes(kind)) return 'completed'
   return 'queued'
 }
 
@@ -1464,6 +1777,46 @@ function messageElapsedLabel(message) {
   const elapsed = message?.elapsedMs ?? message?.metadata?.elapsedMs
   const duration = formatElapsed(elapsed)
   return duration ? t('conversation.elapsed', { duration }) : ''
+}
+
+function isMessageCopied(id) {
+  return copiedMessageIds.value.has(id)
+}
+
+function markMessageCopied(id) {
+  if (!id) return
+  copiedMessageIds.value = new Set([...copiedMessageIds.value, id])
+  clearTimeout(copiedMessageTimers.get(id))
+  copiedMessageTimers.set(id, setTimeout(() => {
+    const next = new Set(copiedMessageIds.value)
+    next.delete(id)
+    copiedMessageIds.value = next
+    copiedMessageTimers.delete(id)
+  }, 1500))
+}
+
+function messageCopyBlocked(event) {
+  const target = event?.target
+  if (target instanceof Element && target.closest(
+    'a, button, input, textarea, select, option, form, summary, [contenteditable="true"]',
+  )) return true
+  const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+  return Boolean(selection && String(selection).trim())
+}
+
+async function copyMessageContent(message, event, force = false) {
+  const content = String(message?.content || '')
+  if (!content || (!force && messageCopyBlocked(event))) return
+  if (typeof navigator.clipboard?.writeText !== 'function') {
+    notify(t('conversation.copyFailed'))
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(content)
+    markMessageCopied(message.id)
+  } catch {
+    notify(t('conversation.copyFailed'))
+  }
 }
 
 function isDismissibleSystemWarning(message) {
@@ -1488,6 +1841,14 @@ function onboardingSeen() {
 function completeOnboarding() {
   try { localStorage.setItem(ONBOARDING_KEY, '1') } catch { /* noop */ }
   onboardingVisible.value = false
+}
+
+function advanceOnboarding() {
+  if (!onboardingOnLastSlide.value) {
+    onboardingIndex.value += 1
+    return
+  }
+  if (!onboardingDetecting.value) completeOnboarding()
 }
 
 function moveOnboarding(direction) {
@@ -1586,7 +1947,7 @@ async function discardAttachments(values) {
     const result = await attachmentsApi.value.discard(ids)
     forgetAttachmentPreviews(Array.isArray(result?.discardedIds) ? result.discardedIds : [])
   } catch (error) {
-    console.error('[RoundRelay]', errorCode(error))
+    console.error('[Meldwork]', errorCode(error))
   }
 }
 
@@ -1823,6 +2184,49 @@ async function createGroup() {
   }
 }
 
+function beginInlineTitleEdit() {
+  if (!activeGroup.value || activeRun.value || sending.value || saving.value) return
+  inlineTitleDraft.value = String(activeGroup.value.name || '')
+  inlineTitleEditing.value = true
+  void nextTick(() => {
+    inlineTitleInput.value?.focus()
+    inlineTitleInput.value?.select()
+  })
+}
+
+function restoreInlineTitleFocus() {
+  void nextTick(() => inlineTitleButton.value?.focus())
+}
+
+function cancelInlineTitleEdit(options = {}) {
+  inlineTitleEditing.value = false
+  inlineTitleDraft.value = ''
+  if (options?.restoreFocus !== false) restoreInlineTitleFocus()
+}
+
+async function saveInlineTitle() {
+  const group = activeGroup.value
+  const name = inlineTitleDraft.value.trim()
+  if (!group || !name || activeRun.value || sending.value || saving.value) {
+    if (!name) cancelInlineTitleEdit()
+    return
+  }
+  saving.value = true
+  let saved = false
+  try {
+    await workspace.value.updateGroup(group.id, plainGroupPayload({ ...group, name }))
+    snapshot.value = normalizeSnapshot(await workspace.value.get())
+    inlineTitleEditing.value = false
+    inlineTitleDraft.value = ''
+    saved = true
+  } catch (error) {
+    showError(error)
+  } finally {
+    saving.value = false
+  }
+  if (saved) restoreInlineTitleFocus()
+}
+
 function openGroupSettings(intent = 'settings') {
   if (!activeGroup.value || sending.value || saving.value) return
   settingsIntent.value = typeof intent === 'string' ? intent : 'settings'
@@ -1892,9 +2296,17 @@ async function deleteConversation() {
 }
 
 function toggleTarget(kind) {
-  if (sending.value) return
+  if (sending.value || activeRun.value || composerMode.value === 'auto') return
   if (targetKinds.value.includes(kind)) targetKinds.value = targetKinds.value.filter(item => item !== kind)
   else targetKinds.value = [...targetKinds.value, kind]
+}
+
+function isComposerTargetSelected(kind) {
+  return composerTargetKinds.value.includes(kind)
+}
+
+function adjustMaxRounds(delta) {
+  maxRounds.value = Math.max(1, Math.min(10, maxRounds.value + delta))
 }
 
 async function loadSkillsForTargets() {
@@ -1930,7 +2342,21 @@ async function loadSkillsForTargets() {
   }
 }
 
+function resizeComposerInput() {
+  const input = composerInput.value
+  if (!input) return
+  input.style.height = 'auto'
+  const scrollHeight = Math.max(Number(input.scrollHeight) || 0, COMPOSER_INPUT_MIN_HEIGHT)
+  input.style.height = `${Math.min(scrollHeight, COMPOSER_INPUT_MAX_HEIGHT)}px`
+  input.style.overflowY = scrollHeight > COMPOSER_INPUT_MAX_HEIGHT ? 'auto' : 'hidden'
+}
+
+function scheduleComposerResize() {
+  void nextTick(resizeComposerInput)
+}
+
 function handleComposerInput() {
+  resizeComposerInput()
   if (!currentSkillTrigger.value || selectedSkills.value.length >= MAX_SKILLS) {
     skillMenuOpen.value = false
     return
@@ -2124,6 +2550,7 @@ async function sendMessage() {
   const contextVersion = composerContextVersion.value
   const text = draft.value.trim()
   const attachments = composerAttachments.value.map(safeAttachmentPayload)
+  const mode = composerMode.value
   if (!text && !attachments.length) {
     notify(t('composer.messageRequired'))
     return
@@ -2131,6 +2558,10 @@ async function sendMessage() {
   const targets = [...composerTargetKinds.value]
   if (!targets.length) {
     notify(t('composer.selectTarget'))
+    return
+  }
+  if (mode === 'auto' && targets.length < 2) {
+    notify(t('error.autoAgentCount'))
     return
   }
   if (targets.some(kind => !readyAgentKinds.value.has(kind))) {
@@ -2164,6 +2595,8 @@ async function sendMessage() {
       targetKinds: targets,
       skillHints,
       attachments,
+      mode,
+      maxRounds: maxRounds.value,
     })
     snapshot.value = normalizeSnapshot(await workspace.value.get())
   } catch (error) {
@@ -2177,26 +2610,6 @@ async function sendMessage() {
     showError(error)
   } finally {
     sending.value = false
-  }
-}
-
-async function startAutoDiscussion() {
-  if (!activeGroup.value || activeRun.value || sending.value) return
-  const latestRootMessage = activeMessages.value.findLast(
-    message => message.role === 'user' && !message.threadRootId,
-  )
-  if (!latestRootMessage) {
-    notify(t('composer.autoNeedsMessage'))
-    return
-  }
-  try {
-    await workspace.value.startAuto({
-      groupId: activeGroup.value.id,
-      maxRounds: maxRounds.value,
-      threadRootId: latestRootMessage.id,
-    })
-  } catch (error) {
-    showError(error)
   }
 }
 
@@ -2324,20 +2737,47 @@ function dismissToast() {
   toastMessage.value = ''
 }
 
+function normalizeRunFinishedStatus(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  return RUN_FINISHED_STATUSES.has(normalized) ? normalized : 'failed'
+}
+
+function latestTopLevelUserMessage(groupId) {
+  return snapshot.value.messages.filter(message => (
+    message.groupId === groupId && message.role === 'user' && !message.threadRootId
+  )).at(-1) || null
+}
+
+function rememberRunFinishedTurn(event, group) {
+  const groupId = String(event?.groupId || '')
+  const rootId = String(event?.threadRootId || '')
+    || (group?.conversationType === 'direct' ? latestTopLevelUserMessage(groupId)?.id : '')
+  if (!groupId || !rootId) return false
+  const next = new Map(runFinishedTurnStatuses.value)
+  next.set(runFinishedTurnKey(groupId, rootId), normalizeRunFinishedStatus(event?.status))
+  runFinishedTurnStatuses.value = next
+  return true
+}
+
 function handleRunFinished(event) {
   const groupId = String(event?.groupId || '')
   if (!groupId) return
   const group = snapshot.value.groups.find(item => item.id === groupId)
-  if (!group) {
-    pendingRunFinishedEvents.set(groupId, {
-      groupId,
-      status: String(event?.status || ''),
-    })
-    return
+  const normalizedEvent = {
+    groupId,
+    status: normalizeRunFinishedStatus(event?.status),
+    threadRootId: String(event?.threadRootId || ''),
   }
-  pendingRunFinishedEvents.delete(groupId)
+  if (!group || !rememberRunFinishedTurn(normalizedEvent, group)) {
+    pendingRunFinishedEvents.set(groupId, {
+      ...normalizedEvent,
+    })
+    if (!group) return
+  } else {
+    pendingRunFinishedEvents.delete(groupId)
+  }
   if (group.conversationType !== 'direct' || selectedGroupId.value === groupId) return
-  if (event?.status !== 'completed') {
+  if (normalizedEvent.status !== 'completed') {
     if (finishedDirectGroupIds.value.has(groupId)) {
       const next = new Set(finishedDirectGroupIds.value)
       next.delete(groupId)
@@ -2349,9 +2789,11 @@ function handleRunFinished(event) {
 }
 
 function flushPendingRunFinishedEvents() {
-  for (const [groupId, event] of pendingRunFinishedEvents) {
-    if (!snapshot.value.groups.some(group => group.id === groupId)) continue
-    pendingRunFinishedEvents.delete(groupId)
+  const readyEvents = [...pendingRunFinishedEvents.entries()].filter(([groupId]) => (
+    snapshot.value.groups.some(group => group.id === groupId)
+  ))
+  for (const [groupId] of readyEvents) pendingRunFinishedEvents.delete(groupId)
+  for (const [, event] of readyEvents) {
     handleRunFinished(event)
   }
 }
@@ -2373,7 +2815,7 @@ function handleOpenGroup(event) {
 }
 
 function showError(error) {
-  console.error('[RoundRelay]', errorCode(error))
+  console.error('[Meldwork]', errorCode(error))
   notify(translateError(error))
 }
 
@@ -2507,10 +2949,14 @@ watch(() => snapshot.value.groups.map(group => group.id).join('\u0000'), () => {
   openPendingRequestedGroup()
   flushPendingRunFinishedEvents()
 })
+watch(() => snapshot.value.messages.map(message => message.id).join('\u0000'), flushPendingRunFinishedEvents)
 watch(activeGroupMemberSignature, () => {
   composerContextVersion.value += 1
   const abandonedAttachments = composerAttachments.value
   const group = activeGroup.value
+  cancelInlineTitleEdit({ restoreFocus: false })
+  activeTurnId.value = ''
+  discussionMode.value = group?.conversationType === 'direct' ? 'manual' : 'auto'
   targetKinds.value = group ? [...group.agentKinds] : []
   selectedSkills.value = []
   composerAttachments.value = []
@@ -2518,6 +2964,7 @@ watch(activeGroupMemberSignature, () => {
   skillMenuOpen.value = false
   void scrollToLatest()
 })
+watch(activeRun, (value) => { if (value) cancelInlineTitleEdit({ restoreFocus: false }) })
 watch(skillTargetSignature, () => {
   const targets = new Set(composerTargetKinds.value)
   selectedSkills.value = selectedSkills.value.filter(skill => targets.has(skill.targetKind))
@@ -2529,6 +2976,11 @@ watch(skillTargetSignature, () => {
 watch(() => filteredSkillOptions.value.length, (length) => {
   skillActiveIndex.value = length ? Math.min(skillActiveIndex.value, length - 1) : 0
 })
+watch(
+  [draft, () => composerAttachments.value.length, activeGroupMemberSignature],
+  scheduleComposerResize,
+  { flush: 'post' },
+)
 watch(() => activeMessages.value.length, scrollToLatest)
 watch(activeRunTopicSignature, (value) => { if (value) void focusRunTopic() })
 watch(readyAgentSignature, (value) => { if (value) void loadAgentSkillStats() })
@@ -2557,6 +3009,8 @@ onBeforeUnmount(() => {
   unsubscribeRunFinished?.()
   unsubscribeOpenGroup?.()
   pendingRunFinishedEvents.clear()
+  for (const timer of copiedMessageTimers.values()) clearTimeout(timer)
+  copiedMessageTimers.clear()
   clearTimeout(toastTimer)
 })
 </script>

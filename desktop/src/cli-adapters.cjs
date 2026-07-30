@@ -15,10 +15,11 @@ const AGENT_PROFILES = {
     commands: ['codebuddy'],
   },
   kimi: { label: 'Kimi', commands: ['kimi'] },
+  mimo: { label: 'MiMo', commands: ['mimo'] },
   claude: { label: 'Claude', commands: ['claude'] },
-  qwen: { label: 'Qwen', commands: ['qwen'] },
   gemini: { label: 'Gemini', commands: ['gemini'] },
   opencode: { label: 'OpenCode', commands: ['opencode'] },
+  qwen: { label: 'Qwen', commands: ['qwen'] },
 }
 const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const CODEX_SANDBOXES = new Set(['read-only', 'workspace-write'])
@@ -157,6 +158,7 @@ function searchDirectories(options = {}) {
       pathApi.join(home, '.local', 'opt', 'npm-global', 'bin'),
       pathApi.join(home, '.npm-global', 'bin'),
       pathApi.join(home, '.kimi-code', 'bin'),
+      pathApi.join(home, '.mimocode', 'bin'),
       '/opt/homebrew/bin',
       '/usr/local/bin',
       '/usr/bin',
@@ -182,6 +184,7 @@ function searchDirectories(options = {}) {
     pathApi.join(home, '.local', 'opt', 'npm-global', 'bin'),
     pathApi.join(home, '.npm-global', 'bin'),
     pathApi.join(home, '.kimi-code', 'bin'),
+    pathApi.join(home, '.mimocode', 'bin'),
     pnpmHome,
     appData && pathApi.join(appData, 'npm'),
     localAppData && pathApi.join(localAppData, 'npm'),
@@ -498,6 +501,16 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       promptArg: true,
     }
   }
+  if (kind === 'mimo') {
+    return {
+      command: executable,
+      args: [
+        'run', '--pure', '--agent', 'plan', '--format', 'json', '--dir', workdir,
+        ...(sessionRef ? ['--session', sessionRef] : []),
+      ],
+      promptArg: true,
+    }
+  }
   if (kind === 'claude') {
     return {
       command: executable,
@@ -567,6 +580,27 @@ function parseCodexOutput(stdout) {
     } catch { /* ignore non-JSON diagnostics */ }
   }
   return { text: texts.join('\n').trim(), sessionRef }
+}
+
+function parseMimoOutput(stdout) {
+  let sessionRef = ''
+  const texts = []
+  const errors = []
+  for (const line of String(stdout || '').split('\n')) {
+    if (!line.trim()) continue
+    try {
+      const event = JSON.parse(line)
+      if (typeof event.sessionID === 'string') sessionRef = event.sessionID
+      if (event.type === 'text' && typeof event.part?.text === 'string') {
+        texts.push(event.part.text)
+      }
+      if (event.type === 'error') {
+        const detail = event.error?.data?.message || event.error?.message || event.error?.name
+        if (detail) errors.push(String(detail))
+      }
+    } catch { /* ignore non-JSON diagnostics */ }
+  }
+  return { text: texts.join('\n').trim(), sessionRef, error: errors.join('\n').trim() }
 }
 
 function normalizeOpenClawOutput(stdout) {
@@ -816,6 +850,7 @@ function normalizeOutput(kind, stdout, sessionRef = '') {
     const parsed = parseKimiOutput(stdout)
     return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
   }
+  if (kind === 'mimo') return parseMimoOutput(stdout)
   if (kind === 'gemini') {
     const parsed = parseGeminiOutput(stdout)
     return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
@@ -1404,6 +1439,10 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           Buffer.concat(stdout).toString('utf8'),
           nextSessionRef,
         )
+        if (result.error) {
+          reject(failedAgentProcessError(redactChildSecrets(result.error, childEnv)))
+          return
+        }
         const redactedSessionRef = redactChildSecrets(result.sessionRef, childEnv)
         const publicSessionRef = redactedSessionRef.includes('[redacted]')
           ? ''
@@ -1452,6 +1491,7 @@ module.exports = {
   parseCodexOutput,
   parseGeminiOutput,
   parseKimiOutput,
+  parseMimoOutput,
   parseOpenCodeOutput,
   parseWorkBuddyOutput,
   prepareCommand,

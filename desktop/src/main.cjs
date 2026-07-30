@@ -27,7 +27,7 @@ const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
 ])
 const LOCAL_AGENT_KINDS = new Set([
-  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'claude', 'qwen', 'gemini', 'opencode',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
 ])
 const LOCAL_IDENTIFIER = /^[A-Za-z0-9_-]{1,100}$/
 let mainWindow = null
@@ -375,7 +375,7 @@ function notifyRunFinished(input) {
   if (typeof Notification !== 'function' || Notification.isSupported?.() === false) return
   const locale = String(app.getLocale?.() || '').toLowerCase()
   const notification = new Notification({
-    title: 'RoundRelay',
+    title: 'Meldwork',
     body: locale.startsWith('zh') ? '会话运行已结束' : 'Conversation run finished',
   })
   notification.on('click', () => openRunResult(payload.groupId))
@@ -460,7 +460,7 @@ function createWindow() {
     height: 920,
     minWidth: 980,
     minHeight: 680,
-    title: 'RoundRelay',
+    title: 'Meldwork',
     backgroundColor: '#f6f3ed',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),

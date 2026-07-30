@@ -1,6 +1,6 @@
 # Variables And Secrets
 
-RoundRelay requires no `.env` file, server URL, account token, JWT, database credential, email credential, or cron secret.
+Meldwork requires no `.env` file, server URL, account token, JWT, database credential, email credential, or cron secret.
 
 ## User And Runtime Configuration
 
@@ -15,7 +15,7 @@ RoundRelay requires no `.env` file, server URL, account token, JWT, database cre
 
 ## Native Agent Credential Inputs
 
-RoundRelay detects and forwards only credential variables associated with the selected Agent:
+Meldwork detects and forwards only credential variables associated with the selected Agent:
 
 | Agent | Recognized process variables |
 | --- | --- |
@@ -29,11 +29,11 @@ RoundRelay detects and forwards only credential variables associated with the se
 | Gemini CLI | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | OpenCode | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` |
 
-These credentials are owned and rotated through the upstream CLI/provider, not RoundRelay. Readiness checks report only `ready`, `missing`, or `unknown`; they do not return credential values.
+These credentials are owned and rotated through the upstream CLI/provider, not Meldwork. Readiness checks report only `ready`, `missing`, or `unknown`; they do not return credential values.
 
 ## Internal Child-Process Variables
 
-Main derives these at invocation time; users should not set them as RoundRelay configuration:
+Main derives these at invocation time; users should not set them as Meldwork configuration:
 
 | Variables | Purpose |
 | --- | --- |
@@ -48,7 +48,7 @@ The API key is intentionally absent from generated OpenClaw JSON and supplied on
 
 ## Non-Secret System Environment
 
-Agent children receive an allowlist of operating-system identity/path/locale/temp/certificate variables plus a constructed `PATH`. RoundRelay does not forward the entire Electron environment.
+Agent children receive an allowlist of operating-system identity/path/locale/temp/certificate variables plus a constructed `PATH`. Meldwork does not forward the entire Electron environment.
 
 ## Pre-Release Checklist
 

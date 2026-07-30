@@ -658,7 +658,7 @@ test('workspace loading allowlists local group and message fields', async (t) =>
   assert.equal('remoteChannels' in restored.state, false)
 })
 
-test('direct conversations persist one Agent and reuse its main session history', async (t) => {
+test('direct conversations force manual mode and reuse their group Agent session', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -669,7 +669,7 @@ test('direct conversations persist one Agent and reuse its main session history'
     conversationType: 'direct', directAgentKind: 'codex',
   })
 
-  await workspace.sendMessage({ groupId: direct.id, text: '第一条' })
+  await workspace.sendMessage({ groupId: direct.id, text: '第一条', mode: 'auto', maxRounds: 10 })
   await workspace.sendMessage({ groupId: direct.id, text: '第二条' })
 
   assert.deepEqual(direct.agentKinds, ['codex'])
@@ -677,6 +677,8 @@ test('direct conversations persist one Agent and reuse its main session history'
   assert.equal(direct.directAgentKind, 'codex')
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'codex'])
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
+  assert.equal(calls.some(call => call.prompt.includes('ROUNDRELAY_CONSENSUS')), false)
+  assert.equal(workspace.snapshot().messages.some(message => message.threadRootId), false)
   const restored = new LocalWorkspace(options)
   assert.deepEqual(restored.snapshot().groups[0], direct)
 })
@@ -699,7 +701,7 @@ test('Gemini and OpenCode messages keep their Agent names', async (t) => {
   )
 })
 
-test('native session references are reused per topic and agent', async (t) => {
+test('group messages create distinct visual roots while native sessions stay group scoped', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -708,68 +710,160 @@ test('native session references are reused per topic and agent', async (t) => {
     name: '会话测试', agentKinds: ['codex', 'hermes', 'workbuddy'], workdir: directory,
   })
   await workspace.sendMessage({ groupId: group.id, text: '第一条', targetKinds: ['codex'] })
-  const rootId = workspace.snapshot().messages[0].id
+  const firstRoot = workspace.snapshot().messages[0]
   await workspace.sendMessage({
-    groupId: group.id, text: '第二条', targetKinds: ['codex'], threadRootId: rootId,
-  })
-  const hermesKey = workspace.sessionKey(group.id, 'hermes', rootId)
-  workspace.state.sessions[hermesKey] = `roundrelay-${group.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}-hermes`
-  workspace.save()
-  await workspace.sendMessage({
-    groupId: group.id, text: 'Hermes', targetKinds: ['hermes'], threadRootId: rootId,
-  })
-  await workspace.sendMessage({
-    groupId: group.id, text: 'Hermes 继续', targetKinds: ['hermes'], threadRootId: rootId,
-  })
-  await workspace.sendMessage({
-    groupId: group.id, text: 'WorkBuddy', targetKinds: ['workbuddy'], threadRootId: rootId,
-  })
-  await workspace.sendMessage({
-    groupId: group.id, text: 'WorkBuddy 继续', targetKinds: ['workbuddy'], threadRootId: rootId,
+    groupId: group.id, text: '第二条', targetKinds: ['codex'], threadRootId: firstRoot.id,
   })
 
-  assert.equal(calls[0].runOptions.sessionRef, '')
-  assert.equal(calls[1].runOptions.sessionRef, 'codex-session')
-  assert.equal(calls[2].runOptions.sessionRef, '')
-  assert.equal(calls[3].runOptions.sessionRef, 'hermes-session')
-  assert.equal(calls[4].runOptions.sessionRef, '')
-  assert.equal(calls[5].runOptions.sessionRef, 'workbuddy-session')
+  const userMessages = workspace.snapshot().messages.filter(message => message.role === 'user')
+  const agentMessages = workspace.snapshot().messages.filter(message => message.role === 'agent')
+  assert.equal(userMessages.length, 2)
+  assert.equal(userMessages.every(message => !message.threadRootId), true)
+  assert.notEqual(userMessages[0].id, userMessages[1].id)
+  assert.deepEqual(agentMessages.map(message => message.threadRootId), userMessages.map(message => message.id))
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
+  assert.equal(
+    workspace.sessionKey(group.id, 'codex', userMessages[0].id),
+    workspace.sessionKey(group.id, 'codex', userMessages[1].id),
+  )
 })
 
-test('different topics do not share native sessions or local transcript context', async (t) => {
+test('group-scoped sessions migrate the exact root or the most recently active legacy root', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '旧会话迁移', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const oldestRoot = workspace.addMessage(group.id, 'user', '最早旧话题')
+  const currentRoot = workspace.addMessage(group.id, 'user', '当前旧话题')
+  const recentRoot = workspace.addMessage(group.id, 'user', '最近活跃话题')
+  workspace.addMessage(group.id, 'agent', '最近活跃话题结论', 'hermes', recentRoot.id)
+  workspace.state.sessions[`${group.id}:codex:thread:${recentRoot.id}`] = 'codex-recent-root'
+  workspace.state.sessions[`${group.id}:codex:thread:${currentRoot.id}`] = 'codex-current-root'
+  workspace.state.sessions[`${group.id}:hermes:thread:orphan-root`] = 'hermes-orphan-root'
+  workspace.state.sessions[`${group.id}:hermes:thread:${oldestRoot.id}`] = 'hermes-oldest-root'
+  workspace.state.sessions[`${group.id}:hermes:thread:${recentRoot.id}`] = 'hermes-recent-root'
+  workspace.save()
+
+  workspace.startAuto({ groupId: group.id, threadRootId: currentRoot.id, maxRounds: 1 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
+    'codex-current-root', 'hermes-recent-root',
+  ])
+  assert.equal(calls.every(call => call.prompt.includes('最近活跃话题结论')), true)
+  assert.equal(workspace.state.sessions[`${group.id}:codex`], 'codex-current-root')
+  assert.equal(workspace.state.sessions[`${group.id}:hermes`], 'hermes-recent-root')
+  assert.equal(Object.keys(workspace.state.sessions).some(key => (
+    key.startsWith(`${group.id}:codex:thread:`)
+      || key.startsWith(`${group.id}:hermes:thread:`)
+  )), false)
+  delete workspace.state.sessions[`${group.id}:codex`]
+  delete workspace.state.sessions[`${group.id}:hermes`]
+  assert.equal(workspace.sessionRef(group, 'codex', currentRoot.id), '')
+  assert.equal(workspace.sessionRef(group, 'hermes', recentRoot.id), '')
+  assert.doesNotMatch(JSON.stringify(workspace.snapshot()), /sessionRef|codex-current-root|hermes-recent-root/)
+})
+
+test('prompts retain bounded topic and stable user turns plus group-wide final messages', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: '话题隔离', agentKinds: ['codex', 'hermes'], workdir: directory,
+    name: '全群上下文',
+    topic: `GEO 产品定位 ${'T'.repeat(240)} TOPIC_TAIL_SHOULD_BE_BOUNDED`,
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
   })
+  workspace.addMessage(group.id, 'user', '问候：请使用中文')
+  workspace.addMessage(group.id, 'user', 'GEO 任务：分析检索可见性')
+  workspace.addMessage(group.id, 'user', '补充约束：不引入云端存储')
+  for (let index = 0; index < 20; index += 1) {
+    workspace.addMessage(group.id, 'agent', `已持久化的最终正文 ${index}`, index % 2 ? 'hermes' : 'codex', `old-root-${index}`, null, {
+      elapsedMs: 12,
+      toolCalls: [{ title: 'write_file', status: 'completed' }],
+    })
+  }
+  workspace.addMessage(
+    group.id,
+    'system',
+    'PROCESS_METADATA_SHOULD_NOT_REACH_AGENT',
+    '',
+    'old-root-19',
+    { key: 'system.agentCallFailed', params: { reason: 'private' } },
+  )
 
   await workspace.sendMessage({
-    groupId: group.id, text: '第一话题的唯一内容', targetKinds: ['codex'],
-  })
-  const firstRoot = workspace.snapshot().messages[0].id
-  await workspace.sendMessage({
-    groupId: group.id, text: '继续第一话题', targetKinds: ['codex'], threadRootId: firstRoot,
-  })
-  await workspace.sendMessage({
-    groupId: group.id, text: '第二话题的唯一内容', targetKinds: ['codex'],
-  })
-  const secondRoot = workspace.snapshot().messages.findLast(
-    message => message.role === 'user' && !message.threadRootId,
-  ).id
-  await workspace.sendMessage({
-    groupId: group.id, text: '继续第二话题', targetKinds: ['codex'], threadRootId: secondRoot,
+    groupId: group.id,
+    text: '当前新指令：给出最终建议',
+    targetKinds: ['codex'],
   })
 
-  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    '', 'codex-session', '', 'codex-session',
-  ])
-  assert.match(calls[2].prompt, /第二话题的唯一内容/)
-  assert.doesNotMatch(calls[2].prompt, /第一话题的唯一内容/)
+  const prompt = calls.at(-1).prompt
+  assert.match(prompt, /Group topic: GEO 产品定位/)
+  assert.doesNotMatch(prompt, /TOPIC_TAIL_SHOULD_BE_BOUNDED/)
+  assert.match(prompt, /问候：请使用中文/)
+  assert.match(prompt, /GEO 任务：分析检索可见性/)
+  assert.match(prompt, /补充约束：不引入云端存储/)
+  assert.match(prompt, /当前新指令：给出最终建议/)
+  assert.match(prompt, /Hermes: 已持久化的最终正文 19/)
+  assert.doesNotMatch(prompt, /PROCESS_METADATA_SHOULD_NOT_REACH_AGENT|write_file|elapsedMs/)
 })
 
-test('Kimi captures its native session while OpenClaw isolates topics with stable keys', async (t) => {
+test('resumed group sessions receive only transcript messages after their own final reply', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} final ${calls.length}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '增量上下文', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: '第一条稳定约束', targetKinds: ['codex', 'hermes'],
+  })
+  await workspace.sendMessage({
+    groupId: group.id, text: '第二条当前任务', targetKinds: ['codex'],
+  })
+  await workspace.sendMessage({
+    groupId: group.id, text: '第三条继续任务', targetKinds: ['codex'],
+  })
+
+  const recentSection = prompt => prompt.split('Recent conversation across the group:\n')[1] || ''
+  const secondCodexRecent = recentSection(calls[2].prompt)
+  const thirdCodexRecent = recentSection(calls[3].prompt)
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
+    '', '', 'codex-session', 'codex-session',
+  ])
+  assert.match(calls[1].prompt, /User: 第一条稳定约束/)
+  assert.match(calls[1].prompt, /Codex: codex final 1/)
+  assert.match(secondCodexRecent, /Hermes: hermes final 2/)
+  assert.match(secondCodexRecent, /User: 第二条当前任务/)
+  assert.doesNotMatch(secondCodexRecent, /第一条稳定约束|codex final 1/)
+  assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第一条稳定约束/)
+  assert.match(thirdCodexRecent, /User: 第三条继续任务/)
+  assert.doesNotMatch(thirdCodexRecent, /第二条当前任务|codex final 3|hermes final 2/)
+  assert.ok(thirdCodexRecent.length < secondCodexRecent.length)
+})
+
+test('Kimi and OpenClaw keep stable group-scoped native sessions', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -783,7 +877,7 @@ test('Kimi captures its native session while OpenClaw isolates topics with stabl
 
   await workspace.sendMessage({ groupId: first.id, text: 'Kimi 1', targetKinds: ['kimi'] })
   const firstRoot = workspace.snapshot().messages[0].id
-  const openClawKey = workspace.sessionKey(first.id, 'openclaw', firstRoot)
+  const openClawKey = workspace.sessionKey(first.id, 'openclaw')
   workspace.state.sessions[openClawKey] = 'explicit:roundrelay-legacy-openclaw'
   workspace.save()
   await workspace.sendMessage({
@@ -803,6 +897,7 @@ test('Kimi captures its native session while OpenClaw isolates topics with stabl
   assert.equal(sessionRefs[3], sessionRefs[2])
   assert.notEqual(sessionRefs[4], sessionRefs[2])
   assert.notEqual(workspace.state.sessions[openClawKey], 'explicit:roundrelay-legacy-openclaw')
+  assert.equal(workspace.sessionKey(first.id, 'openclaw', firstRoot), openClawKey)
   assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
   assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
 })
@@ -851,6 +946,30 @@ test('group settings cannot change execution context during an active run', asyn
   await send
   assert.equal(workspace.getGroup(group.id).workdir, directory)
   assert.equal(workspace.getGroup(group.id).allowWrite, false)
+})
+
+test('changing a group workdir clears native sessions while equivalent paths retain them', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const firstWorkdir = path.join(directory, 'workspace-a')
+  const secondWorkdir = path.join(directory, 'workspace-b')
+  fs.mkdirSync(firstWorkdir)
+  fs.mkdirSync(secondWorkdir)
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '工作区会话隔离', agentKinds: ['codex'], workdir: firstWorkdir,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'A1', targetKinds: ['codex'] })
+  workspace.updateGroup(group.id, { workdir: path.join(firstWorkdir, '.') })
+  await workspace.sendMessage({ groupId: group.id, text: 'A2', targetKinds: ['codex'] })
+  workspace.updateGroup(group.id, { workdir: secondWorkdir })
+  assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'codex')], undefined)
+  await workspace.sendMessage({ groupId: group.id, text: 'B1', targetKinds: ['codex'] })
+
+  assert.deepEqual(calls.map(call => call.workdir), [firstWorkdir, firstWorkdir, secondWorkdir])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session', ''])
 })
 
 test('one failed agent persists only its stable error code in a multi-agent message', async (t) => {
@@ -928,6 +1047,7 @@ test('running snapshots expose queued and active agents with the topic root', as
   assert.equal(running.runs.length, 1)
   assert.deepEqual(running.runs[0].targetKinds, ['codex', 'hermes'])
   assert.deepEqual(running.runs[0].completedKinds, [])
+  assert.deepEqual(running.runs[0].failedKinds, [])
   assert.equal(running.runs[0].currentKind, 'codex')
   assert.equal(running.runs[0].threadRootId, running.messages[0].id)
 
@@ -938,6 +1058,38 @@ test('running snapshots expose queued and active agents with the topic root', as
   assert.equal(finished[0].status, 'completed')
   assert.equal(finished[0].groupId, group.id)
   assert.equal(finished[0].threadRootId, running.messages[0].id)
+})
+
+test('running snapshots distinguish failed Agents from successful completions', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let releaseHermes
+  let markHermesStarted
+  const hermesStarted = new Promise(resolve => { markHermesStarted = resolve })
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    if (agent.kind === 'codex') throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    markHermesStarted()
+    await new Promise(resolve => { releaseHermes = resolve })
+    return { text: 'Hermes done', sessionRef: runOptions.sessionRef || 'hermes-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '失败状态', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({
+    groupId: group.id, text: '开始', targetKinds: ['codex', 'hermes'],
+  })
+  await hermesStarted
+  const running = workspace.snapshot().runs[0]
+
+  assert.deepEqual(running.completedKinds, ['codex'])
+  assert.deepEqual(running.failedKinds, ['codex'])
+  assert.equal(running.currentKind, 'hermes')
+
+  releaseHermes()
+  await send
 })
 
 test('Hermes progress stays bounded metadata while later Agents receive only its final reply', async (t) => {
@@ -1029,6 +1181,143 @@ test('all failed agents resolve after persisting one user message and recording 
   )
   assert.equal(finished.length, 1)
   assert.equal(finished[0].status, 'failed')
+})
+
+test('auto send preflights atomically, persists one root, and starts at round one', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const firstCallEntered = deferred()
+  const firstCallGate = deferred()
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length === 1) {
+      firstCallEntered.resolve()
+      await firstCallGate.promise
+    }
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '原子自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const attachment = {
+    id: 'auto-send-image', name: 'context.png', mimeType: 'image/png', size: 20,
+  }
+  const skill = {
+    targetKind: 'hermes', namespace: 'global', slug: 'research', name: 'Research',
+  }
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: '直接开始自动讨论',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes'],
+    attachments: [attachment],
+    skillHints: [skill],
+  })
+  await firstCallEntered.promise
+
+  const active = workspace.snapshot()
+  const root = active.messages.find(message => message.role === 'user')
+  assert.deepEqual(started, { started: true, maxRounds: 2, threadRootId: root.id })
+  assert.equal(active.messages.filter(message => message.role === 'user').length, 1)
+  assert.equal(root.threadRootId, undefined)
+  assert.deepEqual(active.runs.map(run => ({
+    mode: run.mode,
+    currentRound: run.currentRound,
+    maxRounds: run.maxRounds,
+    threadRootId: run.threadRootId,
+  })), [{ mode: 'auto', currentRound: 1, maxRounds: 2, threadRootId: root.id }])
+  assert.equal(calls.length, 1)
+  assert.match(calls[0].prompt, /ROUNDRELAY_CONSENSUS/)
+  assert.doesNotMatch(JSON.stringify(active), /sessionRef/)
+
+  const pending = workspace.activeRuns.get(group.id).promise
+  firstCallGate.resolve()
+  await pending
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
+  assert.equal(calls.every(call => call.prompt.includes('ROUNDRELAY_CONSENSUS')), true)
+  assert.deepEqual(calls.map(call => call.runOptions.attachments), [
+    [path.join(directory, 'attachments', 'auto-send-image.png')],
+    [path.join(directory, 'attachments', 'auto-send-image.png')],
+  ])
+  assert.deepEqual(calls[1].runOptions.skills, ['research'])
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => message.threadRootId),
+    [root.id, root.id],
+  )
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].mode, 'auto')
+  assert.equal(finished[0].status, 'completed')
+})
+
+test('auto send rejects failed preflight without persisting a root or starting an Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.validateSkillSelections = () => { throw new Error('LOCAL_SKILL_SELECTION_INVALID') }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '自动预检失败', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: '不应持久化',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    skillHints: [{
+      targetKind: 'hermes', namespace: 'global', slug: 'research', name: 'Research',
+    }],
+  }), { message: 'LOCAL_SKILL_SELECTION_INVALID' })
+
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.deepEqual(finished, [])
+})
+
+test('auto send rolls back its root when the reserved run is cancelled during handoff', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  let stopped = false
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '自动交接取消', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.on('changed', (snapshot) => {
+    if (stopped || !snapshot.messages.some(message => message.role === 'user')) return
+    if (!snapshot.runs.some(run => run.groupId === group.id && run.phase === 'preparing')) return
+    stopped = true
+    workspace.stop(group.id)
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: '取消时不应留下消息',
+    mode: 'auto',
+    maxRounds: 2,
+  }), { message: 'LOCAL_AGENT_EXECUTION_STOPPED' })
+
+  assert.equal(stopped, true)
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.deepEqual(finished, [])
 })
 
 test('automatic dialogue continues complete rounds until every Agent agrees', async (t) => {
@@ -1382,7 +1671,7 @@ test('automatic dialogue resumes a session captured before a failed turn', async
   )
 })
 
-test('automatic dialogue defaults to three rounds and hides consensus markers at the cap', async (t) => {
+test('automatic dialogue defaults to six rounds and hides consensus markers at the cap', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1404,8 +1693,9 @@ test('automatic dialogue defaults to three rounds and hides consensus markers at
   const started = workspace.startAuto({ groupId: group.id })
   await workspace.activeRuns.get(group.id).promise
 
-  assert.deepEqual(started, { started: true, maxRounds: 3 })
+  assert.deepEqual(started, { started: true, maxRounds: 6 })
   assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'codex', 'hermes', 'codex', 'hermes',
     'codex', 'hermes', 'codex', 'hermes', 'codex', 'hermes',
   ])
   assert.equal(workspace.snapshot().messages.some(message => (
@@ -1415,7 +1705,7 @@ test('automatic dialogue defaults to three rounds and hides consensus markers at
     message.system?.key === 'system.autoRoundLimit'
   ))
   assert.equal(limit.threadRootId, root.id)
-  assert.deepEqual(limit.system.params, { rounds: 3 })
+  assert.deepEqual(limit.system.params, { rounds: 6 })
   assert.equal(finished.length, 1)
   assert.equal(finished[0].status, 'round-limit')
   assert.equal(finished[0].threadRootId, root.id)
@@ -1447,6 +1737,30 @@ test('automatic dialogue accepts legacy maxTurns as a round limit', async (t) =>
 
   assert.deepEqual(started, { started: true, maxRounds: 2 })
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+})
+
+test('automatic dialogue caps both round parameters at ten', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '十轮上限', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '上限测试')
+
+  const started = workspace.startAuto({ groupId: group.id, maxTurns: 999 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(started, { started: true, maxRounds: 10 })
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
 })
 
 test('automatic dialogue aborts the active Agent at the total runtime limit', async (t) => {

@@ -93,6 +93,12 @@ test('Claude readiness uses the official auth status without exposing OAuth data
   }
 })
 
+test('MiMo readiness relies on the installed CLI and does not inspect private auth storage', async () => {
+  assert.deepEqual(await resolveNativeCredentialState('mimo', {}), {
+    state: 'ready', source: 'native-cli',
+  })
+})
+
 test('Claude auth status overrides a stale credential file', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-claude-stale-auth-'))
   const credentialPath = path.join(home, '.claude', '.credentials.json')

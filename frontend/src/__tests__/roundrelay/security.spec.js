@@ -30,9 +30,19 @@ describe('renderer security policy', () => {
 
   it('keeps public asset URLs relative for file-based Electron builds', () => {
     const indexSource = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
-    expect(publicAsset('logos/roundrelay.png')).toBe('./logos/roundrelay.png')
-    expect(indexSource).toContain('href="./logos/roundrelay-favicon.png"')
+    expect(publicAsset('logos/meldwork-mark.svg')).toBe('./logos/meldwork-mark.svg')
+    expect(indexSource).toContain('href="./logos/meldwork-favicon-16.png"')
+    expect(indexSource).toContain('href="./logos/meldwork-favicon-32.png"')
+    expect(indexSource).toContain('href="./logos/meldwork-favicon.png"')
     expect(AGENTS.every(agent => agent.logo.startsWith('./agent-logos/'))).toBe(true)
+    expect(AGENTS.some(agent => agent.kind === 'mimo')).toBe(true)
+    expect(AGENTS.at(-1)?.kind).toBe('qwen')
+
+    const mimoSource = readFileSync(resolve(process.cwd(), 'public/agent-logos/mimo.svg'), 'utf8')
+    const openCodeSource = readFileSync(resolve(process.cwd(), 'public/agent-logos/opencode.svg'), 'utf8')
+    expect(mimoSource).toContain('data-brand="mimocode"')
+    expect(mimoSource).toContain('#FF7F45')
+    expect(mimoSource).not.toBe(openCodeSource)
 
     const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
     const catalogSource = readFileSync(resolve(process.cwd(), 'src/catalog.js'), 'utf8')
