@@ -173,6 +173,12 @@ test('local preload rejects unbounded or unsupported renderer image payloads bef
   )
   assert.throws(
     () => api.localAttachments.importImage({
+      name: 'preview.webp', mimeType: 'image/webp', bytes: Uint8Array.from([1]),
+    }),
+    { code: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
+  )
+  assert.throws(
+    () => api.localAttachments.importImage({
       name: 'large.png', mimeType: 'image/png', bytes: new Uint8Array((8 * 1024 * 1024) + 1),
     }),
     { code: 'LOCAL_ATTACHMENT_TOO_LARGE' },

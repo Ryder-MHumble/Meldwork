@@ -1,7 +1,7 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
 
 function attachmentError(code) {
   return Object.assign(new Error(code), { code })

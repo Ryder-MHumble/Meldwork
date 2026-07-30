@@ -20,7 +20,7 @@ const DEFAULT_AUTO_RUN_TIMEOUT_MS = 30 * 60 * 1000
 const MAX_MESSAGE_ATTACHMENTS = 4
 const MAX_SKILL_HINTS = 4
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
-const ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp'])
+const ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',

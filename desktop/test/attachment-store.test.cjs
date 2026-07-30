@@ -74,17 +74,13 @@ test('reads preview metadata and bytes through one integrity-checked entry load'
   assert.equal('path' in result, false)
 })
 
-test('accepts PNG, JPEG, and WebP using their real magic bytes', (t) => {
+test('accepts PNG and JPEG using their real magic bytes', (t) => {
   const { store } = fixture(t)
 
   assert.equal(importImage(store).mimeType, 'image/png')
   assert.deepEqual(
     store.importBuffer({ bytes: JPEG, name: 'photo.jpeg', mimeType: 'image/jpeg' }),
     { id: 'attachment-2', name: 'photo.jpg', mimeType: 'image/jpeg', size: JPEG.length },
-  )
-  assert.deepEqual(
-    store.importBuffer({ bytes: WEBP, name: 'preview.webp', mimeType: 'image/webp' }),
-    { id: 'attachment-3', name: 'preview.webp', mimeType: 'image/webp', size: WEBP.length },
   )
 })
 
@@ -93,6 +89,10 @@ test('rejects unsupported bytes and declared type or extension mismatches', (t) 
 
   assert.throws(
     () => store.importBuffer({ bytes: Buffer.from('not an image'), name: 'note.png', mimeType: 'image/png' }),
+    { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
+  )
+  assert.throws(
+    () => store.importBuffer({ bytes: WEBP, name: 'preview.webp', mimeType: 'image/webp' }),
     { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
   )
   assert.throws(

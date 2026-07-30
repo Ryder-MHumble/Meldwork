@@ -68,7 +68,7 @@ RoundRelay has one human actor: the local desktop user. There are no accounts, r
 
 1. Typing `@` or pressing the Skill button asks `agentInstaller.skills(kind)` for each current target. The installed-Agent gate and `LocalSkillCatalog` return only sanitized `{targetKind, namespace, slug, name}` records.
 2. The renderer keeps at most four selections and sends structured Skill coordinates, not filesystem paths or Skill contents.
-3. The image button opens a main-owned PNG/JPEG/WebP picker. Clipboard images cross the bridge only as an exact `{name, mimeType, bytes}` payload.
+3. The image button opens a main-owned PNG/JPEG picker. Clipboard images cross the bridge only as an exact `{name, mimeType, bytes}` payload.
 4. `AttachmentStore` validates source-file safety, magic bytes, declared MIME/name agreement, the 8 MiB limit, private modes, checksum, and image dimensions before returning safe metadata plus a bounded preview.
 5. Before persisting a message, `LocalWorkspace` resolves attachment IDs to main-only absolute paths, revalidates every Skill against the current target's catalog, and checks every selected Agent's image count/capability.
 6. Persisted messages and renderer snapshots contain attachment metadata and target-scoped Skill hints only. Historical previews are loaded separately by ID through a bounded, visibility-driven renderer cache.

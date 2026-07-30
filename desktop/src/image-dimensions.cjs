@@ -61,66 +61,6 @@ function jpegDimensions(bytes) {
   unsupported()
 }
 
-function uint24LE(bytes, offset) {
-  return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16)
-}
-
-function webpChunkDimensions(bytes, chunkType, payloadOffset, chunkSize) {
-  if (chunkType === 'VP8X') {
-    if (chunkSize < 10) unsupported()
-    return validDimensions(
-      uint24LE(bytes, payloadOffset + 4) + 1,
-      uint24LE(bytes, payloadOffset + 7) + 1,
-    )
-  }
-  if (chunkType === 'VP8 ') {
-    if (chunkSize < 10
-        || bytes[payloadOffset + 3] !== 0x9d
-        || bytes[payloadOffset + 4] !== 0x01
-        || bytes[payloadOffset + 5] !== 0x2a) {
-      unsupported()
-    }
-    return validDimensions(
-      bytes.readUInt16LE(payloadOffset + 6) & 0x3fff,
-      bytes.readUInt16LE(payloadOffset + 8) & 0x3fff,
-    )
-  }
-  if (chunkType === 'VP8L') {
-    if (chunkSize < 5 || bytes[payloadOffset] !== 0x2f) unsupported()
-    const b1 = bytes[payloadOffset + 1]
-    const b2 = bytes[payloadOffset + 2]
-    const b3 = bytes[payloadOffset + 3]
-    const b4 = bytes[payloadOffset + 4]
-    return validDimensions(
-      1 + b1 + ((b2 & 0x3f) << 8),
-      1 + ((b2 & 0xc0) >> 6) + (b3 << 2) + ((b4 & 0x0f) << 10),
-    )
-  }
-  return null
-}
-
-function webpDimensions(bytes) {
-  if (bytes.length < 20 || bytes.toString('ascii', 0, 4) !== 'RIFF'
-      || bytes.toString('ascii', 8, 12) !== 'WEBP') {
-    unsupported()
-  }
-  const riffEnd = bytes.readUInt32LE(4) + 8
-  if (riffEnd > bytes.length || riffEnd < 20) unsupported()
-
-  let offset = 12
-  while (offset + 8 <= riffEnd) {
-    const chunkType = bytes.toString('ascii', offset, offset + 4)
-    const chunkSize = bytes.readUInt32LE(offset + 4)
-    const payloadOffset = offset + 8
-    const chunkEnd = payloadOffset + chunkSize
-    if (chunkEnd > riffEnd) unsupported()
-    const dimensions = webpChunkDimensions(bytes, chunkType, payloadOffset, chunkSize)
-    if (dimensions) return dimensions
-    offset = chunkEnd + (chunkSize & 1)
-  }
-  unsupported()
-}
-
 function imageDimensions(value) {
   const bytes = Buffer.isBuffer(value)
     ? value
@@ -133,10 +73,6 @@ function imageDimensions(value) {
   }
   if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
     return jpegDimensions(bytes)
-  }
-  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF'
-      && bytes.toString('ascii', 8, 12) === 'WEBP') {
-    return webpDimensions(bytes)
   }
   unsupported()
 }

@@ -337,6 +337,29 @@ test('image-only messages persist safe metadata and pass resolved paths to suppo
   assert.deepEqual(restored.snapshot().messages[0].attachments, [attachment])
 })
 
+test('WebP attachment metadata is rejected before a message or Agent run is recorded', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Unsupported image', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await assert.rejects(
+    workspace.sendMessage({
+      groupId: group.id,
+      text: 'Inspect',
+      attachments: [{
+        id: 'attachment-webp', name: 'preview.webp', mimeType: 'image/webp', size: 10,
+      }],
+    }),
+    { message: 'LOCAL_ATTACHMENT_REFERENCE_INVALID' },
+  )
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+})
+
 test('image capability failures happen before a message or Agent run is recorded', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

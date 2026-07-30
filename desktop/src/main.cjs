@@ -580,7 +580,7 @@ function registerIpc() {
     const limit = normalizeAttachmentPickLimit(remainingCapacity)
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
     })
     if (shutdownStarted) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
     if (result.canceled) return { attachments: [], truncated: false }

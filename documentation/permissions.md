@@ -45,7 +45,7 @@ Node integration, webviews, insecure content, and renderer permission requests a
 
 - RoundRelay state is written only by main.
 - Provider and managed OpenClaw secret-bearing files use atomic writes and mode `0600`; their directories use mode `0700` where created by those modules.
-- Imported PNG/JPEG/WebP copies live under the Electron user-data attachment directory. The root/entry directories use mode `0700`, files use `0600`, metadata carries a SHA-256 checksum, and symlink/path escape or tampering fails closed.
+- Imported PNG/JPEG copies live under the Electron user-data attachment directory. The root/entry directories use mode `0700`, files use `0600`, metadata carries a SHA-256 checksum, and symlink/path escape or tampering fails closed.
 - Conversation data is local JSON and is not application-encrypted.
 - Agent executable paths, native session IDs, native session storage paths, attachment paths, Skill paths, preview payloads, and credential material are stripped from renderer snapshots and lifecycle events. User-selected conversation workdirs are intentionally returned for display and editing.
 - Main scans known per-Agent Skill roots and reads only bounded Skill manifest prefixes for catalog metadata. The renderer cannot request an arbitrary directory or file.

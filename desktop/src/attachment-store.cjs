@@ -12,14 +12,12 @@ const FILE_MODE = 0o600
 const IMAGE_TYPES = Object.freeze([
   Object.freeze({ mimeType: 'image/png', extension: 'png' }),
   Object.freeze({ mimeType: 'image/jpeg', extension: 'jpg' }),
-  Object.freeze({ mimeType: 'image/webp', extension: 'webp' }),
 ])
 const TYPE_BY_MIME = new Map(IMAGE_TYPES.map(type => [type.mimeType, type]))
 const TYPE_BY_EXTENSION = new Map([
   ['png', TYPE_BY_MIME.get('image/png')],
   ['jpg', TYPE_BY_MIME.get('image/jpeg')],
   ['jpeg', TYPE_BY_MIME.get('image/jpeg')],
-  ['webp', TYPE_BY_MIME.get('image/webp')],
 ])
 
 function attachmentError(code) {
@@ -86,10 +84,6 @@ function detectImageType(bytes) {
   }
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return TYPE_BY_MIME.get('image/jpeg')
-  }
-  if (bytes.length >= 12 && bytes.toString('ascii', 0, 4) === 'RIFF'
-      && bytes.toString('ascii', 8, 12) === 'WEBP') {
-    return TYPE_BY_MIME.get('image/webp')
   }
   return null
 }

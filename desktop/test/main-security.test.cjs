@@ -937,7 +937,7 @@ test('image IPC returns bounded previews and never exposes imported file paths',
   assert.deepEqual(harness.attachmentInstances[0].importedFiles, [first, second])
   assert.deepEqual(harness.dialogCalls[0][1], {
     properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
   })
   for (const attachment of picked.attachments) {
     assert.deepEqual(Object.keys(attachment).sort(), [

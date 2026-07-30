@@ -140,7 +140,7 @@ test('Codex resume uses the native session id with the current sandbox', () => {
 
 test('Codex forwards every validated image to new and resumed sessions', () => {
   const first = path.resolve('diagram-one.png')
-  const second = path.resolve('diagram-two.webp')
+  const second = path.resolve('diagram-two.jpg')
   const created = invocation('codex', '/tmp/codex', '/tmp/work', '', {
     attachments: [first, second],
   })

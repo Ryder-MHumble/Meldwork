@@ -20,7 +20,7 @@ The first release has a strict boundary: Agent execution, orchestration, groups,
 - Create persistent local Agent groups and continue conversations across app restarts.
 - Bring heterogeneous local Agents into one manual or bounded automatic discussion, with each Agent keeping its own native session reference.
 - Reference validated local Skills with `@` and route each selection only to its intended Agent.
-- Attach PNG, JPEG, or WebP images through the system picker or clipboard paste, with per-Agent capability checks before any run starts.
+- Attach PNG or JPEG images through the system picker or clipboard paste, with per-Agent capability checks before any run starts.
 - Run Agent turns through a constrained Electron bridge instead of giving the web UI shell access.
 - Request read-only/plan modes by default where the Agent adapter can enforce them, with explicit write opt-in; adapters without an enforceable mode are labeled as Agent-managed permissions.
 - Install supported missing Agents through fixed, allowlisted flows.
