@@ -21,6 +21,15 @@ function fixture() {
     detectAgents: async () => agents,
     credentialState: async () => ({ state: 'ready', source: 'native-credential' }),
     sharedProviderReady: () => false,
+    resolveAttachments: async refs => refs.map(ref => ({
+      id: ref.id,
+      name: ref.name,
+      mimeType: ref.mimeType,
+      size: ref.size,
+      path: path.join(directory, 'attachments', `${ref.id}.png`),
+    })),
+    validateSkillSelections: (_kind, selections) => selections,
+    imageAttachmentLimit: kind => ({ codex: 4, hermes: 1, opencode: 4 })[kind] || 0,
     runAgent: async (agent, prompt, workdir, runOptions) => {
       calls.push({ agent, prompt, workdir, runOptions })
       return {
@@ -32,6 +41,16 @@ function fixture() {
     createId: () => `id-${++id}`,
   }
   return { directory, calls, options }
+}
+
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
 }
 
 test('installed Agents distinguish ready, unverified, and missing credential states', async (t) => {
@@ -104,10 +123,7 @@ test('an authentication failure keeps an Agent unavailable when later detection 
     name: '待验证', agentKinds: ['kimi'], workdir: directory,
   })
 
-  await assert.rejects(
-    workspace.sendMessage({ groupId: group.id, text: '测试', targetKinds: ['kimi'] }),
-    { message: 'LOCAL_AGENT_ALL_CALLS_FAILED' },
-  )
+  await workspace.sendMessage({ groupId: group.id, text: '测试', targetKinds: ['kimi'] })
   assert.equal(workspace.snapshot().agents.find(agent => agent.kind === 'kimi').available, false)
 
   nativeState = { state: 'unknown', source: 'unverified' }
@@ -129,10 +145,7 @@ test('runtime authentication failures require an explicit retry before native ev
   const group = workspace.createGroup({
     name: '凭据恢复', agentKinds: ['kimi'], workdir: directory,
   })
-  await assert.rejects(
-    workspace.sendMessage({ groupId: group.id, text: '测试', targetKinds: ['kimi'] }),
-    { message: 'LOCAL_AGENT_ALL_CALLS_FAILED' },
-  )
+  await workspace.sendMessage({ groupId: group.id, text: '测试', targetKinds: ['kimi'] })
 
   await workspace.refreshAgents()
 
@@ -193,10 +206,7 @@ test('a slow readiness refresh cannot overwrite a concurrent runtime authenticat
   refreshing = true
   const refresh = workspace.refreshAgents()
   while (!releaseClaude) await new Promise(resolve => setImmediate(resolve))
-  await assert.rejects(
-    workspace.sendMessage({ groupId: group.id, text: '测试', targetKinds: ['kimi'] }),
-    { message: 'LOCAL_AGENT_ALL_CALLS_FAILED' },
-  )
+  await workspace.sendMessage({ groupId: group.id, text: '测试', targetKinds: ['kimi'] })
   releaseClaude({ state: 'ready', source: 'native-credential' })
   await refresh
 
@@ -244,6 +254,125 @@ test('groups and messages persist without exposing executable paths', async (t) 
   assert.equal('executable' in workspace.snapshot().agents[0], false)
 })
 
+test('Skills are validated and injected only into their selected target Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const validationCalls = []
+  options.validateSkillSelections = (kind, selections) => {
+    validationCalls.push({ kind, selections })
+    return selections
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Skill routing', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const review = {
+    targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code',
+  }
+  const research = {
+    targetKind: 'hermes', namespace: 'research', slug: 'sources', name: 'Find sources',
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Compare the implementation',
+    targetKinds: ['codex', 'hermes'],
+    skillHints: [review, research],
+  })
+
+  assert.deepEqual(validationCalls, [
+    { kind: 'codex', selections: [review] },
+    { kind: 'hermes', selections: [research] },
+  ])
+  assert.match(calls[0].prompt, /quality\/review: Review code/)
+  assert.doesNotMatch(calls[0].prompt, /research\/sources|Find sources/)
+  assert.match(calls[1].prompt, /research\/sources: Find sources/)
+  assert.doesNotMatch(calls[1].prompt, /quality\/review|Review code/)
+  assert.equal(calls[0].runOptions.skills, undefined)
+  assert.deepEqual(calls[1].runOptions.skills, ['sources'])
+  assert.deepEqual(workspace.snapshot().messages[0].skillHints, [review, research])
+
+  await assert.rejects(
+    workspace.sendMessage({
+      groupId: group.id,
+      text: 'Invalid target',
+      targetKinds: ['codex'],
+      skillHints: [research],
+    }),
+    { message: 'LOCAL_SKILL_SELECTION_INVALID' },
+  )
+  assert.equal(workspace.snapshot().messages.filter(message => message.role === 'user').length, 1)
+})
+
+test('image-only messages persist safe metadata and pass resolved paths to supported CLIs', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Image review', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const attachment = {
+    id: 'attachment-1', name: 'diagram.png', mimeType: 'image/png', size: 128,
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: '',
+    targetKinds: ['codex', 'hermes'],
+    attachments: [attachment],
+  })
+
+  const expectedPath = path.join(directory, 'attachments', 'attachment-1.png')
+  assert.deepEqual(calls.map(call => call.runOptions.attachments), [
+    [expectedPath], [expectedPath],
+  ])
+  const storedMessage = workspace.snapshot().messages[0]
+  assert.equal(storedMessage.content, '')
+  assert.deepEqual(storedMessage.attachments, [attachment])
+  assert.equal(JSON.stringify(storedMessage).includes(expectedPath), false)
+
+  const restored = new LocalWorkspace(options)
+  assert.deepEqual(restored.snapshot().messages[0].attachments, [attachment])
+})
+
+test('image capability failures happen before a message or Agent run is recorded', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const mixed = workspace.createGroup({
+    name: 'Mixed image support', agentKinds: ['codex', 'workbuddy'], workdir: directory,
+  })
+  const first = { id: 'attachment-1', name: 'one.png', mimeType: 'image/png', size: 10 }
+  const second = { id: 'attachment-2', name: 'two.png', mimeType: 'image/png', size: 10 }
+
+  await assert.rejects(
+    workspace.sendMessage({
+      groupId: mixed.id,
+      text: 'Inspect',
+      targetKinds: ['codex', 'workbuddy'],
+      attachments: [first],
+    }),
+    { message: 'LOCAL_AGENT_IMAGE_UNSUPPORTED' },
+  )
+
+  const hermes = workspace.createGroup({
+    name: 'Hermes image limit', agentKinds: ['hermes'], workdir: directory,
+  })
+  await assert.rejects(
+    workspace.sendMessage({
+      groupId: hermes.id,
+      text: 'Inspect both',
+      attachments: [first, second],
+    }),
+    { message: 'LOCAL_AGENT_IMAGE_LIMIT' },
+  )
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+})
+
 test('a failed run-start notification does not leave an active run behind', (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -255,6 +384,177 @@ test('a failed run-start notification does not leave an active run behind', (t) 
     { message: 'listener failed' },
   )
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+})
+
+test('manual send reserves its group throughout asynchronous attachment preflight', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const attachmentGate = deferred()
+  options.resolveAttachments = async (refs) => {
+    await attachmentGate.promise
+    return refs.map(ref => ({
+      ...ref,
+      path: path.join(directory, 'attachments', `${ref.id}.png`),
+    }))
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '预处理占位', agentKinds: ['codex'], workdir: directory,
+  })
+  const first = workspace.sendMessage({
+    groupId: group.id,
+    text: 'First',
+    targetKinds: ['codex'],
+    attachments: [{
+      id: 'attachment-first', name: 'first.png', mimeType: 'image/png', size: 10,
+    }],
+  })
+
+  assert.equal(workspace.snapshot().runs[0].phase, 'preparing')
+  await assert.rejects(
+    workspace.sendMessage({ groupId: group.id, text: 'Second', targetKinds: ['codex'] }),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  assert.throws(
+    () => workspace.updateGroup(group.id, { workdir: path.join(directory, 'other') }),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  assert.throws(
+    () => workspace.deleteGroup(group.id),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+
+  attachmentGate.resolve()
+  await first
+
+  assert.equal(calls.length, 1)
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'user')
+      .map(message => message.content),
+    ['First'],
+  )
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+})
+
+test('automatic discussion cannot overtake a manual send in preflight', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const attachmentGate = deferred()
+  options.resolveAttachments = async (refs) => {
+    await attachmentGate.promise
+    return refs.map(ref => ({
+      ...ref,
+      path: path.join(directory, 'attachments', `${ref.id}.png`),
+    }))
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '发送与自动讨论互斥', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Existing topic')
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Manual follow-up',
+    targetKinds: ['codex'],
+    attachments: [{
+      id: 'attachment-follow-up', name: 'follow-up.png', mimeType: 'image/png', size: 10,
+    }],
+  })
+
+  assert.throws(
+    () => workspace.startAuto({ groupId: group.id, maxRounds: 2 }),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  attachmentGate.resolve()
+  await send
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    ['system.autoRoundLimit', 'system.autoTimeout'].includes(message.system?.key)
+  )), false)
+})
+
+test('stopAll waits for an in-flight preflight and prevents it from launching an Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const attachmentEntered = deferred()
+  const attachmentGate = deferred()
+  options.resolveAttachments = async (refs) => {
+    attachmentEntered.resolve()
+    await attachmentGate.promise
+    return refs.map(ref => ({
+      ...ref,
+      path: path.join(directory, 'attachments', `${ref.id}.png`),
+    }))
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '关闭时预处理', agentKinds: ['codex'], workdir: directory,
+  })
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Do not launch',
+    targetKinds: ['codex'],
+    attachments: [{
+      id: 'attachment-shutdown', name: 'shutdown.png', mimeType: 'image/png', size: 10,
+    }],
+  })
+  const stoppedSend = assert.rejects(send, { message: 'LOCAL_AGENT_EXECUTION_STOPPED' })
+  await attachmentEntered.promise
+
+  let shutdownComplete = false
+  const shutdown = workspace.stopAll().then(() => { shutdownComplete = true })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(shutdownComplete, false)
+
+  attachmentGate.resolve()
+  await Promise.all([stoppedSend, shutdown])
+
+  assert.equal(shutdownComplete, true)
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+})
+
+test('a stale controller cannot clear a newer active run for the same group', (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const first = workspace.beginRun('group-id', 'manual', ['codex'], '')
+  const second = workspace.createRunController('manual', ['hermes'], '')
+  workspace.activeRuns.set('group-id', second)
+
+  workspace.finishRun('group-id', first, 'completed')
+  assert.equal(workspace.activeRuns.get('group-id'), second)
+
+  workspace.finishRun('group-id', second, 'stopped')
+  assert.equal(workspace.activeRuns.has('group-id'), false)
+})
+
+test('run-finished listener failures do not change a completed manual result', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Best effort event', agentKinds: ['codex'], workdir: directory,
+  })
+  workspace.on('run-finished', () => { throw new Error('listener failed') })
+
+  await assert.doesNotReject(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Complete despite notification failure',
+    targetKinds: ['codex'],
+  }))
+
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.equal(
+    workspace.snapshot().messages.some(message => message.agentKind === 'codex'),
+    true,
+  )
 })
 
 test('workspace loading allowlists local group and message fields', async (t) => {
@@ -287,6 +587,27 @@ test('workspace loading allowlists local group and message fields', async (t) =>
   stored.messages[0].emoji = 'legacy-reaction'
   stored.messages[0].reactions = [{ name: 'thumbs-up' }]
   stored.messages[0].sticker = { id: 'legacy-sticker' }
+  stored.messages[0].attachments = [{
+    id: 'attachment-safe',
+    name: 'diagram.png',
+    mimeType: 'image/png',
+    size: 128,
+    path: '/private/attachment.png',
+    previewDataUrl: 'data:image/png;base64,private',
+  }]
+  stored.messages[0].skillHints = [{
+    targetKind: 'codex',
+    namespace: 'global',
+    slug: 'review',
+    name: 'Review',
+    path: '/private/SKILL.md',
+  }]
+  stored.messages[1].elapsedMs = 12.4
+  stored.messages[1].toolCalls = [
+    ...Array.from({ length: 8 }, () => ({ title: 'write_file', status: 'completed' })),
+    { title: '/private/tool-output', status: 'unknown' },
+  ]
+  stored.messages[1].executable = '/private/agent'
   stored.remoteChannels = [{ id: 'remote-channel' }]
   fs.writeFileSync(options.storagePath, `${JSON.stringify(stored)}\n`)
   const restored = new LocalWorkspace(options)
@@ -297,6 +618,20 @@ test('workspace loading allowlists local group and message fields', async (t) =>
   for (const key of ['emoji', 'reactions', 'sticker']) {
     assert.equal(key in restoredSnapshot.messages[0], false)
   }
+  assert.deepEqual(restoredSnapshot.messages[0].attachments, [{
+    id: 'attachment-safe', name: 'diagram.png', mimeType: 'image/png', size: 128,
+  }])
+  assert.deepEqual(restoredSnapshot.messages[0].skillHints, [{
+    targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
+  }])
+  assert.equal(restoredSnapshot.messages[1].elapsedMs, 12)
+  assert.equal(restoredSnapshot.messages[1].toolCalls.length, 8)
+  assert.deepEqual(restoredSnapshot.messages[1].toolCalls.at(-1), {
+    title: 'process', status: 'completed',
+  })
+  assert.equal('executable' in restoredSnapshot.messages[1], false)
+  assert.equal(JSON.stringify(restoredSnapshot).includes('/private/'), false)
+  assert.equal(JSON.stringify(restoredSnapshot).includes('previewDataUrl'), false)
   assert.equal('remoteChannels' in restored.state, false)
 })
 
@@ -468,6 +803,33 @@ test('group write authorization is explicit, persisted, and passed to local CLIs
   assert.equal(restored.snapshot().groups[0].allowWrite, true)
 })
 
+test('group settings cannot change execution context during an active run', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let releaseRun
+  const runGate = new Promise(resolve => { releaseRun = resolve })
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    await runGate
+    return { text: `${agent.kind} done`, sessionRef: runOptions.sessionRef || 'session-1' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '运行中配置', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: '开始', targetKinds: ['codex'] })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.throws(
+    () => workspace.updateGroup(group.id, { workdir: path.join(directory, 'other'), allowWrite: true }),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  releaseRun()
+  await send
+  assert.equal(workspace.getGroup(group.id).workdir, directory)
+  assert.equal(workspace.getGroup(group.id).allowWrite, false)
+})
+
 test('one failed agent persists only its stable error code in a multi-agent message', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -482,6 +844,8 @@ test('one failed agent persists only its stable error code in a multi-agent mess
     return { text: 'Codex 正常回复', sessionRef: 'codex-session' }
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '部分失败', agentKinds: ['codex', 'hermes'], workdir: directory,
@@ -512,6 +876,8 @@ test('one failed agent persists only its stable error code in a multi-agent mess
   assert.match(serialized, /LOCAL_AGENT_PROCESS_FAILED/)
   assert.doesNotMatch(serialized, /\/private\/agents\/hermes|upstream untranslated text/)
   assert.doesNotMatch(JSON.stringify(snapshot), /\/private\/agents\/hermes|upstream untranslated text/)
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'partial')
 })
 
 test('running snapshots expose queued and active agents with the topic root', async (t) => {
@@ -525,6 +891,8 @@ test('running snapshots expose queued and active agents with the topic root', as
     return { text: `${agent.kind} done`, sessionRef: runOptions.sessionRef || `${agent.kind}-session` }
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '运行状态', agentKinds: ['codex', 'hermes'], workdir: directory,
@@ -543,9 +911,66 @@ test('running snapshots expose queued and active agents with the topic root', as
   releaseCodex()
   await send
   assert.deepEqual(workspace.snapshot().runs, [])
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'completed')
+  assert.equal(finished[0].groupId, group.id)
+  assert.equal(finished[0].threadRootId, running.messages[0].id)
 })
 
-test('all failed agents reject with an aggregate error after recording failures', async (t) => {
+test('Hermes progress stays bounded metadata while later Agents receive only its final reply', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let releaseHermes
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes') {
+      for (let index = 0; index < 9; index += 1) {
+        runOptions.onProgress({ title: 'write_file', status: 'completed' })
+      }
+      runOptions.onProgress({ title: '/private/review diff', status: 'unknown' })
+      await new Promise(resolve => { releaseHermes = resolve })
+      return { text: 'Hermes authoritative final', sessionRef: 'hermes-session' }
+    }
+    return { text: 'WorkBuddy used the final', sessionRef: 'workbuddy-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '最终结果传递', agentKinds: ['hermes', 'workbuddy'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: '开始研究',
+    targetKinds: ['hermes', 'workbuddy'],
+  })
+  await new Promise(resolve => setImmediate(resolve))
+
+  const active = workspace.snapshot().runs[0]
+  assert.equal(active.currentKind, 'hermes')
+  assert.equal(active.progress.length, 8)
+  assert.deepEqual(active.progress.at(-1), { title: 'process', status: 'completed' })
+  assert.doesNotMatch(JSON.stringify(active.progress), /private|review diff/)
+
+  releaseHermes()
+  await send
+
+  assert.match(calls[1].prompt, /Hermes: Hermes authoritative final/)
+  assert.doesNotMatch(calls[1].prompt, /write_file|review diff|elapsedMs|private/)
+  const hermesReply = workspace.snapshot().messages.find(message => message.agentKind === 'hermes')
+  assert.equal(hermesReply.content, 'Hermes authoritative final')
+  assert.equal(hermesReply.toolCalls.length, 8)
+  assert.equal(Number.isSafeInteger(hermesReply.elapsedMs), true)
+  assert.equal(hermesReply.elapsedMs >= 0, true)
+
+  const persisted = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  const persistedReply = persisted.messages.find(message => message.agentKind === 'hermes')
+  assert.equal(persistedReply.content, 'Hermes authoritative final')
+  assert.equal(persistedReply.toolCalls.length, 8)
+  assert.equal(typeof persistedReply.elapsedMs, 'number')
+})
+
+test('all failed agents resolve after persisting one user message and recording failures', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -553,28 +978,34 @@ test('all failed agents reject with an aggregate error after recording failures'
     throw new Error(`${agent.kind} failed`)
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '全部失败', agentKinds: ['codex', 'hermes'], workdir: directory,
   })
 
-  await assert.rejects(
-    workspace.sendMessage({
-      groupId: group.id, text: '@所有人 测试', targetKinds: ['codex', 'hermes'],
-    }),
-    error => {
-      assert.equal(error.message, 'LOCAL_AGENT_ALL_CALLS_FAILED')
-      assert.deepEqual(error.failures, ['Codex: codex failed', 'Hermes: hermes failed'])
-      return true
-    },
-  )
+  const result = await workspace.sendMessage({
+    groupId: group.id,
+    text: '@所有人 测试',
+    targetKinds: ['codex', 'hermes'],
+    attachments: [{ id: 'failure-image', name: 'failure.png', mimeType: 'image/png', size: 3 }],
+  })
 
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
+  const userMessages = result.messages.filter(message => message.role === 'user')
+  assert.equal(userMessages.length, 1)
+  assert.equal(userMessages[0].content, '@所有人 测试')
+  assert.deepEqual(userMessages[0].attachments, [
+    { id: 'failure-image', name: 'failure.png', mimeType: 'image/png', size: 3 },
+  ])
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'system')
       .map(message => message.content),
     ['Codex failed: codex failed', 'Hermes failed: hermes failed'],
   )
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'failed')
 })
 
 test('automatic dialogue continues complete rounds until every Agent agrees', async (t) => {
@@ -594,6 +1025,8 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
     }
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
@@ -623,6 +1056,74 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
     ],
   )
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'completed')
+  assert.equal(finished[0].mode, 'auto')
+})
+
+test('automatic dialogue carries root images until delivery and preloads Hermes root skills', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let hermesAttempts = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes' && hermesAttempts++ === 0) {
+      throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    }
+    const consensus = calls.length >= 4 ? 'agree' : 'continue'
+    return {
+      text: `${agent.kind} reply\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '附件自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const attachment = {
+    id: 'attachment-auto', name: 'architecture.png', mimeType: 'image/png', size: 128,
+  }
+  const skill = {
+    targetKind: 'hermes', namespace: 'global', slug: 'research', name: 'Research',
+  }
+  workspace.addMessage(group.id, 'user', '审查这张架构图', '', '', null, {
+    attachments: [attachment], skillHints: [skill],
+  })
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  const attachmentPath = path.join(directory, 'attachments', 'attachment-auto.png')
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+  assert.deepEqual(calls.map(call => call.runOptions.attachments), [
+    [attachmentPath], [attachmentPath], [], [attachmentPath],
+  ])
+  assert.deepEqual(calls.filter(call => call.agent.kind === 'hermes')
+    .map(call => call.runOptions.skills), [['research'], ['research']])
+})
+
+test('automatic dialogue rejects unequal image context before starting any Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '附件能力预检', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '比较两张图', '', '', null, {
+    attachments: [
+      { id: 'attachment-a', name: 'a.png', mimeType: 'image/png', size: 128 },
+      { id: 'attachment-b', name: 'b.png', mimeType: 'image/png', size: 128 },
+    ],
+  })
+
+  assert.throws(
+    () => workspace.startAuto({ groupId: group.id, maxRounds: 2 }),
+    { message: 'LOCAL_AGENT_IMAGE_LIMIT' },
+  )
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.equal(calls.length, 0)
 })
 
 test('automatic dialogue requires one final standalone consensus marker', async (t) => {
@@ -717,6 +1218,8 @@ test('stopping automatic dialogue cancels the active round without a limit messa
     })
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '停止自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
@@ -737,6 +1240,8 @@ test('stopping automatic dialogue cancels the active round without a limit messa
   assert.equal(workspace.snapshot().messages.some(message => (
     ['system.autoRoundLimit', 'system.autoTimeout'].includes(message.system?.key)
   )), false)
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'stopped')
 })
 
 test('automatic dialogue isolates duplicate failures and retries every Agent next round', async (t) => {
@@ -789,6 +1294,37 @@ test('automatic dialogue isolates duplicate failures and retries every Agent nex
   )
 })
 
+test('automatic dialogue keeps the round-limit diagnostic when every Agent fails', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '全员失败', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', '失败也要保留终止诊断')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'codex', 'hermes',
+  ])
+  const limit = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.autoRoundLimit'
+  ))
+  assert.equal(limit.threadRootId, root.id)
+  assert.deepEqual(limit.system.params, { rounds: 2 })
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'failed')
+})
+
 test('automatic dialogue resumes a session captured before a failed turn', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -834,6 +1370,8 @@ test('automatic dialogue defaults to three rounds and hides consensus markers at
     }
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '安全上限', agentKinds: ['codex', 'hermes'], workdir: directory,
@@ -855,6 +1393,13 @@ test('automatic dialogue defaults to three rounds and hides consensus markers at
   ))
   assert.equal(limit.threadRootId, root.id)
   assert.deepEqual(limit.system.params, { rounds: 3 })
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'round-limit')
+  assert.equal(finished[0].threadRootId, root.id)
+  assert.doesNotMatch(
+    fs.readFileSync(options.storagePath, 'utf8'),
+    /"status"\s*:\s*"round-limit"|run-finished/,
+  )
 })
 
 test('automatic dialogue accepts legacy maxTurns as a round limit', async (t) => {
@@ -900,6 +1445,8 @@ test('automatic dialogue aborts the active Agent at the total runtime limit', as
     })
   }
   const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '运行时限', agentKinds: ['codex', 'hermes'], workdir: directory,
@@ -916,12 +1463,12 @@ test('automatic dialogue aborts the active Agent at the total runtime limit', as
   ))
   assert.equal(timeout.threadRootId, root.id)
   assert.deepEqual(timeout.system.params, {})
-  assert.equal(workspace.snapshot().messages.some(message => (
-    message.system?.key === 'system.autoRoundLimit'
-  )), false)
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'timeout')
+  assert.equal(finished[0].threadRootId, root.id)
 })
 
-test('automatic dialogue contains unexpected orchestration errors with a stable system message', async (t) => {
+test('automatic dialogue keeps its stable diagnostic and emits a failed terminal event', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -930,6 +1477,8 @@ test('automatic dialogue contains unexpected orchestration errors with a stable 
     name: '异常兜底', agentKinds: ['codex', 'hermes'], workdir: directory,
   })
   const root = workspace.addMessage(group.id, 'user', '内部异常不能形成未处理拒绝')
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
   const emitChanged = workspace.emitChanged.bind(workspace)
   let emitCount = 0
   workspace.emitChanged = () => {
@@ -939,7 +1488,7 @@ test('automatic dialogue contains unexpected orchestration errors with a stable 
   }
 
   workspace.startAuto({ groupId: group.id, maxRounds: 2 })
-  await new Promise(resolve => setImmediate(resolve))
+  await workspace.activeRuns.get(group.id).promise
 
   const stopped = workspace.snapshot().messages.find(message => (
     message.system?.key === 'system.autoStopped'
@@ -948,6 +1497,9 @@ test('automatic dialogue contains unexpected orchestration errors with a stable 
   assert.equal(stopped.content, 'Automatic discussion stopped: LOCAL_AGENT_UNKNOWN_FAILURE')
   assert.deepEqual(stopped.system.params, { reason: 'LOCAL_AGENT_UNKNOWN_FAILURE' })
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'failed')
+  assert.equal(finished[0].threadRootId, root.id)
 })
 
 test('automatic dialogue requires a topic root and accepts an explicit one', async (t) => {

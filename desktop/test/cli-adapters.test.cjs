@@ -7,6 +7,7 @@ const { EventEmitter } = require('node:events')
 const { PassThrough } = require('node:stream')
 const {
   detectAgents,
+  imageAttachmentLimit,
   invocation,
   normalizeOutput,
   parseCodexOutput,
@@ -15,6 +16,8 @@ const {
   parseOpenCodeOutput,
   parseWorkBuddyOutput,
   prepareCommand,
+  readHermesFinalResponse,
+  readHermesMessageWatermark,
   resolveExecutable,
   runAgent,
   searchPath,
@@ -135,6 +138,26 @@ test('Codex resume uses the native session id with the current sandbox', () => {
   ])
 })
 
+test('Codex forwards every validated image to new and resumed sessions', () => {
+  const first = path.resolve('diagram-one.png')
+  const second = path.resolve('diagram-two.webp')
+  const created = invocation('codex', '/tmp/codex', '/tmp/work', '', {
+    attachments: [first, second],
+  })
+  assert.deepEqual(created.args, [
+    'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only',
+    '-C', '/tmp/work', '--image', first, '--image', second, '-',
+  ])
+
+  const resumed = invocation('codex', '/tmp/codex', '/tmp/work', 'thread-123', {
+    attachments: [first],
+  })
+  assert.deepEqual(resumed.args, [
+    'exec', 'resume', '--json', '--skip-git-repo-check',
+    '-c', 'sandbox_mode="read-only"', '--image', first, 'thread-123', '-',
+  ])
+})
+
 test('Codex JSONL output returns the reply and session id', () => {
   const output = [
     JSON.stringify({ type: 'thread.started', thread_id: 'thread-123' }),
@@ -163,6 +186,17 @@ test('Hermes uses quiet query mode and resumes the native session id without a s
   assert.equal(spec.args.includes('--yolo'), false)
 })
 
+test('Hermes normalizes official quiet stdout as the fallback reply', () => {
+  assert.deepEqual(normalizeOutput(
+    'hermes',
+    '\u001b[32mHermes process output\u001b[0m\n',
+    'hermes-session-123',
+  ), {
+    text: 'Hermes process output',
+    sessionRef: 'hermes-session-123',
+  })
+})
+
 test('Hermes accepts an explicit OpenAI-compatible provider without exposing its key in arguments', () => {
   const spec = invocation('hermes', '/tmp/hermes', '/tmp', '', {
     provider: { id: 'openai-api', model: 'glm' },
@@ -173,24 +207,97 @@ test('Hermes accepts an explicit OpenAI-compatible provider without exposing its
   assert.equal(spec.args.some(value => value.includes('test-secret')), false)
 })
 
+test('Hermes preloads validated selected skills through its native CLI flags', () => {
+  const spec = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
+    skills: ['research', 'code-review', 'research'],
+  })
+  assert.deepEqual(spec.args, [
+    'chat', '--quiet',
+    '--skills', 'research',
+    '--skills', 'code-review',
+    '--resume', 'hermes-session-123',
+    '--query',
+  ])
+  assert.throws(
+    () => invocation('hermes', '/tmp/hermes', '/tmp', '', { skills: ['../private'] }),
+    { message: 'LOCAL_SKILL_SELECTION_INVALID' },
+  )
+  assert.throws(
+    () => invocation('hermes', '/tmp/hermes', '/tmp', '', {
+      skills: ['one', 'two', 'three', 'four', 'five'],
+    }),
+    { message: 'LOCAL_SKILL_LIMIT' },
+  )
+})
+
+test('Hermes forwards one image and rejects additional images instead of dropping them', () => {
+  const first = path.resolve('diagram-one.png')
+  const second = path.resolve('diagram-two.png')
+  const spec = invocation('hermes', '/tmp/hermes', '/tmp', '', {
+    attachments: [first],
+  })
+  assert.deepEqual(spec.args, [
+    'chat', '--quiet', '--image', first, '--query',
+  ])
+  assert.throws(
+    () => invocation('hermes', '/tmp/hermes', '/tmp', '', {
+      attachments: [first, second],
+    }),
+    { message: 'LOCAL_AGENT_IMAGE_LIMIT' },
+  )
+})
+
+test('image capability rejects unsupported Agents and malformed paths before spawning', () => {
+  assert.equal(imageAttachmentLimit('codex'), 4)
+  assert.equal(imageAttachmentLimit('hermes'), 1)
+  assert.equal(imageAttachmentLimit('opencode'), 4)
+  assert.equal(imageAttachmentLimit('claude'), 0)
+  assert.throws(
+    () => invocation('claude', '/tmp/claude', '/tmp', '', {
+      attachments: [path.resolve('diagram.png')],
+    }),
+    { message: 'LOCAL_AGENT_IMAGE_UNSUPPORTED' },
+  )
+  assert.throws(
+    () => invocation('codex', '/tmp/codex', '/tmp', '', {
+      attachments: ['relative.png'],
+    }),
+    { message: 'LOCAL_ATTACHMENT_REFERENCE_INVALID' },
+  )
+})
+
 test('runAgent forces Hermes execution confirmation even when callers request yolo mode', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-env-'))
+  const resultFile = path.join(directory, 'hermes-env-result.json')
   const cli = executable(directory, 'hermes-env.cjs', `
-process.stdout.write(JSON.stringify({
+const fs = require('node:fs')
+fs.writeFileSync(${JSON.stringify(resultFile)}, JSON.stringify({
   ask: process.env.HERMES_EXEC_ASK,
   yolo: process.env.HERMES_YOLO_MODE,
 }))
+process.stderr.write('session_id: hermes-env-session\\n')
 `)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let finalLookup
 
   const result = await runAgent(
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     'hello',
     directory,
-    { env: { HERMES_EXEC_ASK: '0', HERMES_YOLO_MODE: '1' } },
+    {
+      home: directory,
+      env: { HERMES_EXEC_ASK: '0', HERMES_YOLO_MODE: '1' },
+      hermesMessageWatermarkFn: () => 0,
+      hermesFinalResponseFn: (sessionRef, lookupOptions) => {
+        finalLookup = { sessionRef, lookupOptions }
+        return fs.readFileSync(resultFile, 'utf8')
+      },
+    },
   )
 
   assert.deepEqual(JSON.parse(result.text), { ask: '1', yolo: '' })
+  assert.equal(finalLookup.sessionRef, 'hermes-env-session')
+  assert.equal(finalLookup.lookupOptions.afterMessageId, 0)
 })
 
 test('runAgent restores the Hermes session id reported on successful stderr', async (t) => {
@@ -205,12 +312,225 @@ process.stderr.write('diagnostic\\nsession_id: hermes-session-123\\n')
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     'hello',
     directory,
+    {
+      home: directory,
+      hermesMessageWatermarkFn: () => 23,
+      hermesFinalResponseFn: () => 'Hermes reply',
+    },
   )
 
   assert.deepEqual(result, {
     text: 'Hermes reply',
     sessionRef: 'hermes-session-123',
   })
+})
+
+test('runAgent prefers the authoritative Hermes reply and keeps stderr progress out of content', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-final-'))
+  const cli = executable(directory, 'hermes-final.cjs', `
+process.stdout.write('┊ planning\\nnoisy stdout fallback')
+process.stderr.write('┊ review diff\\na//tmp/report.py → b//tmp/report.py\\n@@ -0,0 +1 @@\\n+tool trace\\nsession_id: hermes-session-final\\n')
+  `)
+  const progress = []
+  let finalLookup
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'hello',
+    directory,
+    {
+      env: { OPENAI_API_KEY: 'test-secret-value' },
+      onProgress: step => progress.push(step),
+      hermesMessageWatermarkFn: () => 41,
+      hermesFinalResponseFn: (sessionRef, lookupOptions) => {
+        finalLookup = { sessionRef, lookupOptions }
+        return sessionRef === 'hermes-session-final'
+          ? 'Hermes authoritative final test-secret-value'
+          : ''
+      },
+    },
+  )
+
+  assert.deepEqual(result, {
+    text: 'Hermes authoritative final [redacted]',
+    sessionRef: 'hermes-session-final',
+    progress: [{ title: 'write_file', status: 'completed' }],
+  })
+  assert.deepEqual(progress, [{ title: 'write_file', status: 'completed' }])
+  assert.equal(finalLookup.sessionRef, 'hermes-session-final')
+  assert.equal(finalLookup.lookupOptions.afterMessageId, 41)
+  assert.doesNotMatch(result.text, /review diff|tool trace|noisy stdout|test-secret-value/)
+})
+
+test('Hermes final lookup accepts post-watermark stop and length rows through a read-only query seam', () => {
+  const rows = [
+    {
+      id: 40, session_id: 'session-1', role: 'assistant',
+      content: 'previous turn final', finish_reason: 'stop',
+    },
+    {
+      id: 41, session_id: 'session-1', role: 'assistant',
+      content: 'current process draft', finish_reason: 'tool_calls',
+    },
+  ]
+  const queries = []
+  const queryFn = (query) => {
+    queries.push(query)
+    if (/MAX\(id\)/.test(query.sql)) return { max_id: 40 }
+    const [sessionRef, afterMessageId] = query.params
+    return rows
+      .filter(row => row.session_id === sessionRef
+        && row.id > afterMessageId
+        && row.role === 'assistant'
+        && ['stop', 'length'].includes(row.finish_reason)
+        && row.content.trim())
+      .sort((left, right) => right.id - left.id)[0]
+  }
+  const stateOptions = {
+    home: '/virtual/hermes-home',
+    existsFn: () => true,
+    queryFn,
+  }
+
+  const watermark = readHermesMessageWatermark(stateOptions)
+  assert.equal(watermark, 40)
+  assert.equal(readHermesFinalResponse('session-1', {
+    ...stateOptions, afterMessageId: watermark,
+  }), '')
+
+  rows.push({
+    id: 42, session_id: 'session-1', role: 'assistant',
+    content: 'token-limited current final', finish_reason: 'length',
+  })
+  assert.equal(readHermesFinalResponse('session-1', {
+    ...stateOptions, afterMessageId: watermark,
+  }), 'token-limited current final')
+  rows.push({
+    id: 43, session_id: 'session-1', role: 'assistant',
+    content: 'authoritative current final', finish_reason: 'stop',
+  })
+  assert.equal(readHermesFinalResponse('session-1', {
+    ...stateOptions, afterMessageId: watermark,
+  }), 'authoritative current final')
+  assert.equal(queries.every(query => query.readOnly === true), true)
+  assert.match(queries.at(-1).sql, /id > \?/)
+  assert.match(queries.at(-1).sql, /finish_reason IN \('stop', 'length'\)/)
+  assert.deepEqual(queries.at(-1).params, ['session-1', 40])
+
+  const failedQuery = () => { throw new Error('schema changed') }
+  assert.equal(readHermesMessageWatermark({
+    ...stateOptions, queryFn: failedQuery,
+  }), null)
+  assert.equal(readHermesFinalResponse('session-1', {
+    ...stateOptions, afterMessageId: 40, queryFn: failedQuery,
+  }), '')
+  assert.equal(readHermesMessageWatermark({
+    ...stateOptions, existsFn: () => false,
+  }), 0)
+})
+
+test('runAgent falls back to Hermes quiet stdout when no post-watermark final exists', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-no-final-'))
+  const processProgress = Array.from({ length: 10 }, () => '┊ review diff').join('\n')
+  const cli = executable(directory, 'hermes-no-final.cjs', `
+process.stdout.write('Hermes quiet fallback')
+process.stderr.write(${JSON.stringify(`${processProgress}\nsession_id: hermes-session-no-final\n`)})
+  `)
+  const progress = []
+  let finalLookup
+  const lifecycle = []
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'hello',
+    directory,
+    {
+      onProgress: step => progress.push(step),
+      onSessionRef: async (sessionRef) => {
+        await new Promise(resolve => setImmediate(resolve))
+        lifecycle.push(`session:${sessionRef}`)
+      },
+      hermesMessageWatermarkFn: () => 52,
+      hermesFinalResponseFn: (sessionRef, lookupOptions) => {
+        lifecycle.push('final-lookup')
+        finalLookup = { sessionRef, lookupOptions }
+        return ''
+      },
+    },
+  )
+  assert.equal(result.text, 'Hermes quiet fallback')
+  assert.equal(result.sessionRef, 'hermes-session-no-final')
+  assert.equal(finalLookup.sessionRef, 'hermes-session-no-final')
+  assert.equal(finalLookup.lookupOptions.afterMessageId, 52)
+  assert.deepEqual(lifecycle, [
+    'session:hermes-session-no-final',
+    'final-lookup',
+  ])
+  assert.equal(progress.length, 8)
+  assert.deepEqual(progress.at(-1), { title: 'write_file', status: 'completed' })
+})
+
+test('runAgent persists the Hermes session before falling back from a throwing final lookup', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-lookup-failure-'))
+  const cli = executable(directory, 'hermes-lookup-failure.cjs', `
+process.stdout.write('process output only')
+process.stderr.write('session_id: hermes-session-lookup-failure\\n')
+`)
+  const lifecycle = []
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'hello',
+    directory,
+    {
+      onSessionRef: async (sessionRef) => {
+        await new Promise(resolve => setImmediate(resolve))
+        lifecycle.push(`session:${sessionRef}`)
+      },
+      hermesMessageWatermarkFn: () => 61,
+      hermesFinalResponseFn: () => {
+        lifecycle.push('final-lookup')
+        throw new Error('schema changed')
+      },
+    },
+  )
+  assert.equal(result.text, 'process output only')
+  assert.equal(result.sessionRef, 'hermes-session-lookup-failure')
+  assert.deepEqual(lifecycle, [
+    'session:hermes-session-lookup-failure',
+    'final-lookup',
+  ])
+})
+
+test('runAgent still starts Hermes and uses quiet stdout when the pre-run watermark is unavailable', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-no-watermark-'))
+  const cli = executable(directory, 'hermes-no-watermark.cjs', `
+process.stdout.write('\\u001b[36mHermes quiet fallback\\u001b[0m\\n')
+process.stderr.write('session_id: hermes-session-no-watermark\\n')
+  `)
+  let finalLookupCount = 0
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'hello',
+    directory,
+    {
+      hermesMessageWatermarkFn: () => null,
+      hermesFinalResponseFn: () => {
+        finalLookupCount += 1
+        return 'previous turn final'
+      },
+    },
+  )
+  assert.deepEqual(result, {
+    text: 'Hermes quiet fallback',
+    sessionRef: 'hermes-session-no-watermark',
+  })
+  assert.equal(finalLookupCount, 0)
 })
 
 test('OpenClaw JSON output is reduced to reply text', () => {
@@ -786,6 +1106,16 @@ test('OpenCode uses JSON events and resumes the requested session without auto a
     sandbox: 'workspace-write',
   })
   assert.deepEqual(configure.args, ['run', '--format', 'json'])
+
+  const first = path.resolve('diagram-one.png')
+  const second = path.resolve('diagram-two.jpg')
+  const withImages = invocation('opencode', '/tmp/opencode', '/tmp/work', 'opencode-session', {
+    attachments: [first, second],
+  })
+  assert.deepEqual(withImages.args, [
+    'run', '--format', 'json', '--agent', 'plan', '--session', 'opencode-session',
+    '--file', first, '--file', second,
+  ])
 })
 
 test('OpenCode JSONL output returns completed text and the native session id', () => {
@@ -1524,7 +1854,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal },
+    { signal: controller.signal, hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pid = Number(await readWhenReady(readyFile))
 
@@ -1557,7 +1887,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal },
+    { signal: controller.signal, hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pids = await readJsonWhenReady(readyFile)
 

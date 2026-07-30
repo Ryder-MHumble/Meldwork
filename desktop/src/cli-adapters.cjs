@@ -22,6 +22,14 @@ const AGENT_PROFILES = {
 }
 const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const CODEX_SANDBOXES = new Set(['read-only', 'workspace-write'])
+const IMAGE_ATTACHMENT_LIMITS = Object.freeze({
+  codex: 4,
+  hermes: 1,
+  opencode: 4,
+})
+const MAX_NATIVE_SKILLS = 4
+const NATIVE_SKILL_NAME = /^[\p{L}\p{N}._-]{1,100}$/u
+const MAX_PROGRESS_STEPS = 8
 const TERMINATE_GRACE_MS = 500
 const KILL_SETTLE_MS = 500
 const ACP_CANCEL_GRACE_MS = 250
@@ -372,15 +380,53 @@ function codexSandbox(requested) {
   return CODEX_SANDBOXES.has(configured) ? configured : 'read-only'
 }
 
+function imageAttachmentLimit(kind) {
+  return IMAGE_ATTACHMENT_LIMITS[kind] || 0
+}
+
+function attachmentPaths(kind, value) {
+  if (value == null) return []
+  if (!Array.isArray(value)) throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+  const limit = imageAttachmentLimit(kind)
+  if (value.length && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
+  if (value.length > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
+  const normalized = value.map((filename) => {
+    if (typeof filename !== 'string' || !filename || filename.length > 4096
+        || !path.isAbsolute(filename) || /[\u0000-\u001f\u007f]/.test(filename)) {
+      throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+    }
+    return path.normalize(filename)
+  })
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+  }
+  return normalized
+}
+
+function hermesSkillNames(value) {
+  if (value == null) return []
+  if (!Array.isArray(value)) throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+  if (value.length > MAX_NATIVE_SKILLS) throw new Error('LOCAL_SKILL_LIMIT')
+  const normalized = value.map((skill) => {
+    if (typeof skill !== 'string' || !NATIVE_SKILL_NAME.test(skill)) {
+      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+    }
+    return skill
+  })
+  return [...new Set(normalized)]
+}
+
 function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
+  const attachments = attachmentPaths(kind, options.attachments)
   if (kind === 'codex') {
     const sandbox = codexSandbox(options.sandbox)
+    const imageArgs = attachments.flatMap(filename => ['--image', filename])
     if (sessionRef) {
       return {
         command: executable,
         args: [
           'exec', 'resume', '--json', '--skip-git-repo-check',
-          '-c', `sandbox_mode="${sandbox}"`, sessionRef, '-',
+          '-c', `sandbox_mode="${sandbox}"`, ...imageArgs, sessionRef, '-',
         ],
         stdin: true,
       }
@@ -388,11 +434,12 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     return {
       command: executable,
       args: ['exec', '--json', '--skip-git-repo-check', '--sandbox',
-        sandbox, '-C', workdir, '-'],
+        sandbox, '-C', workdir, ...imageArgs, '-'],
       stdin: true,
     }
   }
   if (kind === 'hermes') {
+    const skills = hermesSkillNames(options.skills)
     return {
       command: executable,
       args: [
@@ -400,7 +447,9 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--quiet',
         ...(options.provider?.id ? ['--provider', options.provider.id] : []),
         ...(options.provider?.model ? ['--model', options.provider.model] : []),
+        ...skills.flatMap(skill => ['--skills', skill]),
         ...(sessionRef ? ['--resume', sessionRef] : []),
+        ...(attachments[0] ? ['--image', attachments[0]] : []),
         '--query',
       ],
       promptArg: true,
@@ -493,6 +542,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         'run', '--format', 'json',
         ...(options.sandbox === 'workspace-write' ? [] : ['--agent', 'plan']),
         ...(sessionRef ? ['--session', sessionRef] : []),
+        ...attachments.flatMap(filename => ['--file', filename]),
       ],
       promptArg: true,
     }
@@ -654,6 +704,64 @@ function hermesSessionRef(stderr) {
   return matches.at(-1)?.[1] || ''
 }
 
+function stripAnsi(value) {
+  return String(value || '').replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+}
+
+function queryHermesState(databasePath, sql, params, options = {}) {
+  if (typeof options.queryFn === 'function') {
+    return options.queryFn({ databasePath, sql, params, readOnly: true })
+  }
+  let database
+  try {
+    const { DatabaseSync } = require('node:sqlite')
+    database = new DatabaseSync(databasePath, { readOnly: true })
+    return database.prepare(sql).get(...params)
+  } finally {
+    try { database?.close() } catch { /* database was already closed */ }
+  }
+}
+
+function readHermesMessageWatermark(options = {}) {
+  const databasePath = path.join(options.home || os.homedir(), '.hermes', 'state.db')
+  const existsFn = options.existsFn || fs.existsSync
+  if (!existsFn(databasePath)) return 0
+  try {
+    const row = queryHermesState(databasePath, `
+      SELECT COALESCE(MAX(id), 0) AS max_id
+      FROM messages
+    `, [], options)
+    const watermark = Number(row?.max_id)
+    return Number.isSafeInteger(watermark) && watermark >= 0 ? watermark : null
+  } catch {
+    return null
+  }
+}
+
+function readHermesFinalResponse(sessionRef, options = {}) {
+  const afterMessageId = Number(options.afterMessageId)
+  if (!sessionRef || !Number.isSafeInteger(afterMessageId) || afterMessageId < 0) return ''
+  const databasePath = path.join(options.home || os.homedir(), '.hermes', 'state.db')
+  const existsFn = options.existsFn || fs.existsSync
+  if (!existsFn(databasePath)) return ''
+  try {
+    const row = queryHermesState(databasePath, `
+      SELECT content
+      FROM messages
+      WHERE session_id = ?
+        AND id > ?
+        AND role = 'assistant'
+        AND finish_reason IN ('stop', 'length')
+        AND length(trim(content)) > 0
+      ORDER BY id DESC
+      LIMIT 1
+    `, [sessionRef, afterMessageId], options)
+    return String(row?.content || '').trim()
+  } catch {
+    return ''
+  }
+}
+
 function redactChildSecrets(value, env) {
   let result = String(value || '')
   for (const [name, secret] of Object.entries(env)) {
@@ -699,6 +807,7 @@ function normalizeOutput(kind, stdout, sessionRef = '') {
   if (kind === 'openclaw') {
     return { text: normalizeOpenClawOutput(stdout), sessionRef }
   }
+  if (kind === 'hermes') return { text: stripAnsi(stdout).trim(), sessionRef }
   if (kind === 'workbuddy') {
     const parsed = parseWorkBuddyOutput(stdout)
     return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
@@ -1131,6 +1240,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   const spec = invocation(agent.kind, agent.executable, workdir, sessionRef, {
     sandbox: options.sandbox,
     provider: options.provider,
+    attachments: options.attachments,
+    skills: options.skills,
   })
   if (spec.acpMode) return runKimiAcp(agent, prompt, workdir, options, spec)
   const args = [...spec.args]
@@ -1138,6 +1249,20 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   if (spec.suffixArgs) args.push(...spec.suffixArgs)
   const prepared = prepareCommand(spec.command, args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
+  let hermesMessageWatermark = null
+  if (agent.kind === 'hermes') {
+    const watermarkFn = options.hermesMessageWatermarkFn || readHermesMessageWatermark
+    try {
+      const watermark = watermarkFn({
+        home: options.home,
+        existsFn: options.hermesStateExistsFn,
+        queryFn: options.hermesStateQueryFn,
+      })
+      if (Number.isSafeInteger(watermark) && watermark >= 0) {
+        hermesMessageWatermark = watermark
+      }
+    } catch { /* a missing pre-run watermark makes final lookup ineligible */ }
+  }
   return await new Promise((resolve, reject) => {
     let child
     try {
@@ -1164,6 +1289,23 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     let timeout
     let forceKillTimeout
     let forceSettleTimeout
+    const progress = []
+    const hermesProgressBuffers = { stdout: '', stderr: '' }
+    const hermesProgressDecoders = { stdout: new TextDecoder(), stderr: new TextDecoder() }
+    const emitHermesProgress = (source, chunk, flush = false) => {
+      if (agent.kind !== 'hermes' || progress.length >= MAX_PROGRESS_STEPS) return
+      const decoder = hermesProgressDecoders[source]
+      hermesProgressBuffers[source] += decoder.decode(chunk || undefined, { stream: !flush })
+      const lines = hermesProgressBuffers[source].split(/\r?\n/)
+      hermesProgressBuffers[source] = flush ? '' : (lines.pop() || '')
+      for (const line of lines) {
+        if (!/^┊\s*review diff$/i.test(stripAnsi(line).trim())) continue
+        const event = { title: 'write_file', status: 'completed' }
+        progress.push(event)
+        try { options.onProgress?.(event) } catch { /* progress is best-effort */ }
+        if (progress.length >= MAX_PROGRESS_STEPS) break
+      }
+    }
     const finish = (callback) => {
       if (settled) return
       settled = true
@@ -1219,10 +1361,12 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     child.stdout.on('data', (chunk) => {
       stdoutBytes += chunk.length
       if (stdoutBytes <= 10 * 1024 * 1024) stdout.push(chunk)
+      emitHermesProgress('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
       stderrBytes += chunk.length
       if (stderrBytes <= 1024 * 1024) stderr.push(chunk)
+      emitHermesProgress('stderr', chunk)
     })
     child.on('error', error => finish(() => reject(
       stopRequested
@@ -1233,40 +1377,66 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           ),
     )))
     child.on('close', (code, signal) => finish(() => {
-      if (stopRequested || options.signal?.aborted) {
-        reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
-        return
-      }
-      if (code !== 0) {
-        const rawStdout = Buffer.concat(stdout).toString('utf8')
-        const rawStderr = Buffer.concat(stderr).toString('utf8').trim()
-        const structuredDetail = structuredCliError(rawStdout)
-        const detail = redactChildSecrets(
-          [rawStderr, structuredDetail].filter(Boolean).join('\n'),
-          childEnv,
+      void (async () => {
+        emitHermesProgress('stdout', null, true)
+        emitHermesProgress('stderr', null, true)
+        if (stopRequested || options.signal?.aborted) {
+          reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+          return
+        }
+        if (code !== 0) {
+          const rawStdout = Buffer.concat(stdout).toString('utf8')
+          const rawStderr = Buffer.concat(stderr).toString('utf8').trim()
+          const structuredDetail = structuredCliError(rawStdout)
+          const detail = redactChildSecrets(
+            [rawStderr, structuredDetail].filter(Boolean).join('\n'),
+            childEnv,
+          )
+          reject(failedAgentProcessError(detail))
+          return
+        }
+        const rawStderr = Buffer.concat(stderr).toString('utf8')
+        const nextSessionRef = agent.kind === 'hermes'
+          ? hermesSessionRef(rawStderr) || sessionRef
+          : sessionRef
+        const result = normalizeOutput(
+          agent.kind,
+          Buffer.concat(stdout).toString('utf8'),
+          nextSessionRef,
         )
-        reject(failedAgentProcessError(detail))
-        return
-      }
-      const rawStderr = Buffer.concat(stderr).toString('utf8')
-      const nextSessionRef = agent.kind === 'hermes'
-        ? hermesSessionRef(rawStderr) || sessionRef
-        : sessionRef
-      const result = normalizeOutput(
-        agent.kind,
-        Buffer.concat(stdout).toString('utf8'),
-        nextSessionRef,
-      )
-      const redactedText = redactChildSecrets(result.text, childEnv)
-      const redactedSessionRef = redactChildSecrets(result.sessionRef, childEnv)
-      if (!redactedText) {
-        reject(new Error('LOCAL_AGENT_EMPTY_RESPONSE'))
-        return
-      }
-      resolve({
-        text: redactedText,
-        sessionRef: redactedSessionRef.includes('[redacted]') ? '' : redactedSessionRef,
-      })
+        const redactedSessionRef = redactChildSecrets(result.sessionRef, childEnv)
+        const publicSessionRef = redactedSessionRef.includes('[redacted]')
+          ? ''
+          : redactedSessionRef
+        if (agent.kind === 'hermes') {
+          if (publicSessionRef && typeof options.onSessionRef === 'function') {
+            await options.onSessionRef(publicSessionRef)
+          }
+          const finalResponseFn = options.hermesFinalResponseFn || readHermesFinalResponse
+          let finalResponse = ''
+          if (publicSessionRef && Number.isSafeInteger(hermesMessageWatermark)) {
+            try {
+              finalResponse = finalResponseFn(publicSessionRef, {
+                home: options.home,
+                afterMessageId: hermesMessageWatermark,
+                existsFn: options.hermesStateExistsFn,
+                queryFn: options.hermesStateQueryFn,
+              })
+            } catch { /* fall back to the official --quiet stdout */ }
+          }
+          const storedResponse = typeof finalResponse === 'string' ? finalResponse.trim() : ''
+          if (storedResponse) result.text = storedResponse
+          if (progress.length) result.progress = progress
+        }
+        const redactedText = redactChildSecrets(result.text, childEnv)
+        if (!redactedText) {
+          reject(agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE'))
+          return
+        }
+        const output = { text: redactedText, sessionRef: publicSessionRef }
+        if (result.progress?.length) output.progress = result.progress
+        resolve(output)
+      })().catch(error => reject(error))
     }))
     if (spec.stdin) child.stdin.end(prompt)
     else child.stdin.end()
@@ -1276,6 +1446,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
 module.exports = {
   ALLOWED_KINDS,
   detectAgents,
+  imageAttachmentLimit,
   invocation,
   normalizeOutput,
   parseCodexOutput,
@@ -1284,6 +1455,8 @@ module.exports = {
   parseOpenCodeOutput,
   parseWorkBuddyOutput,
   prepareCommand,
+  readHermesFinalResponse,
+  readHermesMessageWatermark,
   resolveExecutable,
   runAgent,
   searchPath,

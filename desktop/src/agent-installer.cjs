@@ -7,6 +7,7 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 const { randomUUID } = require('node:crypto')
 const { searchPath } = require('./cli-adapters.cjs')
+const { DISPLAY_LIMIT, listLocalAgentSkills } = require('./local-skill-catalog.cjs')
 
 const execFileAsync = promisify(execFile)
 const MAX_SCRIPT_BYTES = 4 * 1024 * 1024
@@ -122,6 +123,26 @@ function abortError() {
   return Object.assign(new Error('cancelled'), { name: 'AbortError' })
 }
 
+function abortable(task, signal) {
+  if (signal.aborted) return Promise.reject(abortError())
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const settle = (callback) => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', abort)
+      callback()
+    }
+    const abort = () => settle(() => reject(abortError()))
+    signal.addEventListener('abort', abort, { once: true })
+    Promise.resolve(task).then(
+      value => settle(() => resolve(value)),
+      error => settle(() => reject(error)),
+    )
+    if (signal.aborted) abort()
+  })
+}
+
 function validateScriptUrl(url) {
   let parsed
   try {
@@ -215,39 +236,54 @@ function verifiedAgent(agent) {
   return Boolean(agent?.kind && String(agent.version || '').trim())
 }
 
-function downloadResponse(url, redirects = 0) {
+function downloadResponse(url, signal, redirects = 0) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(abortError())
+      return
+    }
     const parsed = validateScriptUrl(url)
-    const request = https.get(parsed, { timeout: 30000 }, response => {
+    let settled = false
+    let request
+    const abort = () => request?.destroy(abortError())
+    const settle = (callback) => {
+      if (settled) return
+      settled = true
+      signal?.removeEventListener('abort', abort)
+      callback()
+    }
+    request = https.get(parsed, { timeout: 30000 }, response => {
       if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
         response.resume()
         if (redirects >= 3 || !response.headers.location) {
-          reject(installerError('INSTALL_AGENT_DOWNLOAD_FAILED'))
+          settle(() => reject(installerError('INSTALL_AGENT_DOWNLOAD_FAILED')))
           return
         }
         let next
         try {
           next = new URL(response.headers.location, parsed).toString()
         } catch {
-          reject(installerError('INSTALL_AGENT_DOWNLOAD_FAILED'))
+          settle(() => reject(installerError('INSTALL_AGENT_DOWNLOAD_FAILED')))
           return
         }
-        downloadResponse(next, redirects + 1).then(resolve, reject)
+        settle(() => downloadResponse(next, signal, redirects + 1).then(resolve, reject))
         return
       }
       if (response.statusCode !== 200) {
         response.resume()
-        reject(installerError('INSTALL_AGENT_DOWNLOAD_FAILED'))
+        settle(() => reject(installerError('INSTALL_AGENT_DOWNLOAD_FAILED')))
         return
       }
-      resolve(response)
+      settle(() => resolve(response))
     })
     request.on('timeout', () => request.destroy(installerError('INSTALL_AGENT_DOWNLOAD_FAILED')))
-    request.on('error', error => reject(
-      String(error?.code || '').startsWith('INSTALL_AGENT_')
+    request.on('error', error => settle(() => reject(
+      error?.name === 'AbortError' || String(error?.code || '').startsWith('INSTALL_AGENT_')
         ? error
         : installerError('INSTALL_AGENT_DOWNLOAD_FAILED'),
-    ))
+    )))
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) abort()
   })
 }
 
@@ -262,7 +298,7 @@ async function defaultDownloadScript(url, signal) {
   let response
   const abort = () => response?.destroy(abortError())
   try {
-    response = await downloadResponse(url)
+    response = await downloadResponse(url, signal)
     if (signal?.aborted) throw abortError()
     signal?.addEventListener('abort', abort, { once: true })
     for await (const chunk of response) {
@@ -369,6 +405,7 @@ class AgentInstaller extends EventEmitter {
     runProcess = defaultRunProcess,
     readCommandFile = filename => fs.readFileSync(filename, 'utf8'),
     commandPathExists = fs.existsSync,
+    listSkills = listLocalAgentSkills,
     createId = randomUUID,
     now = Date.now,
   }) {
@@ -381,10 +418,12 @@ class AgentInstaller extends EventEmitter {
     this.runProcess = runProcess
     this.readCommandFile = readCommandFile
     this.commandPathExists = commandPathExists
+    this.listSkills = listSkills
     this.createId = createId
     this.now = now
     this.current = publicState({})
     this.controller = null
+    this.starting = null
     this.running = null
     this.detectionCache = null
     this.detectionCacheExpiresAt = 0
@@ -456,31 +495,64 @@ class AgentInstaller extends EventEmitter {
     }
   }
 
+  async skills(kind) {
+    const installed = await this.detectedAgents()
+    if (!installed.some(agent => agent.kind === kind && verifiedAgent(agent))) {
+      return { supported: false, skills: [], total: 0, limit: DISPLAY_LIMIT }
+    }
+    return this.listSkills(kind)
+  }
+
   async start(kind) {
-    if (this.running) throw installerError('INSTALL_AGENT_BUSY')
+    if (this.starting || this.running) throw installerError('INSTALL_AGENT_BUSY')
     const profile = AGENT_CATALOG.find(agent => agent.kind === kind)
     if (!profile) throw installerError('INSTALL_AGENT_UNSUPPORTED')
     const recipe = installRecipe(kind, this.platform)
-    if (!recipe) {
-      throw installerError('INSTALL_AGENT_PLATFORM_UNSUPPORTED')
-    }
-    const installed = await this.detectAgents()
-    if (installed.some(agent => agent.kind === kind && verifiedAgent(agent))) {
+    if (!recipe) throw installerError('INSTALL_AGENT_PLATFORM_UNSUPPORTED')
+
+    const previousState = this.state()
+    const controller = new AbortController()
+    const taskId = this.createId()
+    const task = Promise.resolve()
+      .then(() => this.prepareStart({ profile, recipe, signal: controller.signal }))
+      .catch((error) => {
+        if (controller.signal.aborted || error?.name === 'AbortError') {
+          this.setState({ phase: 'cancelled', canCancel: false, errorCode: '' })
+          return this.state()
+        }
+        this.setState(previousState)
+        throw error
+      })
+    this.starting = { task, controller }
+    this.controller = controller
+    this.setState({ taskId, kind, phase: 'checking', canCancel: true, errorCode: '' })
+    return task.finally(() => {
+      if (this.starting?.task === task) this.starting = null
+      if (!this.running && this.controller === controller) this.controller = null
+    })
+  }
+
+  async prepareStart({ profile, recipe, signal }) {
+    this.invalidateDetectionCache()
+    const installed = await abortable(this.detectedAgents(), signal)
+    if (signal.aborted) throw abortError()
+    if (installed.some(agent => agent.kind === profile.kind && verifiedAgent(agent))) {
       throw installerError('INSTALL_AGENT_ALREADY_INSTALLED')
     }
     let command = recipe.interpreter || ''
     if (recipe.type === 'npm') {
-      command = await this.findCommand(this.platform === 'win32' ? 'npm.cmd' : 'npm')
+      command = await abortable(
+        this.findCommand(this.platform === 'win32' ? 'npm.cmd' : 'npm'),
+        signal,
+      )
+      if (signal.aborted) throw abortError()
       if (!command) throw installerError('INSTALL_AGENT_NODE_REQUIRED')
     }
     validateInstallCommand(command, recipe, this.platform)
-
-    const taskId = this.createId()
-    this.controller = new AbortController()
-    this.setState({ taskId, kind, phase: 'checking', canCancel: true, errorCode: '' })
-    this.running = this.runInstall({ profile, recipe, command, signal: this.controller.signal })
+    if (signal.aborted) throw abortError()
+    this.running = this.runInstall({ profile, recipe, command, signal })
       .finally(() => {
-        this.controller = null
+        if (this.controller?.signal === signal) this.controller = null
         this.running = null
       })
     return this.state()
@@ -515,11 +587,11 @@ class AgentInstaller extends EventEmitter {
       this.setState({ phase: 'installing' })
       await this.runProcess(prepared.command, prepared.args, { signal, platform: this.platform })
       this.setState({ phase: 'verifying', canCancel: false })
-      const installed = await this.detectAgents()
+      this.invalidateDetectionCache()
+      const installed = await this.detectedAgents()
       if (!installed.some(agent => agent.kind === profile.kind && verifiedAgent(agent))) {
         throw installerError('INSTALL_AGENT_VERIFY_FAILED')
       }
-      this.invalidateDetectionCache()
       this.setState({ phase: 'completed', canCancel: false })
     } catch (error) {
       if (signal.aborted || error?.name === 'AbortError') {
@@ -539,18 +611,30 @@ class AgentInstaller extends EventEmitter {
   }
 
   cancel(taskId) {
-    if (!this.running || !this.controller || taskId !== this.current.taskId) return false
+    if ((!this.starting && !this.running)
+      || !this.controller
+      || !this.current.canCancel
+      || taskId !== this.current.taskId) return false
     this.controller.abort()
+    this.setState({ canCancel: false })
     return true
   }
 
-  waitForIdle() {
-    return this.running || Promise.resolve()
+  cancelPending() {
+    if (!this.starting) return false
+    return this.cancel(this.current.taskId)
+  }
+
+  async waitForIdle() {
+    const starting = this.starting?.task
+    if (starting) await starting
+    if (this.running) await this.running
   }
 }
 
 module.exports = {
   AgentInstaller,
+  defaultDownloadScript,
   defaultFindCommand,
   defaultRunProcess,
   installRecipe,

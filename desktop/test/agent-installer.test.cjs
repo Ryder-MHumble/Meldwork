@@ -1,12 +1,14 @@
 const assert = require('node:assert/strict')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
+const https = require('node:https')
 const os = require('node:os')
 const path = require('node:path')
 const { test } = require('node:test')
 
 const {
   AgentInstaller,
+  defaultDownloadScript,
   defaultFindCommand,
   defaultRunProcess,
   installRecipe,
@@ -102,6 +104,35 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   assert.equal(result.agents.find(agent => agent.kind === 'opencode').providerCompatible, false)
   assert.equal(JSON.stringify(result).includes('/tmp/codebuddy'), false)
   assert.equal(JSON.stringify(result).includes('/tmp/kimi'), false)
+})
+
+test('skills are listed only for a verified installed Agent', async () => {
+  const listCalls = []
+  const service = installer({
+    detectAgents: async () => [
+      { kind: 'codex', version: '1.0.0', executable: '/tmp/codex' },
+    ],
+    listSkills: kind => {
+      listCalls.push(kind)
+      return {
+        supported: true,
+        total: 1,
+        limit: 100,
+        skills: [{ targetKind: kind, namespace: 'global', slug: 'review', name: 'Review' }],
+      }
+    },
+  })
+
+  assert.deepEqual(await service.skills('codex'), {
+    supported: true,
+    total: 1,
+    limit: 100,
+    skills: [{ targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review' }],
+  })
+  assert.deepEqual(await service.skills('hermes'), {
+    supported: false, total: 0, limit: 1000, skills: [],
+  })
+  assert.deepEqual(listCalls, ['codex'])
 })
 
 test('catalog lookups share in-flight and short-lived Agent detection', async () => {
@@ -339,7 +370,7 @@ test('npm installation uses an allowlisted package then verifies detection', asy
   })
 })
 
-test('a completed installation invalidates a previously cached catalog', async () => {
+test('installation refreshes cached detection before and after mutating the machine', async () => {
   let installed = false
   let detectCount = 0
   const service = installer({
@@ -359,7 +390,139 @@ test('a completed installation invalidates a previously cached catalog', async (
 
   const after = await service.catalog()
   assert.equal(after.agents.find(agent => agent.kind === 'workbuddy').installed, true)
-  assert.equal(detectCount, 4)
+  assert.equal(detectCount, 3)
+})
+
+test('installation rejects a concurrently starting request before either can launch twice', async () => {
+  let installed = false
+  let releaseDetection
+  let detectCount = 0
+  let runCount = 0
+  const firstDetection = new Promise(resolve => { releaseDetection = resolve })
+  const service = installer({
+    detectAgents: async () => {
+      detectCount += 1
+      if (detectCount === 1) await firstDetection
+      return installed
+        ? [{ kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' }]
+        : []
+    },
+    runProcess: async () => {
+      runCount += 1
+      installed = true
+    },
+  })
+
+  const firstStart = service.start('workbuddy')
+  assert.deepEqual(service.state(), {
+    taskId: 'task-1',
+    kind: 'workbuddy',
+    phase: 'checking',
+    canCancel: true,
+    errorCode: '',
+  })
+  await assert.rejects(service.start('qwen'), { message: 'INSTALL_AGENT_BUSY' })
+  releaseDetection()
+  await firstStart
+  await service.waitForIdle()
+
+  assert.equal(runCount, 1)
+})
+
+test('pending startup is cancellable and waitForIdle covers detection before process launch', async () => {
+  let releaseDetection
+  let runCount = 0
+  let idleSettled = false
+  const detection = new Promise(resolve => { releaseDetection = resolve })
+  const service = installer({
+    detectAgents: async () => {
+      await detection
+      return []
+    },
+    runProcess: async () => { runCount += 1 },
+  })
+
+  const start = service.start('workbuddy')
+  const idle = service.waitForIdle().finally(() => { idleSettled = true })
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.deepEqual(service.state(), {
+    taskId: 'task-1',
+    kind: 'workbuddy',
+    phase: 'checking',
+    canCancel: true,
+    errorCode: '',
+  })
+  assert.equal(idleSettled, false)
+  assert.equal(service.cancel('wrong-task'), false)
+  assert.equal(service.cancel('task-1'), true)
+  assert.equal(service.state().canCancel, false)
+  assert.deepEqual(await within(start), {
+    taskId: 'task-1',
+    kind: 'workbuddy',
+    phase: 'cancelled',
+    canCancel: false,
+    errorCode: '',
+  })
+  await within(idle)
+  assert.equal(idleSettled, true)
+  assert.equal(runCount, 0)
+  assert.equal(service.cancel('task-1'), false)
+  assert.equal(service.cancelPending(), false)
+  releaseDetection()
+  await new Promise(resolve => setImmediate(resolve))
+})
+
+test('npm lookup remains visibly cancellable before the installer process launches', async () => {
+  let releaseLookup
+  let markLookupStarted
+  let runCount = 0
+  const lookup = new Promise(resolve => { releaseLookup = resolve })
+  const lookupStarted = new Promise(resolve => { markLookupStarted = resolve })
+  const service = installer({
+    findCommand: async () => {
+      markLookupStarted()
+      return lookup
+    },
+    runProcess: async () => { runCount += 1 },
+  })
+
+  const start = service.start('workbuddy')
+  await lookupStarted
+
+  assert.equal(service.state().phase, 'checking')
+  assert.equal(service.state().canCancel, true)
+  assert.equal(service.cancel('task-1'), true)
+  assert.equal((await within(start)).phase, 'cancelled')
+  assert.equal(runCount, 0)
+
+  releaseLookup('/usr/local/bin/npm')
+  await new Promise(resolve => setImmediate(resolve))
+})
+
+test('installation refuses to overwrite an Agent that appeared after a cached catalog read', async () => {
+  let installed = false
+  let detectCount = 0
+  let runCount = 0
+  const service = installer({
+    detectAgents: async () => {
+      detectCount += 1
+      return installed
+        ? [{ kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' }]
+        : []
+    },
+    runProcess: async () => { runCount += 1 },
+  })
+
+  const before = await service.catalog()
+  assert.equal(before.agents.find(agent => agent.kind === 'workbuddy').installed, false)
+  installed = true
+
+  await assert.rejects(service.start('workbuddy'), {
+    message: 'INSTALL_AGENT_ALREADY_INSTALLED',
+  })
+  assert.equal(detectCount, 2)
+  assert.equal(runCount, 0)
 })
 
 test('Windows npm installation launches node.exe and npm-cli.js without a shell', async () => {
@@ -509,6 +672,32 @@ test('reports download failures without starting the installer command', async (
     canCancel: false,
     errorCode: 'INSTALL_AGENT_DOWNLOAD_FAILED',
   })
+})
+
+test('download cancellation aborts the request before response headers arrive', async (t) => {
+  const originalGet = https.get
+  let request
+  let destroyedWith
+  t.after(() => { https.get = originalGet })
+  https.get = () => {
+    request = new EventEmitter()
+    request.destroy = (error) => {
+      destroyedWith = error
+      queueMicrotask(() => request.emit('error', error))
+    }
+    return request
+  }
+  const controller = new AbortController()
+
+  const download = defaultDownloadScript(
+    'https://hermes-agent.nousresearch.com/install.sh',
+    controller.signal,
+  )
+  while (!request) await new Promise(resolve => setImmediate(resolve))
+  controller.abort()
+
+  await assert.rejects(within(download, 500), { name: 'AbortError' })
+  assert.equal(destroyedWith?.name, 'AbortError')
 })
 
 test('cancels only the active task and never exposes commands or output in state', async () => {

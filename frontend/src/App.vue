@@ -13,7 +13,11 @@
     </section>
 
     <template v-else>
-      <aside class="sidebar">
+      <aside
+        class="sidebar"
+        :inert="blockingOverlayOpen ? '' : undefined"
+        :aria-hidden="blockingOverlayOpen ? 'true' : undefined"
+      >
         <header class="brand-row">
           <button class="brand-button" type="button" @click="goHome">
             <img :src="productLogo" alt="" />
@@ -53,24 +57,85 @@
         <nav class="conversation-nav" :aria-label="t('nav.conversations')">
           <section class="nav-section">
             <div class="nav-heading">
-              <span>{{ t('nav.direct') }}</span>
+              <span>{{ t('nav.sidebarAgents') }}</span>
               <PersonOutline />
             </div>
-            <button
-              v-for="group in directGroups"
-              :key="group.id"
-              class="conversation-link"
-              :class="{ active: selectedGroupId === group.id }"
-              type="button"
-              @click="selectGroup(group.id)"
-            >
-              <img :src="agentLogo(group.directAgentKind)" alt="" />
-              <span>{{ groupName(group) }}</span>
-              <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
-                <StopCircleOutline />
-              </span>
-            </button>
-            <p v-if="!directGroups.length" class="nav-empty">{{ t('nav.noDirect') }}</p>
+            <article v-for="agent in sidebarAgents" :key="agent.kind" class="sidebar-agent">
+              <header class="sidebar-agent-header">
+                <button
+                  class="sidebar-agent-main"
+                  type="button"
+                  :disabled="isDirectCreationPending(agent.kind)"
+                  @click="openDirect(agent)"
+                >
+                  <img :src="agent.logo" :alt="agent.label" />
+                  <span>
+                    <strong>{{ agent.label }}</strong>
+                    <small>
+                      {{ directGroupsFor(agent.kind).length
+                        ? t('nav.agentSessions', { count: directGroupsFor(agent.kind).length })
+                        : t('nav.noAgentSessions') }}
+                    </small>
+                  </span>
+                </button>
+                <button
+                  class="sidebar-agent-new"
+                  type="button"
+                  :title="t('nav.newDirect', { agent: agent.label })"
+                  :aria-label="t('nav.newDirect', { agent: agent.label })"
+                  :disabled="!agent.ready || isDirectCreationPending(agent.kind)"
+                  @click="createDirectSession(agent)"
+                >
+                  <AddOutline />
+                </button>
+              </header>
+              <div v-if="directGroupsFor(agent.kind).length" class="direct-session-list">
+                <div
+                  v-for="group in directGroupsFor(agent.kind)"
+                  :key="group.id"
+                  class="direct-session-row"
+                  :class="{ active: selectedGroupId === group.id }"
+                >
+                  <button
+                    class="direct-session-open"
+                    type="button"
+                    :title="t('nav.openDirect', { name: groupName(group) })"
+                    @click="selectGroup(group.id)"
+                  >
+                    <span>{{ groupName(group) }}</span>
+                    <time>{{ formatNavTime(group.updatedAt || group.createdAt) }}</time>
+                  </button>
+                  <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+                    <span class="run-pulse" />
+                  </span>
+                  <span v-else-if="hasFinishedDirectRun(group.id)" class="run-finished-mark" :title="t('nav.runFinished')">
+                    <CheckmarkCircleOutline />
+                  </span>
+                  <span v-else class="direct-session-spacer" />
+                  <button
+                    class="direct-session-action"
+                    type="button"
+                    :title="t('nav.renameDirect', { name: groupName(group) })"
+                    :aria-label="t('nav.renameDirect', { name: groupName(group) })"
+                    :disabled="isGroupRunning(group.id)"
+                    @click="openDirectRename(group)"
+                  >
+                    <PencilOutline />
+                  </button>
+                  <button
+                    class="direct-session-action danger"
+                    type="button"
+                    :title="t('nav.deleteDirect', { name: groupName(group) })"
+                    :aria-label="t('nav.deleteDirect', { name: groupName(group) })"
+                    :disabled="isGroupRunning(group.id)"
+                    @click="openDirectDelete(group)"
+                  >
+                    <TrashOutline />
+                  </button>
+                </div>
+              </div>
+            </article>
+            <p v-if="!sidebarAgents.length" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
           </section>
 
           <section class="nav-section">
@@ -89,7 +154,7 @@
               <span class="group-avatar"><ChatbubblesOutline /></span>
               <span>{{ groupName(group) }}</span>
               <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
-                <StopCircleOutline />
+                <span class="run-pulse" />
               </span>
             </button>
             <p v-if="!groupGroups.length" class="nav-empty">{{ t('nav.noGroups') }}</p>
@@ -111,7 +176,11 @@
         </footer>
       </aside>
 
-      <section class="workspace-pane">
+      <section
+        class="workspace-pane"
+        :inert="blockingOverlayOpen ? '' : undefined"
+        :aria-hidden="blockingOverlayOpen ? 'true' : undefined"
+      >
         <section v-if="!activeGroup" class="agent-home">
           <header class="home-header">
             <div>
@@ -136,7 +205,12 @@
 
           <div class="agent-grid">
             <article v-for="agent in mergedCatalog" :key="agent.kind" class="agent-card">
-              <button class="agent-card-main" type="button" @click="handleAgentPrimary(agent)">
+              <button
+                class="agent-card-main"
+                type="button"
+                :disabled="agent.ready && isDirectCreationPending(agent.kind)"
+                @click="handleAgentPrimary(agent)"
+              >
                 <img :src="agent.logo" :alt="agent.label" />
                 <span class="agent-card-copy">
                   <span class="agent-name-row">
@@ -146,7 +220,11 @@
                       {{ agentState(agent).label }}
                     </span>
                   </span>
-                  <span class="agent-provider-mode">{{ providerModeLabel(agent.providerMode) }}</span>
+                  <span class="agent-capability-list">
+                    <span v-if="agent.ready">{{ agentSkillLabel(agent.kind) }}</span>
+                    <span>{{ agentImageLabel(agent) }}</span>
+                    <span>{{ providerModeShortLabel(agent.providerMode) }}</span>
+                  </span>
                   <span v-if="agent.version" class="agent-version">
                     {{ t('agent.detectedVersion', { version: agent.version }) }}
                   </span>
@@ -154,7 +232,12 @@
                 <ChevronForwardOutline class="card-chevron" />
               </button>
               <div class="agent-card-actions">
-                <button v-if="agent.ready" type="button" @click="openDirect(agent)">
+                <button
+                  v-if="agent.ready"
+                  type="button"
+                  :disabled="isDirectCreationPending(agent.kind)"
+                  @click="openDirect(agent)"
+                >
                   <ChatbubbleEllipsesOutline />
                   {{ t('home.openChat') }}
                 </button>
@@ -184,23 +267,51 @@
               </div>
               <div>
                 <h1>{{ groupName(activeGroup) }}</h1>
-                <p>
+                <p class="conversation-capabilities">
                   <span>{{ activeGroup.conversationType === 'direct' ? t('conversation.direct') : t('conversation.members', { count: activeGroup.agentKinds.length }) }}</span>
                   <span class="meta-separator">/</span>
-                  <span>{{ activeGroup.allowWrite ? t('conversation.writeEnabled') : t('conversation.readOnly') }}</span>
+                  <span>{{ conversationPermissionLabel(activeGroup) }}</span>
+                  <template v-if="activeDirectAgent">
+                    <template v-if="activeDirectAgent.ready">
+                      <span class="meta-separator">/</span>
+                      <span>{{ agentSkillLabel(activeDirectAgent.kind) }}</span>
+                    </template>
+                    <span class="meta-separator">/</span>
+                    <span>{{ agentImageLabel(activeDirectAgent) }}</span>
+                    <span class="meta-separator">/</span>
+                    <span>{{ providerModeShortLabel(activeDirectAgent.providerMode) }}</span>
+                  </template>
                 </p>
               </div>
             </div>
             <div class="conversation-header-actions">
-              <button class="workspace-chip" type="button" :title="activeGroup.workdir" @click="openGroupSettings">
+              <button
+                class="workspace-chip"
+                type="button"
+                :title="activeGroup.workdir"
+                :disabled="Boolean(activeRun) || sending"
+                @click="openGroupSettings"
+              >
                 <FolderOpenOutline />
                 <span>{{ compactPath(activeGroup.workdir) }}</span>
+              </button>
+              <button
+                v-if="activeGroup.conversationType === 'direct'"
+                class="icon-button"
+                type="button"
+                :title="t('nav.renameDirect', { name: groupName(activeGroup) })"
+                :aria-label="t('nav.renameDirect', { name: groupName(activeGroup) })"
+                :disabled="Boolean(activeRun) || sending"
+                @click="openDirectRename(activeGroup)"
+              >
+                <PencilOutline />
               </button>
               <button
                 class="icon-button"
                 type="button"
                 :title="t('conversation.settings')"
                 :aria-label="t('conversation.settings')"
+                :disabled="Boolean(activeRun) || sending"
                 @click="openGroupSettings"
               >
                 <SettingsOutline />
@@ -209,7 +320,7 @@
           </header>
 
           <div ref="messageScroller" class="message-scroll">
-            <section v-if="!activeMessages.length" class="conversation-empty">
+            <section v-if="!timelineMessages.length && !activeRun" class="conversation-empty">
               <div class="empty-icon">
                 <ChatbubbleEllipsesOutline />
               </div>
@@ -222,15 +333,33 @@
 
             <div v-else class="message-list">
               <article
-                v-for="message in activeMessages"
+                v-for="message in timelineMessages"
                 :key="message.id"
+                :id="messageElementId(message.id)"
                 class="message-row"
-                :class="message.role"
+                :class="[
+                  message.role,
+                  {
+                    'topic-root': isTopicRoot(message),
+                    'topic-reply': Boolean(message.threadRootId),
+                    'active-topic': isActiveRunTopic(message),
+                  },
+                ]"
               >
                 <template v-if="message.role === 'system'">
                   <div class="system-message">
                     <WarningOutline />
                     <span>{{ translateSystemMessage(message) }}</span>
+                    <button
+                      v-if="isDismissibleSystemWarning(message)"
+                      class="message-dismiss-button"
+                      type="button"
+                      :title="t('common.dismiss')"
+                      :aria-label="t('common.dismiss')"
+                      @click="dismissSystemMessage(message.id)"
+                    >
+                      <CloseOutline />
+                    </button>
                   </div>
                 </template>
                 <template v-else>
@@ -244,21 +373,125 @@
                     <div class="message-meta">
                       <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
                       <time>{{ formatTime(message.createdAt) }}</time>
+                      <span v-if="isActiveRunTopic(message)" class="active-topic-label">
+                        {{ t('conversation.activeTopic') }}
+                      </span>
+                      <button
+                        v-if="isTopicRoot(message)"
+                        class="topic-toggle"
+                        type="button"
+                        :aria-expanded="isTopicExpanded(message.id) ? 'true' : 'false'"
+                        :aria-label="topicToggleLabel(message.id)"
+                        @click="toggleTopic(message.id)"
+                      >
+                        <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
+                        {{ t('conversation.topicReplies', { count: topicReplyCount(message.id) }) }}
+                      </button>
                     </div>
-                    <MarkdownMessage
-                      v-if="message.role === 'agent'"
-                      :content="message.content"
-                    />
-                    <div v-else class="message-content plain-message">{{ message.content }}</div>
+                    <template v-if="message.role === 'agent'">
+                      <MarkdownMessage :content="message.content" />
+                      <details v-if="messageExecutionSteps(message).length" class="execution-details">
+                        <summary>
+                          <TerminalOutline />
+                          <span>{{ t('conversation.executionProcess') }}</span>
+                          <small>{{ messageExecutionSteps(message).length }}</small>
+                          <time v-if="messageElapsedLabel(message)">{{ messageElapsedLabel(message) }}</time>
+                        </summary>
+                        <ol>
+                          <li v-for="(step, index) in messageExecutionSteps(message)" :key="`${message.id}-${index}`">
+                            <span>{{ localizedStepTitle(step, index) }}</span>
+                            <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
+                          </li>
+                        </ol>
+                      </details>
+                    </template>
+                    <template v-else>
+                      <div v-if="message.content" class="message-content plain-message">{{ message.content }}</div>
+                      <div v-if="messageSkills(message).length" class="message-skill-list">
+                        <span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
+                          @{{ skill.name || skill.slug }}
+                        </span>
+                      </div>
+                      <div v-if="messageAttachments(message).length" class="message-attachment-grid">
+                        <figure
+                          v-for="attachment in messageAttachments(message)"
+                          :key="attachment.id"
+                          v-attachment-preview="attachment"
+                        >
+                          <img
+                            v-if="attachmentPreviewUrl(attachment)"
+                            :src="attachmentPreviewUrl(attachment)"
+                            :alt="attachment.name"
+                            loading="lazy"
+                            decoding="async"
+                          />
+                          <div v-else class="message-attachment-placeholder" aria-hidden="true">
+                            <AttachOutline />
+                          </div>
+                          <figcaption :title="attachment.name">{{ attachment.name }}</figcaption>
+                        </figure>
+                      </div>
+                    </template>
                   </div>
                 </template>
               </article>
 
-              <div v-if="activeRun" class="running-row" aria-live="polite">
-                <img v-if="activeRun.currentKind" :src="agentLogo(activeRun.currentKind)" alt="" />
-                <div class="typing-bars"><span /><span /><span /></div>
-                <span>{{ activeRun.currentKind ? t('conversation.running', { agent: agentLabel(activeRun.currentKind) }) : t('conversation.runningGeneric') }}</span>
-              </div>
+              <section
+                v-if="activeRun"
+                class="run-status-panel"
+                :class="activeGroup.conversationType === 'direct' ? 'direct' : 'group'"
+                aria-live="polite"
+              >
+                <header class="run-status-header">
+                  <div v-if="activeGroup.conversationType === 'direct'" class="direct-run-indicator" aria-hidden="true">
+                    <img :src="agentLogo(activeRun.currentKind || activeGroup.directAgentKind)" alt="" />
+                    <div class="typing-bars"><span /><span /><span /></div>
+                  </div>
+                  <div v-else class="relay-run-indicator" aria-hidden="true">
+                    <img
+                      v-for="kind in runTargetKinds.slice(0, 4)"
+                      :key="kind"
+                      :src="agentLogo(kind)"
+                      alt=""
+                      :class="{
+                        current: activeRun.currentKind === kind,
+                        completed: runCompletedKinds.includes(kind),
+                      }"
+                    />
+                  </div>
+                  <div>
+                    <strong>{{ activeRunLabel }}</strong>
+                    <span v-if="activeRun.threadRootId">{{ t('conversation.activeTopic') }}</span>
+                  </div>
+                </header>
+                <div class="run-progress-summary">
+                  <span>
+                    <small>{{ t('run.current') }}</small>
+                    <strong>{{ runCurrentLabel }}</strong>
+                  </span>
+                  <span>
+                    <small>{{ t('run.queued') }}</small>
+                    <strong>{{ runQueuedCount }}</strong>
+                  </span>
+                  <span>
+                    <small>{{ t('run.completed') }}</small>
+                    <strong>{{ runCompletedKinds.length }}/{{ runTargetKinds.length }}</strong>
+                  </span>
+                </div>
+                <details v-if="activeRunProgress.length" class="execution-details run-progress-details">
+                  <summary>
+                    <TerminalOutline />
+                    <span>{{ t('run.progress') }}</span>
+                    <small>{{ activeRunProgress.length }}</small>
+                  </summary>
+                  <ol>
+                    <li v-for="(step, index) in activeRunProgress" :key="`${step.title}-${index}`">
+                      <span>{{ localizedStepTitle(step, index) }}</span>
+                      <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
+                    </li>
+                  </ol>
+                </details>
+              </section>
             </div>
           </div>
 
@@ -271,7 +504,7 @@
                 class="target-chip"
                 :class="{ selected: targetKinds.includes(kind) }"
                 type="button"
-                :disabled="Boolean(activeRun)"
+                :disabled="Boolean(activeRun) || sending"
                 @click="toggleTarget(kind)"
               >
                 <img :src="agentLogo(kind)" alt="" />
@@ -279,53 +512,221 @@
               </button>
             </div>
 
-            <div class="composer-box">
-              <textarea
-                v-model="draft"
-                rows="1"
-                :placeholder="t('composer.placeholder', { name: groupName(activeGroup) })"
-                :disabled="Boolean(activeRun)"
-                @keydown="handleComposerKeydown"
-              />
-              <div class="composer-actions">
-                <div v-if="activeGroup.agentKinds.length >= 2" class="auto-controls">
-                  <select v-model.number="maxRounds" :disabled="Boolean(activeRun)" :aria-label="t('composer.auto')">
-                    <option v-for="count in [1, 2, 3, 4, 6]" :key="count" :value="count">
-                      {{ t('composer.autoRounds', { count }) }}
-                    </option>
-                  </select>
+            <div class="composer-shell">
+              <section
+                v-if="skillMenuOpen"
+                id="composer-skill-menu"
+                class="skill-menu"
+                role="listbox"
+                :aria-label="t('composer.skills')"
+              >
+                <p v-if="skillsLoading" class="skill-menu-state">{{ t('composer.skillsLoading') }}</p>
+                <template v-else-if="filteredSkillOptions.length">
                   <button
-                    class="secondary-button compact"
+                    v-for="(skill, index) in filteredSkillOptions"
+                    :key="skillKey(skill)"
+                    :id="`composer-skill-option-${index}`"
+                    class="skill-option"
+                    :class="{ active: skillActiveIndex === index }"
                     type="button"
-                    :disabled="Boolean(activeRun)"
-                    @click="startAutoDiscussion"
+                    role="option"
+                    :aria-selected="skillActiveIndex === index"
+                    :disabled="selectedSkills.length >= MAX_SKILLS"
+                    @mouseenter="skillActiveIndex = index"
+                    @click="selectSkill(skill)"
                   >
-                    <PlayOutline />
-                    {{ t('composer.auto') }}
+                    <span>
+                      <strong>{{ skill.name || skill.slug }}</strong>
+                      <small>{{ agentLabel(skill.targetKind) }} / {{ skill.namespace }}</small>
+                    </span>
+                    <AddOutline />
                   </button>
+                </template>
+                <p v-else class="skill-menu-state">
+                  {{ selectedSkills.length >= MAX_SKILLS ? t('composer.skillLimit') : t('composer.noSkills') }}
+                </p>
+              </section>
+
+              <div class="composer-box">
+                <div v-if="composerAttachments.length" class="composer-attachment-list">
+                  <article v-for="attachment in composerAttachments" :key="attachment.id" class="composer-attachment">
+                    <img :src="attachment.previewDataUrl" :alt="attachment.name" />
+                    <span :title="attachment.name">{{ attachment.name }}</span>
+                    <button
+                      type="button"
+                      :title="t('composer.removeAttachment')"
+                      :aria-label="t('composer.removeAttachment')"
+                      :disabled="Boolean(activeRun) || sending"
+                      @click="removeAttachment(attachment.id)"
+                    >
+                      <CloseCircleOutline />
+                    </button>
+                  </article>
                 </div>
-                <button v-if="activeRun" class="stop-button" type="button" @click="stopRun">
-                  <StopCircleOutline />
-                  {{ t('composer.stop') }}
-                </button>
-                <button v-else class="send-button" type="button" :disabled="!draft.trim() || sending" @click="sendMessage">
-                  <SendOutline />
-                  <span>{{ t('composer.send') }}</span>
-                </button>
+
+                <textarea
+                  ref="composerInput"
+                  v-model="draft"
+                  rows="1"
+                  :placeholder="t('composer.placeholder', { name: groupName(activeGroup) })"
+                  :disabled="Boolean(activeRun) || sending"
+                  role="combobox"
+                  aria-autocomplete="list"
+                  aria-controls="composer-skill-menu"
+                  :aria-expanded="skillMenuOpen ? 'true' : 'false'"
+                  :aria-activedescendant="activeSkillOptionId || undefined"
+                  @input="handleComposerInput"
+                  @keydown="handleComposerKeydown"
+                  @paste="handleComposerPaste"
+                />
+                <div class="composer-actions">
+                  <div class="composer-tools">
+                    <button
+                      class="composer-tool-button"
+                      type="button"
+                      :title="attachmentActionLabel"
+                      :aria-label="attachmentActionLabel"
+                      :disabled="Boolean(activeRun) || sending || importingAttachment || !composerTargetsReady || composerImageLimit <= composerAttachments.length"
+                      @click="pickImages"
+                    >
+                      <RefreshOutline v-if="importingAttachment" class="spinning" />
+                      <AttachOutline v-else />
+                    </button>
+                    <button
+                      class="composer-tool-button"
+                      type="button"
+                      :title="t('composer.skills')"
+                      :aria-label="t('composer.skills')"
+                      :disabled="Boolean(activeRun) || sending || selectedSkills.length >= MAX_SKILLS"
+                      @click="openSkillMenu"
+                    >
+                      <AtOutline />
+                    </button>
+                    <div v-if="selectedSkills.length" class="selected-skill-list">
+                      <span v-for="skill in selectedSkills" :key="skillKey(skill)" class="selected-skill">
+                        @{{ skill.name || skill.slug }}
+                        <button
+                          type="button"
+                          :title="t('composer.removeSkill')"
+                          :aria-label="t('composer.removeSkill')"
+                          :disabled="Boolean(activeRun) || sending"
+                          @click="removeSkill(skill)"
+                        >
+                          <CloseOutline />
+                        </button>
+                      </span>
+                    </div>
+                  </div>
+
+                  <div class="composer-run-actions">
+                    <div v-if="activeGroup.agentKinds.length >= 2" class="auto-controls">
+                      <select v-model.number="maxRounds" :disabled="Boolean(activeRun) || sending" :aria-label="t('composer.auto')">
+                        <option v-for="count in [1, 2, 3, 4, 6]" :key="count" :value="count">
+                          {{ t('composer.autoRounds', { count }) }}
+                        </option>
+                      </select>
+                      <button
+                        class="secondary-button compact"
+                        type="button"
+                        :disabled="Boolean(activeRun) || sending"
+                        @click="startAutoDiscussion"
+                      >
+                        <PlayOutline />
+                        {{ t('composer.auto') }}
+                      </button>
+                    </div>
+                    <button v-if="activeRun" class="stop-button" type="button" @click="stopRun">
+                      <StopCircleOutline />
+                      {{ t('composer.stop') }}
+                    </button>
+                    <button v-else class="send-button" type="button" :disabled="!canSendMessage || sending" @click="sendMessage">
+                      <SendOutline />
+                      <span>{{ t('composer.send') }}</span>
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </footer>
         </section>
       </section>
 
+      <div v-if="onboardingVisible" class="onboarding-backdrop">
+        <section
+          ref="onboardingDialog"
+          class="onboarding-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="onboarding-title"
+          tabindex="-1"
+        >
+          <transition name="onboarding-slide" mode="out-in">
+            <article :key="onboardingIndex" class="onboarding-slide">
+              <img :src="onboardingSlide.image" alt="" />
+              <div>
+                <h1 id="onboarding-title">{{ onboardingSlide.title }}</h1>
+                <p>{{ onboardingSlide.body }}</p>
+              </div>
+            </article>
+          </transition>
+          <footer class="onboarding-footer">
+            <div class="onboarding-carousel-controls">
+              <button
+                class="icon-button"
+                type="button"
+                :title="t('onboarding.previous')"
+                :aria-label="t('onboarding.previous')"
+                @click="moveOnboarding(-1)"
+              >
+                <ChevronBackOutline />
+              </button>
+              <div class="onboarding-dots" :aria-label="t('onboarding.progress')">
+                <button
+                  v-for="(_slide, index) in onboardingSlides"
+                  :key="index"
+                  class="onboarding-dot"
+                  :class="{ active: onboardingIndex === index }"
+                  type="button"
+                  :aria-label="t('onboarding.goToSlide', { count: index + 1 })"
+                  :aria-current="onboardingIndex === index ? 'step' : undefined"
+                  @click="onboardingIndex = index"
+                />
+              </div>
+              <button
+                class="icon-button"
+                type="button"
+                :title="t('onboarding.next')"
+                :aria-label="t('onboarding.next')"
+                @click="moveOnboarding(1)"
+              >
+                <ChevronForwardOutline />
+              </button>
+            </div>
+            <button class="primary-button onboarding-primary" type="button" :disabled="onboardingDetecting" @click="completeOnboarding">
+              <RefreshOutline v-if="onboardingDetecting" class="spinning" />
+              <CheckmarkCircleOutline v-else />
+              {{ onboardingDetecting ? t('onboarding.detecting') : t('onboarding.start') }}
+            </button>
+          </footer>
+        </section>
+      </div>
+
       <div v-if="modal" class="modal-backdrop" @mousedown.self="closeModal">
-        <section class="modal" :class="{ wide: modal === 'agents' }" role="dialog" aria-modal="true">
+        <section
+          ref="modalDialog"
+          class="modal"
+          :class="{ wide: modal === 'agents', medium: modal === 'new-group' || modal === 'settings' }"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
+          tabindex="-1"
+        >
           <header class="modal-header">
             <div>
-              <h2>{{ modalTitle }}</h2>
+              <h2 id="modal-title">{{ modalTitle }}</h2>
               <p v-if="modalSubtitle">{{ modalSubtitle }}</p>
             </div>
-            <button class="icon-button" type="button" :aria-label="t('common.close')" @click="closeModal">
+            <button class="icon-button" type="button" :aria-label="t('common.close')" :disabled="saving" @click="closeModal">
               <CloseOutline />
             </button>
           </header>
@@ -333,16 +734,25 @@
           <form v-if="modal === 'new-group'" class="modal-body form-stack" @submit.prevent="createGroup">
             <label>
               <span>{{ t('group.name') }}</span>
-              <input v-model.trim="groupForm.name" :placeholder="t('group.namePlaceholder')" maxlength="60" />
+              <input v-model.trim="groupForm.name" :placeholder="t('group.namePlaceholder')" maxlength="60" :disabled="saving" />
             </label>
             <label>
               <span>{{ t('group.topic') }}</span>
-              <input v-model.trim="groupForm.topic" :placeholder="t('group.topicPlaceholder')" maxlength="200" />
+              <input v-model.trim="groupForm.topic" :placeholder="t('group.topicPlaceholder')" maxlength="200" :disabled="saving" />
             </label>
-            <fieldset>
-              <legend>{{ t('group.agents') }}</legend>
+            <fieldset :disabled="saving">
+              <legend class="agent-choice-legend">
+                <span>{{ t('group.agents') }}</span>
+                <small>{{ t('group.selectedCount', { count: groupForm.agentKinds.length }) }}</small>
+              </legend>
               <div class="agent-choice-grid">
-                <label v-for="agent in readyAgents" :key="agent.kind" class="agent-choice" :class="{ selected: groupForm.agentKinds.includes(agent.kind) }">
+                <label
+                  v-for="agent in readyAgents"
+                  :key="agent.kind"
+                  class="agent-choice"
+                  :class="{ selected: groupForm.agentKinds.includes(agent.kind) }"
+                  :title="agent.label"
+                >
                   <input v-model="groupForm.agentKinds" type="checkbox" :value="agent.kind" />
                   <img :src="agent.logo" alt="" />
                   <span>{{ agent.label }}</span>
@@ -353,21 +763,21 @@
             <label>
               <span>{{ t('group.workspace') }}</span>
               <div class="input-action-row">
-                <input v-model="groupForm.workdir" readonly />
-                <button class="secondary-button" type="button" @click="pickGroupDirectory('new')">
+                <input v-model="groupForm.workdir" :title="groupForm.workdir" readonly />
+                <button class="secondary-button" type="button" :disabled="saving" @click="pickGroupDirectory('new')">
                   <FolderOpenOutline />
                   {{ t('group.pickFolder') }}
                 </button>
               </div>
             </label>
             <label class="switch-row">
-              <input v-model="groupForm.allowWrite" type="checkbox" />
+              <input v-model="groupForm.allowWrite" type="checkbox" :disabled="saving" />
               <span class="switch-control" />
               <span>{{ t('group.allowWrite') }}</span>
             </label>
-            <p v-if="formError" class="form-error">{{ formError }}</p>
+            <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
             <footer class="modal-footer">
-              <button class="secondary-button" type="button" @click="closeModal">{{ t('common.cancel') }}</button>
+              <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
               <button class="primary-button" type="submit" :disabled="saving">
                 {{ saving ? t('common.saving') : t('group.create') }}
               </button>
@@ -376,17 +786,26 @@
 
           <form v-else-if="modal === 'settings'" class="modal-body form-stack" @submit.prevent="saveGroupSettings">
             <label>
-              <span>{{ t('group.name') }}</span>
-              <input v-model.trim="settingsForm.name" maxlength="60" />
+              <span>{{ activeGroup?.conversationType === 'direct' ? t('settings.conversationName') : t('group.name') }}</span>
+              <input ref="settingsNameInput" v-model.trim="settingsForm.name" maxlength="60" :disabled="saving" />
             </label>
             <label>
               <span>{{ t('group.topic') }}</span>
-              <input v-model.trim="settingsForm.topic" maxlength="200" />
+              <input v-model.trim="settingsForm.topic" maxlength="200" :disabled="saving" />
             </label>
-            <fieldset v-if="activeGroup?.conversationType !== 'direct'">
-              <legend>{{ t('group.agents') }}</legend>
+            <fieldset v-if="activeGroup?.conversationType !== 'direct'" :disabled="saving">
+              <legend class="agent-choice-legend">
+                <span>{{ t('group.agents') }}</span>
+                <small>{{ t('group.selectedCount', { count: settingsForm.agentKinds.length }) }}</small>
+              </legend>
               <div class="agent-choice-grid">
-                <label v-for="agent in readyAgents" :key="agent.kind" class="agent-choice" :class="{ selected: settingsForm.agentKinds.includes(agent.kind) }">
+                <label
+                  v-for="agent in readyAgents"
+                  :key="agent.kind"
+                  class="agent-choice"
+                  :class="{ selected: settingsForm.agentKinds.includes(agent.kind) }"
+                  :title="agent.label"
+                >
                   <input v-model="settingsForm.agentKinds" type="checkbox" :value="agent.kind" />
                   <img :src="agent.logo" alt="" />
                   <span>{{ agent.label }}</span>
@@ -397,31 +816,31 @@
             <label>
               <span>{{ t('group.workspace') }}</span>
               <div class="input-action-row">
-                <input v-model="settingsForm.workdir" readonly />
-                <button class="secondary-button" type="button" @click="pickGroupDirectory('settings')">
+                <input v-model="settingsForm.workdir" :title="settingsForm.workdir" readonly />
+                <button class="secondary-button" type="button" :disabled="saving" @click="pickGroupDirectory('settings')">
                   <FolderOpenOutline />
                   {{ t('group.pickFolder') }}
                 </button>
               </div>
             </label>
             <label class="switch-row">
-              <input v-model="settingsForm.allowWrite" type="checkbox" />
+              <input v-model="settingsForm.allowWrite" type="checkbox" :disabled="saving" />
               <span class="switch-control" />
               <span>{{ t('group.allowWrite') }}</span>
             </label>
-            <p v-if="formError" class="form-error">{{ formError }}</p>
-            <div class="danger-zone">
+            <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+            <div class="danger-zone" :class="{ attention: settingsIntent === 'delete' }">
               <div>
                 <strong>{{ t('settings.delete') }}</strong>
                 <p>{{ t('settings.deleteHint') }}</p>
               </div>
-              <button class="danger-button" type="button" @click="deleteConversation">
+              <button class="danger-button" type="button" :disabled="saving" @click="deleteConversation">
                 <TrashOutline />
                 {{ deleteArmed ? t('settings.deleteConfirm') : t('settings.delete') }}
               </button>
             </div>
             <footer class="modal-footer">
-              <button class="secondary-button" type="button" @click="closeModal">{{ t('common.cancel') }}</button>
+              <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
               <button class="primary-button" type="submit" :disabled="saving">
                 {{ saving ? t('common.saving') : t('settings.save') }}
               </button>
@@ -458,7 +877,13 @@
                   </div>
                 </div>
                 <div class="manager-actions">
-                  <button v-if="agent.ready" class="secondary-button compact" type="button" @click="openDirect(agent)">
+                  <button
+                    v-if="agent.ready"
+                    class="secondary-button compact"
+                    type="button"
+                    :disabled="isDirectCreationPending(agent.kind)"
+                    @click="openDirect(agent)"
+                  >
                     <ChatbubbleEllipsesOutline />
                     {{ t('home.openChat') }}
                   </button>
@@ -503,28 +928,28 @@
             </p>
             <label>
               <span>{{ t('provider.name') }}</span>
-              <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" />
+              <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" :disabled="saving" />
             </label>
             <label>
               <span>{{ t('provider.baseUrl') }}</span>
-              <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" />
+              <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" :disabled="saving" />
             </label>
             <label>
               <span>{{ t('provider.model') }}</span>
-              <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" />
+              <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" :disabled="saving" />
             </label>
             <label>
               <span>{{ t('provider.apiKey') }}</span>
-              <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" />
+              <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" :disabled="saving" />
             </label>
             <p v-if="formError" class="form-error">{{ formError }}</p>
             <footer class="modal-footer provider-footer">
-              <button v-if="providerStatus.configured" class="danger-button" type="button" @click="removeProvider">
+              <button v-if="providerStatus.configured" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
                 <TrashOutline />
                 {{ providerRemoveArmed ? t('provider.removeConfirm') : t('provider.remove') }}
               </button>
               <span class="footer-spacer" />
-              <button class="secondary-button" type="button" @click="closeModal">{{ t('common.cancel') }}</button>
+              <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
               <button class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
                 {{ saving ? t('common.saving') : t('provider.save') }}
               </button>
@@ -534,9 +959,18 @@
       </div>
 
       <transition name="toast">
-        <div v-if="toastMessage" class="toast-message" role="status">
+        <div v-if="toastMessage" class="toast-message" role="status" aria-live="polite">
           <WarningOutline />
           <span>{{ toastMessage }}</span>
+          <button
+            class="toast-dismiss-button"
+            type="button"
+            :title="t('common.dismiss')"
+            :aria-label="t('common.dismiss')"
+            @click="dismissToast"
+          >
+            <CloseOutline />
+          </button>
         </div>
       </transition>
     </template>
@@ -547,16 +981,22 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AddOutline,
+  AttachOutline,
+  AtOutline,
   ChatbubbleEllipsesOutline,
   ChatbubblesOutline,
   CheckmarkCircleOutline,
+  ChevronBackOutline,
+  ChevronDownOutline,
   ChevronForwardOutline,
+  CloseCircleOutline,
   CloseOutline,
   DownloadOutline,
   FolderOpenOutline,
   KeyOutline,
   LanguageOutline,
   MoonOutline,
+  PencilOutline,
   PeopleOutline,
   PersonOutline,
   PlayOutline,
@@ -571,10 +1011,19 @@ import {
 } from '@vicons/ionicons5'
 import MarkdownMessage from './components/MarkdownMessage.vue'
 import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
+import { useAttachmentPreviews } from './composables/useAttachmentPreviews.js'
 import { desktopApi, emptySnapshot, errorCode, normalizeSnapshot } from './desktop.js'
 import { locale, setLocale, t, translateError, translateSystemMessage } from './i18n.js'
 
 const snapshot = ref(emptySnapshot())
+const ONBOARDING_KEY = 'roundrelay-onboarding-seen-v1'
+const MAX_SKILLS = 4
+const MAX_ATTACHMENTS = 4
+const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
+const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
+  'codex', 'workbuddy', 'kimi', 'claude', 'qwen', 'gemini', 'opencode',
+])
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
 const providerStatus = ref({ provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true })
@@ -585,9 +1034,21 @@ const bridgeMissing = ref(false)
 const refreshing = ref(false)
 const sending = ref(false)
 const saving = ref(false)
+const directCreationKinds = ref(new Set())
 const modal = ref('')
 const draft = ref('')
 const targetKinds = ref([])
+const selectedSkills = ref([])
+const skillOptions = ref([])
+const skillMenuOpen = ref(false)
+const skillActiveIndex = ref(0)
+const skillsLoading = ref(false)
+const composerAttachments = ref([])
+const attachmentImportOperations = ref([])
+const composerContextVersion = ref(0)
+const onboardingVisible = ref(false)
+const onboardingIndex = ref(0)
+const onboardingDetecting = ref(false)
 const maxRounds = ref(3)
 const formError = ref('')
 const deleteArmed = ref(false)
@@ -595,16 +1056,43 @@ const providerRemoveArmed = ref(false)
 const installConfirmKind = ref('')
 const focusedAgentKind = ref('')
 const toastMessage = ref('')
+const settingsIntent = ref('settings')
+const agentSkillStats = ref({})
+const collapsedTopicIds = ref(new Set())
+const dismissedSystemMessageIds = ref(new Set())
+const finishedDirectGroupIds = ref(new Set())
 const messageScroller = ref(null)
+const composerInput = ref(null)
+const settingsNameInput = ref(null)
+const onboardingDialog = ref(null)
+const modalDialog = ref(null)
 let toastTimer = null
+let skillLoadToken = 0
+let agentSkillStatsToken = 0
+let attachmentImportSequence = 0
 let unsubscribeWorkspace = null
 let unsubscribeInstaller = null
+let unsubscribeRunFinished = null
+let unsubscribeOpenGroup = null
 let modalHistoryPushed = false
+let modalFocusReturn = null
+let pendingRequestedGroupId = ''
+const pendingRunFinishedEvents = new Map()
 
 const api = computed(() => desktopApi())
 const workspace = computed(() => api.value?.localWorkspace || null)
 const installer = computed(() => api.value?.agentInstaller || null)
 const provider = computed(() => api.value?.localAgentProvider || null)
+const attachmentsApi = computed(() => api.value?.localAttachments || null)
+const {
+  attachmentPreviewUrl,
+  forgetAttachmentPreviews,
+  rememberAttachmentPreview,
+  vAttachmentPreview,
+} = useAttachmentPreviews({
+  api: () => attachmentsApi.value,
+  normalize: normalizeAttachment,
+})
 
 function initialTheme() {
   try {
@@ -616,6 +1104,24 @@ function initialTheme() {
 
 const theme = ref(initialTheme())
 const productLogo = computed(() => publicAsset('logos/roundrelay.png'))
+const onboardingSlides = computed(() => [
+  {
+    image: publicAsset('onboarding/discover-local-agents.png'),
+    title: t('onboarding.discoverTitle'),
+    body: t('onboarding.discoverBody'),
+  },
+  {
+    image: publicAsset('onboarding/agent-collaboration.png'),
+    title: t('onboarding.collaborationTitle'),
+    body: t('onboarding.collaborationBody'),
+  },
+  {
+    image: publicAsset('onboarding/skills-and-images.png'),
+    title: t('onboarding.toolsTitle'),
+    body: t('onboarding.toolsBody'),
+  },
+])
+const onboardingSlide = computed(() => onboardingSlides.value[onboardingIndex.value] || onboardingSlides.value[0])
 
 const directGroups = computed(() => snapshot.value.groups
   .filter(group => group.conversationType === 'direct')
@@ -629,7 +1135,78 @@ const activeGroupMemberSignature = computed(() => {
   return group ? [group.id, ...group.agentKinds].join('\u0000') : ''
 })
 const activeMessages = computed(() => snapshot.value.messages.filter(message => message.groupId === selectedGroupId.value))
+const topicReplyCounts = computed(() => {
+  const counts = new Map()
+  for (const message of activeMessages.value) {
+    if (!message.threadRootId) continue
+    counts.set(message.threadRootId, (counts.get(message.threadRootId) || 0) + 1)
+  }
+  return counts
+})
+const messageTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en', {
+  hour: '2-digit', minute: '2-digit',
+}))
+const navTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en', {
+  month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+}))
 const activeRun = computed(() => snapshot.value.runs.find(run => run.groupId === selectedGroupId.value) || null)
+const activeRunProgress = computed(() => Array.isArray(activeRun.value?.progress) ? activeRun.value.progress.slice(0, 8) : [])
+const runTargetKinds = computed(() => [...new Set(activeRun.value?.targetKinds || [])])
+const runCompletedKinds = computed(() => {
+  const targets = new Set(runTargetKinds.value)
+  return [...new Set(activeRun.value?.completedKinds || [])].filter(kind => targets.has(kind))
+})
+const runQueuedCount = computed(() => {
+  const completed = new Set(runCompletedKinds.value)
+  return runTargetKinds.value.filter(kind => kind !== activeRun.value?.currentKind && !completed.has(kind)).length
+})
+const runCurrentLabel = computed(() => (
+  activeRun.value?.currentKind ? agentLabel(activeRun.value.currentKind) : t('run.status.running')
+))
+const activeRunLabel = computed(() => {
+  if (!activeRun.value || !activeGroup.value) return ''
+  if (activeGroup.value.conversationType === 'direct') {
+    return t('conversation.directWorking', {
+      agent: agentLabel(activeRun.value.currentKind || activeGroup.value.directAgentKind),
+    })
+  }
+  return t('conversation.groupWorking')
+})
+const activeRunTopicSignature = computed(() => {
+  if (!activeRun.value?.threadRootId) return ''
+  return `${activeRun.value.groupId}\u0000${activeRun.value.threadRootId}`
+})
+const timelineMessages = computed(() => activeMessages.value.filter((message) => {
+  if (dismissedSystemMessageIds.value.has(message.id)) return false
+  return !message.threadRootId || isTopicExpanded(message.threadRootId)
+}))
+const composerTargetKinds = computed(() => {
+  const group = activeGroup.value
+  if (!group) return []
+  return group.conversationType === 'direct' ? [...group.agentKinds] : [...targetKinds.value]
+})
+const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
+const currentSkillTrigger = computed(() => parseSkillTrigger(draft.value))
+const filteredSkillOptions = computed(() => {
+  const query = currentSkillTrigger.value?.query.toLocaleLowerCase() || ''
+  const selected = new Set(selectedSkills.value.map(skillKey))
+  return skillOptions.value
+    .filter(skill => !selected.has(skillKey(skill)))
+    .filter((skill) => {
+      if (!query) return true
+      return [skill.name, skill.slug, skill.namespace, agentLabel(skill.targetKind)]
+        .some(value => String(value || '').toLocaleLowerCase().includes(query))
+    })
+    .slice(0, 8)
+})
+const activeSkillOptionId = computed(() => (
+  skillMenuOpen.value && filteredSkillOptions.value[skillActiveIndex.value]
+    ? `composer-skill-option-${skillActiveIndex.value}`
+    : ''
+))
+const importingAttachment = computed(() => attachmentImportOperations.value
+  .some(operation => operation.contextVersion === composerContextVersion.value))
+const blockingOverlayOpen = computed(() => Boolean(modal.value || onboardingVisible.value))
 
 const mergedCatalog = computed(() => AGENTS.map((profile) => {
   const installedProfile = installCatalog.value.agents?.find(agent => agent.kind === profile.kind) || {}
@@ -641,11 +1218,46 @@ const mergedCatalog = computed(() => AGENTS.map((profile) => {
     label: profile.label,
     logo: profile.logo,
     providerMode: profile.providerMode,
+    imageLimit: Number(detected.imageAttachmentLimit ?? installedProfile.imageAttachmentLimit ?? profile.imageLimit) || 0,
     installed: Boolean(installedProfile.installed || detected.installed),
     ready: detected.available === true,
   }
 }))
 const readyAgents = computed(() => mergedCatalog.value.filter(agent => agent.ready))
+const readyAgentSignature = computed(() => readyAgents.value.map(agent => agent.kind).join('\u0000'))
+const sidebarAgents = computed(() => mergedCatalog.value.filter((agent) => {
+  if (agent.ready) return agent.showInSidebar !== false
+  return directGroupsFor(agent.kind).length > 0
+}))
+const activeDirectAgent = computed(() => {
+  if (activeGroup.value?.conversationType !== 'direct') return null
+  return mergedCatalog.value.find(agent => agent.kind === activeGroup.value.directAgentKind) || null
+})
+const readyAgentKinds = computed(() => new Set(readyAgents.value.map(agent => agent.kind)))
+const composerTargetsReady = computed(() => (
+  composerTargetKinds.value.length > 0
+  && composerTargetKinds.value.every(kind => readyAgentKinds.value.has(kind))
+))
+const composerImageLimit = computed(() => {
+  const targets = composerTargetKinds.value
+  if (!targets.length) return 0
+  const limits = targets.map((kind) => {
+    const agent = mergedCatalog.value.find(item => item.kind === kind)
+    return Math.max(0, Math.floor(Number(agent?.imageLimit) || 0))
+  })
+  return Math.min(MAX_ATTACHMENTS, ...limits)
+})
+const attachmentActionLabel = computed(() => {
+  if (!composerTargetKinds.value.length) return t('composer.selectTarget')
+  if (!composerTargetsReady.value) return t('error.agentUnavailable')
+  return composerImageLimit.value > 0 ? t('composer.attachImages') : t('agent.noImages')
+})
+const canSendMessage = computed(() => (
+  composerTargetsReady.value
+  && !importingAttachment.value
+  && composerAttachments.value.length <= composerImageLimit.value
+  && Boolean(draft.value.trim() || composerAttachments.value.length)
+))
 const readyCount = computed(() => readyAgents.value.length)
 const installedCount = computed(() => mergedCatalog.value.filter(agent => agent.installed).length)
 
@@ -655,7 +1267,9 @@ const providerForm = reactive({ provider: '', baseUrl: '', model: '', apiKey: ''
 
 const modalTitle = computed(() => ({
   'new-group': t('group.newTitle'),
-  settings: t('settings.title'),
+  settings: activeGroup.value?.conversationType === 'direct' && settingsIntent.value === 'rename'
+    ? t('settings.renameDirectTitle')
+    : t('settings.title'),
   agents: t('installer.title'),
   provider: t('provider.title'),
 })[modal.value] || '')
@@ -673,6 +1287,350 @@ function sortByUpdated(a, b) {
 
 function groupName(group) {
   return group?.name || t('group.defaultName')
+}
+
+function directGroupsFor(kind) {
+  return directGroups.value.filter(group => group.directAgentKind === kind)
+}
+
+function isDirectCreationPending(kind) {
+  return directCreationKinds.value.has(kind)
+}
+
+function setDirectCreationPending(kind, pending) {
+  const next = new Set(directCreationKinds.value)
+  if (pending) next.add(kind)
+  else next.delete(kind)
+  directCreationKinds.value = next
+}
+
+function formatNavTime(value) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return navTimeFormatter.value.format(date)
+}
+
+function providerModeShortLabel(mode) {
+  return t(`agent.providerShort.${mode}`)
+}
+
+function conversationPermissionLabel(group) {
+  const kinds = Array.isArray(group?.agentKinds) ? group.agentKinds : []
+  const enforced = kinds.length && kinds.every(kind => READ_ONLY_ENFORCED_AGENT_KINDS.has(kind))
+  if (!enforced) return t('conversation.agentManagedPermissions')
+  return group?.allowWrite ? t('conversation.writeEnabled') : t('conversation.readOnly')
+}
+
+function agentSkillLabel(kind) {
+  const state = agentSkillStats.value[kind]
+  if (!state || state.loading) return t('agent.skillsLoading')
+  if (!Number.isFinite(state.total)) return t('agent.skillsUnavailable')
+  return t('agent.localSkills', { count: state.total })
+}
+
+function agentImageLabel(agent) {
+  return agent?.imageLimit > 0
+    ? t('agent.images', { count: agent.imageLimit })
+    : t('agent.noImages')
+}
+
+async function loadAgentSkillStats() {
+  if (typeof installer.value?.skills !== 'function') return
+  const kinds = readyAgents.value.map(agent => agent.kind)
+  const token = ++agentSkillStatsToken
+  const next = { ...agentSkillStats.value }
+  for (const kind of kinds) next[kind] = { loading: true, total: next[kind]?.total }
+  agentSkillStats.value = next
+  const results = await Promise.all(kinds.map(async (kind) => {
+    try {
+      const result = await installer.value.skills(kind)
+      const total = Number.isFinite(Number(result?.total))
+        ? Number(result.total)
+        : Array.isArray(result?.skills) ? result.skills.length : NaN
+      return [kind, result?.supported === false ? NaN : total]
+    } catch {
+      return [kind, NaN]
+    }
+  }))
+  if (token !== agentSkillStatsToken) return
+  agentSkillStats.value = Object.fromEntries(results.map(([kind, total]) => [kind, {
+    loading: false,
+    total: Number.isFinite(total) ? total : NaN,
+  }]))
+}
+
+function topicReplyCount(rootId) {
+  return topicReplyCounts.value.get(rootId) || 0
+}
+
+function isTopicRoot(message) {
+  return message?.role === 'user' && !message.threadRootId && topicReplyCount(message.id) > 0
+}
+
+function isTopicExpanded(rootId) {
+  return !collapsedTopicIds.value.has(rootId)
+}
+
+function toggleTopic(rootId) {
+  const next = new Set(collapsedTopicIds.value)
+  if (next.has(rootId)) next.delete(rootId)
+  else next.add(rootId)
+  collapsedTopicIds.value = next
+}
+
+function topicToggleLabel(rootId) {
+  const count = topicReplyCount(rootId)
+  return t(isTopicExpanded(rootId) ? 'conversation.collapseTopic' : 'conversation.expandTopic', { count })
+}
+
+function isActiveRunTopic(message) {
+  const rootId = activeRun.value?.threadRootId
+  return Boolean(rootId && (message?.id === rootId || message?.threadRootId === rootId))
+}
+
+function messageElementId(id) {
+  return `message-${String(id || '').replace(/[^a-zA-Z0-9_-]/g, '-')}`
+}
+
+async function focusRunTopic() {
+  const rootId = activeRun.value?.threadRootId
+  if (!rootId) return
+  if (!isTopicExpanded(rootId)) {
+    const next = new Set(collapsedTopicIds.value)
+    next.delete(rootId)
+    collapsedTopicIds.value = next
+  }
+  await nextTick()
+  const element = document.getElementById(messageElementId(rootId))
+  element?.scrollIntoView?.({
+    block: 'nearest',
+    behavior: typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 'auto'
+      : 'smooth',
+  })
+}
+
+function messageExecutionSteps(message) {
+  const values = Array.isArray(message?.toolCalls)
+    ? message.toolCalls
+    : Array.isArray(message?.metadata?.toolCalls) ? message.metadata.toolCalls : []
+  return values.slice(0, 8).map(item => ({
+    title: String(item?.title || item?.label || item?.name || item?.toolName || item?.tool || item?.type || item?.kind || '').trim(),
+    status: String(item?.status || item?.state || '').trim().toLowerCase(),
+  })).filter(item => item.title)
+}
+
+function localizedStepTitle(step, index) {
+  const key = String(step?.title || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
+  const known = {
+    process: 'run.step.process',
+    write_file: 'run.step.writeFile',
+    edit_file: 'run.step.writeFile',
+    read_file: 'run.step.readFile',
+    search: 'run.step.search',
+  }[key]
+  if (known) return t(known)
+  if (locale.value === 'en' && step?.title) return step.title
+  return t('run.step.generic', { count: index + 1 })
+}
+
+function runStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (normalized === 'in_progress') return t('run.status.running')
+  const known = ['pending', 'queued', 'running', 'completed', 'succeeded', 'failed', 'skipped']
+  return t(`run.status.${known.includes(normalized) ? normalized : 'unknown'}`)
+}
+
+function runStatusTone(status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  if (['completed', 'succeeded'].includes(normalized)) return 'completed'
+  if (normalized === 'failed') return 'failed'
+  if (['running', 'in_progress'].includes(normalized)) return 'running'
+  return 'queued'
+}
+
+function formatElapsed(milliseconds) {
+  const value = Number(milliseconds)
+  if (!Number.isFinite(value) || value < 0) return ''
+  if (value < 60000) {
+    const seconds = Math.max(0.1, Math.round(value / 100) / 10)
+    return t('conversation.seconds', { count: seconds })
+  }
+  const minutes = Math.round(value / 6000) / 10
+  return t('conversation.minutes', { count: minutes })
+}
+
+function messageElapsedLabel(message) {
+  const elapsed = message?.elapsedMs ?? message?.metadata?.elapsedMs
+  const duration = formatElapsed(elapsed)
+  return duration ? t('conversation.elapsed', { duration }) : ''
+}
+
+function isDismissibleSystemWarning(message) {
+  return message?.role === 'system'
+    && Boolean(message?.id)
+    && String(message.content || '').trim() === DISMISSIBLE_PLAN_WARNING
+}
+
+function dismissSystemMessage(id) {
+  if (!id) return
+  dismissedSystemMessageIds.value = new Set([...dismissedSystemMessageIds.value, id])
+}
+
+function hasFinishedDirectRun(groupId) {
+  return finishedDirectGroupIds.value.has(groupId)
+}
+
+function onboardingSeen() {
+  try { return localStorage.getItem(ONBOARDING_KEY) === '1' } catch { return false }
+}
+
+function completeOnboarding() {
+  try { localStorage.setItem(ONBOARDING_KEY, '1') } catch { /* noop */ }
+  onboardingVisible.value = false
+}
+
+function moveOnboarding(direction) {
+  const count = onboardingSlides.value.length
+  onboardingIndex.value = (onboardingIndex.value + direction + count) % count
+}
+
+function beginOnboardingDetection() {
+  onboardingDetecting.value = true
+  void refreshAgents().finally(() => { onboardingDetecting.value = false })
+}
+
+function settleWithin(promise, timeoutMs = 1200) {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(undefined), timeoutMs)
+    Promise.resolve(promise).then(
+      value => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      () => {
+        clearTimeout(timer)
+        resolve(undefined)
+      },
+    )
+  })
+}
+
+function plainGroupPayload(form) {
+  return {
+    name: String(form.name || ''),
+    topic: String(form.topic || ''),
+    agentKinds: [...form.agentKinds].map(kind => String(kind)),
+    workdir: String(form.workdir || ''),
+    allowWrite: form.allowWrite === true,
+  }
+}
+
+function parseSkillTrigger(value) {
+  const match = /(^|\s)@([^\s@]*)$/.exec(String(value || ''))
+  if (!match) return null
+  return {
+    query: match[2] || '',
+    start: match.index + match[1].length,
+    end: String(value || '').length,
+  }
+}
+
+function skillKey(skill) {
+  return [skill?.targetKind, skill?.namespace, skill?.slug].map(value => String(value || '')).join(':')
+}
+
+function normalizeSkill(skill, requestedTarget) {
+  const targetKind = String(skill?.targetKind || requestedTarget || '')
+  const namespace = String(skill?.namespace || '')
+  const slug = String(skill?.slug || '')
+  const name = String(skill?.name || slug)
+  if (!targetKind || targetKind !== requestedTarget || !slug) return null
+  return { targetKind, namespace, slug, name }
+}
+
+function messageSkills(message) {
+  return Array.isArray(message?.skillHints) ? message.skillHints : []
+}
+
+function normalizeAttachment(attachment) {
+  const id = String(attachment?.id || '')
+  const name = String(attachment?.name || '')
+  const mimeType = String(attachment?.mimeType || '')
+  const size = Number(attachment?.size || 0)
+  const previewDataUrl = String(attachment?.previewDataUrl || '')
+  if (!id || !name || !mimeType.startsWith('image/') || !previewDataUrl) return null
+  return { id, name, mimeType, size: Number.isFinite(size) ? size : 0, previewDataUrl }
+}
+
+function safeAttachmentPayload(attachment) {
+  return {
+    id: String(attachment.id),
+    name: String(attachment.name),
+    mimeType: String(attachment.mimeType),
+    size: Number(attachment.size) || 0,
+  }
+}
+
+function messageAttachments(message) {
+  return Array.isArray(message?.attachments) ? message.attachments : []
+}
+
+async function discardAttachments(values) {
+  if (typeof attachmentsApi.value?.discard !== 'function') return
+  const ids = [...new Set(values
+    .map(value => String(typeof value === 'string' ? value : value?.id || ''))
+    .filter(Boolean))]
+  if (!ids.length) return
+  try {
+    const result = await attachmentsApi.value.discard(ids)
+    forgetAttachmentPreviews(Array.isArray(result?.discardedIds) ? result.discardedIds : [])
+  } catch (error) {
+    console.error('[RoundRelay]', errorCode(error))
+  }
+}
+
+function attachmentLimitMessage() {
+  if (composerImageLimit.value <= 0) return t('error.imageUnsupported')
+  return composerImageLimit.value < MAX_ATTACHMENTS
+    ? t('error.imageLimit')
+    : t('composer.attachmentLimit')
+}
+
+function addAttachments(values) {
+  const normalized = values.map(normalizeAttachment).filter(Boolean)
+  normalized.forEach(rememberAttachmentPreview)
+  const existingIds = new Set(composerAttachments.value.map(attachment => attachment.id))
+  const available = normalized.filter(attachment => !existingIds.has(attachment.id))
+  const room = Math.max(0, composerImageLimit.value - composerAttachments.value.length)
+  const accepted = available.slice(0, room)
+  const overflow = available.slice(room)
+  composerAttachments.value = [...composerAttachments.value, ...accepted]
+  if (overflow.length) {
+    notify(attachmentLimitMessage())
+    void discardAttachments(overflow)
+  }
+}
+
+function beginAttachmentImport() {
+  const groupId = String(activeGroup.value?.id || '')
+  if (!groupId) return null
+  const operation = {
+    id: ++attachmentImportSequence,
+    groupId,
+    contextVersion: composerContextVersion.value,
+  }
+  attachmentImportOperations.value = [...attachmentImportOperations.value, operation]
+  return operation
+}
+
+function finishAttachmentImport(operation) {
+  attachmentImportOperations.value = attachmentImportOperations.value.filter(item => item.id !== operation.id)
+}
+
+function attachmentImportIsCurrent(operation) {
+  return operation.contextVersion === composerContextVersion.value
+    && operation.groupId === String(activeGroup.value?.id || '')
 }
 
 function toggleTheme() {
@@ -696,6 +1654,11 @@ function goHome() {
 
 function selectGroup(id) {
   selectedGroupId.value = id
+  if (finishedDirectGroupIds.value.has(id)) {
+    const next = new Set(finishedDirectGroupIds.value)
+    next.delete(id)
+    finishedDirectGroupIds.value = next
+  }
 }
 
 function isGroupRunning(id) {
@@ -712,9 +1675,7 @@ function compactPath(path) {
 function formatTime(value) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return ''
-  return new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en', {
-    hour: '2-digit', minute: '2-digit',
-  }).format(date)
+  return messageTimeFormatter.value.format(date)
 }
 
 function providerModeLabel(mode) {
@@ -744,34 +1705,59 @@ async function ensureDefaultDirectory() {
 }
 
 async function openDirect(agent) {
+  if (saving.value || isDirectCreationPending(agent?.kind)) return
   closeModal()
+  const existing = directGroupsFor(agent.kind)[0]
+  if (existing) {
+    selectGroup(existing.id)
+    return
+  }
   if (!agent.ready) {
     openAgentManager(agent.kind)
     return
   }
-  let group = directGroups.value.find(item => item.directAgentKind === agent.kind)
-  if (!group) {
-    try {
-      group = await workspace.value.createGroup({
-        conversationType: 'direct',
-        directAgentKind: agent.kind,
-        name: agent.label,
-        agentKinds: [agent.kind],
-        workdir: await ensureDefaultDirectory(),
-        allowWrite: false,
-      })
-      snapshot.value = normalizeSnapshot(await workspace.value.get())
-    } catch (error) {
-      showError(error)
-      return
-    }
-  }
+  const group = await createDirectSession(agent, false)
+  if (!group) return
   selectGroup(group.id)
+}
+
+async function createDirectSession(agent, select = true) {
+  const kind = String(agent?.kind || '')
+  if (saving.value || !kind || isDirectCreationPending(kind)) return null
+  setDirectCreationPending(kind, true)
+  closeModal()
+  if (!agent?.ready) {
+    if (agent?.kind) openAgentManager(agent.kind)
+    setDirectCreationPending(kind, false)
+    return null
+  }
+  try {
+    const sessionCount = directGroupsFor(agent.kind).length + 1
+    const group = await workspace.value.createGroup({
+      conversationType: 'direct',
+      directAgentKind: agent.kind,
+      name: sessionCount === 1
+        ? agent.label
+        : t('conversation.directDefaultName', { agent: agent.label, count: sessionCount }),
+      agentKinds: [agent.kind],
+      workdir: await ensureDefaultDirectory(),
+      allowWrite: false,
+    })
+    snapshot.value = normalizeSnapshot(await workspace.value.get())
+    if (select) selectGroup(group.id)
+    return group
+  } catch (error) {
+    showError(error)
+    return null
+  } finally {
+    setDirectCreationPending(kind, false)
+  }
 }
 
 async function refreshAgents() {
   if (!workspace.value || refreshing.value) return
   refreshing.value = true
+  const previousReadyAgentSignature = readyAgentSignature.value
   try {
     const [nextSnapshot, nextCatalog, nextInstaller] = await Promise.all([
       workspace.value.refreshAgents(),
@@ -781,6 +1767,9 @@ async function refreshAgents() {
     snapshot.value = normalizeSnapshot(nextSnapshot)
     installCatalog.value = nextCatalog || { platform: '', agents: [] }
     installerState.value = nextInstaller || installerState.value
+    if (readyAgentSignature.value && readyAgentSignature.value === previousReadyAgentSignature) {
+      await loadAgentSkillStats()
+    }
   } catch (error) {
     showError(error)
   } finally {
@@ -789,6 +1778,7 @@ async function refreshAgents() {
 }
 
 function openNewGroup() {
+  if (saving.value) return
   formError.value = ''
   groupForm.name = ''
   groupForm.topic = ''
@@ -822,9 +1812,9 @@ async function createGroup() {
   }
   saving.value = true
   try {
-    const group = await workspace.value.createGroup({ ...groupForm })
+    const group = await workspace.value.createGroup(plainGroupPayload(groupForm))
     snapshot.value = normalizeSnapshot(await workspace.value.get())
-    closeModal()
+    closeModal({ force: true })
     selectGroup(group.id)
   } catch (error) {
     formError.value = translateError(error)
@@ -833,8 +1823,9 @@ async function createGroup() {
   }
 }
 
-function openGroupSettings() {
-  if (!activeGroup.value) return
+function openGroupSettings(intent = 'settings') {
+  if (!activeGroup.value || sending.value || saving.value) return
+  settingsIntent.value = typeof intent === 'string' ? intent : 'settings'
   settingsForm.name = activeGroup.value.name || ''
   settingsForm.topic = activeGroup.value.topic || ''
   settingsForm.agentKinds = [...activeGroup.value.agentKinds]
@@ -843,6 +1834,20 @@ function openGroupSettings() {
   formError.value = ''
   deleteArmed.value = false
   modal.value = 'settings'
+}
+
+function openDirectRename(group) {
+  if (!group || isGroupRunning(group.id)) return
+  selectGroup(group.id)
+  openGroupSettings('rename')
+  void nextTick(() => settingsNameInput.value?.focus())
+}
+
+function openDirectDelete(group) {
+  if (!group || isGroupRunning(group.id)) return
+  selectGroup(group.id)
+  openGroupSettings('delete')
+  deleteArmed.value = true
 }
 
 async function saveGroupSettings() {
@@ -858,9 +1863,9 @@ async function saveGroupSettings() {
   }
   saving.value = true
   try {
-    await workspace.value.updateGroup(activeGroup.value.id, { ...settingsForm })
+    await workspace.value.updateGroup(activeGroup.value.id, plainGroupPayload(settingsForm))
     snapshot.value = normalizeSnapshot(await workspace.value.get())
-    closeModal()
+    closeModal({ force: true })
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -869,25 +1874,244 @@ async function saveGroupSettings() {
 }
 
 async function deleteConversation() {
+  if (saving.value) return
   if (!deleteArmed.value) {
     deleteArmed.value = true
     return
   }
+  saving.value = true
   try {
     snapshot.value = normalizeSnapshot(await workspace.value.deleteGroup(activeGroup.value.id))
     selectedGroupId.value = ''
-    closeModal()
+    closeModal({ force: true })
   } catch (error) {
     formError.value = translateError(error)
+  } finally {
+    saving.value = false
   }
 }
 
 function toggleTarget(kind) {
+  if (sending.value) return
   if (targetKinds.value.includes(kind)) targetKinds.value = targetKinds.value.filter(item => item !== kind)
   else targetKinds.value = [...targetKinds.value, kind]
 }
 
+async function loadSkillsForTargets() {
+  const targets = [...composerTargetKinds.value]
+  const token = ++skillLoadToken
+  skillOptions.value = []
+  if (!targets.length || typeof installer.value?.skills !== 'function') {
+    skillsLoading.value = false
+    return
+  }
+  skillsLoading.value = true
+  try {
+    const results = await Promise.all(targets.map(async (kind) => {
+      try {
+        const result = await installer.value.skills(kind)
+        return (Array.isArray(result?.skills) ? result.skills : [])
+          .map(skill => normalizeSkill(skill, kind))
+          .filter(Boolean)
+      } catch {
+        return []
+      }
+    }))
+    if (token !== skillLoadToken) return
+    const seen = new Set()
+    skillOptions.value = results.flat().filter((skill) => {
+      const key = skillKey(skill)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  } finally {
+    if (token === skillLoadToken) skillsLoading.value = false
+  }
+}
+
+function handleComposerInput() {
+  if (!currentSkillTrigger.value || selectedSkills.value.length >= MAX_SKILLS) {
+    skillMenuOpen.value = false
+    return
+  }
+  const shouldLoad = !skillMenuOpen.value
+  skillActiveIndex.value = 0
+  skillMenuOpen.value = true
+  if (shouldLoad) void loadSkillsForTargets()
+}
+
+async function openSkillMenu() {
+  if (!composerTargetKinds.value.length) {
+    notify(t('composer.selectTarget'))
+    return
+  }
+  if (selectedSkills.value.length >= MAX_SKILLS) {
+    notify(t('composer.skillLimit'))
+    return
+  }
+  if (!currentSkillTrigger.value) {
+    const spacer = draft.value && !/\s$/.test(draft.value) ? ' ' : ''
+    draft.value = `${draft.value}${spacer}@`
+  }
+  skillActiveIndex.value = 0
+  skillMenuOpen.value = true
+  await loadSkillsForTargets()
+  await nextTick()
+  composerInput.value?.focus()
+}
+
+async function selectSkill(skill) {
+  if (selectedSkills.value.length >= MAX_SKILLS) {
+    notify(t('composer.skillLimit'))
+    return
+  }
+  const key = skillKey(skill)
+  if (!selectedSkills.value.some(item => skillKey(item) === key)) {
+    selectedSkills.value = [...selectedSkills.value, { ...skill }]
+  }
+  const trigger = currentSkillTrigger.value
+  if (trigger) draft.value = `${draft.value.slice(0, trigger.start)}${draft.value.slice(trigger.end)}`
+  skillMenuOpen.value = false
+  await nextTick()
+  composerInput.value?.focus()
+}
+
+function removeSkill(skill) {
+  const key = skillKey(skill)
+  selectedSkills.value = selectedSkills.value.filter(item => skillKey(item) !== key)
+}
+
+function removeAttachment(id) {
+  composerAttachments.value = composerAttachments.value.filter(attachment => attachment.id !== id)
+  void discardAttachments([id])
+}
+
+async function pickImages() {
+  if (typeof attachmentsApi.value?.pickImages !== 'function') {
+    notify(t('composer.attachmentsUnavailable'))
+    return
+  }
+  if (!composerTargetKinds.value.length) {
+    notify(t('composer.selectTarget'))
+    return
+  }
+  if (!composerTargetsReady.value) {
+    notify(t('error.agentUnavailable'))
+    return
+  }
+  if (composerImageLimit.value <= 0) {
+    notify(t('error.imageUnsupported'))
+    return
+  }
+  const remainingCapacity = Math.max(
+    0, composerImageLimit.value - composerAttachments.value.length,
+  )
+  if (!remainingCapacity) {
+    notify(attachmentLimitMessage())
+    return
+  }
+  const operation = beginAttachmentImport()
+  if (!operation) return
+  try {
+    const result = await attachmentsApi.value.pickImages(remainingCapacity)
+    const values = Array.isArray(result) ? result : (Array.isArray(result?.attachments) ? result.attachments : [])
+    if (attachmentImportIsCurrent(operation)) {
+      addAttachments(values)
+      if (result?.truncated) notify(attachmentLimitMessage())
+    }
+    else void discardAttachments(values)
+  } catch (error) {
+    if (attachmentImportIsCurrent(operation)) showError(error)
+  } finally {
+    finishAttachmentImport(operation)
+  }
+}
+
+async function handleComposerPaste(event) {
+  if (typeof attachmentsApi.value?.importImage !== 'function') return
+  const files = Array.from(event.clipboardData?.items || [])
+    .filter(item => item.kind === 'file' && String(item.type || '').startsWith('image/'))
+    .map(item => item.getAsFile?.())
+    .filter(Boolean)
+  if (!files.length) return
+  event.preventDefault()
+  if (importingAttachment.value) {
+    notify(t('composer.attachmentImporting'))
+    return
+  }
+  if (!composerTargetKinds.value.length) {
+    notify(t('composer.selectTarget'))
+    return
+  }
+  if (!composerTargetsReady.value) {
+    notify(t('error.agentUnavailable'))
+    return
+  }
+  const room = Math.max(0, composerImageLimit.value - composerAttachments.value.length)
+  if (!room) {
+    notify(attachmentLimitMessage())
+    return
+  }
+  if (files.length > room) notify(attachmentLimitMessage())
+  const operation = beginAttachmentImport()
+  if (!operation) return
+  try {
+    const imported = []
+    for (const file of files.slice(0, room)) {
+      if (!attachmentImportIsCurrent(operation)) break
+      try {
+        if (Number(file.size) > MAX_ATTACHMENT_BYTES) {
+          throw Object.assign(new Error('LOCAL_ATTACHMENT_TOO_LARGE'), {
+            code: 'LOCAL_ATTACHMENT_TOO_LARGE',
+          })
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer())
+        const attachment = await attachmentsApi.value.importImage({
+          name: String(file.name || t('composer.pastedImage')),
+          mimeType: String(file.type || 'application/octet-stream'),
+          bytes,
+        })
+        if (!attachmentImportIsCurrent(operation)) {
+          void discardAttachments([attachment])
+          break
+        }
+        imported.push(attachment)
+      } catch (error) {
+        if (attachmentImportIsCurrent(operation)) showError(error)
+      }
+    }
+    if (attachmentImportIsCurrent(operation)) addAttachments(imported)
+    else void discardAttachments(imported)
+  } finally {
+    finishAttachmentImport(operation)
+  }
+}
+
 function handleComposerKeydown(event) {
+  if (skillMenuOpen.value) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const count = filteredSkillOptions.value.length
+      if (count) {
+        const direction = event.key === 'ArrowDown' ? 1 : -1
+        skillActiveIndex.value = (skillActiveIndex.value + direction + count) % count
+      }
+      return
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      skillMenuOpen.value = false
+      return
+    }
+    if (event.key === 'Enter' && !event.isComposing) {
+      event.preventDefault()
+      const skill = filteredSkillOptions.value[skillActiveIndex.value]
+      if (skill) void selectSkill(skill)
+      else skillMenuOpen.value = false
+      return
+    }
+  }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
     void sendMessage()
@@ -895,26 +2119,61 @@ function handleComposerKeydown(event) {
 }
 
 async function sendMessage() {
-  if (!activeGroup.value || sending.value || activeRun.value) return
+  if (!activeGroup.value || sending.value || activeRun.value || importingAttachment.value) return
+  const groupId = activeGroup.value.id
+  const contextVersion = composerContextVersion.value
   const text = draft.value.trim()
-  if (!text) {
+  const attachments = composerAttachments.value.map(safeAttachmentPayload)
+  if (!text && !attachments.length) {
     notify(t('composer.messageRequired'))
     return
   }
-  const targets = activeGroup.value.conversationType === 'direct'
-    ? [...activeGroup.value.agentKinds]
-    : [...targetKinds.value]
+  const targets = [...composerTargetKinds.value]
   if (!targets.length) {
     notify(t('composer.selectTarget'))
     return
   }
+  if (targets.some(kind => !readyAgentKinds.value.has(kind))) {
+    notify(t('error.agentUnavailable'))
+    return
+  }
+  if (attachments.length > composerImageLimit.value) {
+    notify(attachmentLimitMessage())
+    return
+  }
+  const skillHints = selectedSkills.value
+    .filter(skill => targets.includes(skill.targetKind))
+    .map(skill => ({
+      targetKind: String(skill.targetKind),
+      namespace: String(skill.namespace),
+      slug: String(skill.slug),
+      name: String(skill.name),
+    }))
+  const previousDraft = draft.value
+  const previousSkills = selectedSkills.value.map(skill => ({ ...skill }))
+  const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
   draft.value = ''
+  selectedSkills.value = []
+  composerAttachments.value = []
+  skillMenuOpen.value = false
   sending.value = true
   try {
-    await workspace.value.send({ groupId: activeGroup.value.id, text, targetKinds: targets })
+    await workspace.value.send({
+      groupId,
+      text,
+      targetKinds: targets,
+      skillHints,
+      attachments,
+    })
     snapshot.value = normalizeSnapshot(await workspace.value.get())
   } catch (error) {
-    draft.value = text
+    if (contextVersion === composerContextVersion.value && groupId === activeGroup.value?.id) {
+      draft.value = previousDraft
+      selectedSkills.value = previousSkills
+      composerAttachments.value = previousAttachments
+    } else {
+      void discardAttachments(previousAttachments)
+    }
     showError(error)
   } finally {
     sending.value = false
@@ -922,7 +2181,7 @@ async function sendMessage() {
 }
 
 async function startAutoDiscussion() {
-  if (!activeGroup.value || activeRun.value) return
+  if (!activeGroup.value || activeRun.value || sending.value) return
   const latestRootMessage = activeMessages.value.findLast(
     message => message.role === 'user' && !message.threadRootId,
   )
@@ -947,6 +2206,7 @@ async function stopRun() {
 }
 
 function openAgentManager(kind = '') {
+  if (saving.value) return
   focusedAgentKind.value = kind
   installConfirmKind.value = ''
   modal.value = 'agents'
@@ -979,6 +2239,7 @@ async function loadProviderStatus(probeEncryption = false) {
 }
 
 function openProvider() {
+  if (saving.value) return
   closeModal()
   formError.value = ''
   providerRemoveArmed.value = false
@@ -1014,7 +2275,7 @@ async function saveProvider() {
     })
     providerForm.apiKey = ''
     await Promise.all([loadProviderStatus(), refreshAgents()])
-    closeModal()
+    closeModal({ force: true })
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -1023,31 +2284,92 @@ async function saveProvider() {
 }
 
 async function removeProvider() {
+  if (saving.value) return
   if (!providerRemoveArmed.value) {
     providerRemoveArmed.value = true
     return
   }
+  saving.value = true
   try {
     await provider.value.delete()
     await Promise.all([loadProviderStatus(), refreshAgents()])
-    closeModal()
+    closeModal({ force: true })
   } catch (error) {
     formError.value = translateError(error)
+  } finally {
+    saving.value = false
   }
 }
 
-function closeModal() {
+function closeModal(options = {}) {
+  if (saving.value && options?.force !== true) return false
+  if (!modal.value) return false
   modal.value = ''
+  settingsIntent.value = 'settings'
   formError.value = ''
   deleteArmed.value = false
   providerRemoveArmed.value = false
   installConfirmKind.value = ''
+  return true
 }
 
 function notify(message) {
   toastMessage.value = message
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toastMessage.value = '' }, 3600)
+}
+
+function dismissToast() {
+  clearTimeout(toastTimer)
+  toastMessage.value = ''
+}
+
+function handleRunFinished(event) {
+  const groupId = String(event?.groupId || '')
+  if (!groupId) return
+  const group = snapshot.value.groups.find(item => item.id === groupId)
+  if (!group) {
+    pendingRunFinishedEvents.set(groupId, {
+      groupId,
+      status: String(event?.status || ''),
+    })
+    return
+  }
+  pendingRunFinishedEvents.delete(groupId)
+  if (group.conversationType !== 'direct' || selectedGroupId.value === groupId) return
+  if (event?.status !== 'completed') {
+    if (finishedDirectGroupIds.value.has(groupId)) {
+      const next = new Set(finishedDirectGroupIds.value)
+      next.delete(groupId)
+      finishedDirectGroupIds.value = next
+    }
+    return
+  }
+  finishedDirectGroupIds.value = new Set([...finishedDirectGroupIds.value, groupId])
+}
+
+function flushPendingRunFinishedEvents() {
+  for (const [groupId, event] of pendingRunFinishedEvents) {
+    if (!snapshot.value.groups.some(group => group.id === groupId)) continue
+    pendingRunFinishedEvents.delete(groupId)
+    handleRunFinished(event)
+  }
+}
+
+function openPendingRequestedGroup() {
+  if (!pendingRequestedGroupId
+      || !snapshot.value.groups.some(group => group.id === pendingRequestedGroupId)) return false
+  const groupId = pendingRequestedGroupId
+  pendingRequestedGroupId = ''
+  selectGroup(groupId)
+  return true
+}
+
+function handleOpenGroup(event) {
+  const groupId = String(event?.groupId || '')
+  if (!groupId) return
+  pendingRequestedGroupId = groupId
+  openPendingRequestedGroup()
 }
 
 function showError(error) {
@@ -1069,16 +2391,16 @@ async function boot() {
   }
   try {
     unsubscribeWorkspace = workspace.value.onChanged?.((value) => { snapshot.value = normalizeSnapshot(value) }) || null
+    unsubscribeRunFinished = workspace.value.onRunFinished?.(handleRunFinished) || null
+    unsubscribeOpenGroup = workspace.value.onOpenGroup?.(handleOpenGroup) || null
     unsubscribeInstaller = installer.value.onChanged?.((value) => { installerState.value = value }) || null
-    const [nextSnapshot, nextCatalog, nextInstaller, nextProvider, nextDirectory] = await Promise.all([
-      workspace.value.refreshAgents().catch(() => workspace.value.get()),
-      installer.value.catalog(),
-      installer.value.state(),
-      provider.value.status().catch(() => providerStatus.value),
-      workspace.value.defaultDirectory(),
+    const [nextSnapshot, nextInstaller, nextProvider, nextDirectory] = await Promise.all([
+      settleWithin(workspace.value.get()),
+      settleWithin(installer.value.state()),
+      settleWithin(provider.value.status()),
+      settleWithin(workspace.value.defaultDirectory()),
     ])
-    snapshot.value = normalizeSnapshot(nextSnapshot)
-    installCatalog.value = nextCatalog || { platform: '', agents: [] }
+    if (nextSnapshot) snapshot.value = normalizeSnapshot(nextSnapshot)
     installerState.value = nextInstaller || installerState.value
     providerStatus.value = nextProvider || providerStatus.value
     defaultDirectory.value = nextDirectory || ''
@@ -1087,20 +2409,91 @@ async function boot() {
   } finally {
     booting.value = false
   }
+  if (!onboardingSeen()) {
+    onboardingIndex.value = 0
+    onboardingVisible.value = true
+    beginOnboardingDetection()
+  } else {
+    void refreshAgents()
+  }
 }
 
-function handleEscape(event) {
-  if (event.key === 'Escape' && modal.value) closeModal()
+function focusOverlay(dialog) {
+  void nextTick(() => dialog.value?.focus())
+}
+
+function trapOverlayFocus(event) {
+  if (event.key !== 'Tab' || !blockingOverlayOpen.value) return false
+  const dialog = onboardingVisible.value ? onboardingDialog.value : modalDialog.value
+  if (!dialog) return false
+  const focusable = [...dialog.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+  )]
+  if (!focusable.length) {
+    event.preventDefault()
+    dialog.focus()
+    return true
+  }
+  const first = focusable[0]
+  const last = focusable[focusable.length - 1]
+  const focusOutside = !dialog.contains(document.activeElement)
+  if (event.shiftKey && (focusOutside || document.activeElement === first)) {
+    event.preventDefault()
+    last.focus()
+    return true
+  }
+  if (!event.shiftKey && (focusOutside || document.activeElement === last)) {
+    event.preventDefault()
+    first.focus()
+    return true
+  }
+  return false
+}
+
+function handleWindowKeydown(event) {
+  if (trapOverlayFocus(event) || event.key !== 'Escape') return
+  if (skillMenuOpen.value) {
+    skillMenuOpen.value = false
+    return
+  }
+  if (onboardingVisible.value) {
+    completeOnboarding()
+    return
+  }
+  if (modal.value) closeModal()
 }
 
 function handlePopState() {
-  if (!modal.value) return
+  if (!blockingOverlayOpen.value) return
+  if (modal.value && saving.value) {
+    history.pushState({ roundrelayOverlay: true }, '', window.location.href)
+    modalHistoryPushed = true
+    return
+  }
   modalHistoryPushed = false
-  closeModal()
+  if (onboardingVisible.value) completeOnboarding()
+  else closeModal()
 }
 
 watch(theme, applyTheme)
+watch(onboardingVisible, (value) => { if (value) focusOverlay(onboardingDialog) })
 watch(modal, (value, previous) => {
+  if (value && !previous) {
+    const active = document.activeElement
+    modalFocusReturn = active instanceof HTMLElement && active !== document.body ? active : null
+  }
+  if (value) {
+    focusOverlay(modalDialog)
+    return
+  }
+  if (!previous) return
+  const target = modalFocusReturn
+  modalFocusReturn = null
+  void nextTick(() => {
+    if (target?.isConnected && typeof target.focus === 'function') target.focus()
+  })
+})
+watch(blockingOverlayOpen, (value, previous) => {
   document.body.classList.toggle('modal-open', Boolean(value))
   if (value && !previous) {
     history.pushState({ roundrelayOverlay: true }, '', window.location.href)
@@ -1110,28 +2503,60 @@ watch(modal, (value, previous) => {
     history.back()
   }
 })
+watch(() => snapshot.value.groups.map(group => group.id).join('\u0000'), () => {
+  openPendingRequestedGroup()
+  flushPendingRunFinishedEvents()
+})
 watch(activeGroupMemberSignature, () => {
+  composerContextVersion.value += 1
+  const abandonedAttachments = composerAttachments.value
   const group = activeGroup.value
   targetKinds.value = group ? [...group.agentKinds] : []
+  selectedSkills.value = []
+  composerAttachments.value = []
+  void discardAttachments(abandonedAttachments)
+  skillMenuOpen.value = false
   void scrollToLatest()
 })
+watch(skillTargetSignature, () => {
+  const targets = new Set(composerTargetKinds.value)
+  selectedSkills.value = selectedSkills.value.filter(skill => targets.has(skill.targetKind))
+  skillOptions.value = []
+  skillActiveIndex.value = 0
+  skillLoadToken += 1
+  if (skillMenuOpen.value && currentSkillTrigger.value) void loadSkillsForTargets()
+})
+watch(() => filteredSkillOptions.value.length, (length) => {
+  skillActiveIndex.value = length ? Math.min(skillActiveIndex.value, length - 1) : 0
+})
 watch(() => activeMessages.value.length, scrollToLatest)
+watch(activeRunTopicSignature, (value) => { if (value) void focusRunTopic() })
+watch(readyAgentSignature, (value) => { if (value) void loadAgentSkillStats() })
 watch(() => installerState.value.phase, (phase, previous) => {
   if (phase === 'completed' && previous !== 'completed') void refreshAgents()
 })
 
 onMounted(() => {
-  window.addEventListener('keydown', handleEscape)
+  window.addEventListener('keydown', handleWindowKeydown)
   window.addEventListener('popstate', handlePopState)
   void boot()
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('keydown', handleEscape)
+  composerContextVersion.value += 1
+  const abandonedAttachments = composerAttachments.value
+  composerAttachments.value = []
+  void discardAttachments(abandonedAttachments)
+  window.removeEventListener('keydown', handleWindowKeydown)
   window.removeEventListener('popstate', handlePopState)
   document.body.classList.remove('modal-open')
+  skillLoadToken += 1
+  agentSkillStatsToken += 1
   unsubscribeWorkspace?.()
   unsubscribeInstaller?.()
+  unsubscribeRunFinished?.()
+  unsubscribeOpenGroup?.()
+  pendingRunFinishedEvents.clear()
   clearTimeout(toastTimer)
 })
 </script>
