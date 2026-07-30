@@ -3,11 +3,11 @@ export function publicAsset(path) {
 }
 
 export const AGENTS = Object.freeze([
-  { kind: 'codex', label: 'Codex', logo: publicAsset('agent-logos/codex-transparent.png'), providerMode: 'responses', imageLimit: 4 },
-  { kind: 'hermes', label: 'Hermes', logo: publicAsset('agent-logos/hermes-transparent.png'), providerMode: 'compatible', imageLimit: 1 },
+  { kind: 'codex', label: 'Codex', logo: publicAsset('agent-logos/codex.svg'), providerMode: 'responses', imageLimit: 4 },
+  { kind: 'hermes', label: 'Hermes', logo: publicAsset('agent-logos/hermes.svg'), providerMode: 'compatible', imageLimit: 1 },
   { kind: 'openclaw', label: 'OpenClaw', logo: publicAsset('agent-logos/openclaw-transparent.png'), providerMode: 'compatible', imageLimit: 0 },
-  { kind: 'workbuddy', label: 'WorkBuddy', logo: publicAsset('agent-logos/workbuddy.svg'), providerMode: 'experimental', imageLimit: 0 },
-  { kind: 'kimi', label: 'Kimi Code', logo: publicAsset('agent-logos/kimi.svg'), providerMode: 'native', imageLimit: 0 },
+  { kind: 'workbuddy', label: 'WorkBuddy', logo: publicAsset('agent-logos/workbuddy.png'), providerMode: 'experimental', imageLimit: 0 },
+  { kind: 'kimi', label: 'Kimi Code', logo: publicAsset('agent-logos/kimi.png'), providerMode: 'native', imageLimit: 0 },
   { kind: 'mimo', label: 'MiMo Code', logo: publicAsset('agent-logos/mimo.svg'), providerMode: 'native', imageLimit: 0 },
   { kind: 'claude', label: 'Claude Code', logo: publicAsset('agent-logos/claude.png'), providerMode: 'anthropic', imageLimit: 0 },
   { kind: 'gemini', label: 'Gemini CLI', logo: publicAsset('agent-logos/gemini.svg'), providerMode: 'native', imageLimit: 0 },

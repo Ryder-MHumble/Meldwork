@@ -2309,7 +2309,7 @@ button svg {
   margin-left: 0;
 }
 
-:root[data-theme="dark"] img[src$="/kimi.svg"],
+:root[data-theme="dark"] img[src$="/hermes.svg"],
 :root[data-theme="dark"] img[src$="/opencode.svg"] {
   filter: invert(1) hue-rotate(180deg) drop-shadow(0 1px 1px rgb(0 0 0 / 0.24));
 }
