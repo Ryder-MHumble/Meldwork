@@ -553,6 +553,7 @@ button svg {
 .sidebar-agent-main img {
   width: 28px;
   height: 28px;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -1237,6 +1238,7 @@ button svg {
 .conversation-avatar.single img {
   width: 100%;
   height: 100%;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -1248,8 +1250,9 @@ button svg {
   position: absolute;
   width: 26px;
   height: 26px;
-  border: 2px solid var(--surface);
-  border-radius: 7px;
+  border: 0;
+  background: transparent;
+  filter: drop-shadow(0 1px 1px rgb(24 31 38 / 0.16));
   object-fit: contain;
 }
 
@@ -1474,6 +1477,7 @@ button svg {
   width: 32px;
   height: 32px;
   flex: 0 0 auto;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -2005,6 +2009,7 @@ button svg {
 .direct-run-indicator img {
   width: 30px;
   height: 30px;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -2020,6 +2025,7 @@ button svg {
 .relay-run-indicator img {
   width: 27px;
   height: 27px;
+  background: transparent;
   object-fit: contain;
   opacity: 0.46;
   transition: opacity 0.16s ease, transform 0.16s ease;
@@ -2064,6 +2070,7 @@ button svg {
 .run-agent-row img {
   width: 26px;
   height: 26px;
+  background: transparent;
   object-fit: contain;
 }
 
@@ -2267,12 +2274,12 @@ button svg {
   justify-content: center;
   margin-left: -7px;
   padding: 2px;
-  border: 2px solid var(--surface);
+  border: 0;
   border-radius: 50%;
   background: transparent;
   cursor: pointer;
   opacity: 0.46;
-  transition: border-color 0.14s ease, opacity 0.14s ease, transform 0.14s ease;
+  transition: margin-left 0.18s ease, opacity 0.14s ease, transform 0.14s ease;
 }
 
 .target-chip:first-child {
@@ -2282,13 +2289,29 @@ button svg {
 .target-chip img {
   width: 23px;
   height: 23px;
+  background: transparent;
+  filter: drop-shadow(0 1px 1px rgb(24 31 38 / 0.16));
   object-fit: contain;
 }
 
 .target-chip.selected {
-  border-color: var(--accent);
   opacity: 1;
   transform: translateY(-1px);
+}
+
+.target-avatar-stack:hover .target-chip,
+.target-avatar-stack:focus-within .target-chip {
+  margin-left: 2px;
+}
+
+.target-avatar-stack:hover .target-chip:first-child,
+.target-avatar-stack:focus-within .target-chip:first-child {
+  margin-left: 0;
+}
+
+:root[data-theme="dark"] img[src$="/kimi.svg"],
+:root[data-theme="dark"] img[src$="/opencode.svg"] {
+  filter: invert(1) hue-rotate(180deg) drop-shadow(0 1px 1px rgb(0 0 0 / 0.24));
 }
 
 .target-chip.selected:disabled {

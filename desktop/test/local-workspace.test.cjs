@@ -774,6 +774,76 @@ test('group-scoped sessions migrate the exact root or the most recently active l
   assert.doesNotMatch(JSON.stringify(workspace.snapshot()), /sessionRef|codex-current-root|hermes-recent-root/)
 })
 
+test('legacy GEO conversations keep their task and reuse one session per Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} completed the GEO turn\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-group-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Test', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const intro = workspace.addMessage(group.id, 'user', '你们好，互相介绍下自己吧')
+  workspace.addMessage(group.id, 'agent', 'Codex 自我介绍', 'codex', intro.id)
+  workspace.addMessage(group.id, 'agent', 'Hermes 自我介绍', 'hermes', intro.id)
+  const task = workspace.addMessage(
+    group.id,
+    'user',
+    '这是一个 GEO 调研任务，请结合各自特点分配岗位并开始。',
+  )
+  workspace.addMessage(group.id, 'agent', 'Codex 负责技术与证据研究', 'codex', task.id)
+  workspace.addMessage(group.id, 'agent', 'Hermes 负责市场与内容策略', 'hermes', task.id)
+  const scope = workspace.addMessage(
+    group.id,
+    'user',
+    '通用课题，海外为主，目标是培养商业和市场洞悉力并完成行业摸底。',
+  )
+  workspace.state.sessions[`${group.id}:codex:thread:${task.id}`] = 'codex-old-task'
+  workspace.state.sessions[`${group.id}:codex:thread:${scope.id}`] = 'codex-old-scope'
+  workspace.state.sessions[`${group.id}:hermes:thread:${task.id}`] = 'hermes-old-task'
+  workspace.state.sessions[`${group.id}:hermes:thread:${scope.id}`] = 'hermes-old-scope'
+  workspace.save()
+
+  const firstFinished = new Promise(resolve => workspace.once('run-finished', resolve))
+  const first = await workspace.sendMessage({
+    groupId: group.id,
+    text: '你们自己讨论吧，等干完了再跟我说。',
+    mode: 'auto',
+    maxRounds: 2,
+  })
+  await firstFinished
+  const secondFinished = new Promise(resolve => workspace.once('run-finished', resolve))
+  const second = await workspace.sendMessage({
+    groupId: group.id,
+    text: '继续完成上面的 GEO 调研，不要重新询问任务。',
+    mode: 'auto',
+    maxRounds: 2,
+  })
+  await secondFinished
+
+  assert.ok(first.threadRootId)
+  assert.ok(second.threadRootId)
+  assert.notEqual(first.threadRootId, second.threadRootId)
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
+    'codex-old-scope',
+    'hermes-old-scope',
+    'codex-old-scope',
+    'hermes-old-scope',
+  ])
+  assert.equal(calls.every(call => call.prompt.includes('GEO 调研任务')), true)
+  assert.equal(calls.every(call => call.prompt.includes('海外为主')), true)
+  assert.equal(calls.every(call => call.prompt.includes('商业和市场洞悉力')), true)
+  assert.equal(Object.keys(workspace.state.sessions).some(key => key.includes(':thread:')), false)
+  assert.equal(workspace.state.sessions[`${group.id}:codex`], 'codex-old-scope')
+  assert.equal(workspace.state.sessions[`${group.id}:hermes`], 'hermes-old-scope')
+})
+
 test('prompts retain bounded topic and stable user turns plus group-wide final messages', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

@@ -40,9 +40,11 @@ describe('renderer security policy', () => {
 
     const mimoSource = readFileSync(resolve(process.cwd(), 'public/agent-logos/mimo.svg'), 'utf8')
     const openCodeSource = readFileSync(resolve(process.cwd(), 'public/agent-logos/opencode.svg'), 'utf8')
+    const transparentPngAgents = AGENTS.filter(agent => ['codex', 'hermes', 'openclaw'].includes(agent.kind))
     expect(mimoSource).toContain('data-brand="mimocode"')
     expect(mimoSource).toContain('#FF7F45')
     expect(mimoSource).not.toBe(openCodeSource)
+    expect(transparentPngAgents.every(agent => agent.logo.includes('-transparent.png'))).toBe(true)
 
     const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
     const catalogSource = readFileSync(resolve(process.cwd(), 'src/catalog.js'), 'utf8')
