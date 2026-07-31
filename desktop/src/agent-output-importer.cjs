@@ -84,6 +84,7 @@ function sameFileState(left, right) {
 }
 
 function importAgentOutputs(input, attachmentStore) {
+  if (input?.signal?.aborted) return []
   if (!input?.baseline || !attachmentStore || typeof attachmentStore.importFile !== 'function') return []
   const workdirRealPath = safeWorkdir(input.workdir)
   if (!workdirRealPath || input.baseline.workdirRealPath !== workdirRealPath) return []
@@ -102,8 +103,9 @@ function importAgentOutputs(input, attachmentStore) {
     ))
 
   const imported = []
+  if (input.signal?.aborted) return imported
   for (const file of candidates) {
-    if (imported.length >= MAX_OUTPUT_ATTACHMENTS) break
+    if (input.signal?.aborted || imported.length >= MAX_OUTPUT_ATTACHMENTS) break
     try { imported.push(attachmentStore.importFile(file.path)) } catch { /* invalid media is ignored */ }
   }
   return imported

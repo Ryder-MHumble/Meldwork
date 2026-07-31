@@ -4398,7 +4398,8 @@ button svg {
   border-radius: var(--radius-sm);
   background: var(--surface-raised);
   color: var(--text-soft);
-  font: 10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.4;
   text-align: left;
   cursor: pointer;
 }
@@ -6435,19 +6436,21 @@ fieldset:disabled .agent-choice {
 
 @media (max-width: 1040px) {
   :root { --sidebar-width: 242px; }
-  .app-shell.trace-panel-open,
-  .app-shell.sidebar-collapsed.trace-panel-open {
-    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  }
-  .app-shell.sidebar-collapsed.trace-panel-open {
-    grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
-  }
   .agent-grid { grid-template-columns: 1fr; }
   .home-dashboard-grid { grid-template-columns: 1fr; }
   .workspace-chip { max-width: 280px; }
 }
 
 @media (max-width: 1179px) {
+  .app-shell.trace-panel-open,
+  .app-shell.sidebar-collapsed.trace-panel-open {
+    grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+  }
+
+  .app-shell.sidebar-collapsed.trace-panel-open {
+    grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr);
+  }
+
   .trace-panel-layer {
     position: fixed;
     inset: 0;

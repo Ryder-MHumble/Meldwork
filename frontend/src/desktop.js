@@ -27,9 +27,9 @@ const EVENT_STATUSES = new Set([
 const MAX_RUN_AGENTS = 64
 const MAX_TRACE_EVENTS = 200
 const MAX_CAPSULE_EVENTS = 12
-const MAX_SEEN_EVENT_SEQUENCES = 4096
+const MAX_SEEN_EVENT_SEQUENCES = 512
 const MAX_SOURCE_MESSAGE_IDS = 32
-const MAX_AGENT_OUTPUT = 200000
+const MAX_AGENT_OUTPUT = 20000
 
 function record(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null

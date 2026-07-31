@@ -2435,6 +2435,7 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgentTimeoutMs = 8
+  options.runAbortGraceMs = 20
   options.runSilenceWarningMs = 100
   const lateCallbacksDone = deferred()
   let timedOutSignal
@@ -2502,6 +2503,7 @@ test('manual Agent watchdog finishes the run as timeout and removes the parent a
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgentTimeoutMs = 8
+  options.runAbortGraceMs = 20
   options.runSilenceWarningMs = 100
   const started = deferred()
   let timedOutSignal
@@ -2663,4 +2665,223 @@ test('Automatic Harness conclusions stream without exposing the consensus contro
       .map(message => message.content),
     ['codex conclusion', 'hermes conclusion'],
   )
+})
+
+test('stopping during output capture prevents the Agent from launching', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const captureEntered = deferred()
+  const captureGate = deferred()
+  options.runAbortGraceMs = 20
+  let captureSignal
+  options.captureAgentOutputs = async (_workdir, captureOptions) => {
+    captureSignal = captureOptions.signal
+    captureEntered.resolve()
+    return await captureGate.promise
+  }
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Stop during capture', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: 'Generate a file' })
+  await captureEntered.promise
+  assert.equal(workspace.stop(group.id), true)
+  await send
+
+  assert.equal(captureSignal.aborted, true)
+  assert.equal(calls.length, 0)
+  assert.equal(finished[0].status, 'stopped')
+  assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
+  captureGate.resolve({ marker: 'late capture' })
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
+})
+
+test('stopping during output import never persists the late completed reply', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const importEntered = deferred()
+  const importGate = deferred()
+  options.runAbortGraceMs = 20
+  let importSignal
+  options.importAgentOutputs = async (input) => {
+    importSignal = input.signal
+    importEntered.resolve()
+    return await importGate.promise
+  }
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Stop during import', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: 'Generate a file' })
+  await importEntered.promise
+  assert.equal(workspace.stop(group.id), true)
+  await send
+
+  assert.equal(importSignal.aborted, true)
+  assert.equal(finished[0].status, 'stopped')
+  assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
+  importGate.resolve([
+    { id: 'late-image', name: 'late.png', mimeType: 'image/png', size: 10 },
+  ])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
+})
+
+test('a stopped run keeps the group lock until the Agent cleanup settles', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAbortGraceMs = 100
+  const firstStarted = deferred()
+  let attempts = 0
+  let cleanupFinished = false
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    attempts += 1
+    if (attempts > 1) return { text: 'Second run', sessionRef: 'codex-session-2' }
+    return await new Promise((resolve, reject) => {
+      runOptions.signal.addEventListener('abort', () => {
+        setTimeout(() => {
+          cleanupFinished = true
+          reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        }, 30)
+      }, { once: true })
+      firstStarted.resolve()
+    })
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Cleanup lock', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const firstSend = workspace.sendMessage({ groupId: group.id, text: 'First run' })
+  await firstStarted.promise
+  assert.equal(workspace.stop(group.id), true)
+  await assert.rejects(
+    workspace.sendMessage({ groupId: group.id, text: 'Too early' }),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  await firstSend
+
+  assert.equal(cleanupFinished, true)
+  await workspace.sendMessage({ groupId: group.id, text: 'Second run' })
+  assert.equal(workspace.snapshot().messages.at(-1).content, 'Second run')
+})
+
+test('a stopped run keeps the group lock until output import cleanup settles', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAbortGraceMs = 100
+  const importStarted = deferred()
+  let attempts = 0
+  let importCleanupFinished = false
+  options.importAgentOutputs = async (input) => {
+    attempts += 1
+    if (attempts > 1) return []
+    return await new Promise((resolve) => {
+      input.signal.addEventListener('abort', () => {
+        setTimeout(() => {
+          importCleanupFinished = true
+          resolve([])
+        }, 30)
+      }, { once: true })
+      importStarted.resolve()
+    })
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Import cleanup lock', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const firstSend = workspace.sendMessage({ groupId: group.id, text: 'First import' })
+  await importStarted.promise
+  assert.equal(workspace.stop(group.id), true)
+  await assert.rejects(
+    workspace.sendMessage({ groupId: group.id, text: 'Too early' }),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  await firstSend
+
+  assert.equal(importCleanupFinished, true)
+  await workspace.sendMessage({ groupId: group.id, text: 'After cleanup' })
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'user' && message.content === 'After cleanup'
+  )), true)
+})
+
+test('the Agent watchdog covers output capture and import phases', async (t) => {
+  const phases = ['capture', 'import']
+  for (const phase of phases) {
+    await t.test(phase, async (subtest) => {
+      const { directory, calls, options } = fixture()
+      subtest.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      options.runAgentTimeoutMs = 8
+      options.runAbortGraceMs = 20
+      if (phase === 'capture') options.captureAgentOutputs = async () => await new Promise(() => {})
+      else options.importAgentOutputs = async () => await new Promise(() => {})
+      const finished = []
+      const workspace = new LocalWorkspace(options)
+      workspace.on('run-finished', result => finished.push(result))
+      await workspace.refreshAgents()
+      const group = workspace.createGroup({
+        name: `Watchdog ${phase}`, agentKinds: ['codex'], workdir: directory,
+      })
+
+      await workspace.sendMessage({ groupId: group.id, text: 'Do not hang' })
+
+      assert.equal(calls.length, phase === 'capture' ? 0 : 1)
+      assert.equal(finished[0].status, 'timeout')
+      const failure = workspace.snapshot().messages.find(message => (
+        message.system?.key === 'system.agentCallFailed'
+      ))
+      assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+      assert.equal(failure.trace.status, 'timeout')
+      assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
+    })
+  }
+})
+
+test('session references stay opaque and OpenClaw group scopes do not collide', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const privateSessionRef = '/Users/private/token=secret'
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    runOptions.onSessionRef(privateSessionRef)
+    return { text: 'Safe reply', sessionRef: privateSessionRef }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Opaque sessions', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Keep the session private' })
+
+  assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'codex')], undefined)
+  assert.doesNotMatch(fs.readFileSync(options.storagePath, 'utf8'), /Users\/private|token=secret/)
+  assert.equal(workspace.persistSessionRef(
+    workspace.sessionKey(group.id, 'codex'),
+    'sk-abcdefghijklmnop1234',
+  ), false)
+  const first = workspace.openClawSessionRef({ id: 'group-abcdefghijkl-1' })
+  const second = workspace.openClawSessionRef({ id: 'group-abcdefghijkl-2' })
+  assert.notEqual(first, second)
+  assert.match(first, /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
+  assert.match(second, /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
+
+  const legacyGroup = { id: 'group-abcdefghijkl-1' }
+  const legacyKey = workspace.sessionKey(legacyGroup.id, 'openclaw')
+  workspace.state.sessions[legacyKey] = 'agent:main:desktop-roundrelay-groupabcdefg-openclaw'
+  workspace.state.sessionMeta[legacyKey] = { turns: 4, estimatedChars: 1200 }
+  assert.equal(workspace.sessionRef(legacyGroup, 'openclaw'), first)
+  assert.equal(workspace.state.sessionMeta[legacyKey], undefined)
 })

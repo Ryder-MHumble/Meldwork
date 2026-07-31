@@ -942,7 +942,7 @@
                   alt=""
                 />
               </div>
-              <div class="conversation-title-block">
+              <div ref="conversationTitleBlock" class="conversation-title-block" tabindex="-1">
                 <form v-if="inlineTitleEditing" class="inline-title-form" @submit.prevent="saveInlineTitle">
                   <input
                     ref="inlineTitleInput"
@@ -1026,6 +1026,16 @@
             </div>
           </header>
 
+          <p
+            v-if="activeGroup.conversationType === 'direct'"
+            class="visually-hidden direct-conclusion-live-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {{ directConclusionLiveStatus }}
+          </p>
+
           <div ref="messageScroller" class="message-scroll" @scroll="handleMessageScroll">
             <section v-if="conversationEmptyVisible" class="conversation-empty">
               <img class="conversation-empty-wordmark" :src="productWordmark" alt="Meldwork" />
@@ -1084,6 +1094,7 @@
                         v-if="activeGroup.conversationType !== 'direct' && message.agentKind && messageHasTrace(message)"
                         class="message-trace-button"
                         type="button"
+                        :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
                         :title="t('trace.viewProcess')"
                         :aria-label="t('trace.viewProcess')"
                         @click.stop="openTraceForMessage(message, $event.currentTarget)"
@@ -1155,6 +1166,7 @@
                         v-if="activeGroup.conversationType !== 'direct' && messageHasTrace(message)"
                         class="message-trace-button"
                         type="button"
+                        :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
                         :title="t('trace.viewProcess')"
                         :aria-label="t('trace.viewProcess')"
                         @click.stop="openTraceForMessage(message, $event.currentTarget)"
@@ -1388,6 +1400,7 @@
                       :key="kind"
                       class="run-agent-row"
                       :data-status="runAgentStatus(kind)"
+                      :data-trace-agent-run-id="runAgentForKind(kind)?.agentRunId || undefined"
                       :style="{ '--reveal-index': index }"
                       type="button"
                       :disabled="!runAgentForKind(kind)"
@@ -2245,6 +2258,7 @@ const finishedDirectGroupIds = ref(new Set())
 const runFinishedTurnStatuses = ref(new Map())
 const messageScroller = ref(null)
 const composerInput = ref(null)
+const conversationTitleBlock = ref(null)
 const inlineTitleInput = ref(null)
 const inlineTitleButton = ref(null)
 const settingsNameInput = ref(null)
@@ -2272,6 +2286,7 @@ let modalHistoryPushed = false
 let modalFocusReturn = null
 let tracePanelHistoryPushed = false
 let tracePanelFocusReturn = null
+let tracePanelFocusReturnAgentRunId = ''
 let tracePanelMediaQuery = null
 let tracePanelResizeHandler = null
 let pendingRequestedGroupId = ''
@@ -2419,6 +2434,16 @@ const activeRunProgress = computed(() => Array.isArray(activeRun.value?.progress
 const liveOutputSignature = computed(() => activeRunAgentRuns.value.map(agent => (
   `${agent.agentRunId}:${String(agent.output || '').length}:${agent.events?.at(-1)?.seq || 0}`
 )).join('\u0000'))
+const directConclusionLiveStatus = computed(() => {
+  if (activeGroup.value?.conversationType !== 'direct') return ''
+  const agent = activeRunAgentRuns.value.at(-1)
+  if (!agent?.output) return ''
+  const status = ['completed', 'succeeded', 'failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted']
+    .includes(String(agent.status || '').toLowerCase())
+    ? agent.status
+    : 'streaming'
+  return [agentLabel(agent.kind), t('trace.conclusion'), runStatusLabel(status)].join(' / ')
+})
 
 function latestAgentRunForKind(kind) {
   return activeRunAgentRuns.value.filter(agent => agent.kind === kind).at(-1) || null
@@ -2515,6 +2540,21 @@ function traceRound(item) {
   return match ? Number(match[1]) : 0
 }
 
+function traceSourceItems(sourceIds) {
+  const messagesById = new Map(activeMessages.value.map(message => [message.id, message]))
+  return (Array.isArray(sourceIds) ? sourceIds : []).map((id) => {
+    const message = messagesById.get(id)
+    if (!message) return { id, available: false, label: t('trace.sourceUnavailable') }
+    const sender = message.role === 'user'
+      ? t('conversation.you')
+      : message.agentKind ? agentLabel(message.agentKind) : t('conversation.system')
+    const content = message.role === 'system' ? translateSystemMessage(message) : message.content
+    const summary = String(content || '').trim().replace(/\s+/g, ' ').slice(0, 96)
+      || t('conversation.attachmentTurn')
+    return { id, available: true, label: `${sender}: ${summary}` }
+  })
+}
+
 const tracePanelItems = computed(() => {
   if (activeGroup.value?.conversationType === 'direct') return []
   const byAgentRunId = new Map()
@@ -2528,6 +2568,7 @@ const tracePanelItems = computed(() => {
       summary: '',
       events: agent.events || [],
       sourceMessageIds: agent.sourceMessageIds || [],
+      sources: traceSourceItems(agent.sourceMessageIds),
       truncated: agent.truncated === true,
       context: {},
       startedAt: agent.startedAt,
@@ -2547,6 +2588,7 @@ const tracePanelItems = computed(() => {
       summary: trace.summary || '',
       events: trace.events || [],
       sourceMessageIds: trace.sourceMessageIds || [],
+      sources: traceSourceItems(trace.sourceMessageIds),
       truncated: trace.truncated === true,
       context: trace.context || {},
       messageId: message.id,
@@ -3419,6 +3461,10 @@ function messageTraceKey(message) {
   return message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId || message?.id || ''
 }
 
+function messageAgentRunId(message) {
+  return message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId || ''
+}
+
 function messageTraceEvents(message) {
   const events = message?.liveAgentRun?.events || message?.trace?.events
   return (Array.isArray(events) ? events : []).filter(event => event?.type !== 'answer_delta')
@@ -3920,6 +3966,7 @@ function openTracePanel(agentRunId, opener = null) {
   if (!tracePanelItems.value.some(item => item.agentRunId === agentRunId)) return
   if (!tracePanelOpen.value) {
     tracePanelFocusReturn = opener instanceof HTMLElement ? opener : document.activeElement
+    tracePanelFocusReturnAgentRunId = agentRunId
     history.pushState({ roundrelayTracePanel: true }, '', window.location.href)
     tracePanelHistoryPushed = true
   }
@@ -3935,8 +3982,22 @@ function openTraceForAgent(kind, opener = null) {
 }
 
 function openTraceForMessage(message, opener = null) {
-  const agentRunId = message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId
+  const agentRunId = messageAgentRunId(message)
   if (agentRunId) openTracePanel(agentRunId, opener)
+}
+
+function focusTraceReturnTarget(target, agentRunId) {
+  if (target?.isConnected && typeof target.focus === 'function') {
+    target.focus()
+    if (document.activeElement === target) return
+  }
+  const matchingTarget = [...document.querySelectorAll('[data-trace-agent-run-id]')]
+    .find(element => element.getAttribute('data-trace-agent-run-id') === agentRunId && !element.disabled)
+  if (matchingTarget && typeof matchingTarget.focus === 'function') {
+    matchingTarget.focus()
+    if (document.activeElement === matchingTarget) return
+  }
+  conversationTitleBlock.value?.focus?.()
 }
 
 function closeTracePanel(options = {}) {
@@ -3945,7 +4006,9 @@ function closeTracePanel(options = {}) {
   tracePanelGroupId.value = ''
   selectedTraceAgentRunId.value = ''
   const target = tracePanelFocusReturn
+  const agentRunId = tracePanelFocusReturnAgentRunId
   tracePanelFocusReturn = null
+  tracePanelFocusReturnAgentRunId = ''
   if (!options.fromHistory && tracePanelHistoryPushed) {
     tracePanelHistoryPushed = false
     history.back()
@@ -3953,7 +4016,7 @@ function closeTracePanel(options = {}) {
     tracePanelHistoryPushed = false
   }
   void nextTick(() => {
-    if (target?.isConnected && typeof target.focus === 'function') target.focus()
+    focusTraceReturnTarget(target, agentRunId)
   })
   return true
 }
@@ -5644,6 +5707,24 @@ watch(modal, (value, previous) => {
     if (target?.isConnected && typeof target.focus === 'function') target.focus()
   })
 })
+watch(
+  [
+    activeView,
+    selectedGroupId,
+    () => snapshot.value.groups.some(group => group.id === tracePanelGroupId.value),
+    () => tracePanelItems.value.length,
+  ],
+  ([view, groupId, traceGroupExists, traceItemCount]) => {
+    if (!tracePanelOpen.value) return
+    if (
+      view === 'conversation'
+      && groupId === tracePanelGroupId.value
+      && traceGroupExists
+      && traceItemCount > 0
+    ) return
+    closeTracePanel({ fromHistory: blockingOverlayOpen.value })
+  },
+)
 watch(blockingOverlayOpen, (value, previous) => {
   if (value && !previous && tracePanelOpen.value) closeTracePanel({ fromHistory: true })
   document.body.classList.toggle('modal-open', Boolean(value))

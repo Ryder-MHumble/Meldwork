@@ -44,6 +44,7 @@ const LOCAL_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
 ])
 const LOCAL_IDENTIFIER = /^[A-Za-z0-9_-]{1,100}$/
+const LOCAL_RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 let mainWindow = null
 let workspace = null
 let workspaceChangedListener = null
@@ -511,6 +512,7 @@ function notifyWorkspaceChanged(snapshot) {
 function normalizeRunFinished(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const groupId = String(input.groupId || '')
+  const runId = String(input.runId || '')
   const status = String(input.status || '')
   if (!LOCAL_IDENTIFIER.test(groupId) || !RUN_FINISHED_STATUSES.has(status)) return null
   const threadRootId = String(input.threadRootId || '')
@@ -518,11 +520,13 @@ function normalizeRunFinished(input) {
     .filter(kind => LOCAL_AGENT_KINDS.has(kind)))]
   return {
     groupId,
+    runId: LOCAL_RUN_IDENTIFIER.test(runId) ? runId : '',
     mode: input.mode === 'auto' ? 'auto' : 'manual',
     status,
     threadRootId: LOCAL_IDENTIFIER.test(threadRootId) ? threadRootId : '',
     targetKinds: kinds(input.targetKinds),
     completedKinds: kinds(input.completedKinds),
+    failedKinds: kinds(input.failedKinds),
     startedAt: Number.isFinite(input.startedAt) ? input.startedAt : 0,
     finishedAt: Number.isFinite(input.finishedAt) ? input.finishedAt : Date.now(),
   }

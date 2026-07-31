@@ -757,11 +757,13 @@ test('run completion uses sanitized renderer events and a localized background n
 
   workspace.emit('run-finished', {
     groupId: 'group-1',
+    runId: 'run:trace.1',
     mode: 'auto',
     status: 'partial',
     threadRootId: 'thread-1',
     targetKinds: ['hermes', '../../private', 'hermes'],
     completedKinds: ['hermes'],
+    failedKinds: ['codex', '../../private', 'codex'],
     startedAt: 100,
     finishedAt: 200,
     path: '/private/workspace',
@@ -774,11 +776,13 @@ test('run completion uses sanitized renderer events and a localized background n
   ))
   assert.deepEqual(finished, ['local-workspace:run-finished', {
     groupId: 'group-1',
+    runId: 'run:trace.1',
     mode: 'auto',
     status: 'partial',
     threadRootId: 'thread-1',
     targetKinds: ['hermes'],
     completedKinds: ['hermes'],
+    failedKinds: ['codex'],
     startedAt: 100,
     finishedAt: 200,
   }])

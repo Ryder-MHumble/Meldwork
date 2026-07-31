@@ -82,3 +82,38 @@ test('requires a matching pre-run baseline and refuses symlinked output director
     startedAt: Date.now(),
   }, store), [])
 })
+
+test('stops importing generated media when the run is aborted', (t) => {
+  const { workdir, output } = fixture(t)
+  const baseline = captureAgentOutputState(workdir)
+  const startedAt = Date.now()
+  fs.writeFileSync(path.join(output, 'first.png'), PNG)
+  fs.writeFileSync(path.join(output, 'second.png'), PNG)
+
+  const alreadyStopped = new AbortController()
+  alreadyStopped.abort()
+  const calls = []
+  const store = {
+    importFile(filename) {
+      calls.push(filename)
+      return { name: path.basename(filename) }
+    },
+  }
+  assert.deepEqual(importAgentOutputs({
+    workdir, baseline, startedAt, signal: alreadyStopped.signal,
+  }, store), [])
+  assert.equal(calls.length, 0)
+
+  const controller = new AbortController()
+  store.importFile = (filename) => {
+    calls.push(filename)
+    controller.abort()
+    return { name: path.basename(filename) }
+  }
+  const imported = importAgentOutputs({
+    workdir, baseline, startedAt, signal: controller.signal,
+  }, store)
+
+  assert.equal(imported.length, 1)
+  assert.equal(calls.length, 1)
+})

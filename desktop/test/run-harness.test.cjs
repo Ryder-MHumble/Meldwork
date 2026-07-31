@@ -103,6 +103,48 @@ test('enriches events, appends bounded answer deltas, and upserts tool lifecycle
   assert.equal(run.sourceMessageIds[0], 'message-1')
 })
 
+test('deduplicates identical live tool events without dropping lifecycle updates', () => {
+  const harness = fixture()
+  const started = harness.beginAgent('codex', 1)
+  const toolStarted = harness.ingest('codex', 1, {
+    id: 'tool-1', type: 'tool_start', status: 'running', title: 'search',
+  })
+  const duplicate = harness.ingest('codex', 1, {
+    id: 'tool-1', type: 'tool_start', status: 'running', title: 'search',
+  })
+  const richer = harness.ingest('codex', 1, {
+    id: 'tool-1', type: 'tool_start', status: 'running', title: 'search',
+    summary: 'Searching the workspace',
+  })
+  const completed = harness.ingest('codex', 1, {
+    id: 'tool-1', type: 'tool_result_summary', status: 'completed', title: 'search',
+    summary: '3 matches',
+  })
+
+  assert.equal(duplicate, null)
+  assert.equal(richer.seq, toolStarted.seq + 1)
+  assert.equal(completed.seq, richer.seq + 1)
+  const run = harness.snapshot()[0]
+  assert.deepEqual(run.seenSeqs, [started.seq, toolStarted.seq, richer.seq, completed.seq])
+  assert.equal(run.events.filter(event => event.id === 'tool-1').length, 1)
+  assert.equal(run.events.find(event => event.id === 'tool-1').status, 'completed')
+  assert.equal(run.events.find(event => event.id === 'tool-1').summary, '3 matches')
+})
+
+test('bounds the default live output and seen sequence snapshot', () => {
+  const harness = fixture()
+  harness.beginAgent('codex', 1)
+  for (let index = 0; index < 520; index += 1) {
+    harness.ingest('codex', 1, { type: 'answer_delta', delta: 'x'.repeat(40) })
+  }
+
+  const run = harness.snapshot()[0]
+  assert.equal(run.output.length, 20000)
+  assert.equal(run.seenSeqs.length, 501)
+  assert.equal(run.seenSeqs.at(-1), 501)
+  assert.equal(run.truncated, true)
+})
+
 test('keeps a bounded event ledger and marks the trace as truncated', () => {
   const harness = fixture({ maxEventsPerAgent: 8 })
   harness.beginAgent('codex', 1)

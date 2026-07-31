@@ -1,7 +1,7 @@
 const DEFAULT_MAX_EVENTS_PER_AGENT = 80
-const DEFAULT_MAX_OUTPUT_CHARS = 40000
+const DEFAULT_MAX_OUTPUT_CHARS = 20000
 const DEFAULT_MAX_AGENT_RUNS = 64
-const MAX_SEEN_EVENT_SEQUENCES = 4096
+const MAX_SEEN_EVENT_SEQUENCES = 512
 const DEFAULT_CONTEXT_BUDGET = 12000
 const DEFAULT_CONTEXT_ENTRY_LIMIT = 3000
 const DEFAULT_SESSION_TURNS = 18
@@ -119,6 +119,16 @@ function normalizeRunEvent(input) {
     status: cleanStatus(input.status),
     ...event,
   }
+}
+
+function sameToolLifecycleEvent(existing, event, fallbackStatus) {
+  if (!existing || !event?.id || !event.type?.startsWith('tool_')) return false
+  const fields = ['id', 'type', 'status', 'title', 'summary', 'detail', 'delta']
+  const normalized = {
+    ...event,
+    status: cleanStatus(event.status, fallbackStatus),
+  }
+  return fields.every(field => (existing[field] || '') === (normalized[field] || ''))
 }
 
 function normalizeSourceMessageIds(value) {
@@ -261,7 +271,27 @@ class RunHarness {
   }
 
   record(run, normalized) {
-    const event = this.nextEvent(run, normalized)
+    let input = normalized
+    if (normalized.type === 'answer_delta') {
+      const remaining = Math.max(0, this.maxOutputChars - run.output.length)
+      if (!remaining) {
+        run.truncated = true
+        return null
+      }
+      const delta = String(normalized.delta || '')
+      if (delta.length > remaining) {
+        input = { ...normalized, delta: delta.slice(0, remaining) }
+        run.truncated = true
+      }
+    }
+    const eventKey = input.id && input.type.startsWith('tool_')
+      ? `tool:${input.id}`
+      : ''
+    const existingIndex = eventKey ? run.eventIndexes.get(eventKey) : null
+    if (existingIndex != null
+        && sameToolLifecycleEvent(run.events[existingIndex], input, run.status)) return null
+
+    const event = this.nextEvent(run, input)
     run.lastActivityAt = event.timestamp
     run.silent = false
     run.seenSeqs.push(event.seq)
@@ -275,8 +305,6 @@ class RunHarness {
       return event
     }
 
-    const eventKey = event.id && event.type.startsWith('tool_') ? `tool:${event.id}` : ''
-    const existingIndex = eventKey ? run.eventIndexes.get(eventKey) : null
     if (existingIndex != null) {
       run.events[existingIndex] = event
       return event

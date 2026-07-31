@@ -51,8 +51,17 @@
         </button>
       </nav>
 
+      <p
+        class="visually-hidden trace-event-live-status"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {{ eventLiveStatus }}
+      </p>
+
       <div v-if="selectedItem" class="trace-panel-scroll">
-        <section class="trace-panel-summary" aria-live="polite">
+        <section class="trace-panel-summary">
           <div class="trace-panel-summary-heading">
             <div>
               <strong>{{ agentLabel(selectedItem.agentKind) }}</strong>
@@ -105,19 +114,21 @@
           <p v-else class="trace-empty-state">{{ t('trace.noEvents') }}</p>
         </section>
 
-        <section v-if="selectedItem.sourceMessageIds?.length" class="trace-source-section">
+        <section v-if="selectedSources.length" class="trace-source-section">
           <header class="trace-section-heading">
             <strong>{{ t('trace.sources') }}</strong>
-            <small>{{ selectedItem.sourceMessageIds.length }}</small>
+            <small>{{ selectedSources.length }}</small>
           </header>
           <div class="trace-source-list">
             <button
-              v-for="sourceId in selectedItem.sourceMessageIds"
-              :key="sourceId"
+              v-for="source in selectedSources"
+              :key="source.id"
               type="button"
-              @click="emit('jump-source', sourceId)"
+              :disabled="!source.available"
+              :aria-label="source.label"
+              @click="emit('jump-source', source.id)"
             >
-              <span>{{ sourceId }}</span>
+              <span>{{ source.label }}</span>
               <ChevronForwardOutline />
             </button>
           </div>
@@ -153,6 +164,33 @@ const props = defineProps({
 const emit = defineEmits(['close', 'select', 'jump-source'])
 const panelElement = ref(null)
 const selectedItem = computed(() => props.items.find(item => item.agentRunId === props.selectedAgentRunId) || props.items.at(-1) || null)
+const selectedSources = computed(() => {
+  const item = selectedItem.value
+  const sources = Array.isArray(item?.sources) ? item.sources : []
+  if (sources.length) {
+    return sources.map(source => ({
+      id: String(source?.id || ''),
+      available: source?.available === true && Boolean(source?.label),
+      label: String(source?.label || t('trace.sourceUnavailable')),
+    })).filter(source => source.id)
+  }
+  return (Array.isArray(item?.sourceMessageIds) ? item.sourceMessageIds : []).map(id => ({
+    id,
+    available: false,
+    label: t('trace.sourceUnavailable'),
+  }))
+})
+const eventLiveStatus = computed(() => {
+  const item = selectedItem.value
+  const event = filteredEvents(item).at(-1)
+  if (!item || !event) return ''
+  return [...new Set([
+    agentLabel(item.agentKind),
+    eventTypeLabel(event.type),
+    eventTitle(event),
+    statusLabel(event.status),
+  ].filter(Boolean))].join(' / ')
+})
 
 function focus() {
   void nextTick(() => panelElement.value?.focus())

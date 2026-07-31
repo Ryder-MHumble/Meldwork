@@ -1516,6 +1516,7 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border-radius:\s*var\(--radius\);/s)
     expect(source).toMatch(/body\.trace-drawer-open\s*\{[^}]*overflow:\s*hidden;/s)
+    expect(source).toMatch(/@media \(max-width: 1179px\)\s*\{[^}]*\.app-shell\.trace-panel-open,[^{]+\{[^}]*grid-template-columns:\s*var\(--sidebar-width\) minmax\(0, 1fr\);/s)
     expect(source).not.toContain('.stop-button-motion')
     expect(appSource).toContain('<SendOutline v-else aria-hidden="true" />')
     expect(appSource).toContain('<StopCircleOutline aria-hidden="true" />')
@@ -1567,7 +1568,7 @@ describe('RoundRelay workbench', () => {
           status: 'running',
           output: '',
           events: [],
-          sourceMessageIds: ['root-1'],
+          sourceMessageIds: ['root-1', 'missing-source'],
           seenSeqs: [],
         }],
       }]
@@ -1599,6 +1600,23 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-event-list').text()).toContain('Reviewing files')
     expect(wrapper.get('.trace-event-list').text()).toContain('Running')
     expect(wrapper.get('.trace-event-time').text()).not.toBe('2026-07-29T08:02:00Z')
+    expect(wrapper.get('.trace-event-live-status').text()).toBe('Codex / Reasoning summary / Reviewing files / Running')
+    expect(wrapper.get('.trace-panel-summary').attributes('aria-live')).toBeUndefined()
+    const sourceButtons = wrapper.findAll('.trace-source-list button')
+    expect(sourceButtons).toHaveLength(2)
+    expect(sourceButtons[0].text()).toContain('You: Inspect the implementation')
+    expect(sourceButtons[0].text()).not.toContain('root-1')
+    expect(sourceButtons[0].attributes('disabled')).toBeUndefined()
+    expect(sourceButtons[1].text()).toContain('Source unavailable')
+    expect(sourceButtons[1].attributes()).toHaveProperty('disabled')
+    const scrollIntoView = vi.fn()
+    wrapper.get('#message-root-1').element.scrollIntoView = scrollIntoView
+    await sourceButtons[0].trigger('click')
+    await flushPromises()
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.findAll('.trace-source-list button')[1].text()).toContain('来源不可用')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
@@ -3893,6 +3911,8 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-copy-surface').text()).toContain('First')
+    expect(wrapper.get('.direct-conclusion-live-status').text()).toBe('Codex / Conclusion / Streaming')
+    expect(wrapper.get('.direct-conclusion-live-status').text()).not.toContain('First')
     const traceDetails = wrapper.get('.trace-inline-details')
     expect(traceDetails.exists()).toBe(true)
     expect(traceDetails.element.open).toBe(false)
@@ -3911,6 +3931,7 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-copy-surface').text()).toContain('First answer')
+    expect(wrapper.get('.direct-conclusion-live-status').text()).toBe('Codex / Conclusion / Streaming')
     expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
     wrapper.unmount()
   })
@@ -4045,6 +4066,60 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('closes the group trace panel when leaving the conversation or its group disappears', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'group-trace-lifecycle',
+        conversationType: 'group',
+        name: 'Trace lifecycle',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.runs = [{
+        runId: 'run-trace-lifecycle',
+        groupId: 'group-trace-lifecycle',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'codex',
+        agentRuns: [
+          { agentRunId: 'agent-lifecycle-codex', kind: 'codex', round: 1, status: 'running', output: '', events: [] },
+          { agentRunId: 'agent-lifecycle-hermes', kind: 'hermes', round: 1, status: 'queued', output: '', events: [] },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.run-agent-row:not([disabled])').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.system-settings-page').exists()).toBe(true)
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.run-agent-row:not([disabled])').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+
+    state.groups = []
+    state.messages = []
+    state.runs = []
+    state.runningGroupIds = []
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.agent-home').exists()).toBe(true)
+    expect(historyBack).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
   it('closes the group trace panel with Escape and restores the Agent row focus', async () => {
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const { wrapper } = await mountApp(({ state }) => {
@@ -4084,7 +4159,49 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('closes an empty trace panel and falls back to the conversation title', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'group-trace-title-focus',
+        conversationType: 'group',
+        name: 'Trace title focus',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.runs = [{
+        runId: 'run-title-focus',
+        groupId: 'group-trace-title-focus',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'codex',
+        agentRuns: [
+          { agentRunId: 'agent-title-focus-codex', kind: 'codex', round: 1, status: 'running', output: '', events: [] },
+          { agentRunId: 'agent-title-focus-hermes', kind: 'hermes', round: 1, status: 'queued', output: '', events: [] },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const opener = wrapper.get('.run-agent-row:not([disabled])')
+    await opener.trigger('click')
+    await flushPromises()
+
+    state.runs = []
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(opener.element.isConnected).toBe(false)
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('.conversation-title-block').element)
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
   it('replaces a provisional group answer with its durable trace capsule', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
       nextState.groups.push({
         id: 'group-durable-trace',
@@ -4124,6 +4241,10 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('live output')
+    const provisionalTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    await provisionalTraceButton.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
 
     state.runs = []
     state.runningGroupIds = []
@@ -4154,10 +4275,14 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('durable output')
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).not.toContain('live output')
-    await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button').trigger('click')
-    await flushPromises()
+    expect(provisionalTraceButton.element.isConnected).toBe(false)
     expect(wrapper.get('.trace-summary-copy').text()).toContain('durable summary')
     expect(wrapper.get('.trace-conclusion').text()).toContain('durable output')
+    const durableTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.activeElement).toBe(durableTraceButton.element)
+    expect(historyBack).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
