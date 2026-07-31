@@ -12,6 +12,9 @@ const PROVIDER_METADATA = Object.freeze({
   baseUrl: 'https://api.example.com/v1',
   model: 'example-model',
 })
+const PROVIDER_AGENT_KINDS = Object.freeze([
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+])
 
 function pngHeader(width = 1, height = 1) {
   const bytes = Buffer.alloc(24)
@@ -48,6 +51,9 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-agent-provider:probe',
   'local-agent-provider:save',
   'local-agent-provider:delete',
+  'local-knowledge-base:status',
+  'local-knowledge-base:open-guide',
+  'local-knowledge-base:pick-obsidian-vault',
 ])
 
 let nextRoutingId = 1
@@ -80,6 +86,8 @@ function loadMain(userData, options = {}) {
   const workspaceInstances = []
   const installerInstances = []
   const providerInstances = []
+  const knowledgeBaseStoreInstances = []
+  const knowledgeBaseResolveCalls = []
   const attachmentInstances = []
   const skillCatalogInstances = []
   const runAgentCalls = []
@@ -307,6 +315,31 @@ function loadMain(userData, options = {}) {
     }
   }
 
+  class TestKnowledgeBaseStore {
+    constructor(input) {
+      this.input = input
+      this.savedVaultPaths = []
+      this.vaultPath = options.obsidianVaultPath || ''
+      knowledgeBaseStoreInstances.push(this)
+    }
+
+    state() {
+      return {
+        version: 1,
+        obsidianVaultPath: this.vaultPath,
+      }
+    }
+
+    saveObsidianVaultPath(value) {
+      this.vaultPath = String(value || '')
+      this.savedVaultPaths.push(this.vaultPath)
+      return {
+        version: 1,
+        obsidianVaultPath: this.vaultPath,
+      }
+    }
+  }
+
   class TestBrowserWindow {
     constructor(input) {
       this.input = input
@@ -455,6 +488,20 @@ function loadMain(userData, options = {}) {
       managedOpenClawOptions: input => ({ env: { MANAGED_OPENCLAW: JSON.stringify(input) } }),
     },
     './provider-store.cjs': { ProviderStore: TestProviderStore },
+    './knowledge-base-store.cjs': { KnowledgeBaseStore: TestKnowledgeBaseStore },
+    './local-knowledge-base.cjs': {
+      knowledgeBaseGuideUrl: (kind, action) => (
+        options.knowledgeBaseGuideUrl?.(kind, action) || `https://example.com/${kind}/${action}`
+      ),
+      resolveKnowledgeBaseSources: async (input) => {
+        knowledgeBaseResolveCalls.push(input)
+        return options.knowledgeBaseSources || [{
+          kind: 'obsidian',
+          installed: true,
+          vaultPath: input.store?.state?.().obsidianVaultPath || '',
+        }]
+      },
+    },
     ...options.moduleMocks,
   }
 
@@ -478,6 +525,8 @@ function loadMain(userData, options = {}) {
         installerInstances,
         nativeImageCalls,
         notificationInstances,
+        knowledgeBaseResolveCalls,
+        knowledgeBaseStoreInstances,
         dialogCalls,
         externalUrls,
         permissionHandlers,
@@ -617,8 +666,10 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     path.join(directory, 'roundrelay-provider.json'))
   assert.deepEqual(
     [...harness.providerInstances[0].input.allowedKinds].sort(),
-    ['hermes', 'openclaw', 'qwen', 'workbuddy'].sort(),
+    [...PROVIDER_AGENT_KINDS].sort(),
   )
+  assert.equal(harness.knowledgeBaseStoreInstances[0].input.storagePath,
+    path.join(directory, 'roundrelay-knowledge-base.json'))
   assert.equal(harness.attachmentInstances[0].input.rootPath,
     path.join(directory, 'attachments'))
   assert.equal(harness.skillCatalogInstances[0].input.home,
@@ -786,7 +837,7 @@ test('startup attachment cleanup receives every persisted message reference once
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachment-cleanup-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   fs.writeFileSync(path.join(directory, 'roundrelay-workspace.json'), JSON.stringify({
-    version: 1,
+    version: 2,
     groups: [{ id: 'one' }, { id: 'two' }],
     messages: [
       { groupId: 'one', attachments: [{ id: 'shared' }, { id: 'only-one' }] },
@@ -926,7 +977,7 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   assert.equal(harness.workspaceInstances[0].refreshCount, 1)
 
   await assert.rejects(
-    async () => harness.ipcHandlers.get('local-agent-provider:status')(harness.event(), 'codex'),
+    async () => harness.ipcHandlers.get('local-agent-provider:status')(harness.event(), 'not-an-agent'),
     { message: 'PROVIDER_AGENT_UNSUPPORTED' },
   )
 
@@ -936,6 +987,46 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   assert.deepEqual(harness.providerInstances[0].deleted, ['hermes'])
   assert.equal(deleted.configured, false)
   assert.equal(harness.workspaceInstances[0].refreshCount, 2)
+})
+
+test('Knowledge base IPC exposes status, safe guides, and a local Obsidian directory picker', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const vaultPath = path.join(directory, 'Obsidian Vault')
+  const { harness } = loadMain(directory, {
+    dialogResult: { canceled: false, filePaths: [vaultPath] },
+    knowledgeBaseGuideUrl: (kind, action) => (
+      kind === 'unsafe'
+        ? 'http://example.com/unsafe'
+        : `https://example.com/${kind}/${action}`
+    ),
+  })
+  await harness.ready()
+
+  const status = await harness.ipcHandlers.get('local-knowledge-base:status')(harness.event())
+  assert.deepEqual(status, [{ kind: 'obsidian', installed: true, vaultPath: '' }])
+  assert.equal(harness.knowledgeBaseResolveCalls[0].home, path.join(directory, 'Home'))
+
+  const opened = await harness.ipcHandlers.get('local-knowledge-base:open-guide')(
+    harness.event(), 'feishu', 'login',
+  )
+  assert.equal(opened, true)
+  assert.deepEqual(harness.externalUrls, ['https://example.com/feishu/login'])
+
+  const unsafe = await harness.ipcHandlers.get('local-knowledge-base:open-guide')(
+    harness.event(), 'unsafe', 'login',
+  )
+  assert.equal(unsafe, false)
+  assert.deepEqual(harness.externalUrls, ['https://example.com/feishu/login'])
+
+  const picked = await harness.ipcHandlers.get('local-knowledge-base:pick-obsidian-vault')(
+    harness.event(),
+  )
+  assert.deepEqual(harness.dialogCalls[0][1], {
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  assert.deepEqual(harness.knowledgeBaseStoreInstances[0].savedVaultPaths, [vaultPath])
+  assert.deepEqual(picked, [{ kind: 'obsidian', installed: true, vaultPath }])
 })
 
 test('directory picker uses the operating system localized title', async (t) => {

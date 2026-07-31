@@ -58,7 +58,9 @@
                   type="button"
                   :title="agent.label"
                   :disabled="isDirectCreationPending(agent.kind)"
-                  @click="openDirect(agent)"
+                  :aria-expanded="directGroupsFor(agent.kind).length ? String(isSidebarAgentExpanded(agent.kind)) : undefined"
+                  :aria-controls="directGroupsFor(agent.kind).length ? sidebarAgentSessionListId(agent.kind) : undefined"
+                  @click="handleSidebarAgentMain(agent)"
                 >
                   <img :src="agent.logo" :alt="agent.label" />
                   <span>
@@ -81,7 +83,11 @@
                   <AddOutline />
                 </button>
               </header>
-              <div v-if="directGroupsFor(agent.kind).length" class="direct-session-list">
+              <div
+                v-if="directGroupsFor(agent.kind).length && isSidebarAgentExpanded(agent.kind)"
+                :id="sidebarAgentSessionListId(agent.kind)"
+                class="direct-session-list"
+              >
                 <div
                   v-for="group in directGroupsFor(agent.kind)"
                   :key="group.id"
@@ -341,6 +347,58 @@
                   </div>
                 </article>
               </div>
+
+              <section class="knowledge-base-panel">
+                <header class="knowledge-base-header">
+                  <div>
+                    <h2>{{ t('knowledgeBase.title') }}</h2>
+                    <p>{{ t('knowledgeBase.subtitle') }}</p>
+                  </div>
+                  <button class="secondary-button compact" type="button" :disabled="knowledgeBaseLoading" @click="refreshKnowledgeBases">
+                    <RefreshOutline :class="{ spinning: knowledgeBaseLoading }" />
+                    {{ t('knowledgeBase.refresh') }}
+                  </button>
+                </header>
+                <div class="knowledge-base-grid">
+                  <article v-for="source in knowledgeBaseSources" :key="source.kind" class="knowledge-base-card">
+                    <header class="knowledge-base-card-header">
+                      <span class="knowledge-base-badge">{{ t(`knowledgeBase.badge.${source.kind}`) }}</span>
+                      <div class="knowledge-base-card-copy">
+                        <div class="knowledge-base-card-title">
+                          <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                          <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
+                            <component :is="knowledgeBaseIcon(source)" />
+                            {{ knowledgeBaseStatusLabel(source) }}
+                          </span>
+                        </div>
+                        <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
+                      </div>
+                    </header>
+                    <div class="knowledge-base-tags">
+                      <span
+                        v-for="tag in knowledgeBaseTags(source)"
+                        :key="tag.label"
+                        class="knowledge-base-tag"
+                        :class="tag.tone"
+                      >
+                        {{ tag.label }}
+                      </span>
+                    </div>
+                    <p class="knowledge-base-hint">{{ knowledgeBaseHint(source) }}</p>
+                    <p v-if="source.kind === 'obsidian' && source.vaultPath" class="knowledge-base-path">
+                      <code>{{ source.vaultPath }}</code>
+                    </p>
+                    <p v-else-if="source.commandPath" class="knowledge-base-path">
+                      <code>{{ source.commandPath }}</code>
+                    </p>
+                    <footer class="knowledge-base-actions">
+                      <button type="button" @click="runKnowledgeBasePrimaryAction(source)">
+                        {{ knowledgeBasePrimaryActionLabel(source) }}
+                      </button>
+                    </footer>
+                  </article>
+                </div>
+              </section>
             </section>
 
             <section v-else class="settings-panel provider-settings-panel">
@@ -378,6 +436,22 @@
                   <span>{{ providerStatusLabel(selectedProviderKind) }}</span>
                 </div>
                 <p class="provider-agent-hint">{{ t('provider.agentSpecificHint') }}</p>
+                <section class="provider-source-section" :aria-label="t('provider.source')">
+                  <span>{{ t('provider.source') }}</span>
+                  <div class="provider-source-options">
+                    <button
+                      v-for="preset in selectedProviderPresets"
+                      :key="preset.id"
+                      type="button"
+                      :class="{ active: providerForm.preset === preset.id }"
+                      :disabled="saving"
+                      @click="applyProviderPreset(preset.id)"
+                    >
+                      <strong>{{ providerPresetLabel(preset.id) }}</strong>
+                      <small>{{ providerPresetHint(preset.id) }}</small>
+                    </button>
+                  </div>
+                </section>
                 <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
                   {{ t('provider.encryptionUnavailable') }}
                 </p>
@@ -397,6 +471,24 @@
                   <span>{{ t('provider.apiKey') }}</span>
                   <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" :disabled="saving" />
                 </label>
+                <section class="provider-doc-card">
+                  <div>
+                    <strong>{{ t('provider.configGuide') }}</strong>
+                    <p>{{ t(selectedProviderProfile.docsKey) }}</p>
+                  </div>
+                  <dl>
+                    <div v-if="selectedProviderProfile.configFile">
+                      <dt>{{ t('provider.configFile') }}</dt>
+                      <dd><code>{{ selectedProviderProfile.configFile }}</code></dd>
+                    </div>
+                    <div v-if="selectedProviderRuntimeKeys.length">
+                      <dt>{{ t('provider.runtimeKeys') }}</dt>
+                      <dd>
+                        <code v-for="key in selectedProviderRuntimeKeys" :key="key">{{ key }}</code>
+                      </dd>
+                    </div>
+                  </dl>
+                </section>
                 <p v-if="formError" class="form-error">{{ formError }}</p>
                 <footer class="provider-editor-footer">
                   <button v-if="providerStatus.configured" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
@@ -1170,7 +1262,7 @@
                       :aria-label="t('composer.stop')"
                       @click="stopRun"
                     >
-                      <span class="stop-button-motion" aria-hidden="true"><StopCircleOutline /></span>
+                      <Stop aria-hidden="true" />
                       <span class="visually-hidden">{{ t('composer.stop') }}</span>
                     </button>
                     <button
@@ -1184,8 +1276,7 @@
                       @click="sendMessage"
                     >
                       <span v-if="sending" class="send-button-loader" aria-hidden="true"><i /><i /><i /></span>
-                      <PlayOutline v-else-if="composerMode === 'auto'" />
-                      <SendOutline v-else />
+                      <ArrowUpOutline v-else aria-hidden="true" />
                       <span class="visually-hidden">{{ sendButtonLabel }}</span>
                     </button>
                   </div>
@@ -1240,25 +1331,27 @@
         </section>
       </div>
 
-      <div v-if="modal" class="modal-backdrop" @mousedown.self="closeModal">
-        <section
-          ref="modalDialog"
-          class="modal"
-          :class="{ medium: modal === 'new-group' || modal === 'settings', 'agent-detail-modal': modal === 'agent-detail' }"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="modal-title"
-          tabindex="-1"
-        >
-          <header class="modal-header">
-            <div>
-              <h2 id="modal-title">{{ modalTitle }}</h2>
-              <p v-if="modalSubtitle">{{ modalSubtitle }}</p>
-            </div>
-            <button class="icon-button" type="button" :aria-label="t('common.close')" :disabled="saving" @click="closeModal">
-              <CloseOutline />
-            </button>
-          </header>
+      <transition name="modal-backdrop" appear>
+        <div v-if="modal" class="modal-backdrop" @mousedown.self="closeModal">
+          <transition name="modal-pop" appear>
+            <section
+              ref="modalDialog"
+              class="modal"
+              :class="{ medium: modal === 'new-group' || modal === 'settings', 'agent-detail-modal': modal === 'agent-detail' }"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="modal-title"
+              tabindex="-1"
+            >
+              <header class="modal-header">
+                <div>
+                  <h2 id="modal-title">{{ modalTitle }}</h2>
+                  <p v-if="modalSubtitle">{{ modalSubtitle }}</p>
+                </div>
+                <button class="icon-button" type="button" :aria-label="t('common.close')" :disabled="saving" @click="closeModal">
+                  <CloseOutline />
+                </button>
+              </header>
 
           <form v-if="modal === 'new-group'" class="modal-body form-stack" @submit.prevent="createGroup">
             <label>
@@ -1313,25 +1406,38 @@
             </footer>
           </form>
 
-          <form v-else-if="modal === 'settings'" class="modal-body form-stack" @submit.prevent="saveGroupSettings">
-            <label>
-              <span>{{ activeGroup?.conversationType === 'direct' ? t('settings.conversationName') : t('group.name') }}</span>
-              <input ref="settingsNameInput" v-model.trim="settingsForm.name" maxlength="60" :disabled="saving" />
-            </label>
-            <label>
-              <span>{{ t('group.topic') }}</span>
-              <input v-model.trim="settingsForm.topic" maxlength="200" :disabled="saving" />
-            </label>
-            <fieldset v-if="activeGroup?.conversationType !== 'direct'" :disabled="saving">
+          <form v-else-if="modal === 'settings'" class="modal-body form-stack settings-form" @submit.prevent="saveGroupSettings">
+            <div class="settings-primary-grid">
+              <label>
+                <span>{{ activeGroup?.conversationType === 'direct' ? t('settings.conversationName') : t('group.name') }}</span>
+                <input
+                  ref="settingsNameInput"
+                  v-model.trim="settingsForm.name"
+                  :placeholder="t('group.namePlaceholder')"
+                  maxlength="60"
+                  :disabled="saving"
+                />
+              </label>
+              <label>
+                <span>{{ t('group.topic') }}</span>
+                <input
+                  v-model.trim="settingsForm.topic"
+                  :placeholder="t('group.topicPlaceholder')"
+                  maxlength="200"
+                  :disabled="saving"
+                />
+              </label>
+            </div>
+            <fieldset v-if="activeGroup?.conversationType !== 'direct'" class="settings-agent-fieldset" :disabled="saving">
               <legend class="agent-choice-legend">
                 <span>{{ t('group.agents') }}</span>
                 <small>{{ t('group.selectedCount', { count: settingsForm.agentKinds.length }) }}</small>
               </legend>
-              <div class="agent-choice-grid">
+              <div class="agent-choice-grid settings-agent-choice-grid">
                 <label
                   v-for="agent in readyAgents"
                   :key="agent.kind"
-                  class="agent-choice"
+                  class="agent-choice settings-agent-choice"
                   :class="{ selected: settingsForm.agentKinds.includes(agent.kind) }"
                   :title="agent.label"
                 >
@@ -1358,25 +1464,50 @@
               <span>{{ t('group.allowWrite') }}</span>
             </label>
             <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
-            <div class="danger-zone" :class="{ attention: settingsIntent === 'delete' }">
-              <div>
-                <strong>{{ t('settings.delete') }}</strong>
-                <p>{{ t('settings.deleteHint') }}</p>
+            <footer class="modal-footer settings-modal-footer">
+              <div class="settings-delete-control">
+                <button
+                  class="settings-delete-trigger"
+                  type="button"
+                  :aria-expanded="String(deleteArmed)"
+                  aria-controls="settings-delete-confirmation"
+                  :disabled="saving"
+                  @click="requestDeleteConfirmation"
+                >
+                  <TrashOutline />
+                  {{ t('settings.delete') }}
+                </button>
+                <div
+                  v-if="deleteArmed"
+                  id="settings-delete-confirmation"
+                  class="settings-delete-popover"
+                  role="alertdialog"
+                  aria-modal="false"
+                  aria-labelledby="settings-delete-title"
+                  aria-describedby="settings-delete-description"
+                >
+                  <strong id="settings-delete-title">{{ t('settings.deletePrompt') }}</strong>
+                  <p id="settings-delete-description">{{ t('settings.deleteHint') }}</p>
+                  <div class="settings-delete-actions">
+                    <button class="secondary-button compact" type="button" :disabled="saving" @click="dismissDeleteConfirmation">
+                      {{ t('common.cancel') }}
+                    </button>
+                    <button class="danger-button" type="button" :disabled="saving" @click="deleteConversation">
+                      {{ t('settings.deleteConfirm') }}
+                    </button>
+                  </div>
+                </div>
               </div>
-              <button class="danger-button" type="button" :disabled="saving" @click="deleteConversation">
-                <TrashOutline />
-                {{ deleteArmed ? t('settings.deleteConfirm') : t('settings.delete') }}
-              </button>
-            </div>
-            <footer class="modal-footer">
-              <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
-              <button class="primary-button" type="submit" :disabled="saving">
-                {{ saving ? t('common.saving') : t('settings.save') }}
-              </button>
+              <div class="modal-footer-actions">
+                <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
+                <button class="primary-button" type="submit" :disabled="saving">
+                  {{ saving ? t('common.saving') : t('settings.save') }}
+                </button>
+              </div>
             </footer>
           </form>
 
-          <section v-else-if="modal === 'agent-detail' && selectedAgentDetail" class="modal-body agent-detail-body">
+              <section v-else-if="modal === 'agent-detail' && selectedAgentDetail" class="modal-body agent-detail-body">
             <div class="agent-detail-hero">
               <img :src="selectedAgentDetail.logo" :alt="selectedAgentDetail.label" />
               <div>
@@ -1452,10 +1583,11 @@
                 {{ t('installer.install') }}
               </button>
             </footer>
-          </section>
-
-        </section>
-      </div>
+              </section>
+            </section>
+          </transition>
+        </div>
+      </transition>
 
       <transition name="toast">
         <div v-if="toastMessage" class="toast-message" role="status" aria-live="polite">
@@ -1480,6 +1612,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AddOutline,
+  ArrowUpOutline,
   AttachOutline,
   AtOutline,
   ChatbubbleEllipsesOutline,
@@ -1499,11 +1632,9 @@ import {
   PencilOutline,
   PeopleOutline,
   PersonOutline,
-  PlayOutline,
   RefreshOutline,
-  SendOutline,
   SettingsOutline,
-  StopCircleOutline,
+  Stop,
   SunnyOutline,
   TerminalOutline,
   TrashOutline,
@@ -1514,6 +1645,7 @@ import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
 import { useAttachmentPreviews } from './composables/useAttachmentPreviews.js'
 import { desktopApi, emptySnapshot, errorCode, normalizeSnapshot } from './desktop.js'
 import { locale, setLocale, t, translateError, translateSystemMessage } from './i18n.js'
+import { inferProviderPreset, providerProfile } from './providerProfiles.js'
 
 const snapshot = ref(emptySnapshot())
 const ONBOARDING_KEY = 'roundrelay-onboarding-seen-v1'
@@ -1528,16 +1660,17 @@ const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
 ])
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
-  'codex', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini', 'opencode',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini',
+  'opencode',
 ])
-const EXTERNAL_PROVIDER_KINDS = new Set(['hermes', 'openclaw', 'workbuddy', 'qwen'])
+const EXTERNAL_PROVIDER_KINDS = new Set(AGENTS.map(agent => agent.kind))
 const EMPTY_PROVIDER_STATUS = Object.freeze({
   provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true,
 })
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
 const providerStatuses = ref({})
-const selectedProviderKind = ref('hermes')
+const selectedProviderKind = ref(AGENTS[0]?.kind || 'codex')
 const systemSettingsOpen = ref(false)
 const systemSettingsSection = ref('agents')
 const selectedGroupId = ref('')
@@ -1578,6 +1711,9 @@ const installConfirmKind = ref('')
 const focusedAgentKind = ref('')
 const toastMessage = ref('')
 const settingsIntent = ref('settings')
+const knowledgeBaseSources = ref([])
+const knowledgeBaseLoading = ref(false)
+const collapsedSidebarAgentKinds = ref(new Set())
 const agentSkillStats = ref({})
 const inlineTitleEditing = ref(false)
 const inlineTitleDraft = ref('')
@@ -1615,6 +1751,7 @@ const api = computed(() => desktopApi())
 const workspace = computed(() => api.value?.localWorkspace || null)
 const installer = computed(() => api.value?.agentInstaller || null)
 const provider = computed(() => api.value?.localAgentProvider || null)
+const knowledgeBase = computed(() => api.value?.localKnowledgeBase || null)
 const attachmentsApi = computed(() => api.value?.localAttachments || null)
 const {
   attachmentPreviewUrl,
@@ -1934,14 +2071,22 @@ const selectedProviderAgent = computed(() => configurableProviderAgents.value.fi
   agent => agent.kind === selectedProviderKind.value,
 ) || configurableProviderAgents.value[0] || null)
 const providerStatus = computed(() => providerStatusFor(selectedProviderKind.value))
+const selectedProviderProfile = computed(() => providerProfile(selectedProviderKind.value))
+const selectedProviderPresets = computed(() => selectedProviderProfile.value.presets || [])
+const selectedProviderPreset = computed(() => (
+  selectedProviderPresets.value.find(preset => preset.id === providerForm.preset)
+  || selectedProviderPresets.value[0]
+  || null
+))
+const selectedProviderRuntimeKeys = computed(() => selectedProviderProfile.value.runtimeKeys || [])
 const roundProgressPercent = computed(() => {
   const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
   return `${((bounded - 1) / 9) * 100}%`
 })
 
-const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
+const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: true })
 const settingsForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
-const providerForm = reactive({ provider: '', baseUrl: '', model: '', apiKey: '' })
+const providerForm = reactive({ preset: 'official', provider: '', baseUrl: '', model: '', apiKey: '' })
 
 const modalTitle = computed(() => ({
   'new-group': t('group.newTitle'),
@@ -1951,6 +2096,7 @@ const modalTitle = computed(() => ({
   'agent-detail': selectedAgentDetail.value?.label || t('systemSettings.openAgentDetailDefault'),
 })[modal.value] || '')
 const modalSubtitle = computed(() => ({
+  settings: groupName(activeGroup.value),
   'agent-detail': agentDetailSkillSummary.value,
 })[modal.value] || '')
 
@@ -1978,6 +2124,40 @@ function setDirectCreationPending(kind, pending) {
   if (pending) next.add(kind)
   else next.delete(kind)
   directCreationKinds.value = next
+}
+
+function sidebarAgentSessionListId(kind) {
+  return `sidebar-agent-sessions-${String(kind || '')}`
+}
+
+function isSidebarAgentExpanded(kind) {
+  return !collapsedSidebarAgentKinds.value.has(String(kind || ''))
+}
+
+function setSidebarAgentExpanded(kind, expanded) {
+  const normalized = String(kind || '')
+  if (!normalized) return
+  const next = new Set(collapsedSidebarAgentKinds.value)
+  if (expanded) next.delete(normalized)
+  else next.add(normalized)
+  collapsedSidebarAgentKinds.value = next
+}
+
+function toggleSidebarAgentExpanded(kind) {
+  setSidebarAgentExpanded(kind, !isSidebarAgentExpanded(kind))
+}
+
+function handleSidebarAgentMain(agent) {
+  if (!agent || isDirectCreationPending(agent.kind)) return
+  if (sidebarCollapsed.value) {
+    void openDirect(agent)
+    return
+  }
+  if (directGroupsFor(agent.kind).length) {
+    toggleSidebarAgentExpanded(agent.kind)
+    return
+  }
+  void openDirect(agent)
 }
 
 function formatNavTime(value) {
@@ -2017,6 +2197,34 @@ function providerSummaryLabel(agent) {
   if (supportsExternalProvider(agent)) return providerStatusLabel(agent.kind)
   if (agent.ready) return t('provider.nativeConnected')
   return providerModeLabel(agent.providerMode)
+}
+
+function providerPresetLabel(id) {
+  return t(`provider.preset.${id}`)
+}
+
+function providerPresetHint(id) {
+  return t(`provider.presetHint.${id}`)
+}
+
+function providerPresetFor(kind, presetId) {
+  const profile = providerProfile(kind)
+  return profile.presets.find(preset => preset.id === presetId) || profile.presets[0] || null
+}
+
+function fillProviderFormFromPreset(kind, presetId) {
+  const preset = providerPresetFor(kind, presetId)
+  if (!preset) return
+  providerForm.preset = preset.id
+  providerForm.provider = preset.provider || ''
+  providerForm.baseUrl = preset.baseUrl || ''
+  providerForm.model = preset.model || ''
+}
+
+function applyProviderPreset(presetId) {
+  formError.value = ''
+  providerRemoveArmed.value = false
+  fillProviderFormFromPreset(selectedProviderKind.value, presetId)
 }
 
 function conversationPermissionLabel(group) {
@@ -2576,6 +2784,10 @@ function goHome() {
 function selectGroup(id) {
   systemSettingsOpen.value = false
   selectedGroupId.value = id
+  const group = snapshot.value.groups.find(item => item.id === id)
+  if (group?.conversationType === 'direct' && group.directAgentKind) {
+    setSidebarAgentExpanded(group.directAgentKind, true)
+  }
   if (finishedDirectGroupIds.value.has(id)) {
     const next = new Set(finishedDirectGroupIds.value)
     next.delete(id)
@@ -2629,6 +2841,7 @@ async function ensureDefaultDirectory() {
 async function openDirect(agent) {
   if (saving.value || isDirectCreationPending(agent?.kind)) return
   closeModal()
+  if (agent?.kind) setSidebarAgentExpanded(agent.kind, true)
   const existing = directGroupsFor(agent.kind)[0]
   if (existing) {
     selectGroup(existing.id)
@@ -2648,6 +2861,7 @@ async function createDirectSession(agent, select = true) {
   if (saving.value || !kind || isDirectCreationPending(kind)) return null
   setDirectCreationPending(kind, true)
   closeModal()
+  if (kind) setSidebarAgentExpanded(kind, true)
   if (!agent?.ready) {
     if (agent?.kind) openAgentManager(agent.kind)
     setDirectCreationPending(kind, false)
@@ -2663,7 +2877,7 @@ async function createDirectSession(agent, select = true) {
         : t('conversation.directDefaultName', { agent: agent.label, count: sessionCount }),
       agentKinds: [agent.kind],
       workdir: await ensureDefaultDirectory(),
-      allowWrite: false,
+      allowWrite: true,
     })
     snapshot.value = normalizeSnapshot(await workspace.value.get())
     if (select) selectGroup(group.id)
@@ -2689,6 +2903,7 @@ async function refreshAgents() {
     snapshot.value = normalizeSnapshot(nextSnapshot)
     installCatalog.value = nextCatalog || { platform: '', agents: [] }
     installerState.value = nextInstaller || installerState.value
+    void loadKnowledgeBaseStatuses()
     if (readyAgentSignature.value && readyAgentSignature.value === previousReadyAgentSignature) {
       await loadAgentSkillStats()
     }
@@ -2706,7 +2921,7 @@ function openNewGroup() {
   groupForm.topic = ''
   groupForm.agentKinds = readyAgents.value.slice(0, 2).map(agent => agent.kind)
   groupForm.workdir = defaultDirectory.value
-  groupForm.allowWrite = false
+  groupForm.allowWrite = true
   modal.value = 'new-group'
   void ensureDefaultDirectory().then(path => { if (!groupForm.workdir) groupForm.workdir = path })
 }
@@ -2791,7 +3006,7 @@ async function saveInlineTitle() {
 function openGroupSettings(intent = 'settings') {
   if (!activeGroup.value || sending.value || saving.value) return
   settingsIntent.value = typeof intent === 'string' ? intent : 'settings'
-  settingsForm.name = activeGroup.value.name || ''
+  settingsForm.name = groupName(activeGroup.value)
   settingsForm.topic = activeGroup.value.topic || ''
   settingsForm.agentKinds = [...activeGroup.value.agentKinds]
   settingsForm.workdir = activeGroup.value.workdir || ''
@@ -2813,6 +3028,16 @@ function openConversationDelete(group) {
   selectGroup(group.id)
   openGroupSettings('delete')
   deleteArmed.value = true
+}
+
+function requestDeleteConfirmation() {
+  if (saving.value) return
+  deleteArmed.value = true
+}
+
+function dismissDeleteConfirmation() {
+  if (saving.value) return
+  deleteArmed.value = false
 }
 
 async function saveGroupSettings() {
@@ -3247,6 +3472,8 @@ function openSystemSettings(section = 'agents', kind = '') {
   if (systemSettingsSection.value === 'providers') {
     const targetKind = EXTERNAL_PROVIDER_KINDS.has(kind) ? kind : selectedProviderKind.value
     void loadProviderStatuses().then(() => selectProviderAgent(targetKind))
+  } else {
+    void loadKnowledgeBaseStatuses()
   }
 }
 
@@ -3257,6 +3484,8 @@ function selectSystemSettingsSection(section) {
   providerRemoveArmed.value = false
   if (systemSettingsSection.value === 'providers') {
     void loadProviderStatuses().then(() => selectProviderAgent(selectedProviderKind.value))
+  } else {
+    void loadKnowledgeBaseStatuses()
   }
 }
 
@@ -3315,11 +3544,36 @@ async function loadProviderStatuses() {
   await Promise.all(configurableProviderAgents.value.map(agent => loadProviderStatus(agent.kind)))
 }
 
+async function loadKnowledgeBaseStatuses() {
+  if (!knowledgeBase.value?.status) {
+    knowledgeBaseSources.value = []
+    return []
+  }
+  knowledgeBaseLoading.value = true
+  try {
+    const sources = await knowledgeBase.value.status()
+    knowledgeBaseSources.value = Array.isArray(sources) ? sources : []
+    return knowledgeBaseSources.value
+  } catch (error) {
+    showError(error)
+    knowledgeBaseSources.value = []
+    return []
+  } finally {
+    knowledgeBaseLoading.value = false
+  }
+}
+
 function syncProviderForm(kind) {
   const status = providerStatusFor(kind)
-  providerForm.provider = status.provider || ''
-  providerForm.baseUrl = status.baseUrl || ''
-  providerForm.model = status.model || ''
+  const preset = inferProviderPreset(kind, status)
+  if (status.configured) {
+    providerForm.preset = preset
+    providerForm.provider = status.provider || ''
+    providerForm.baseUrl = status.baseUrl || ''
+    providerForm.model = status.model || ''
+  } else {
+    fillProviderFormFromPreset(kind, preset)
+  }
   providerForm.apiKey = ''
 }
 
@@ -3365,6 +3619,147 @@ async function saveProvider() {
   } finally {
     saving.value = false
   }
+}
+
+function knowledgeBaseReady(source) {
+  if (!source) return false
+  if (source.kind === 'obsidian') return Boolean(source.installed && source.vaultPath)
+  return Boolean(source.installed && source.loginState === 'ready' && source.permissionState !== 'needs-grant')
+}
+
+function knowledgeBaseTone(source) {
+  if (!source) return 'checking'
+  if (knowledgeBaseReady(source)) return 'connected'
+  if (source.kind === 'obsidian') {
+    return source.installed ? 'warning' : 'checking'
+  }
+  if (!source.installed) return 'warning'
+  if (source.loginState === 'missing' || source.permissionState === 'needs-grant') return 'warning'
+  return 'checking'
+}
+
+function knowledgeBaseIcon(source) {
+  if (knowledgeBaseReady(source)) return CheckmarkCircleOutline
+  if (source.kind === 'obsidian') return source.installed ? WarningOutline : DownloadOutline
+  if (!source.installed) return DownloadOutline
+  return source.loginState === 'missing' || source.permissionState === 'needs-grant'
+    ? WarningOutline
+    : RefreshOutline
+}
+
+function knowledgeBaseStatusLabel(source) {
+  if (!source) return ''
+  if (source.kind === 'obsidian') {
+    if (!source.installed) return t('knowledgeBase.status.obsidianMissing')
+    if (!source.vaultPath) return t('knowledgeBase.status.obsidianNeedVault')
+    return t('knowledgeBase.status.ready')
+  }
+  if (!source.installed) return t('knowledgeBase.status.cliMissing')
+  if (source.loginState === 'missing') return t('knowledgeBase.status.needsLogin')
+  if (source.permissionState === 'needs-grant') return t('knowledgeBase.status.needsPermission')
+  if (source.loginState === 'ready' && source.permissionState === 'ready') return t('knowledgeBase.status.ready')
+  return t('knowledgeBase.status.checking')
+}
+
+function knowledgeBaseTags(source) {
+  if (!source) return []
+  if (source.kind === 'obsidian') {
+    return [
+      {
+        label: source.installed ? t('knowledgeBase.tag.appInstalled') : t('knowledgeBase.tag.appMissing'),
+        tone: source.installed ? 'connected' : 'warning',
+      },
+      {
+        label: source.vaultPath ? t('knowledgeBase.tag.directoryReady') : t('knowledgeBase.tag.directoryMissing'),
+        tone: source.vaultPath ? 'connected' : 'warning',
+      },
+    ]
+  }
+  return [
+    {
+      label: source.installed ? t('knowledgeBase.tag.cliInstalled') : t('knowledgeBase.tag.cliMissing'),
+      tone: source.installed ? 'connected' : 'warning',
+    },
+    {
+      label: source.loginState === 'ready'
+        ? t('knowledgeBase.tag.loggedIn')
+        : source.loginState === 'missing'
+          ? t('knowledgeBase.tag.needsLogin')
+          : t('knowledgeBase.tag.checking'),
+      tone: source.loginState === 'ready' ? 'connected' : source.loginState === 'missing' ? 'warning' : 'checking',
+    },
+    {
+      label: source.permissionState === 'ready'
+        ? t('knowledgeBase.tag.permissionReady')
+        : source.permissionState === 'needs-grant'
+          ? t('knowledgeBase.tag.needsPermission')
+          : t('knowledgeBase.tag.checking'),
+      tone: source.permissionState === 'ready' ? 'connected' : source.permissionState === 'needs-grant' ? 'warning' : 'checking',
+    },
+  ]
+}
+
+function knowledgeBaseHint(source) {
+  if (!source) return ''
+  if (source.kind === 'obsidian') {
+    if (!source.installed) return t('knowledgeBase.hint.obsidianMissing')
+    if (!source.vaultPath) return t('knowledgeBase.hint.obsidianNeedVault')
+    return t('knowledgeBase.hint.obsidianReady')
+  }
+  if (!source.installed) {
+    return t('knowledgeBase.hint.cliMissing', { command: source.installCommand })
+  }
+  if (source.loginState === 'missing') {
+    return t('knowledgeBase.hint.cliNeedLogin', { command: source.loginCommand })
+  }
+  if (source.permissionState === 'needs-grant') {
+    return t('knowledgeBase.hint.cliNeedPermission', { command: source.permissionCommand || source.loginCommand })
+  }
+  return t('knowledgeBase.hint.cliReady', { command: source.statusCommand })
+}
+
+function knowledgeBasePrimaryActionLabel(source) {
+  if (!source) return ''
+  if (source.kind === 'obsidian') {
+    if (!source.installed) return t('knowledgeBase.action.installObsidian')
+    if (!source.vaultPath) return t('knowledgeBase.action.pickDirectory')
+    return t('knowledgeBase.action.changeDirectory')
+  }
+  if (!source.installed) return t('knowledgeBase.action.installCli')
+  if (source.loginState === 'missing') return t('knowledgeBase.action.goLogin')
+  if (source.permissionState === 'needs-grant') return t('knowledgeBase.action.grantPermission')
+  return t('knowledgeBase.action.recheck')
+}
+
+async function runKnowledgeBasePrimaryAction(source) {
+  if (!source || !knowledgeBase.value) return
+  if (source.kind === 'obsidian') {
+    if (!source.installed) {
+      await knowledgeBase.value.openGuide?.(source.kind, 'install')
+      return
+    }
+    try {
+      const next = await knowledgeBase.value.pickObsidianVault?.()
+      if (Array.isArray(next)) knowledgeBaseSources.value = next
+      else await loadKnowledgeBaseStatuses()
+    } catch (error) {
+      showError(error)
+    }
+    return
+  }
+  if (!source.installed) {
+    await knowledgeBase.value.openGuide?.(source.kind, 'install')
+    return
+  }
+  if (source.loginState === 'missing') {
+    await knowledgeBase.value.openGuide?.(source.kind, 'login')
+    return
+  }
+  if (source.permissionState === 'needs-grant') {
+    await knowledgeBase.value.openGuide?.(source.kind, 'permission')
+    return
+  }
+  await loadKnowledgeBaseStatuses()
 }
 
 async function removeProvider() {
@@ -3531,6 +3926,7 @@ async function boot() {
   } else {
     void refreshAgents()
   }
+  void loadKnowledgeBaseStatuses()
 }
 
 function focusOverlay(dialog) {
@@ -3577,6 +3973,10 @@ function handleWindowKeydown(event) {
   }
   if (onboardingVisible.value) {
     completeOnboarding()
+    return
+  }
+  if (modal.value === 'settings' && deleteArmed.value) {
+    deleteArmed.value = false
     return
   }
   if (modal.value) closeModal()

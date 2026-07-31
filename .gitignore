@@ -23,6 +23,8 @@ latest*.yml
 # Local documentation drafts
 /docs/
 /documentation/
+README.zh-CN.md
+.github/brand/
 
 # Test and coverage output
 coverage/

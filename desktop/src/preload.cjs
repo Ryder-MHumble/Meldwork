@@ -97,6 +97,11 @@ if (isLocalDocument) Object.assign(desktopApi, {
     save: (kind, input) => ipcRenderer.invoke('local-agent-provider:save', kind, input),
     delete: kind => ipcRenderer.invoke('local-agent-provider:delete', kind),
   }),
+  localKnowledgeBase: Object.freeze({
+    status: () => ipcRenderer.invoke('local-knowledge-base:status'),
+    openGuide: (kind, action) => ipcRenderer.invoke('local-knowledge-base:open-guide', kind, action),
+    pickObsidianVault: () => ipcRenderer.invoke('local-knowledge-base:pick-obsidian-vault'),
+  }),
 })
 
 contextBridge.exposeInMainWorld('roundrelayDesktop', Object.freeze(desktopApi))

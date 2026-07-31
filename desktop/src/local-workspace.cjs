@@ -44,7 +44,7 @@ const PROGRESS_TITLES = new Set([
 
 function emptyState() {
   return {
-    version: 1,
+    version: 2,
     groups: [],
     messages: [],
     sessions: {},
@@ -166,7 +166,7 @@ function skillHintsPrompt(hints) {
   ].join('\n')
 }
 
-function normalizeLoadedGroup(input) {
+function normalizeLoadedGroup(input, defaultAllowWrite = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const id = cleanText(input.id, 100)
   const agentKinds = [...new Set((Array.isArray(input.agentKinds) ? input.agentKinds : [])
@@ -180,7 +180,7 @@ function normalizeLoadedGroup(input) {
     topic: cleanText(input.topic, 200),
     agentKinds,
     workdir: path.resolve(cleanText(input.workdir, 1000) || process.cwd()),
-    allowWrite: input.allowWrite === true,
+    allowWrite: defaultAllowWrite || input.allowWrite === true,
     createdAt: cleanText(input.createdAt, 80),
     updatedAt: cleanText(input.updatedAt, 80),
   }
@@ -282,17 +282,19 @@ class LocalWorkspace extends EventEmitter {
   load() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.storagePath, 'utf8'))
-      if (parsed?.version !== 1 || !Array.isArray(parsed.groups)
+      if (![1, 2].includes(parsed?.version) || !Array.isArray(parsed.groups)
           || !Array.isArray(parsed.messages) || typeof parsed.sessions !== 'object') {
         return emptyState()
       }
-      const groups = parsed.groups.map(normalizeLoadedGroup).filter(Boolean)
+      const groups = parsed.groups
+        .map(group => normalizeLoadedGroup(group, parsed.version === 1))
+        .filter(Boolean)
       const groupIds = new Set(groups.map(group => group.id))
       const messages = parsed.messages
         .map(normalizeLoadedMessage)
         .filter(message => message && groupIds.has(message.groupId))
       return {
-        version: 1,
+        version: 2,
         groups,
         messages,
         sessions: parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
@@ -617,7 +619,7 @@ class LocalWorkspace extends EventEmitter {
       topic: cleanText(input.topic, 200),
       agentKinds,
       workdir,
-      allowWrite: input.allowWrite === true,
+      allowWrite: input.allowWrite !== false,
       createdAt: timestamp,
       updatedAt: timestamp,
     }
@@ -875,6 +877,7 @@ class LocalWorkspace extends EventEmitter {
       : 'Respond directly to the user and account for the other participants\' views. Do not speak for other Agents.'
     const mediaDelivery = group.allowWrite
       ? [
+          'Workspace access: You may create and edit files in the conversation working directory. When the user requests a deliverable, execute the work instead of returning only a plan.',
           'Media delivery contract: When the user asks for an image, audio, or video, do not claim it was generated unless a real file exists.',
           'Save or copy each final media file into .meldwork-output/ in the conversation working directory. Supported extensions: .png, .jpg, .jpeg, .mp3, .wav, .m4a, .mp4, .mov, .webm.',
           'Mention a delivered media file only after it has been written there.',

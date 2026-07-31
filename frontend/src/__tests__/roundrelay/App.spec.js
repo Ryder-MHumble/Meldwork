@@ -125,6 +125,95 @@ function createBridge() {
     save: vi.fn(async (kind, input) => ({ kind, ...input, configured: true, encryptionAvailable: true })),
     delete: vi.fn(async kind => ({ kind, configured: false, encryptionAvailable: true })),
   }
+  const localKnowledgeBase = {
+    status: vi.fn(async () => ([
+      {
+        kind: 'feishu',
+        label: 'Feishu Docs',
+        badge: 'FS',
+        type: 'cloud',
+        installed: false,
+        loginState: 'missing',
+        permissionState: 'unknown',
+        commandPath: '',
+        vaultPath: '',
+        installCommand: 'npm install -g @lark-opdev/cli@latest -f',
+        statusCommand: 'lark-cli auth status',
+        loginCommand: 'lark-cli auth login',
+        permissionCommand: 'lark-cli auth check',
+      },
+      {
+        kind: 'dingtalk',
+        label: 'DingTalk Docs',
+        badge: 'DT',
+        type: 'cloud',
+        installed: true,
+        loginState: 'ready',
+        permissionState: 'ready',
+        commandPath: '/usr/local/bin/dws',
+        vaultPath: '',
+        installCommand: 'npm install -g dingtalk-workspace-cli --registry=https://registry.npmmirror.com',
+        statusCommand: 'dws auth status',
+        loginCommand: 'dws auth login',
+        permissionCommand: 'dws auth status',
+      },
+      {
+        kind: 'obsidian',
+        label: 'Obsidian',
+        badge: 'OB',
+        type: 'local',
+        installed: true,
+        loginState: 'ready',
+        permissionState: 'ready',
+        commandPath: '/Applications/Obsidian.app',
+        vaultPath: '',
+      },
+    ])),
+    openGuide: vi.fn(async () => true),
+    pickObsidianVault: vi.fn(async () => ([
+      {
+        kind: 'feishu',
+        label: 'Feishu Docs',
+        badge: 'FS',
+        type: 'cloud',
+        installed: false,
+        loginState: 'missing',
+        permissionState: 'unknown',
+        commandPath: '',
+        vaultPath: '',
+        installCommand: 'npm install -g @lark-opdev/cli@latest -f',
+        statusCommand: 'lark-cli auth status',
+        loginCommand: 'lark-cli auth login',
+        permissionCommand: 'lark-cli auth check',
+      },
+      {
+        kind: 'dingtalk',
+        label: 'DingTalk Docs',
+        badge: 'DT',
+        type: 'cloud',
+        installed: true,
+        loginState: 'ready',
+        permissionState: 'ready',
+        commandPath: '/usr/local/bin/dws',
+        vaultPath: '',
+        installCommand: 'npm install -g dingtalk-workspace-cli --registry=https://registry.npmmirror.com',
+        statusCommand: 'dws auth status',
+        loginCommand: 'dws auth login',
+        permissionCommand: 'dws auth status',
+      },
+      {
+        kind: 'obsidian',
+        label: 'Obsidian',
+        badge: 'OB',
+        type: 'local',
+        installed: true,
+        loginState: 'ready',
+        permissionState: 'ready',
+        commandPath: '/Applications/Obsidian.app',
+        vaultPath: '/Users/rydersun/Documents/Knowledge',
+      },
+    ])),
+  }
   const localAttachments = {
     pickImages: vi.fn(async () => ({ attachments: [] })),
     importImage: vi.fn(async input => ({
@@ -144,7 +233,7 @@ function createBridge() {
     discard: vi.fn(async ids => ({ discardedIds: [...ids], retainedIds: [] })),
   }
   return {
-    bridge: { localWorkspace: workspace, agentInstaller, localAgentProvider, localAttachments },
+    bridge: { localWorkspace: workspace, agentInstaller, localAgentProvider, localKnowledgeBase, localAttachments },
     state,
     emitWorkspaceChanged(value = state) {
       workspaceChanged?.(snapshot(value))
@@ -272,9 +361,9 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.findAll('.settings-tabs button')[1].trigger('click')
     await flushPromises()
-    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(4)
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledTimes(1)
-    expect(bridge.localAgentProvider.probe).toHaveBeenCalledWith('hermes')
+    expect(bridge.localAgentProvider.probe).toHaveBeenCalledWith('codex')
     wrapper.unmount()
   })
 
@@ -296,11 +385,38 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll('.provider-agent-list button')
+      .find(button => button.text().includes('Hermes'))
+      .trigger('click')
     await flushPromises()
 
     expect(wrapper.find('.provider-agent-list svg.ready').exists()).toBe(true)
     expect(wrapper.get('.provider-editor-header h2').text()).toContain('Hermes')
     expect(wrapper.get('.provider-status').text()).toContain('Connected')
+    wrapper.unmount()
+  })
+
+  it('shows local knowledge sources and can pick an Obsidian vault', async () => {
+    const { wrapper, bridge } = await mountApp()
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalled()
+    expect(wrapper.get('.knowledge-base-panel').text()).toContain('Knowledge sources')
+    expect(wrapper.get('.knowledge-base-panel').text()).toContain('Feishu Docs')
+    expect(wrapper.get('.knowledge-base-panel').text()).toContain('DingTalk Docs')
+    expect(wrapper.get('.knowledge-base-panel').text()).toContain('Obsidian')
+
+    const obsidianCard = wrapper.findAll('.knowledge-base-card')
+      .find(card => card.text().includes('Obsidian'))
+    expect(obsidianCard.exists()).toBe(true)
+    expect(obsidianCard.text()).toContain('Vault not selected')
+    await obsidianCard.get('.knowledge-base-actions button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localKnowledgeBase.pickObsidianVault).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.knowledge-base-card').at(2).text()).toContain('/Users/rydersun/Documents/Knowledge')
     wrapper.unmount()
   })
 
@@ -360,8 +476,16 @@ describe('RoundRelay workbench', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
 
     expect(source).toMatch(/\.sidebar-footer\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s)
+    expect(source).not.toMatch(/\.sidebar\s*\{[^}]*border-right:\s*1px solid var\(--border\);/s)
+    expect(source).not.toMatch(/\.sidebar-footer\s*\{[^}]*border-top:\s*1px solid var\(--border\);/s)
+    expect(source).not.toMatch(/\.system-settings-header\s*\{[^}]*border-bottom:\s*1px solid var\(--border\);/s)
+    expect(source).not.toMatch(/\.settings-tabs\s*\{[^}]*border-bottom:\s*1px solid var\(--border\);/s)
+    expect(source).toMatch(/\.settings-tabs button\.active\s*\{[^}]*border-bottom-color:\s*var\(--accent\);/s)
     expect(source).toMatch(/\.skill-menu\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.skill-option\.agent-mention-option small\s*\{[^}]*-webkit-line-clamp:\s*2;/s)
+    expect(source).toMatch(/\.modal-pop-enter-active,[^{]+\.modal-pop-leave-active\s*\{[^}]*transform 0\.18s cubic-bezier\(0\.16, 1, 0\.3, 1\);/s)
+    expect(source).toMatch(/\.direct-session-action\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s)
+    expect(source).toMatch(/\.direct-session-row:hover \.direct-session-action,[^{]+\.direct-session-row:focus-within \.direct-session-action\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*auto;/s)
   })
 
   it('keeps the collapsed mobile sidebar to the expandable brand row', () => {
@@ -382,6 +506,7 @@ describe('RoundRelay workbench', () => {
 
   it('pins the turn rail beside the sidebar with Dock proximity magnification', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
 
     expect(source).toMatch(/\.message-stage\s*\{[^}]*width:\s*100%;[^}]*grid-template-columns:\s*48px minmax\(0,\s*1fr\);[^}]*padding-right:\s*48px;/s)
     expect(source).toMatch(/\.turn-rail\s*\{[^}]*top:\s*50%;[^}]*transform:\s*translateY\(-50%\);/s)
@@ -397,6 +522,13 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.composer-box\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.composer-context-row\s*\{[^}]*border-bottom:\s*0;/s)
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border:\s*0;/s)
+    expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border-radius:\s*var\(--radius\);/s)
+    expect(source).not.toContain('.stop-button-motion')
+    expect(appSource).toContain('<ArrowUpOutline v-else aria-hidden="true" />')
+    expect(appSource).toContain('<Stop aria-hidden="true" />')
+    expect(appSource).not.toContain('<SendOutline')
+    expect(appSource).not.toContain('<PlayOutline')
+    expect(appSource).not.toContain('<StopCircleOutline')
   })
 
   it('saves the exact Provider payload exposed by preload', async () => {
@@ -404,6 +536,9 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll('.provider-agent-list button')
+      .find(button => button.text().includes('Hermes'))
+      .trigger('click')
     await flushPromises()
     const inputs = wrapper.findAll('.provider-editor input')
     await inputs[0].setValue('Local gateway')
@@ -635,7 +770,7 @@ describe('RoundRelay workbench', () => {
       name: 'Codex',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: false,
+      allowWrite: true,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
     }
@@ -650,9 +785,9 @@ describe('RoundRelay workbench', () => {
       name: 'Codex',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: false,
+      allowWrite: true,
     })
-    expect(wrapper.get('.conversation-capabilities').text()).toContain('Read only')
+    expect(wrapper.get('.conversation-capabilities').text()).toContain('Write enabled')
 
     await wrapper.get('.new-group-button').trigger('click')
     await flushPromises()
@@ -670,7 +805,7 @@ describe('RoundRelay workbench', () => {
       topic: 'Review the implementation',
       agentKinds: ['codex', 'hermes'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: false,
+      allowWrite: true,
     }))
     expect(() => structuredClone(bridge.localWorkspace.createGroup.mock.calls.at(-1)[0])).not.toThrow()
     wrapper.unmount()
@@ -832,12 +967,10 @@ describe('RoundRelay workbench', () => {
     expect(hermesAgent.get('.sidebar-agent-new').attributes()).toHaveProperty('disabled')
     expect(hermesAgent.findAll('.direct-session-action')).toHaveLength(2)
 
-    await hermesAgent.get('.sidebar-agent-main').trigger('click')
+    await hermesAgent.get('.direct-session-open').trigger('click')
 
     expect(wrapper.get('.conversation-header h1').text()).toBe('Hermes history')
-    expect(wrapper.get('.conversation-capabilities').text()).toContain('Agent-managed permissions')
-    expect(wrapper.get('.conversation-capabilities').text()).not.toContain('Read only')
-    expect(wrapper.get('.conversation-capabilities').text()).not.toContain('Write enabled')
+    expect(wrapper.get('.conversation-capabilities').text()).toContain('Write enabled')
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('Continue this task')
     expect(wrapper.get('.send-button').attributes()).toHaveProperty('disabled')
@@ -867,6 +1000,13 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     await wrapper.get('.conversation-header-actions .icon-button').trigger('click')
+    expect(wrapper.get('.modal-header p').text()).toBe('Review')
+    const primaryInputs = wrapper.findAll('.settings-primary-grid input')
+    expect(primaryInputs[0].element.value).toBe('Review')
+    expect(primaryInputs[0].attributes('placeholder')).toBe('Design review')
+    expect(primaryInputs[1].element.value).toBe('Initial topic')
+    expect(primaryInputs[1].attributes('placeholder')).toBe('What should the Agents work on?')
+    expect(wrapper.findAll('.settings-agent-choice.selected')).toHaveLength(2)
     await wrapper.get('form.form-stack').trigger('submit')
     await flushPromises()
 
@@ -1913,6 +2053,10 @@ describe('RoundRelay workbench', () => {
       directAgentKind: 'codex',
       name: 'Codex chat 2',
     }))
+    expect(wrapper.findAll('.direct-session-row')).toHaveLength(2)
+    await wrapper.get('.sidebar-agent-main').trigger('click')
+    expect(wrapper.findAll('.direct-session-row')).toHaveLength(0)
+    await wrapper.get('.sidebar-agent-main').trigger('click')
     const sessions = wrapper.findAll('.direct-session-row')
     expect(sessions).toHaveLength(2)
     expect(sessions[0].get('.direct-session-open span').text()).toBe('Codex chat 2')
@@ -1929,9 +2073,14 @@ describe('RoundRelay workbench', () => {
     )
 
     await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
-    expect(wrapper.get('.danger-zone').text()).toContain('Native CLI sessions are not deleted')
-    expect(wrapper.get('.danger-button').text()).toContain('Confirm delete')
-    await wrapper.get('.danger-button').trigger('click')
+    expect(wrapper.get('.settings-delete-popover').text()).toContain('Native CLI sessions are not deleted')
+    expect(wrapper.get('.settings-delete-popover .danger-button').text()).toContain('Confirm delete')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('.settings-delete-popover').exists()).toBe(false)
+    expect(wrapper.find('.modal.medium').exists()).toBe(true)
+    await wrapper.get('.settings-delete-trigger').trigger('click')
+    await wrapper.get('.settings-delete-popover .danger-button').trigger('click')
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('direct-codex-1')
     wrapper.unmount()
@@ -1973,8 +2122,8 @@ describe('RoundRelay workbench', () => {
     )
 
     await wrapper.get('.group-conversation-row .direct-session-action.danger').trigger('click')
-    expect(wrapper.get('.danger-button').text()).toContain('Confirm delete')
-    await wrapper.get('.danger-button').trigger('click')
+    expect(wrapper.get('.settings-delete-popover .danger-button').text()).toContain('Confirm delete')
+    await wrapper.get('.settings-delete-popover .danger-button').trigger('click')
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('group-sidebar-actions')
     wrapper.unmount()

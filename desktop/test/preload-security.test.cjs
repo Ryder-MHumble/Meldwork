@@ -93,6 +93,28 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   ])
 })
 
+test('local preload exposes only narrow knowledge source methods', async () => {
+  const { api, invocations } = loadPreload('file:')
+
+  assert.equal(Object.isFrozen(api.localKnowledgeBase), true)
+  assert.deepEqual(
+    Object.keys(api.localKnowledgeBase).sort(),
+    ['openGuide', 'pickObsidianVault', 'status'],
+  )
+  assert.equal('readVault' in api.localKnowledgeBase, false)
+  assert.equal('runCommand' in api.localKnowledgeBase, false)
+
+  await api.localKnowledgeBase.status()
+  await api.localKnowledgeBase.openGuide('feishu', 'login')
+  await api.localKnowledgeBase.pickObsidianVault()
+
+  assert.deepEqual(invocations, [
+    { channel: 'local-knowledge-base:status', args: [] },
+    { channel: 'local-knowledge-base:open-guide', args: ['feishu', 'login'] },
+    { channel: 'local-knowledge-base:pick-obsidian-vault', args: [] },
+  ])
+})
+
 test('local preload exposes cancellable read-only run lifecycle subscriptions', () => {
   const { api, invocations, listeners } = loadPreload('file:')
   const finished = []
@@ -200,4 +222,5 @@ test('remote preload does not expose local credentials, workspace, or installer 
   assert.equal('agentInstaller' in api, false)
   assert.equal('localAttachments' in api, false)
   assert.equal('localAgentProvider' in api, false)
+  assert.equal('localKnowledgeBase' in api, false)
 })

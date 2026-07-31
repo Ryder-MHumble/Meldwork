@@ -449,6 +449,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       args: [
         'chat',
         '--quiet',
+        ...(options.sandbox === 'workspace-write' ? ['--yolo'] : []),
         ...(options.provider?.id ? ['--provider', options.provider.id] : []),
         ...(options.provider?.model ? ['--model', options.provider.model] : []),
         ...skills.flatMap(skill => ['--skills', skill]),
@@ -496,6 +497,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       command: executable,
       args: [
         '--output-format', 'stream-json',
+        '--auto',
         ...(sessionRef ? ['--session', sessionRef] : []),
         '--prompt',
       ],
@@ -506,7 +508,8 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     return {
       command: executable,
       args: [
-        'run', '--pure', '--agent', 'plan', '--format', 'json', '--dir', workdir,
+        'run', '--pure', '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        '--format', 'json', '--dir', workdir,
         ...(sessionRef ? ['--session', sessionRef] : []),
       ],
       promptArg: true,
@@ -554,7 +557,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       command: executable,
       args: [
         'run', '--format', 'json',
-        ...(options.sandbox === 'workspace-write' ? [] : ['--agent', 'plan']),
+        '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
         ...(sessionRef ? ['--session', sessionRef] : []),
         ...attachments.flatMap(filename => ['--file', filename]),
       ],
@@ -1077,7 +1080,9 @@ function boundedAcpStream(output, input, validators) {
 
 function childEnvironment(agent, workdir, options, platform) {
   const hermesSafetyEnv = agent.kind === 'hermes'
-    ? { HERMES_EXEC_ASK: '1', HERMES_YOLO_MODE: '' }
+    ? options.sandbox === 'workspace-write'
+      ? { HERMES_EXEC_ASK: '', HERMES_YOLO_MODE: '1' }
+      : { HERMES_EXEC_ASK: '1', HERMES_YOLO_MODE: '' }
     : {}
   const openCodeSafetyEnv = agent.kind === 'opencode'
       && options.sandbox !== 'workspace-write'

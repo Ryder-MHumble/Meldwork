@@ -21,9 +21,16 @@ const {
 const { LocalWorkspace } = require('./local-workspace.cjs')
 const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
 const { managedOpenClawOptions } = require('./openclaw-runtime.cjs')
+const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
+const {
+  knowledgeBaseGuideUrl,
+  resolveKnowledgeBaseSources,
+} = require('./local-knowledge-base.cjs')
 const { ProviderStore } = require('./provider-store.cjs')
 
-const EXTERNAL_PROVIDER_KINDS = new Set(['hermes', 'openclaw', 'workbuddy', 'qwen'])
+const EXTERNAL_PROVIDER_KINDS = new Set([
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+])
 const MEDIA_SCHEME = 'meldwork-media'
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const MAX_ATTACHMENT_PICK_REQUEST = 4
@@ -42,6 +49,7 @@ let workspaceRunFinishedListener = null
 let installer = null
 let localAgentRefreshQueue = Promise.resolve()
 let providerStore = null
+let knowledgeBaseStore = null
 let attachmentStore = null
 let skillCatalog = null
 let shutdownStarted = false
@@ -160,7 +168,36 @@ function openExternalUrl(value) {
   return true
 }
 
-function providerOptionsFor(kind, generic, context = {}) {
+const OFFICIAL_PROVIDER_BASE_URLS = Object.freeze({
+  codex: 'https://api.openai.com/v1',
+  hermes: 'https://api.openai.com/v1',
+  openclaw: 'https://api.openai.com/v1',
+  workbuddy: '',
+  kimi: 'https://api.moonshot.cn/v1',
+  mimo: '',
+  claude: 'https://api.anthropic.com',
+  gemini: 'https://generativelanguage.googleapis.com/v1beta',
+  opencode: '',
+  qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+})
+
+function providerPresetFromStatus(kind, status = {}) {
+  const provider = String(status.provider || '').trim().toLowerCase()
+  const baseUrl = String(status.baseUrl || '').trim().replace(/\/+$/, '')
+  if (/openrouter/i.test(provider) || /openrouter\.ai$/i.test(new URL(baseUrl || 'https://example.com').hostname)) {
+    return 'openrouter'
+  }
+  if (OFFICIAL_PROVIDER_BASE_URLS[kind]
+      && baseUrl
+      && baseUrl === OFFICIAL_PROVIDER_BASE_URLS[kind]) {
+    return 'official'
+  }
+  return 'custom'
+}
+
+function providerOptionsFor(kind, generic, context = {}, status = {}) {
+  const preset = providerPresetFromStatus(kind, status)
+  if (kind === 'codex') return { env: generic }
   if (kind === 'hermes') {
     return {
       provider: { id: 'openai-api', model: generic.OPENAI_MODEL },
@@ -170,13 +207,72 @@ function providerOptionsFor(kind, generic, context = {}) {
   if (kind === 'workbuddy') {
     return {
       env: {
+        ...generic,
         CODEBUDDY_MODEL: generic.OPENAI_MODEL,
         CODEBUDDY_API_KEY: generic.OPENAI_API_KEY,
         CODEBUDDY_BASE_URL: generic.OPENAI_BASE_URL,
       },
     }
   }
-  if (kind === 'qwen') return { provider: { id: 'openai', model: generic.OPENAI_MODEL }, env: generic }
+  if (kind === 'kimi') {
+    return {
+      env: {
+        ...generic,
+        MOONSHOT_API_KEY: generic.OPENAI_API_KEY,
+        KIMI_API_KEY: generic.OPENAI_API_KEY,
+        KIMI_MODEL_API_KEY: generic.OPENAI_API_KEY,
+        KIMI_MODEL_BASE_URL: generic.OPENAI_BASE_URL,
+        KIMI_MODEL_NAME: generic.OPENAI_MODEL,
+      },
+    }
+  }
+  if (kind === 'mimo') {
+    return {
+      env: {
+        ...generic,
+        MIMO_API_KEY: generic.OPENAI_API_KEY,
+        MIMO_BASE_URL: generic.OPENAI_BASE_URL,
+        MIMO_MODEL: generic.OPENAI_MODEL,
+      },
+    }
+  }
+  if (kind === 'claude') {
+    return {
+      env: {
+        ...generic,
+        ANTHROPIC_API_KEY: generic.OPENAI_API_KEY,
+        ANTHROPIC_BASE_URL: generic.OPENAI_BASE_URL,
+        ANTHROPIC_MODEL: generic.OPENAI_MODEL,
+      },
+    }
+  }
+  if (kind === 'gemini') {
+    return {
+      env: {
+        ...generic,
+        GEMINI_API_KEY: generic.OPENAI_API_KEY,
+        GOOGLE_API_KEY: generic.OPENAI_API_KEY,
+        GEMINI_MODEL: generic.OPENAI_MODEL,
+      },
+    }
+  }
+  if (kind === 'qwen') {
+    return {
+      provider: { id: 'openai', model: generic.OPENAI_MODEL },
+      env: {
+        ...generic,
+        DASHSCOPE_API_KEY: generic.OPENAI_API_KEY,
+      },
+    }
+  }
+  if (kind === 'opencode') {
+    return {
+      env: {
+        ...generic,
+        ...(preset === 'openrouter' ? { OPENROUTER_API_KEY: generic.OPENAI_API_KEY } : {}),
+      },
+    }
+  }
   if (kind === 'openclaw' && context.storageRoot && context.workdir) {
     return managedOpenClawOptions({
       storageRoot: context.storageRoot,
@@ -191,7 +287,8 @@ function providerOptionsFor(kind, generic, context = {}) {
 
 function providerOptions(kind, context = {}) {
   if (!EXTERNAL_PROVIDER_KINDS.has(kind)) return {}
-  if (!providerStore?.status(kind).configured) {
+  const status = providerStore?.status(kind) || {}
+  if (!status.configured) {
     if (kind === 'openclaw') throw new Error('PROVIDER_CREDENTIAL_REQUIRED')
     return {}
   }
@@ -199,6 +296,7 @@ function providerOptions(kind, context = {}) {
     kind,
     providerStore.envForAgent(kind),
     context,
+    status,
   )
 }
 
@@ -215,7 +313,7 @@ function workspaceStoragePath(userData = app.getPath('userData')) {
 function persistedAttachmentReferences(storagePath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
-    if (parsed?.version !== 1 || !Array.isArray(parsed.groups)
+    if (![1, 2].includes(parsed?.version) || !Array.isArray(parsed.groups)
         || !Array.isArray(parsed.messages) || typeof parsed.sessions !== 'object') {
       return null
     }
@@ -710,6 +808,30 @@ function registerIpc() {
     await refreshLocalAgentState()
     return result
   })
+  registerTrustedHandle('local-knowledge-base:status', async () => {
+    return resolveKnowledgeBaseSources({
+      store: knowledgeBaseStore,
+      home: app.getPath('home'),
+    })
+  })
+  registerTrustedHandle('local-knowledge-base:open-guide', async (kind, action) => {
+    const url = knowledgeBaseGuideUrl(String(kind || ''), String(action || ''))
+    if (!url) return false
+    return openExternalUrl(url)
+  })
+  registerTrustedHandle('local-knowledge-base:pick-obsidian-vault', async () => {
+    if (!knowledgeBaseStore) throw new Error('LOCAL_KNOWLEDGE_BASE_UNAVAILABLE')
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    if (shutdownStarted) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
+    if (result.canceled) return knowledgeBaseStore.state()
+    knowledgeBaseStore.saveObsidianVaultPath(result.filePaths[0] || '')
+    return resolveKnowledgeBaseSources({
+      store: knowledgeBaseStore,
+      home: app.getPath('home'),
+    })
+  })
 }
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock()
@@ -724,7 +846,10 @@ if (!hasSingleInstanceLock) {
     providerStore = new ProviderStore({
       storagePath: path.join(app.getPath('userData'), 'roundrelay-provider.json'),
       safeStorage: lazySafeStorage,
-      allowedKinds: [...EXTERNAL_PROVIDER_KINDS],
+      allowedKinds: [...LOCAL_AGENT_KINDS],
+    })
+    knowledgeBaseStore = new KnowledgeBaseStore({
+      storagePath: path.join(app.getPath('userData'), 'roundrelay-knowledge-base.json'),
     })
     try {
       attachmentStore = new AttachmentStore({

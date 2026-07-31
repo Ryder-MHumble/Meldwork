@@ -266,6 +266,13 @@ test('Hermes uses quiet query mode and resumes the native session id without a s
   ])
   assert.equal(spec.args.includes('-z'), false)
   assert.equal(spec.args.includes('--yolo'), false)
+
+  const writable = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
+    sandbox: 'workspace-write',
+  })
+  assert.deepEqual(writable.args, [
+    'chat', '--quiet', '--yolo', '--resume', 'hermes-session-123', '--query',
+  ])
 })
 
 test('Hermes normalizes official quiet stdout as the fallback reply', () => {
@@ -348,7 +355,7 @@ test('image capability rejects unsupported Agents and malformed paths before spa
   )
 })
 
-test('runAgent forces Hermes execution confirmation even when callers request yolo mode', async (t) => {
+test('runAgent enables Hermes non-interactive execution only for workspace write mode', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-env-'))
   const resultFile = path.join(directory, 'hermes-env-result.json')
   const cli = executable(directory, 'hermes-env.cjs', `
@@ -368,6 +375,7 @@ process.stderr.write('session_id: hermes-env-session\\n')
     directory,
     {
       home: directory,
+      sandbox: 'workspace-write',
       env: { HERMES_EXEC_ASK: '0', HERMES_YOLO_MODE: '1' },
       hermesMessageWatermarkFn: () => 0,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -377,7 +385,7 @@ process.stderr.write('session_id: hermes-env-session\\n')
     },
   )
 
-  assert.deepEqual(JSON.parse(result.text), { ask: '1', yolo: '' })
+  assert.deepEqual(JSON.parse(result.text), { ask: '', yolo: '1' })
   assert.equal(finalLookup.sessionRef, 'hermes-env-session')
   assert.equal(finalLookup.lookupOptions.afterMessageId, 0)
 })
@@ -694,10 +702,10 @@ test('Kimi uses ACP plan mode by default and prompt mode only after write author
     sandbox: 'workspace-write',
   })
   assert.deepEqual(writable.args, [
-    '--output-format', 'stream-json', '--session', 'kimi-session', '--prompt',
+    '--output-format', 'stream-json', '--auto', '--session', 'kimi-session', '--prompt',
   ])
   assert.equal(writable.args.includes('--plan'), false)
-  assert.equal(writable.args.includes('--auto'), false)
+  assert.equal(writable.args.includes('--auto'), true)
 })
 
 test('Kimi stream JSON output returns assistant text and the native session id', () => {
@@ -1112,12 +1120,12 @@ test('Claude uses JSON output and resumes its native session', () => {
   assert.equal(spec.promptArg, true)
 })
 
-test('MiMo uses its read-only plan Agent and resumes its native session', () => {
+test('MiMo uses its build Agent after workspace write authorization', () => {
   const spec = invocation('mimo', '/tmp/mimo', '/tmp/work', 'mimo-session', {
     sandbox: 'workspace-write',
   })
   assert.deepEqual(spec.args, [
-    'run', '--pure', '--agent', 'plan', '--format', 'json', '--dir', '/tmp/work',
+    'run', '--pure', '--agent', 'build', '--format', 'json', '--dir', '/tmp/work',
     '--session', 'mimo-session',
   ])
   assert.equal(spec.promptArg, true)
@@ -1213,7 +1221,7 @@ test('OpenCode uses JSON events and resumes the requested session without auto a
   const configure = invocation('opencode', '/tmp/opencode', '/tmp/work', '', {
     sandbox: 'workspace-write',
   })
-  assert.deepEqual(configure.args, ['run', '--format', 'json'])
+  assert.deepEqual(configure.args, ['run', '--format', 'json', '--agent', 'build'])
 
   const first = path.resolve('diagram-one.png')
   const second = path.resolve('diagram-two.jpg')
