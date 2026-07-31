@@ -16,7 +16,9 @@ AI agents are no longer one narrow product category. Tools that began with codin
 
 Meldwork is not another Agent, and it is not a coding-only Agent aggregator. It keeps conversations, compatible native sessions, collaboration state, and human control in one persistent workspace while work moves between different Agents.
 
-> **Current MVP:** Meldwork connects the supported local Agent CLIs listed below. The product direction is an open connector layer for local, cloud, custom, and channel-native Agents, but arbitrary Agent connectors are not shipped yet. This repository also remains `UNLICENSED` until a public software license is selected.
+> **Current MVP:** Meldwork connects the supported local Agent CLIs listed below. The product direction is an open connector layer for local, cloud, custom, and channel-native Agents, but arbitrary Agent connectors are not shipped yet. This repository is published under a non-commercial software license; commercial use requires a separate written agreement.
+
+> **License:** [PolyForm Noncommercial 1.0.0](LICENSE) · [Commercial use policy](COMMERCIAL_USE.md) · [Notice](NOTICE)
 
 ## Better Agents do not solve fragmented work
 
@@ -174,7 +176,7 @@ Internal identifiers such as `window.roundrelayDesktop`, existing storage filena
 
 Meldwork is a market-validation MVP, not a finished platform. Before a public release, the project still needs:
 
-- a selected and committed software license;
+- a release policy that matches the committed non-commercial license;
 - target-device compatibility tests for supported Agents;
 - a public connector contract before "any Agent" is presented as shipped capability;
 - signed and notarized macOS distribution;

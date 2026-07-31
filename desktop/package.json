@@ -4,7 +4,7 @@
   "private": true,
   "description": "A local-first desktop workspace for multi-Agent collaboration",
   "author": "Ryder-MHumble",
-  "license": "UNLICENSED",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "main": "src/main.cjs",
   "scripts": {
     "build:frontend": "npm --prefix ../frontend run build:desktop",

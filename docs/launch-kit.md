@@ -1,6 +1,6 @@
 # Meldwork Launch Kit
 
-This document contains draft public-relations and repository-launch copy for the current MVP. `Meldwork` still requires trademark, domain, and user-understanding checks. Do not publish open-source claims until a software license is committed.
+This document contains draft public-relations and repository-launch copy for the current MVP. `Meldwork` still requires trademark, domain, and user-understanding checks. Publish only copy that matches the repository's non-commercial license and policy docs.
 
 ## Positioning
 

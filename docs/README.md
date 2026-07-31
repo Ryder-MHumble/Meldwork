@@ -1,6 +1,6 @@
 # Meldwork 文档
 
-Meldwork（工作名）是一个本地优先的 Agent 工作系统。当前仓库是一个 Electron MVP：它把已支持的本地 Agent CLI 放进同一个持久工作空间；长期方向是成为连接本地 Agent、Cloud Agent 与工作渠道的开放 Harness 基座。
+Meldwork 是一个本地优先的 Agent 工作系统。当前仓库是一个 Electron MVP：它把已支持的本地 Agent CLI 放进同一个持久工作空间；长期方向是成为连接本地 Agent、Cloud Agent 与工作渠道的开放 Harness 基座。
 
 本目录是项目唯一的产品与工程文档入口。`documentation/` 已合并到这里；`archive/` 只保留历史战略版本，不能作为当前产品承诺。
 
@@ -8,7 +8,7 @@ Meldwork（工作名）是一个本地优先的 Agent 工作系统。当前仓�
 
 | 文档 | 用途 | 当前决策 |
 | --- | --- | --- |
-| [市场与用户调研](market-user-research.md) | 判断为什么做、为谁做、先验证什么 | 开源优先，商业化可选 |
+| [市场与用户调研](market-user-research.md) | 判断为什么做、为谁做、先验证什么 | 开源优先，当前按非商用协议发布 |
 | [产品迭代规划](product-iteration-plan.md) | 把愿景拆成一个 OPC 能执行的优先级路线 | 先建立 Harness 基座，再扩展 Cloud/Channel |
 | [产品 BP](product-bp.md) | 对外解释定位、价值、增长和后续收入 | 先积累开源资产与用户信号，不急于卖席位 |
 
@@ -29,6 +29,12 @@ Meldwork（工作名）是一个本地优先的 Agent 工作系统。当前仓�
 - **验证中**：已经有原型或实验，但还没有稳定的用户/可靠性证据。
 - **路线图**：希望通过 Connector、Task、Artifact、Evidence 等机制交付的未来能力。
 - **商业假设**：定价、付费和团队治理相关假设，不能写成当前功能。
+
+## 协议文件
+
+- [许可证](../LICENSE)
+- [商业使用政策](../COMMERCIAL_USE.md)
+- [声明](../NOTICE)
 
 对外宣传只能把第一类写成“现在可以用”。第二、三类必须带上阶段或路线图说明，第四类必须带“待验证”。
 
