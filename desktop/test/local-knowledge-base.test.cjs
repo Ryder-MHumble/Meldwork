@@ -72,8 +72,12 @@ test('Feishu reports an installed CLI separately from a missing user login', asy
 
   const feishu = sourceByKind(sources, 'feishu')
   assert.equal(feishu.installed, true)
+  assert.equal(feishu.configured, false)
+  assert.equal(feishu.connected, false)
   assert.equal(feishu.loginState, 'missing')
   assert.equal(feishu.permissionState, 'unknown')
+  assert.equal(feishu.readable, false)
+  assert.equal(feishu.writable, false)
   assert.equal(feishu.ready, false)
   assert.deepEqual(calls, [{
     command: path.posix.join(MOCK_BIN, 'lark-cli'),
@@ -88,14 +92,18 @@ test('DingTalk readiness verifies document access after login', async () => {
     execFileFn: async (command, args) => {
       calls.push({ command, args })
       if (args[0] === 'auth') return { stdout: JSON.stringify({ authenticated: true }) }
-      return { stdout: JSON.stringify({ success: false }) }
+      return { stdout: JSON.stringify({ success: false, permission_granted: false }) }
     },
   }))
 
   const dingtalk = sourceByKind(sources, 'dingtalk')
   assert.equal(dingtalk.installed, true)
+  assert.equal(dingtalk.configured, true)
+  assert.equal(dingtalk.connected, true)
   assert.equal(dingtalk.loginState, 'ready')
   assert.equal(dingtalk.permissionState, 'needs-grant')
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
   assert.equal(dingtalk.ready, false)
   assert.deepEqual(calls, [
     {
@@ -107,6 +115,131 @@ test('DingTalk readiness verifies document access after login', async () => {
       args: ['doc', 'list', '--page-size', '1'],
     },
   ])
+})
+
+test('explicit authentication failures override a generic successful result', async () => {
+  const sources = await resolveKnowledgeBaseSources(probeOptions({
+    commands: ['dws'],
+    execFileFn: async () => ({
+      stdout: JSON.stringify({ ok: true, authenticated: false, token_valid: false }),
+    }),
+  }))
+
+  const dingtalk = sourceByKind(sources, 'dingtalk')
+  assert.equal(dingtalk.loginState, 'missing')
+  assert.equal(dingtalk.configured, false)
+  assert.equal(dingtalk.connected, false)
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
+  assert.equal(dingtalk.ready, false)
+})
+
+test('stderr warnings cannot overturn explicit negative authentication or permission JSON', async () => {
+  const sources = await resolveKnowledgeBaseSources(probeOptions({
+    commands: ['lark-cli', 'dws'],
+    execFileFn: async (command, args) => {
+      if (command.endsWith('/lark-cli')) {
+        return {
+          stdout: JSON.stringify({ ok: true, authenticated: false }),
+          stderr: 'Warning: authenticated account metadata is stale.',
+        }
+      }
+      if (args[0] === 'auth') {
+        return {
+          stdout: JSON.stringify({ authenticated: true }),
+          stderr: 'Warning: authenticated cache entry is stale.',
+        }
+      }
+      return {
+        stdout: JSON.stringify({ permission_granted: false }),
+        stderr: 'Warning: permission granted cache entry is stale.',
+      }
+    },
+  }))
+
+  const feishu = sourceByKind(sources, 'feishu')
+  assert.equal(feishu.loginState, 'missing')
+  assert.equal(feishu.configured, false)
+  assert.equal(feishu.ready, false)
+
+  const dingtalk = sourceByKind(sources, 'dingtalk')
+  assert.equal(dingtalk.loginState, 'ready')
+  assert.equal(dingtalk.permissionState, 'needs-grant')
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
+  assert.equal(dingtalk.ready, false)
+})
+
+test('an explicit denied permission alias overrides unknown and successful aliases', async () => {
+  const sources = await resolveKnowledgeBaseSources(probeOptions({
+    commands: ['dws'],
+    execFileFn: async (command, args) => {
+      if (args[0] === 'auth') return { stdout: JSON.stringify({ authenticated: true }) }
+      return {
+        stdout: JSON.stringify({
+          success: true,
+          permissionState: 'unknown',
+          scope: { status: 'denied' },
+        }),
+      }
+    },
+  }))
+
+  const dingtalk = sourceByKind(sources, 'dingtalk')
+  assert.equal(dingtalk.permissionState, 'needs-grant')
+  assert.equal(dingtalk.connected, true)
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
+  assert.equal(dingtalk.probeState, 'ready')
+  assert.equal(dingtalk.errorCode, '')
+  assert.equal(dingtalk.ready, false)
+})
+
+test('exit-zero unsuccessful permission JSON remains an execution error', async () => {
+  const sources = await resolveKnowledgeBaseSources(probeOptions({
+    commands: ['dws'],
+    execFileFn: async (command, args) => {
+      if (args[0] === 'auth') return { stdout: JSON.stringify({ authenticated: true }) }
+      return {
+        stdout: JSON.stringify({ success: false, error: 'upstream unavailable' }),
+      }
+    },
+  }))
+
+  const dingtalk = sourceByKind(sources, 'dingtalk')
+  assert.equal(dingtalk.permissionState, 'unknown')
+  assert.equal(dingtalk.configured, true)
+  assert.equal(dingtalk.connected, false)
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
+  assert.equal(dingtalk.probeState, 'error')
+  assert.equal(dingtalk.errorCode, 'PROBE_REPORTED_FAILURE')
+  assert.equal(dingtalk.ready, false)
+})
+
+test('an error probe cannot produce a ready CLI DTO', async () => {
+  const sources = await resolveKnowledgeBaseSources(probeOptions({
+    commands: ['dws'],
+    execFileFn: async (command, args) => {
+      if (args[0] === 'auth') {
+        throw Object.assign(new Error('Unexpected auth exit'), {
+          code: 1,
+          stdout: JSON.stringify({ authenticated: true }),
+        })
+      }
+      return { stdout: JSON.stringify({ success: true }) }
+    },
+  }))
+
+  const dingtalk = sourceByKind(sources, 'dingtalk')
+  assert.equal(dingtalk.loginState, 'ready')
+  assert.equal(dingtalk.permissionState, 'ready')
+  assert.equal(dingtalk.configured, true)
+  assert.equal(dingtalk.connected, false)
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
+  assert.equal(dingtalk.probeState, 'error')
+  assert.equal(dingtalk.ready, false)
 })
 
 test('classified CLI authentication and permission failures are not probe errors', async () => {
@@ -129,12 +262,18 @@ test('classified CLI authentication and permission failures are not probe errors
 
   const feishu = sourceByKind(sources, 'feishu')
   assert.equal(feishu.loginState, 'missing')
+  assert.equal(feishu.configured, false)
+  assert.equal(feishu.connected, false)
   assert.equal(feishu.probeState, 'ready')
   assert.equal(feishu.errorCode, '')
 
   const dingtalk = sourceByKind(sources, 'dingtalk')
   assert.equal(dingtalk.loginState, 'ready')
   assert.equal(dingtalk.permissionState, 'needs-grant')
+  assert.equal(dingtalk.configured, true)
+  assert.equal(dingtalk.connected, true)
+  assert.equal(dingtalk.readable, false)
+  assert.equal(dingtalk.writable, false)
   assert.equal(dingtalk.probeState, 'ready')
   assert.equal(dingtalk.errorCode, '')
 })
@@ -145,6 +284,7 @@ test('Obsidian is ready only when its Vault is a readable and writable directory
       name: 'missing',
       vault: { path: '/vault/missing', exists: false },
       details: { exists: false, directory: false, readable: false, writable: false },
+      state: { configured: false, connected: false, readable: false, writable: false },
       ready: false,
     },
     {
@@ -153,6 +293,7 @@ test('Obsidian is ready only when its Vault is a readable and writable directory
         path: '/vault/file', exists: true, directory: false, readable: true, writable: true,
       },
       details: { exists: true, directory: false, readable: false, writable: false },
+      state: { configured: false, connected: false, readable: false, writable: false },
       ready: false,
     },
     {
@@ -161,6 +302,7 @@ test('Obsidian is ready only when its Vault is a readable and writable directory
         path: '/vault/unreadable', exists: true, directory: true, readable: false, writable: true,
       },
       details: { exists: true, directory: true, readable: false, writable: true },
+      state: { configured: true, connected: true, readable: false, writable: true },
       ready: false,
     },
     {
@@ -169,6 +311,7 @@ test('Obsidian is ready only when its Vault is a readable and writable directory
         path: '/vault/read-only', exists: true, directory: true, readable: true, writable: false,
       },
       details: { exists: true, directory: true, readable: true, writable: false },
+      state: { configured: true, connected: true, readable: true, writable: false },
       ready: false,
     },
     {
@@ -177,6 +320,7 @@ test('Obsidian is ready only when its Vault is a readable and writable directory
         path: '/vault/usable', exists: true, directory: true, readable: true, writable: true,
       },
       details: { exists: true, directory: true, readable: true, writable: true },
+      state: { configured: true, connected: true, readable: true, writable: true },
       ready: true,
     },
   ]
@@ -189,6 +333,12 @@ test('Obsidian is ready only when its Vault is a readable and writable directory
     }))
     const obsidian = sourceByKind(sources, 'obsidian')
     assert.deepEqual(obsidian.vaultDetails, fixture.details, fixture.name)
+    assert.deepEqual({
+      configured: obsidian.configured,
+      connected: obsidian.connected,
+      readable: obsidian.readable,
+      writable: obsidian.writable,
+    }, fixture.state, fixture.name)
     assert.equal(obsidian.ready, fixture.ready, fixture.name)
   }
 })
@@ -247,6 +397,10 @@ test('a failed source probe does not mark other knowledge sources unavailable', 
   assert.equal(dingtalk.probeState, 'ready')
   assert.equal(dingtalk.loginState, 'ready')
   assert.equal(dingtalk.permissionState, 'ready')
+  assert.equal(dingtalk.configured, true)
+  assert.equal(dingtalk.connected, true)
+  assert.equal(dingtalk.readable, true)
+  assert.equal(dingtalk.writable, false)
   assert.equal(dingtalk.ready, true)
 })
 

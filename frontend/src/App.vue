@@ -442,6 +442,7 @@
             <section
               v-else-if="systemSettingsSection === 'knowledge-bases'"
               class="settings-panel knowledge-base-manager knowledge-base-panel"
+              :aria-busy="String(knowledgeBaseLoading)"
             >
               <header class="knowledge-base-header">
                 <div>
@@ -453,44 +454,69 @@
                   {{ t('knowledgeBase.refresh') }}
                 </button>
               </header>
-              <div class="manager-toolbar">
-                <span>{{ t('knowledgeBase.readyCount', { ready: readyKnowledgeBaseCount, total: knowledgeBaseEntries.length }) }}</span>
+              <div class="manager-toolbar" role="status" aria-live="polite">
+                <span>{{ knowledgeBaseLoading
+                  ? t('knowledgeBase.status.checking')
+                  : t('knowledgeBase.readyCount', { ready: readyKnowledgeBaseCount, total: localKnowledgeBaseEntries.length }) }}</span>
               </div>
-              <div class="knowledge-base-grid">
-                <article v-for="source in knowledgeBaseEntries" :key="source.kind" class="knowledge-base-card">
-                  <header class="knowledge-base-card-header">
-                    <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
-                    <div class="knowledge-base-card-copy">
-                      <div class="knowledge-base-card-title">
-                        <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
-                        <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
-                          <component :is="knowledgeBaseIcon(source)" />
-                          {{ knowledgeBaseStatusLabel(source) }}
+              <div class="knowledge-base-groups">
+                <section
+                  v-for="group in knowledgeBaseGroups"
+                  :key="group.id"
+                  class="knowledge-base-group"
+                  :class="{ planned: group.planned }"
+                  :aria-labelledby="`knowledge-base-group-${group.id}`"
+                >
+                  <header class="knowledge-base-group-header">
+                    <h3 :id="`knowledge-base-group-${group.id}`">{{ t(group.titleKey) }}</h3>
+                  </header>
+                  <div class="knowledge-base-grid">
+                    <article
+                      v-for="source in group.sources"
+                      :key="source.kind"
+                      class="knowledge-base-card"
+                      :class="{ planned: group.planned, pending: knowledgeBasePending(source) }"
+                    >
+                      <header class="knowledge-base-card-header">
+                        <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
+                        <div class="knowledge-base-card-copy">
+                          <div class="knowledge-base-card-title">
+                            <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                            <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
+                              <component :is="knowledgeBaseIcon(source)" :class="{ spinning: knowledgeBasePending(source) }" />
+                              {{ knowledgeBaseStatusLabel(source) }}
+                            </span>
+                          </div>
+                          <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
+                        </div>
+                      </header>
+                      <div class="knowledge-base-tags">
+                        <span
+                          v-for="tag in knowledgeBaseTags(source)"
+                          :key="tag.label"
+                          class="knowledge-base-tag"
+                          :class="tag.tone"
+                        >
+                          {{ tag.label }}
                         </span>
                       </div>
-                      <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
-                    </div>
-                  </header>
-                  <div class="knowledge-base-tags">
-                    <span
-                      v-for="tag in knowledgeBaseTags(source)"
-                      :key="tag.label"
-                      class="knowledge-base-tag"
-                      :class="tag.tone"
-                    >
-                      {{ tag.label }}
-                    </span>
+                      <p class="knowledge-base-hint">{{ knowledgeBaseHint(source) }}</p>
+                      <p v-if="knowledgeBaseLocationLabel(source)" class="knowledge-base-path">
+                        <code>{{ knowledgeBaseLocationLabel(source) }}</code>
+                      </p>
+                      <footer class="knowledge-base-actions">
+                        <button
+                          type="button"
+                          :disabled="knowledgeBasePending(source)"
+                          @click="runKnowledgeBasePrimaryAction(source)"
+                        >
+                          <RefreshOutline v-if="knowledgeBasePending(source)" class="spinning" />
+                          {{ knowledgeBasePrimaryActionLabel(source) }}
+                        </button>
+                      </footer>
+                    </article>
                   </div>
-                  <p class="knowledge-base-hint">{{ knowledgeBaseHint(source) }}</p>
-                  <p v-if="knowledgeBaseLocationLabel(source)" class="knowledge-base-path">
-                    <code>{{ knowledgeBaseLocationLabel(source) }}</code>
-                  </p>
-                  <footer class="knowledge-base-actions">
-                    <button type="button" @click="runKnowledgeBasePrimaryAction(source)">
-                      {{ knowledgeBasePrimaryActionLabel(source) }}
-                    </button>
-                  </footer>
-                </article>
+                </section>
               </div>
             </section>
 
@@ -525,7 +551,7 @@
                 </button>
               </nav>
 
-              <form class="provider-editor form-stack" @submit.prevent="saveProvider">
+              <form class="provider-editor form-stack" :aria-busy="String(providerNativeStatusPending)" @submit.prevent="saveProvider">
                 <header v-if="selectedProviderAgent" class="provider-editor-header">
                   <img :src="selectedProviderAgent.logo" alt="" />
                   <div>
@@ -534,7 +560,7 @@
                     <small class="provider-capability-label">{{ providerCapabilityLabel(selectedProviderAgent) }}</small>
                   </div>
                 </header>
-                <div class="provider-status" :class="{ configured: providerReady(selectedProviderKind), checking: !hasProviderStatus(selectedProviderKind) && !nativeProviderReady(selectedProviderAgent) }">
+                <div class="provider-status" role="status" aria-live="polite" :class="{ configured: providerReady(selectedProviderKind), checking: !hasProviderStatus(selectedProviderKind) }">
                   <CheckmarkCircleOutline v-if="providerReady(selectedProviderKind)" />
                   <RefreshOutline v-else-if="!hasProviderStatus(selectedProviderKind)" class="spinning" />
                   <WarningOutline v-else />
@@ -542,7 +568,7 @@
                 </div>
                 <p class="provider-agent-hint">{{ t('provider.agentSpecificHint') }}</p>
                 <p
-                  v-if="nativeProviderReady(selectedProviderAgent) && !providerStatus.configured"
+                  v-if="nativeProviderReady(selectedProviderAgent) && hasProviderStatus(selectedProviderKind) && !providerStatus.error && !providerStatus.configured"
                   class="provider-native-detected-note"
                 >
                   <CheckmarkCircleOutline />
@@ -568,11 +594,26 @@
                 <section
                   v-if="providerNativeOfficialMode"
                   class="provider-native-card"
+                  :class="{ warning: providerNativeOverrideActive || providerNativeStatusError }"
                 >
-                  <TerminalOutline />
+                  <RefreshOutline v-if="providerNativeStatusPending" class="spinning" />
+                  <WarningOutline v-else-if="providerNativeOverrideActive || providerNativeStatusError" />
+                  <TerminalOutline v-else />
                   <div>
-                    <strong>{{ t('provider.nativeTitle') }}</strong>
-                    <p>{{ t('provider.nativeBody') }}</p>
+                    <strong>{{ t(providerNativeStatusPending
+                      ? 'provider.nativeStatusCheckingTitle'
+                      : providerNativeStatusError
+                        ? 'provider.nativeStatusErrorTitle'
+                        : providerNativeOverrideActive
+                          ? 'provider.nativeOverrideTitle'
+                          : 'provider.nativeTitle') }}</strong>
+                    <p>{{ t(providerNativeStatusPending
+                      ? 'provider.nativeStatusCheckingBody'
+                      : providerNativeStatusError
+                        ? 'provider.nativeStatusErrorBody'
+                        : providerNativeOverrideActive
+                          ? 'provider.nativeOverrideBody'
+                          : 'provider.nativeBody') }}</p>
                   </div>
                 </section>
                 <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
@@ -616,13 +657,24 @@
                 <footer class="provider-editor-footer">
                   <button v-if="providerStatus.configured" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
                     <TrashOutline />
-                    {{ providerRemoveArmed ? t('provider.removeConfirm') : t('provider.remove') }}
+                    {{ providerRemoveArmed
+                      ? t(providerNativeOverrideActive ? 'provider.removeOverrideConfirm' : 'provider.removeConfirm')
+                      : t(providerNativeOverrideActive ? 'provider.removeOverride' : 'provider.remove') }}
                   </button>
                   <span class="footer-spacer" />
-                  <span v-if="providerNativeOfficialMode" class="provider-native-footer-note">
+                  <span v-if="providerNativeConfigSelected" class="provider-native-footer-note">
                     {{ t('provider.nativeConfiguredHint') }}
                   </span>
-                  <button v-else class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
+                  <span v-else-if="providerNativeOverrideActive" class="provider-native-footer-note warning">
+                    {{ t('provider.nativeOverrideFooterHint') }}
+                  </span>
+                  <span v-else-if="providerNativeStatusError" class="provider-native-footer-note warning">
+                    {{ t('provider.nativeStatusErrorFooterHint') }}
+                  </span>
+                  <span v-else-if="providerNativeStatusPending" class="provider-native-footer-note">
+                    {{ t('provider.checking') }}
+                  </span>
+                  <button v-if="!providerNativeOfficialMode" class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
                     {{ saving ? t('common.saving') : t('provider.save') }}
                   </button>
                 </footer>
@@ -663,7 +715,7 @@
             <article class="home-overview-item">
               <span>{{ t('home.knowledgeSources') }}</span>
               <strong>{{ readyKnowledgeBaseCount }}</strong>
-              <small>{{ t('home.knowledgeTotal', { count: knowledgeBaseEntries.length }) }}</small>
+              <small>{{ t('home.knowledgeTotal', { count: localKnowledgeBaseEntries.length }) }}</small>
             </article>
             <article class="home-overview-item">
               <span>{{ t('home.conversations') }}</span>
@@ -970,17 +1022,6 @@
                         {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
                       </span>
                       <button
-                        v-if="isTopicRoot(message)"
-                        class="topic-toggle"
-                        type="button"
-                        :aria-expanded="isTopicExpanded(message.id) ? 'true' : 'false'"
-                        :aria-label="topicToggleLabel(message.id)"
-                        @click="toggleTopic(message.id)"
-                      >
-                        <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
-                        {{ topicReplyLabel(topicReplyCount(message.id)) }}
-                      </button>
-                      <button
                         v-if="message.content"
                         class="message-copy-button"
                         type="button"
@@ -1018,24 +1059,45 @@
                       </details>
                     </template>
                     <template v-else>
-                      <div
-                        v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
-                        class="message-target-list"
-                        :aria-label="t('composer.mentionedAgents')"
+                      <div class="user-message-flow">
+                        <div
+                          v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
+                          class="message-target-list"
+                          :aria-label="t('composer.mentionedAgents')"
+                        >
+                          <span v-for="kind in messageTargetKinds(message)" :key="kind">
+                            <img :src="agentLogo(kind)" alt="" />
+                            {{ agentLabel(kind) }}
+                          </span>
+                        </div>
+                        <div
+                          v-if="message.content"
+                          class="message-content plain-message message-copy-surface"
+                          :class="{ copied: isMessageCopied(message.id) }"
+                          @click="copyMessageContent(message, $event)"
+                        >
+                          {{ message.content }}
+                        </div>
+                      </div>
+                      <button
+                        v-if="isTopicRoot(message)"
+                        class="topic-toggle topic-reply-summary"
+                        type="button"
+                        :aria-expanded="isTopicExpanded(message.id) ? 'true' : 'false'"
+                        :aria-label="topicToggleLabel(message.id)"
+                        @click="toggleTopic(message.id)"
                       >
-                        <span v-for="kind in messageTargetKinds(message)" :key="kind">
-                          <img :src="agentLogo(kind)" alt="" />
-                          {{ agentLabel(kind) }}
+                        <span class="topic-reply-avatars" aria-hidden="true">
+                          <img
+                            v-for="kind in topicReplyAgentKinds(message.id)"
+                            :key="kind"
+                            :src="agentLogo(kind)"
+                            :alt="agentLabel(kind)"
+                          />
                         </span>
-                      </div>
-                      <div
-                        v-if="message.content"
-                        class="message-content plain-message message-copy-surface"
-                        :class="{ copied: isMessageCopied(message.id) }"
-                        @click="copyMessageContent(message, $event)"
-                      >
-                        {{ message.content }}
-                      </div>
+                        <span>{{ topicReplyLabel(topicReplyCount(message.id)) }}</span>
+                        <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
+                      </button>
                       <div v-if="messageSkills(message).length" class="message-skill-list">
                         <span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
                           @{{ skill.name || skill.slug }}
@@ -1384,7 +1446,7 @@
                 <div class="composer-actions">
                   <div class="composer-tools">
                     <button
-                      class="composer-tool-button"
+                      class="composer-tool-button composer-attachment-button"
                       type="button"
                       :title="attachmentActionLabel"
                       :aria-label="attachmentActionLabel"
@@ -1395,7 +1457,7 @@
                       <AttachOutline v-else />
                     </button>
                     <button
-                      class="composer-tool-button"
+                      class="composer-tool-button composer-skill-button"
                       type="button"
                       :title="t('composer.skills')"
                       :aria-label="t('composer.skills')"
@@ -1889,6 +1951,7 @@ const toastMessage = ref('')
 const settingsIntent = ref('settings')
 const knowledgeBaseSources = ref([])
 const knowledgeBaseLoading = ref(false)
+let knowledgeBaseStatusPromise = null
 const knowledgeBaseSourceMap = computed(() => new Map(knowledgeBaseSources.value.map(source => [source.kind, source])))
 const knowledgeBaseEntries = computed(() => KNOWLEDGE_BASE_CATALOG.map((definition) => {
   const status = knowledgeBaseSourceMap.value.get(definition.kind) || {}
@@ -1898,7 +1961,23 @@ const knowledgeBaseEntries = computed(() => KNOWLEDGE_BASE_CATALOG.map((definiti
     ...status,
   }
 }))
-const readyKnowledgeBaseCount = computed(() => knowledgeBaseEntries.value.filter(knowledgeBaseReady).length)
+const localKnowledgeBaseEntries = computed(() => knowledgeBaseEntries.value.filter(source => !knowledgeBaseComingSoon(source)))
+const plannedKnowledgeBaseEntries = computed(() => knowledgeBaseEntries.value.filter(knowledgeBaseComingSoon))
+const knowledgeBaseGroups = computed(() => ([
+  {
+    id: 'local',
+    titleKey: 'knowledgeBase.group.local',
+    planned: false,
+    sources: localKnowledgeBaseEntries.value,
+  },
+  {
+    id: 'planned',
+    titleKey: 'knowledgeBase.group.planned',
+    planned: true,
+    sources: plannedKnowledgeBaseEntries.value,
+  },
+]))
+const readyKnowledgeBaseCount = computed(() => localKnowledgeBaseEntries.value.filter(knowledgeBaseReady).length)
 const collapsedSidebarAgentKinds = ref(new Set())
 const expandedSidebarAgentSessionKinds = ref(new Set())
 const groupSessionListExpanded = ref(false)
@@ -2281,6 +2360,26 @@ const selectedProviderRuntimeKeys = computed(() => selectedProviderProfile.value
 const providerNativeOfficialMode = computed(() => (
   selectedProviderAgent.value?.providerMode === 'native' && providerForm.preset === 'official'
 ))
+const providerNativeStatusPending = computed(() => (
+  providerNativeOfficialMode.value && !hasProviderStatus(selectedProviderKind.value)
+))
+const providerNativeStatusError = computed(() => (
+  providerNativeOfficialMode.value
+  && hasProviderStatus(selectedProviderKind.value)
+  && providerStatus.value.error
+))
+const providerNativeOverrideActive = computed(() => (
+  providerNativeOfficialMode.value
+  && hasProviderStatus(selectedProviderKind.value)
+  && !providerStatus.value.error
+  && providerStatus.value.configured
+))
+const providerNativeConfigSelected = computed(() => (
+  providerNativeOfficialMode.value
+  && hasProviderStatus(selectedProviderKind.value)
+  && !providerStatus.value.error
+  && !providerStatus.value.configured
+))
 const roundProgressPercent = computed(() => {
   const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
   return `${((bounded - 1) / 9) * 100}%`
@@ -2440,24 +2539,28 @@ function nativeProviderReady(agent) {
 }
 
 function providerReady(kind) {
+  const status = providerStatusFor(kind)
+  if (!hasProviderStatus(kind) || status.error) return false
   const agent = configurableProviderAgents.value.find(item => item.kind === kind)
-  return Boolean(providerStatusFor(kind).configured || nativeProviderReady(agent))
+  return Boolean(status.configured || nativeProviderReady(agent))
 }
 
 function providerStatusLabel(kind) {
+  const status = providerStatusFor(kind)
   const agent = configurableProviderAgents.value.find(item => item.kind === kind)
-  if (nativeProviderReady(agent) && !providerStatusFor(kind).configured) return t('provider.nativeReady')
   if (!hasProviderStatus(kind)) return t('provider.checking')
-  if (providerStatusFor(kind).error) return t('provider.unavailable')
-  return providerStatusFor(kind).configured ? t('provider.configured') : t('provider.notConfigured')
+  if (status.error) return t('provider.unavailable')
+  if (nativeProviderReady(agent) && !status.configured) return t('provider.nativeReady')
+  return status.configured ? t('provider.configured') : t('provider.notConfigured')
 }
 
 function providerStatusTone(kind) {
+  const status = providerStatusFor(kind)
   const agent = configurableProviderAgents.value.find(item => item.kind === kind)
-  if (nativeProviderReady(agent) && !providerStatusFor(kind).configured) return 'connected'
   if (!hasProviderStatus(kind)) return 'checking'
-  if (providerStatusFor(kind).error) return 'warning'
-  return providerStatusFor(kind).configured ? 'connected' : 'warning'
+  if (status.error) return 'warning'
+  if (nativeProviderReady(agent) && !status.configured) return 'connected'
+  return status.configured ? 'connected' : 'warning'
 }
 
 function providerSummaryLabel(agent) {
@@ -2490,9 +2593,11 @@ function fillProviderFormFromPreset(kind, presetId) {
 }
 
 function applyProviderPreset(presetId) {
+  const changed = providerForm.preset !== presetId
   formError.value = ''
   providerRemoveArmed.value = false
   fillProviderFormFromPreset(selectedProviderKind.value, presetId)
+  if (changed) providerForm.apiKey = ''
 }
 
 function conversationPermissionLabel(group) {
@@ -2565,6 +2670,14 @@ async function loadAgentDetailSkills(kind) {
 
 function topicReplyCount(rootId) {
   return topicReplyCounts.value.get(rootId) || 0
+}
+
+function topicReplyAgentKinds(rootId) {
+  return [...new Set(activeMessages.value
+    .filter(message => message.role === 'agent' && messageThreadRootId(message) === rootId)
+    .map(message => message.agentKind)
+    .filter(Boolean))]
+    .slice(0, 4)
 }
 
 function topicReplyLabel(count) {
@@ -3040,7 +3153,7 @@ function toggleLocale() {
 function applyTheme(value) {
   document.documentElement.dataset.theme = value
   document.documentElement.style.colorScheme = value
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0d1117' : '#f6f3ed')
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0e171d' : '#f3f6f8')
   try { localStorage.setItem('roundrelay-theme', value) } catch { /* noop */ }
 }
 
@@ -3851,6 +3964,29 @@ async function loadProviderStatuses() {
   await Promise.all(configurableProviderAgents.value.map(agent => loadProviderStatus(agent.kind)))
 }
 
+function normalizeKnowledgeBaseStatuses(sources) {
+  const sourceMap = new Map((Array.isArray(sources) ? sources : [])
+    .filter(source => source?.kind)
+    .map(source => [source.kind, source]))
+  return KNOWLEDGE_BASE_CATALOG.map((definition) => {
+    const source = sourceMap.get(definition.kind)
+    if (source) {
+      return {
+        ...source,
+        kind: definition.kind,
+        accessMode: source.accessMode || definition.accessMode,
+      }
+    }
+    return {
+      ...definition.defaultState,
+      kind: definition.kind,
+      accessMode: definition.accessMode,
+      probeState: 'unknown',
+      errorCode: 'KNOWLEDGE_BASE_STATUS_MISSING',
+    }
+  })
+}
+
 async function loadKnowledgeBaseStatuses() {
   if (!knowledgeBase.value?.status) {
     const fallback = KNOWLEDGE_BASE_CATALOG.map(source => ({
@@ -3863,24 +3999,33 @@ async function loadKnowledgeBaseStatuses() {
     knowledgeBaseSources.value = fallback
     return fallback
   }
+  if (knowledgeBaseStatusPromise) return knowledgeBaseStatusPromise
   knowledgeBaseLoading.value = true
+  const request = (async () => {
+    try {
+      const sources = await knowledgeBase.value.status()
+      knowledgeBaseSources.value = normalizeKnowledgeBaseStatuses(sources)
+      return knowledgeBaseSources.value
+    } catch (error) {
+      showError(error)
+      const fallback = KNOWLEDGE_BASE_CATALOG.map(source => ({
+        ...source.defaultState,
+        kind: source.kind,
+        accessMode: source.accessMode,
+        probeState: 'error',
+        errorCode: errorCode(error) || 'KNOWLEDGE_BASE_PROBE_FAILED',
+      }))
+      knowledgeBaseSources.value = fallback
+      return fallback
+    } finally {
+      knowledgeBaseLoading.value = false
+    }
+  })()
+  knowledgeBaseStatusPromise = request
   try {
-    const sources = await knowledgeBase.value.status()
-    knowledgeBaseSources.value = Array.isArray(sources) ? sources : []
-    return knowledgeBaseSources.value
-  } catch (error) {
-    showError(error)
-    const fallback = KNOWLEDGE_BASE_CATALOG.map(source => ({
-      ...source.defaultState,
-      kind: source.kind,
-      accessMode: source.accessMode,
-      probeState: 'error',
-      errorCode: errorCode(error) || 'KNOWLEDGE_BASE_PROBE_FAILED',
-    }))
-    knowledgeBaseSources.value = fallback
-    return fallback
+    return await request
   } finally {
-    knowledgeBaseLoading.value = false
+    if (knowledgeBaseStatusPromise === request) knowledgeBaseStatusPromise = null
   }
 }
 
@@ -3943,10 +4088,19 @@ async function saveProvider() {
   }
 }
 
+function knowledgeBaseComingSoon(source) {
+  return Boolean(source && COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind))
+}
+
+function knowledgeBasePending(source) {
+  if (!source || knowledgeBaseComingSoon(source)) return false
+  return knowledgeBaseLoading.value || ['idle', 'loading'].includes(source.probeState)
+}
+
 function knowledgeBaseConfigured(source) {
   if (!source) return false
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return false
-  if (source.probeState === 'error') return false
+  if (knowledgeBaseComingSoon(source)) return false
+  if (source.probeState === 'error' || source.probeState === 'unknown') return false
   if (source.accessMode === 'vault') return Boolean(source.installed && source.vaultPath)
   if (source.accessMode === 'cli') {
     return Boolean(source.installed && source.loginState === 'ready')
@@ -3956,35 +4110,35 @@ function knowledgeBaseConfigured(source) {
 
 function knowledgeBaseReady(source) {
   if (!source) return false
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return false
+  if (knowledgeBaseComingSoon(source)) return false
   if (source.probeState !== 'ready') return false
   if (source.accessMode === 'vault') {
     return Boolean(source.installed && source.vaultPath && source.vaultDetails?.directory && source.vaultDetails?.readable && source.vaultDetails?.writable)
   }
   if (source.accessMode === 'cli') {
-    return Boolean(source.installed && source.loginState === 'ready' && source.permissionState === 'ready')
+    return knowledgeBaseCanRead(source)
   }
   return Boolean(source.configured && source.authState === 'ready' && source.permissionState === 'ready' && knowledgeBaseCanRead(source) && knowledgeBaseCanWrite(source))
 }
 
 function knowledgeBaseCanRead(source) {
   if (!source) return false
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return false
+  if (knowledgeBaseComingSoon(source)) return false
   if (source.probeState !== 'ready') return false
   if (source.accessMode === 'vault') return Boolean(source.installed && source.vaultPath && source.vaultDetails?.directory && source.vaultDetails?.readable)
   if (source.accessMode === 'cli') {
-    return Boolean(source.installed && source.loginState === 'ready' && source.permissionState === 'ready')
+    return Boolean(source.installed && source.loginState === 'ready' && source.permissionState === 'ready' && source.readable === true)
   }
   return Boolean(knowledgeBaseConfigured(source) && source.authState === 'ready' && source.permissionState === 'ready' && source.readable !== false)
 }
 
 function knowledgeBaseCanWrite(source) {
   if (!source) return false
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return false
+  if (knowledgeBaseComingSoon(source)) return false
   if (source.probeState !== 'ready') return false
   if (source.accessMode === 'vault') return Boolean(source.installed && source.vaultPath && source.vaultDetails?.directory && source.vaultDetails?.writable)
   if (source.accessMode === 'cli') {
-    return Boolean(source.installed && source.loginState === 'ready' && source.permissionState === 'ready')
+    return Boolean(source.installed && source.loginState === 'ready' && source.permissionState === 'ready' && source.writable === true)
   }
   return Boolean(knowledgeBaseConfigured(source) && source.authState === 'ready' && source.permissionState === 'ready' && source.writable !== false)
 }
@@ -4001,8 +4155,9 @@ function knowledgeBaseModeLabel(source) {
 
 function knowledgeBaseTone(source) {
   if (!source) return 'checking'
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return 'checking'
+  if (knowledgeBaseComingSoon(source) || knowledgeBasePending(source)) return 'checking'
   if (source.probeState === 'error') return 'warning'
+  if (source.probeState === 'unknown') return 'checking'
   if (knowledgeBaseReady(source)) return 'connected'
   if (source.accessMode === 'vault') return source.installed ? 'warning' : 'checking'
   if (source.accessMode === 'cli') {
@@ -4014,7 +4169,10 @@ function knowledgeBaseTone(source) {
 }
 
 function knowledgeBaseIcon(source) {
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source?.kind)) return CloudOutline
+  if (!source) return RefreshOutline
+  if (knowledgeBaseComingSoon(source)) return CloudOutline
+  if (knowledgeBasePending(source)) return RefreshOutline
+  if (source.probeState === 'unknown') return WarningOutline
   if (knowledgeBaseReady(source)) return CheckmarkCircleOutline
   if (source?.probeState === 'error') return WarningOutline
   if (source.accessMode === 'vault') return source.installed ? WarningOutline : DownloadOutline
@@ -4031,7 +4189,8 @@ function knowledgeBaseIcon(source) {
 
 function knowledgeBaseStatusLabel(source) {
   if (!source) return ''
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return t('knowledgeBase.status.comingSoon')
+  if (knowledgeBaseComingSoon(source)) return t('knowledgeBase.status.comingSoon')
+  if (knowledgeBasePending(source)) return t('knowledgeBase.status.checking')
   if (source.probeState === 'error') return t('knowledgeBase.status.error')
   if (source.probeState === 'unknown') return t('knowledgeBase.status.unknown')
   if (knowledgeBaseReady(source)) return t('knowledgeBase.status.ready')
@@ -4061,11 +4220,17 @@ function knowledgeBaseStatusLabel(source) {
 
 function knowledgeBaseTags(source) {
   if (!source) return []
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) {
+  if (knowledgeBaseComingSoon(source)) {
     return [
       { label: knowledgeBaseModeLabel(source), tone: 'checking' },
       { label: t('knowledgeBase.tag.comingSoon'), tone: 'checking' },
     ]
+  }
+  if (knowledgeBasePending(source)) {
+    return [{ label: t('knowledgeBase.tag.checking'), tone: 'checking' }]
+  }
+  if (source.probeState === 'unknown') {
+    return [{ label: t('knowledgeBase.status.unknown'), tone: 'checking' }]
   }
   const tags = [{
     label: knowledgeBaseModeLabel(source),
@@ -4107,15 +4272,17 @@ function knowledgeBaseTags(source) {
     label: knowledgeBaseCanWrite(source)
       ? t('knowledgeBase.tag.writeEnabled')
       : t('knowledgeBase.tag.writeMissing'),
-    tone: knowledgeBaseCanWrite(source) ? 'connected' : 'warning',
+    tone: knowledgeBaseCanWrite(source) ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
   })
   return tags
 }
 
 function knowledgeBaseHint(source) {
   if (!source) return ''
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return t('knowledgeBase.hint.comingSoon')
+  if (knowledgeBaseComingSoon(source)) return t('knowledgeBase.hint.comingSoon')
+  if (knowledgeBasePending(source)) return t('knowledgeBase.hint.checking')
   if (source.probeState === 'error') return t('knowledgeBase.hint.probeError')
+  if (source.probeState === 'unknown') return t('knowledgeBase.hint.unknown')
   if (source.accessMode === 'vault') {
     if (!source.installed) return t('knowledgeBase.hint.obsidianMissing')
     if (!source.vaultPath) return t('knowledgeBase.hint.obsidianNeedVault')
@@ -4153,7 +4320,9 @@ function knowledgeBaseHint(source) {
 
 function knowledgeBasePrimaryActionLabel(source) {
   if (!source) return ''
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) return t('knowledgeBase.action.viewDocumentation')
+  if (knowledgeBaseComingSoon(source)) return t('knowledgeBase.action.viewDocumentation')
+  if (knowledgeBasePending(source)) return t('knowledgeBase.status.checking')
+  if (source.probeState === 'error' || source.probeState === 'unknown') return t('knowledgeBase.action.recheck')
   if (source.accessMode === 'vault') {
     if (!source.installed) return t('knowledgeBase.action.installObsidian')
     if (!source.vaultPath) return t('knowledgeBase.action.pickDirectory')
@@ -4179,8 +4348,13 @@ function knowledgeBaseLocationLabel(source) {
 
 async function runKnowledgeBasePrimaryAction(source) {
   if (!source || !knowledgeBase.value) return
-  if (COMING_SOON_KNOWLEDGE_BASE_KINDS.has(source.kind)) {
+  if (knowledgeBasePending(source)) return
+  if (knowledgeBaseComingSoon(source)) {
     await knowledgeBase.value.openGuide?.(source.kind, 'install')
+    return
+  }
+  if (source.probeState === 'error' || source.probeState === 'unknown') {
+    await loadKnowledgeBaseStatuses()
     return
   }
   if (source.accessMode === 'vault') {

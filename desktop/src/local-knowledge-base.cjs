@@ -224,10 +224,6 @@ async function runProbe(command, args, options = {}) {
   }
 }
 
-function combinedProbeText(probe) {
-  return `${String(probe?.stdout || '')}\n${String(probe?.stderr || '')}`.trim()
-}
-
 function stableProbeErrorCode(error) {
   const code = error?.code
   if (typeof code === 'string' && /^[A-Z0-9_]{1,64}$/.test(code)) return code
@@ -235,11 +231,18 @@ function stableProbeErrorCode(error) {
   return 'PROBE_FAILED'
 }
 
-function classifyLoginState(output, code) {
-  const text = String(output || '').toLowerCase()
+function reportedProbeErrorCode(output) {
   const parsed = parseProbeJson(output)
-  if (parsed && (parsed.authenticated === true || parsed.token_valid === true || parsed.ok === true)) return 'ready'
+  return parsed && (parsed.ok === false || parsed.success === false)
+    ? 'PROBE_REPORTED_FAILURE'
+    : ''
+}
+
+function classifyLoginState(output, code, diagnostics = '') {
+  const text = `${String(output || '')}\n${String(diagnostics || '')}`.toLowerCase()
+  const parsed = parseProbeJson(output)
   if (parsed && (parsed.authenticated === false || parsed.token_valid === false)) return 'missing'
+  if (parsed && (parsed.authenticated === true || parsed.token_valid === true || parsed.ok === true)) return 'ready'
   if (parsed?.identities?.bot?.status === 'ready' || parsed?.identities?.user?.status === 'ready') return 'ready'
   if (parsed?.identities?.bot?.status === 'missing' && parsed?.identities?.user?.status === 'missing') return 'missing'
   if (!text && code === 0) return 'unknown'
@@ -252,12 +255,33 @@ function classifyLoginState(output, code) {
   return 'unknown'
 }
 
-function classifyPermissionState(output, code, loginState) {
+function classifyPermissionState(output, code, loginState, diagnostics = '') {
   if (loginState === 'missing') return 'unknown'
-  const text = String(output || '').toLowerCase()
+  const text = `${String(output || '')}\n${String(diagnostics || '')}`.toLowerCase()
   const parsed = parseProbeJson(output)
+  const permissionFlags = [
+    parsed?.permissionGranted,
+    parsed?.permission_granted,
+    parsed?.hasPermission,
+    parsed?.has_permission,
+    parsed?.scopeGranted,
+    parsed?.scope_granted,
+    parsed?.permission?.granted,
+    parsed?.scope?.granted,
+  ].filter(value => typeof value === 'boolean')
+  const permissionStatuses = [
+    parsed?.permissionState,
+    parsed?.permission_state,
+    parsed?.permission?.status,
+    parsed?.scope?.status,
+  ]
+    .filter(value => typeof value === 'string')
+    .map(value => value.trim().toLowerCase())
+  if (permissionFlags.includes(false) || permissionStatuses.some(status => /^(?:missing|required|needed|denied|needs-grant)$/.test(status))) {
+    return 'needs-grant'
+  }
+  if (permissionFlags.includes(true) || permissionStatuses.some(status => /^(?:ready|granted|available)$/.test(status))) return 'ready'
   if (parsed && (parsed.ok === true || parsed.success === true)) return 'ready'
-  if (parsed && (parsed.ok === false || parsed.success === false)) return 'needs-grant'
   if (!text && code === 0) return 'unknown'
   if (/permission.*(missing|required|needed|denied)|scope.*(missing|required|denied)|权限.*(缺失|不足|未授予|需要)|授权失败|需要授权|access\s+denied/.test(text)) {
     return 'needs-grant'
@@ -329,22 +353,27 @@ async function probeCloudSource(source, options = {}) {
       badge: source.badge,
       type: source.type,
       installed: false,
+      configured: false,
+      connected: false,
       loginState: 'missing',
       permissionState: 'unknown',
+      readable: false,
+      writable: false,
       probeState: 'ready',
       errorCode: '',
     }
   }
   const primaryProbe = await runProbe(commandPath, probeArgsFor(source, commandPath, 'login', options), options)
-  const primaryOutput = combinedProbeText(primaryProbe)
+  const primaryOutput = String(primaryProbe.stdout || '')
   const primaryJson = parseProbeJson(primaryOutput)
   const loginState = source.kind === 'feishu'
     && commandBaseName(commandPath, options) === 'lark-cli'
     && primaryJson?.identities?.user?.status === 'missing'
     ? 'missing'
-    : classifyLoginState(primaryOutput, primaryProbe.code)
-  const primaryErrorCode = primaryProbe.errorCode && loginState !== 'missing'
-    ? primaryProbe.errorCode
+    : classifyLoginState(primaryOutput, primaryProbe.code, primaryProbe.stderr)
+  const primaryProbeErrorCode = primaryProbe.errorCode || reportedProbeErrorCode(primaryOutput)
+  const primaryErrorCode = primaryProbeErrorCode && loginState !== 'missing'
+    ? primaryProbeErrorCode
     : ''
   let permissionState = 'unknown'
   let permissionProbe = null
@@ -352,24 +381,36 @@ async function probeCloudSource(source, options = {}) {
   if (loginState === 'ready' && permissionArgs.length) {
     permissionProbe = await runProbe(commandPath, permissionArgs, options)
     permissionState = classifyPermissionState(
-      combinedProbeText(permissionProbe),
+      permissionProbe.stdout,
       permissionProbe.code,
       loginState,
+      permissionProbe.stderr,
     )
   }
-  const permissionErrorCode = permissionProbe?.errorCode && permissionState !== 'needs-grant'
-    ? permissionProbe.errorCode
+  const permissionProbeErrorCode = permissionProbe
+    ? permissionProbe.errorCode || reportedProbeErrorCode(permissionProbe.stdout)
     : ''
+  const permissionErrorCode = permissionProbeErrorCode && permissionState !== 'needs-grant'
+    ? permissionProbeErrorCode
+    : ''
+  const probeState = primaryErrorCode || permissionErrorCode ? 'error' : 'ready'
+  const configured = loginState === 'ready'
+  const connected = configured && probeState === 'ready'
+  const readable = connected && permissionState === 'ready'
   return {
     kind: source.kind,
     label: source.label,
     badge: source.badge,
       type: source.type,
     installed: true,
+    configured,
+    connected,
     loginState,
     permissionState,
+    readable,
+    writable: false,
     ...sourceCommandDetails(source, commandPath, options),
-    probeState: primaryErrorCode || permissionErrorCode ? 'error' : 'ready',
+    probeState,
     errorCode: primaryErrorCode || permissionErrorCode,
   }
 }
@@ -472,11 +513,24 @@ async function resolveKnowledgeBaseSources(options = {}) {
     const vaultDetails = source.kind === 'obsidian'
       ? await pathDetails(vaultPath, options)
       : null
-    const ready = source.accessMode === 'vault'
-      ? Boolean(resolved.installed && vaultDetails?.directory && vaultDetails.readable && vaultDetails.writable)
+    const probeReady = resolved.probeState === 'ready'
+    const configured = source.accessMode === 'vault'
+      ? Boolean(resolved.installed && vaultPath && vaultDetails?.directory)
+      : Boolean(resolved.configured)
+    const connected = source.accessMode === 'vault'
+      ? Boolean(configured && probeReady)
+      : Boolean(resolved.connected)
+    const readable = source.accessMode === 'vault'
+      ? Boolean(connected && vaultDetails?.readable)
+      : Boolean(resolved.readable)
+    const writable = source.accessMode === 'vault'
+      ? Boolean(connected && vaultDetails?.writable)
+      : Boolean(resolved.writable)
+    const ready = probeReady && (source.accessMode === 'vault'
+      ? Boolean(readable && writable)
       : source.accessMode === 'cli'
         ? Boolean(resolved.installed && resolved.loginState === 'ready' && resolved.permissionState === 'ready')
-        : Boolean(resolved.configured && resolved.authState === 'ready' && resolved.permissionState === 'ready')
+        : Boolean(resolved.configured && resolved.authState === 'ready' && resolved.permissionState === 'ready'))
     sources.push({
       kind: source.kind,
       label: source.label,
@@ -492,13 +546,13 @@ async function resolveKnowledgeBaseSources(options = {}) {
       permissionCommand: resolved.permissionCommand || source.permissionCommand || '',
       commandName: resolved.commandName || '',
       installed: Boolean(resolved.installed),
-      configured: Boolean(resolved.configured),
-      connected: Boolean(resolved.connected),
+      configured,
+      connected,
       loginState: resolved.loginState || 'unknown',
       permissionState: resolved.permissionState || 'unknown',
       authState: resolved.authState || 'unknown',
-      readable: Boolean(resolved.readable),
-      writable: Boolean(resolved.writable),
+      readable,
+      writable,
       probeState: resolved.probeState || 'ready',
       errorCode: resolved.errorCode || '',
       vaultPath,
