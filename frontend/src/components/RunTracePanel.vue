@@ -40,8 +40,7 @@
           class="trace-agent-tab"
           :class="{ active: item.agentRunId === selectedItem?.agentRunId }"
           type="button"
-          role="tab"
-          :aria-selected="item.agentRunId === selectedItem?.agentRunId ? 'true' : 'false'"
+          :aria-pressed="item.agentRunId === selectedItem?.agentRunId ? 'true' : 'false'"
           @click="emit('select', item.agentRunId)"
         >
           <img :src="agentLogo(item.agentKind, theme)" alt="" />
@@ -96,7 +95,9 @@
                 <div class="trace-event-body">
                   <p v-if="event.summary">{{ event.summary }}</p>
                   <pre v-if="event.detail">{{ event.detail }}</pre>
-                  <small v-if="event.timestamp" class="trace-event-time">{{ event.timestamp }}</small>
+                  <small v-if="formatEventTime(event.timestamp)" class="trace-event-time">
+                    {{ formatEventTime(event.timestamp) }}
+                  </small>
                 </div>
               </details>
             </li>
@@ -139,7 +140,7 @@ import {
 } from '@vicons/ionicons5'
 import MarkdownMessage from './MarkdownMessage.vue'
 import { agentLabel, agentLogo } from '../catalog.js'
-import { t } from '../i18n.js'
+import { locale, t } from '../i18n.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -245,6 +246,17 @@ function hasContextStats(context) {
     || Number(context?.omittedCount) > 0
     || Number(context?.charCount) > 0
     || context?.sessionRotated === true
+}
+
+function formatEventTime(value) {
+  if (value == null || value === '') return ''
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  return new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).format(date)
 }
 
 defineExpose({ focus })

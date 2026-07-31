@@ -76,6 +76,10 @@ body.modal-open {
   overflow: hidden;
 }
 
+body.trace-drawer-open {
+  overflow: hidden;
+}
+
 button,
 input,
 textarea,
@@ -3614,6 +3618,12 @@ button svg {
   color: var(--muted);
 }
 
+.system-message-stack {
+  width: 100%;
+  display: grid;
+  gap: 8px;
+}
+
 .system-message {
   width: 100%;
   display: flex;
@@ -3769,6 +3779,11 @@ button svg {
 
 .trace-inline-details {
   margin-top: 9px;
+}
+
+.trace-system-details {
+  margin-top: 0;
+  padding-inline: 8px;
 }
 
 .trace-inline-summary {

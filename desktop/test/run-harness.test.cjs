@@ -121,6 +121,54 @@ test('keeps a bounded event ledger and marks the trace as truncated', () => {
   assert.equal(run.events.at(-1).summary, 'result 19')
 })
 
+test('rebuilds tool indexes after a silence warning shifts a full ledger', () => {
+  const harness = fixture({ maxEventsPerAgent: 8 })
+  harness.beginAgent('codex', 1)
+  harness.ingest('codex', 1, {
+    id: 'tool-keep', type: 'tool_start', status: 'running', title: 'search',
+  })
+  for (let index = 0; index < 6; index += 1) {
+    harness.ingest('codex', 1, {
+      id: `reason-${index}`, type: 'reasoning_summary', summary: `step ${index}`,
+    })
+  }
+
+  const warning = harness.markSilent('codex', 1)
+  harness.ingest('codex', 1, {
+    id: 'tool-keep', type: 'tool_result_summary', status: 'completed',
+    title: 'search', summary: 'finished safely',
+  })
+
+  const run = harness.snapshot()[0]
+  assert.equal(run.events.filter(event => event.id === 'tool-keep').length, 1)
+  assert.equal(run.events.find(event => event.id === 'tool-keep').type, 'tool_result_summary')
+  assert.equal(run.events.find(event => event.id === 'tool-keep').summary, 'finished safely')
+  assert.equal(run.seenSeqs.includes(warning.seq), true)
+})
+
+test('bounds live Agent runs even when none have completed yet', () => {
+  const harness = fixture({ maxAgentRuns: 2 })
+  harness.beginAgent('codex', 1)
+  harness.beginAgent('hermes', 1)
+  harness.beginAgent('codex', 2)
+
+  assert.deepEqual(harness.snapshot().map(run => [run.kind, run.round]), [
+    ['hermes', 1],
+    ['codex', 2],
+  ])
+})
+
+test('tracks answer delta sequences even though deltas stay outside the event ledger', () => {
+  const harness = fixture()
+  const started = harness.beginAgent('codex', 1)
+  const delta = harness.ingest('codex', 1, { type: 'answer_delta', delta: 'streamed' })
+
+  const run = harness.snapshot()[0]
+  assert.deepEqual(run.seenSeqs, [started.seq, delta.seq])
+  assert.equal(run.events.some(event => event.type === 'answer_delta'), false)
+  assert.equal(run.output, 'streamed')
+})
+
 test('finishes with the authoritative answer and persists only a compact capsule', () => {
   const harness = fixture()
   harness.beginAgent('hermes', 1, ['message-a', 'message-b'])
@@ -203,6 +251,19 @@ test('packs whole context entries by priority and recency within a fixed budget'
   assert.deepEqual(packed.sourceMessageIds, ['important', 'recent'])
   assert.equal(packed.omittedCount, 2)
   assert.equal(packed.charCount <= 60, true)
+})
+
+test('skips an oversized high-priority entry and still packs later smaller entries', () => {
+  const packed = packContextEntries([
+    { id: 'small-old', sender: 'Codex', text: 'usable evidence', priority: 1 },
+    { id: 'small-new', sender: 'Hermes', text: 'compact conclusion', priority: 2 },
+    { id: 'oversized', sender: 'User', text: 'x'.repeat(200), priority: 3 },
+  ], { budget: 35, entryLimit: 300, maxEntries: 3 })
+
+  assert.doesNotMatch(packed.text, /x{20}/)
+  assert.match(packed.text, /compact conclusion/)
+  assert.deepEqual(packed.sourceMessageIds, ['small-new'])
+  assert.equal(packed.omittedCount, 2)
 })
 
 test('rotates native sessions at bounded turns or estimated characters', () => {

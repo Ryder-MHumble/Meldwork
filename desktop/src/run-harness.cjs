@@ -1,5 +1,7 @@
 const DEFAULT_MAX_EVENTS_PER_AGENT = 80
 const DEFAULT_MAX_OUTPUT_CHARS = 40000
+const DEFAULT_MAX_AGENT_RUNS = 64
+const MAX_SEEN_EVENT_SEQUENCES = 4096
 const DEFAULT_CONTEXT_BUDGET = 12000
 const DEFAULT_CONTEXT_ENTRY_LIMIT = 3000
 const DEFAULT_SESSION_TURNS = 18
@@ -193,6 +195,9 @@ class RunHarness {
     this.maxOutputChars = Math.max(1000, boundedNumber(
       options.maxOutputChars, DEFAULT_MAX_OUTPUT_CHARS, 200000,
     ))
+    this.maxAgentRuns = Math.max(1, boundedNumber(
+      options.maxAgentRuns, DEFAULT_MAX_AGENT_RUNS, 512,
+    ))
     this.sequence = 0
     this.agentRuns = []
   }
@@ -245,8 +250,13 @@ class RunHarness {
       lastActivityAt: timestamp,
       silent: false,
       truncated: false,
+      seenSeqs: [],
     }
     this.agentRuns.push(run)
+    while (this.agentRuns.length > this.maxAgentRuns) {
+      const removable = this.agentRuns.findIndex(item => FINAL_STATUSES.has(item.status))
+      this.agentRuns.splice(removable >= 0 ? removable : 0, 1)
+    }
     return this.record(run, { id: 'agent', type: 'status', status: 'running', title: 'agent' })
   }
 
@@ -254,6 +264,10 @@ class RunHarness {
     const event = this.nextEvent(run, normalized)
     run.lastActivityAt = event.timestamp
     run.silent = false
+    run.seenSeqs.push(event.seq)
+    if (run.seenSeqs.length > MAX_SEEN_EVENT_SEQUENCES) {
+      run.seenSeqs.splice(0, run.seenSeqs.length - MAX_SEEN_EVENT_SEQUENCES)
+    }
     if (event.type === 'answer_delta') {
       const next = `${run.output}${event.delta}`
       if (next.length > this.maxOutputChars) run.truncated = true
@@ -300,9 +314,17 @@ class RunHarness {
       title: 'waiting_for_output',
     })
     run.lastActivityAt = event.timestamp
+    run.seenSeqs.push(event.seq)
+    if (run.seenSeqs.length > MAX_SEEN_EVENT_SEQUENCES) {
+      run.seenSeqs.splice(0, run.seenSeqs.length - MAX_SEEN_EVENT_SEQUENCES)
+    }
     if (run.events.length >= this.maxEventsPerAgent) {
       run.events.shift()
       run.truncated = true
+      run.eventIndexes.clear()
+      run.events.forEach((item, index) => {
+        if (item.id && item.type.startsWith('tool_')) run.eventIndexes.set(`tool:${item.id}`, index)
+      })
     }
     run.events.push(event)
     return event
@@ -363,6 +385,7 @@ class RunHarness {
       lastActivityAt: run.lastActivityAt,
       silent: run.silent,
       truncated: run.truncated,
+      seenSeqs: [...run.seenSeqs],
     }))
   }
 }
@@ -420,7 +443,7 @@ function packContextEntries(entries, options = {}) {
   for (const entry of ranked) {
     if (selected.length >= maxEntries) break
     const separator = selected.length ? 1 : 0
-    if (chars + separator + entry.body.length > budget) break
+    if (chars + separator + entry.body.length > budget) continue
     selected.push(entry)
     chars += separator + entry.body.length
   }
@@ -477,6 +500,7 @@ module.exports = {
   DEFAULT_CONTEXT_BUDGET,
   DEFAULT_CONTEXT_ENTRY_LIMIT,
   DEFAULT_MAX_EVENTS_PER_AGENT,
+  DEFAULT_MAX_AGENT_RUNS,
   DEFAULT_MAX_OUTPUT_CHARS,
   DEFAULT_SESSION_CHARS,
   DEFAULT_SESSION_TURNS,

@@ -28,6 +28,7 @@ const AUTO_CONSENSUS_MARKER = /\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\]/gi
 const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\][ \t]*$/i
 const DEFAULT_AUTO_RUN_TIMEOUT_MS = 30 * 60 * 1000
 const DEFAULT_RUN_SILENCE_WARNING_MS = 20 * 1000
+const DEFAULT_RUN_AGENT_TIMEOUT_MS = 15 * 60 * 1000
 const DEFAULT_AUTO_ROUNDS = 6
 const MAX_AUTO_ROUNDS = 10
 const MAX_MESSAGE_ATTACHMENTS = 4
@@ -329,6 +330,10 @@ class LocalWorkspace extends EventEmitter {
       && options.runSilenceWarningMs > 0
       ? options.runSilenceWarningMs
       : DEFAULT_RUN_SILENCE_WARNING_MS
+    this.runAgentTimeoutMs = Number.isFinite(options.runAgentTimeoutMs)
+      && options.runAgentTimeoutMs > 0
+      ? options.runAgentTimeoutMs
+      : DEFAULT_RUN_AGENT_TIMEOUT_MS
     this.now = options.now || (() => new Date().toISOString())
     this.createId = options.createId || randomUUID
     this.createRunId = options.createRunId || randomUUID
@@ -829,6 +834,12 @@ class LocalWorkspace extends EventEmitter {
     return `${groupId}:${kind}`
   }
 
+  openClawSessionRef(group, generation = '') {
+    const groupScope = group.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)
+    const suffix = generation ? `-${generation}` : ''
+    return `agent:main:desktop-roundrelay-${groupScope}-openclaw${suffix}`
+  }
+
   sessionRef(group, kind, threadRootId = '') {
     const key = this.sessionKey(group.id, kind)
     const legacyPrefix = `${group.id}:${kind}:thread:`
@@ -889,9 +900,7 @@ class LocalWorkspace extends EventEmitter {
       stateChanged = true
     }
     if (!stored && kind === 'openclaw') {
-      const groupScope = group.id.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)
-      const stableId = `roundrelay-${groupScope}-${kind}`
-      this.state.sessions[key] = `agent:main:desktop-${stableId}`
+      this.state.sessions[key] = this.openClawSessionRef(group)
       stateChanged = true
       stored = this.state.sessions[key]
     }
@@ -1106,9 +1115,15 @@ class LocalWorkspace extends EventEmitter {
     )
     const sessionMeta = normalizeSessionMeta(this.state.sessionMeta[key])
     let sessionRotated = false
-    if (kind !== 'openclaw' && sessionRef && shouldRotateSession(sessionMeta)) {
+    if (sessionRef && shouldRotateSession(sessionMeta)) {
       delete this.state.sessions[key]
-      sessionRef = ''
+      if (kind === 'openclaw') {
+        const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
+        sessionRef = this.openClawSessionRef(group, generation)
+        this.state.sessions[key] = sessionRef
+      } else {
+        sessionRef = ''
+      }
       sessionRotated = true
       this.save()
     }
@@ -1123,9 +1138,16 @@ class LocalWorkspace extends EventEmitter {
       this.armAgentSilence(activeRun, kind, round)
       this.emitChanged()
     }
-   const startedAt = Date.now()
-   const onProgress = (step) => {
-      if (!activeRun || activeRun.currentKind !== kind) return
+    const agentController = new AbortController()
+    let watchdogTimedOut = false
+    let watchdogError = null
+    let parentAbortObserved = false
+    let agentCallbacksClosed = false
+    const startedAt = Date.now()
+    let anonymousProgressEventId = 0
+    const onProgress = (step) => {
+      if (agentCallbacksClosed || agentController.signal.aborted
+          || !activeRun || activeRun.currentKind !== kind) return
       const next = [...(activeRun.progress || [])]
       const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
         ? step.id
@@ -1136,7 +1158,15 @@ class LocalWorkspace extends EventEmitter {
       if (existingIndex >= 0) next[existingIndex] = { ...step, id: progressId }
       else next.push(progressId ? { ...step, id: progressId } : step)
       activeRun.progress = next.slice(-8)
-      this.emitChanged()
+      this.armAgentSilence(activeRun, kind, round)
+      const safeStep = cleanProgressSteps([step])[0] || { title: 'process', status: 'completed' }
+      const lifecycleId = progressId || `progress-${++anonymousProgressEventId}`
+      emitHarnessEvent({
+        id: lifecycleId,
+        type: safeStep.status === 'in_progress' ? 'tool_start' : 'tool_result_summary',
+        status: safeStep.status === 'in_progress' ? 'running' : safeStep.status,
+        title: safeStep.title,
+      })
     }
     let autoDeltaBuffer = ''
     const consensusMarkers = [
@@ -1144,7 +1174,8 @@ class LocalWorkspace extends EventEmitter {
       '[[ROUNDRELAY_CONSENSUS:continue]]',
     ]
     const emitHarnessEvent = (rawEvent) => {
-      if (!harness || !harnessRun || !rawEvent) return
+      if (agentCallbacksClosed || agentController.signal.aborted
+          || !harness || !harnessRun || !rawEvent) return
       const event = harness.ingest(kind, round, rawEvent)
       if (!event) return
       this.emitRunEvent(event)
@@ -1152,6 +1183,7 @@ class LocalWorkspace extends EventEmitter {
       if (event.type !== 'answer_delta' || event.seq % 8 === 0) this.emitChanged()
     }
     const emitRuntimeEvent = (rawEvent) => {
+      if (agentCallbacksClosed || agentController.signal.aborted) return
       if (!rawEvent || rawEvent.type !== 'answer_delta') {
         emitHarnessEvent(rawEvent)
         return
@@ -1192,6 +1224,7 @@ class LocalWorkspace extends EventEmitter {
     const finishHarness = (status, finalText = '') => {
       if (!harness || !harnessRun || harnessFinished) return null
       flushRuntimeEvent()
+      agentCallbacksClosed = true
       this.clearAgentSilence(activeRun, kind, round)
       const finished = harness.finishAgent(kind, round, status, finalText, {
         ...packedContext.context,
@@ -1202,18 +1235,37 @@ class LocalWorkspace extends EventEmitter {
       this.emitChanged()
       return finished.capsule
     }
+    let watchdogTimer = null
+    let parentAbortHandler = null
+    let parentAbortPromise = null
     try {
-      result = await this.runAgentFn(
+      const prompt = this.promptFor(
+        group, kind, mode, threadRootId, context.skillHints || [],
+        context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
+      )
+      if (signal?.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+      if (signal) {
+        parentAbortPromise = new Promise((_, reject) => {
+          parentAbortHandler = () => {
+            parentAbortObserved = true
+            agentController.abort()
+            reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+          }
+        })
+        parentAbortPromise.catch(() => {})
+        signal.addEventListener('abort', parentAbortHandler, { once: true })
+      }
+      const runPromise = Promise.resolve().then(() => this.runAgentFn(
         agent,
-        this.promptFor(
-          group, kind, mode, threadRootId, context.skillHints || [],
-          context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
-        ),
+        prompt,
         group.workdir,
         {
           sessionRef,
-          onSessionRef: sessionRef => this.persistSessionRef(key, sessionRef),
-          signal,
+          onSessionRef: nextSessionRef => {
+            if (agentCallbacksClosed || agentController.signal.aborted) return
+            this.persistSessionRef(key, nextSessionRef)
+          },
+          signal: agentController.signal,
           sandbox: group.allowWrite ? 'workspace-write' : undefined,
           onProgress,
           onEvent: emitRuntimeEvent,
@@ -1222,10 +1274,27 @@ class LocalWorkspace extends EventEmitter {
             ? { skills: (context.skillHints || []).map(skill => skill.slug) }
             : {}),
         },
-      )
+      ))
+      runPromise.catch(() => {})
+      const watchdogPromise = new Promise((_, reject) => {
+        watchdogTimer = setTimeout(() => {
+          if (parentAbortObserved || signal?.aborted) return
+          watchdogTimedOut = true
+          watchdogError = new Error('LOCAL_AGENT_TIMEOUT')
+          agentController.abort()
+          reject(watchdogError)
+        }, this.runAgentTimeoutMs)
+        watchdogTimer.unref?.()
+      })
+      watchdogPromise.catch(() => {})
+      const pending = [runPromise, watchdogPromise]
+      if (parentAbortPromise) pending.push(parentAbortPromise)
+      result = await Promise.race(pending)
+      clearTimeout(watchdogTimer)
+      watchdogTimer = null
       this.markRuntimeCredential(kind, 'ready')
 
-    this.persistSessionRef(key, result.sessionRef)
+    if (!watchdogTimedOut && !signal?.aborted) this.persistSessionRef(key, result.sessionRef)
     const reply = mode === 'auto'
       ? parseAutoReply(result.text)
       : { text: result.text, consensus: false }
@@ -1271,11 +1340,24 @@ class LocalWorkspace extends EventEmitter {
       rotated: sessionRotated,
     }))
     return { message, consensus: reply.consensus && result.completed !== false }
-    } catch (error) {
+    } catch (caughtError) {
+      const parentTimedOut = Boolean(signal?.aborted && activeRun?.stopReason === 'timeout')
+      const parentStopped = Boolean(signal?.aborted || parentAbortObserved)
+      const error = parentStopped
+        ? (caughtError?.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
+            ? caughtError
+            : new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        : watchdogTimedOut
+          ? (watchdogError || new Error('LOCAL_AGENT_TIMEOUT'))
+          : caughtError
       if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
-      const status = signal?.aborted
-        ? (activeRun?.stopReason === 'timeout' ? 'timeout' : 'stopped')
-        : 'failed'
+      const status = parentTimedOut
+        ? 'timeout'
+        : parentStopped
+          ? 'stopped'
+          : watchdogTimedOut
+            ? 'timeout'
+            : 'failed'
       const trace = finishHarness(status)
       if (trace && error && (typeof error === 'object' || typeof error === 'function')) {
         Object.defineProperty(error, 'runTrace', {
@@ -1285,6 +1367,13 @@ class LocalWorkspace extends EventEmitter {
         })
       }
       throw error
+    } finally {
+      agentCallbacksClosed = true
+      clearTimeout(watchdogTimer)
+      watchdogTimer = null
+      if (signal && parentAbortHandler) {
+        signal.removeEventListener('abort', parentAbortHandler)
+      }
     }
   }
 
@@ -1675,6 +1764,7 @@ class LocalWorkspace extends EventEmitter {
             if (controller.signal.aborted) break
             this.recordAgentFailure(group.id, kind, error, threadRootId)
             controller.failedKinds.push(kind)
+            if (error?.message === 'LOCAL_AGENT_TIMEOUT') runStatus = 'timeout'
           }
           controller.completedKinds.push(kind)
           controller.currentKind = ''

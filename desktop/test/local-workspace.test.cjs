@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { getEventListeners } = require('node:events')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 
 function fixture() {
@@ -1393,9 +1394,14 @@ test('Hermes progress stays bounded metadata while later Agents receive only its
     calls.push({ agent, prompt, workdir, runOptions })
     if (agent.kind === 'hermes') {
       for (let index = 0; index < 9; index += 1) {
-        runOptions.onProgress({ title: 'write_file', status: 'completed' })
+        runOptions.onProgress({
+          title: 'write_file', status: 'completed', detail: 'raw-progress-output',
+          command: 'cat /private/secret',
+        })
       }
-      runOptions.onProgress({ title: '/private/review diff', status: 'unknown' })
+      runOptions.onProgress({
+        title: '/private/review diff', status: 'unknown', detail: 'raw-review-output',
+      })
       await new Promise(resolve => { releaseHermes = resolve })
       return { text: 'Hermes authoritative final', sessionRef: 'hermes-session' }
     }
@@ -1424,10 +1430,16 @@ test('Hermes progress stays bounded metadata while later Agents receive only its
   await send
 
   assert.match(calls[1].prompt, /Hermes: Hermes authoritative final/)
-  assert.doesNotMatch(calls[1].prompt, /write_file|review diff|elapsedMs|private/)
+  assert.match(calls[1].prompt, /E-R0-HERMES-\d+ \[tool_result_summary\] write_file/)
+  assert.doesNotMatch(calls[1].prompt, /raw-progress-output|raw-review-output|cat \/private|elapsedMs|private\/review diff/)
   const hermesReply = workspace.snapshot().messages.find(message => message.agentKind === 'hermes')
   assert.equal(hermesReply.content, 'Hermes authoritative final')
   assert.equal(hermesReply.toolCalls.length, 8)
+  assert.equal(hermesReply.trace.events.length, 10)
+  assert.equal(hermesReply.trace.events.every(event => (
+    event.type === 'tool_result_summary' && ['write_file', 'process'].includes(event.title)
+  )), true)
+  assert.doesNotMatch(JSON.stringify(hermesReply.trace), /raw-progress-output|raw-review-output|cat \/private|review diff/)
   assert.equal(Number.isSafeInteger(hermesReply.elapsedMs), true)
   assert.equal(hermesReply.elapsedMs >= 0, true)
 
@@ -2262,6 +2274,9 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     if (agent.kind === 'codex') {
+      runOptions.onProgress({
+        id: 'tool-1', title: 'search', status: 'in_progress', detail: 'raw progress detail',
+      })
       runOptions.onEvent({
         id: 'reason-1',
         type: 'reasoning_summary',
@@ -2273,6 +2288,9 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
         status: 'running',
         title: 'search',
         command: 'rg secret /Users/private/work',
+      })
+      runOptions.onProgress({
+        id: 'tool-1', title: 'search', status: 'completed', detail: 'raw progress result',
       })
       runOptions.onEvent({
         id: 'tool-1',
@@ -2314,8 +2332,11 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
   assert.equal(codexTrace.status, 'completed')
   assert.equal(codexTrace.events.some(event => event.type === 'reasoning_summary'), true)
   assert.equal(codexTrace.events.some(event => event.type === 'tool_result_summary'), true)
+  assert.equal(codexTrace.events.filter(event => (
+    event.type === 'tool_result_summary' && event.title === 'search'
+  )).length, 1)
   assert.deepEqual(codexTrace.sourceMessageIds, [workspace.snapshot().messages[0].id])
-  assert.doesNotMatch(JSON.stringify(codexTrace), /private-token|secret-value|rg secret|\/Users\/private|Bearer/)
+  assert.doesNotMatch(JSON.stringify(codexTrace), /private-token|secret-value|rg secret|\/Users\/private|Bearer|raw progress/)
   assert.equal(events.some(event => event.type === 'answer_delta' && event.delta === 'Codex live '), true)
   assert.equal(events.every(event => !Object.hasOwn(event, 'command')
     && !Object.hasOwn(event, 'executable')
@@ -2355,6 +2376,224 @@ test('Harness rotates an over-budget native session while retaining compressed c
   assert.equal(workspace.state.sessions[key], 'new-session')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > calls[0].prompt.length, true)
+})
+
+test('Harness rotates an over-budget OpenClaw managed session to a new key', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return { text: 'Fresh OpenClaw conclusion', sessionRef: runOptions.sessionRef }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'OpenClaw rotation', agentKinds: ['openclaw'], workdir: directory,
+  })
+  const oldUser = workspace.addMessage(group.id, 'user', 'Keep the prior constraint')
+  workspace.addMessage(group.id, 'agent', 'Prior OpenClaw conclusion', 'openclaw', oldUser.id)
+  const key = workspace.sessionKey(group.id, 'openclaw')
+  const previousSessionRef = workspace.openClawSessionRef(group)
+  workspace.state.sessions[key] = previousSessionRef
+  workspace.state.sessionMeta[key] = { turns: 18, estimatedChars: 48000 }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue with bounded context',
+    targetKinds: ['openclaw'],
+  })
+
+  assert.notEqual(calls[0].runOptions.sessionRef, previousSessionRef)
+  assert.match(calls[0].runOptions.sessionRef, new RegExp(`^${previousSessionRef}-[a-f0-9]{12}$`))
+  assert.match(calls[0].prompt, /Prior OpenClaw conclusion/)
+  assert.equal(workspace.snapshot().messages.at(-1).trace.context.sessionRotated, true)
+  assert.equal(workspace.state.sessions[key], calls[0].runOptions.sessionRef)
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+})
+
+test('legacy sessions resume once and initialize bounded session metadata', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Legacy session metadata', agentKinds: ['codex'], workdir: directory,
+  })
+  const key = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[key] = 'legacy-codex-session'
+  workspace.save()
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Resume safely', targetKinds: ['codex'] })
+
+  assert.equal(calls[0].runOptions.sessionRef, 'legacy-codex-session')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  assert.equal(workspace.state.sessionMeta[key].estimatedChars > 0, true)
+})
+
+test('per-Agent watchdog persists a timeout trace and continues the automatic round', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 8
+  options.runSilenceWarningMs = 100
+  const lateCallbacksDone = deferred()
+  let timedOutSignal
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'codex') {
+      timedOutSignal = runOptions.signal
+      return await new Promise((resolve) => {
+        runOptions.signal.addEventListener('abort', () => {
+          setImmediate(() => {
+            runOptions.onProgress({
+              id: 'late-progress', title: 'search', status: 'completed', detail: 'late raw data',
+            })
+            runOptions.onEvent({
+              id: 'late-tool', type: 'tool_result_summary', title: 'search',
+              status: 'completed', summary: 'late event',
+            })
+            runOptions.onSessionRef('late-session')
+            resolve({ text: 'late answer', sessionRef: 'late-session' })
+            lateCallbacksDone.resolve()
+          })
+        }, { once: true })
+      })
+    }
+    return {
+      text: 'Hermes continued\n[[ROUNDRELAY_CONSENSUS:continue]]',
+      sessionRef: 'hermes-session',
+    }
+  }
+  const events = []
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Agent watchdog', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue after one Agent times out',
+    mode: 'auto',
+    maxRounds: 1,
+  })
+  await workspace.activeRuns.get(group.id).promise
+  await lateCallbacksDone.promise
+
+  assert.equal(timedOutSignal.aborted, true)
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
+  const failure = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+  assert.equal(failure.trace.status, 'timeout')
+  assert.equal(finished[0].status, 'round-limit')
+  assert.equal(events.some(event => (
+    event.agentKind === 'codex' && event.type === 'status' && event.status === 'timeout'
+  )), true)
+  assert.equal(events.some(event => ['late-progress', 'late-tool'].includes(event.id)), false)
+  assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'codex')], undefined)
+})
+
+test('manual Agent watchdog finishes the run as timeout and removes the parent abort listener', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 8
+  options.runSilenceWarningMs = 100
+  const started = deferred()
+  let timedOutSignal
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    timedOutSignal = runOptions.signal
+    started.resolve()
+    return await new Promise(() => {})
+  }
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Manual watchdog', agentKinds: ['codex'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex',
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: 'Do not wait forever' })
+  await started.promise
+  const parentSignal = workspace.activeRuns.get(group.id).signal
+  assert.equal(getEventListeners(parentSignal, 'abort').length, 1)
+  await send
+
+  assert.equal(timedOutSignal.aborted, true)
+  assert.equal(getEventListeners(parentSignal, 'abort').length, 0)
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'timeout')
+  const failure = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+  assert.equal(failure.trace.status, 'timeout')
+})
+
+test('completed Agents clear watchdog and silence timers', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 5
+  options.runSilenceWarningMs = 5
+  let completedSignal
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    completedSignal = runOptions.signal
+    return { text: 'Completed immediately', sessionRef: 'codex-session' }
+  }
+  const events = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Timer cleanup', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Finish', targetKinds: ['codex'] })
+  await new Promise(resolve => setTimeout(resolve, 20))
+
+  assert.equal(completedSignal.aborted, false)
+  assert.equal(events.some(event => event.type === 'warning'), false)
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+})
+
+test('progress heartbeats reset the soft silence warning', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runSilenceWarningMs = 30
+  options.runAgentTimeoutMs = 500
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    await new Promise((resolve) => {
+      let ticks = 0
+      const timer = setInterval(() => {
+        ticks += 1
+        runOptions.onProgress({ id: 'heartbeat', title: 'search', status: 'in_progress' })
+        if (ticks < 8) return
+        clearInterval(timer)
+        resolve()
+      }, 5)
+    })
+    return { text: 'Finished after progress', sessionRef: 'codex-session' }
+  }
+  const events = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Progress heartbeat', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Keep reporting', targetKinds: ['codex'] })
+
+  assert.equal(events.some(event => event.type === 'warning'), false)
+  assert.equal(events.some(event => (
+    event.id === 'heartbeat' && event.type === 'tool_start' && event.status === 'running'
+  )), true)
 })
 
 test('Harness emits a soft waiting warning without cancelling a long-running Agent', async (t) => {

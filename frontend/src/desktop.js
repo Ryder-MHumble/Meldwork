@@ -395,6 +395,11 @@ export function mergeRunEvent(snapshot, value) {
     agentRuns: agents,
   }
   delete run.agents
+  const allTargetKindsTerminal = targetKinds.length > 0
+    && targetKinds.every(kind => completedKinds.includes(kind))
+  const runningGroupIds = new Set(snapshot.runningGroupIds || [])
+  if (allTargetKindsTerminal && run.mode !== 'auto') runningGroupIds.delete(event.groupId)
+  else runningGroupIds.add(event.groupId)
   const runs = [...existingRuns]
   if (runIndex >= 0) runs[runIndex] = run
   else {
@@ -403,7 +408,7 @@ export function mergeRunEvent(snapshot, value) {
   }
   return {
     ...snapshot,
-    runningGroupIds: [...new Set([...(snapshot.runningGroupIds || []), event.groupId])],
+    runningGroupIds: [...runningGroupIds],
     runs,
   }
 }

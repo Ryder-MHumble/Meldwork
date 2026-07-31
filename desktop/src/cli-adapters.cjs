@@ -541,7 +541,9 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       command: executable,
       args: [
         '--print',
-        '--output-format', 'json',
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
+        '--verbose',
         '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
         ...(sessionRef ? ['--resume', sessionRef] : []),
       ],
@@ -552,7 +554,8 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     return {
       command: executable,
       args: [
-        '--output-format', 'json',
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
         '--approval-mode', options.sandbox === 'workspace-write' ? 'auto-edit' : 'plan',
         ...(options.provider?.id === 'openai' ? ['--auth-type', 'openai'] : []),
         ...(options.provider?.model ? ['--model', options.provider.model] : []),
@@ -658,15 +661,12 @@ function createJsonLineParser(onEvent) {
   let pending = ''
   const consume = (flush = false) => {
     const lines = pending.split(/\r?\n/)
-    pending = flush ? '' : (lines.pop() || '')
-    if (flush && lines.length === 1 && !lines[0]) return
+    const remainder = lines.pop() || ''
+    pending = flush ? '' : remainder
+    if (flush && remainder.trim()) lines.push(remainder)
     for (const line of lines) {
       if (!line.trim()) continue
       try { onEvent(JSON.parse(line)) } catch { /* ignore non-JSON diagnostics */ }
-    }
-    if (flush && pending.trim()) {
-      try { onEvent(JSON.parse(pending)) } catch { /* ignore incomplete diagnostics */ }
-      pending = ''
     }
   }
   return {
@@ -725,21 +725,76 @@ function normalizeOpenClawOutput(stdout) {
   }
 }
 
+function parseJsonOutputEvents(stdout) {
+  const raw = String(stdout || '').trim()
+  if (!raw) return []
+  try {
+    const value = JSON.parse(raw)
+    return (Array.isArray(value) ? value : [value])
+      .filter(event => event && typeof event === 'object')
+  } catch { /* fall through to JSONL parsing */ }
+  const events = []
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    try {
+      const value = JSON.parse(line)
+      const parsed = Array.isArray(value) ? value : [value]
+      events.push(...parsed.filter(event => event && typeof event === 'object'))
+    } catch { /* ignore non-JSON diagnostics */ }
+  }
+  return events
+}
+
 function parseResultOutput(stdout) {
   const raw = String(stdout || '').trim()
   if (!raw) return { text: '', sessionRef: '' }
-  try {
-    const value = JSON.parse(raw)
-    const events = Array.isArray(value) ? value : [value]
-    const result = events.findLast(event => event?.type === 'result')
-    if (result && typeof result.result === 'string') {
-      return {
-        text: result.result.trim(),
-        sessionRef: typeof result.session_id === 'string' ? result.session_id : '',
+  const result = parseJsonOutputEvents(raw)
+    .findLast(event => event?.type === 'result' && typeof event.result === 'string')
+  if (result) {
+    return {
+      text: result.result.trim(),
+      sessionRef: typeof result.session_id === 'string' ? result.session_id : '',
+    }
+  }
+  return { text: raw, sessionRef: '' }
+}
+
+function parseClaudeQwenOutput(stdout) {
+  const raw = String(stdout || '').trim()
+  if (!raw) return { text: '', sessionRef: '' }
+  const events = parseJsonOutputEvents(raw)
+  if (!events.length) return { text: raw, sessionRef: '' }
+  let sessionRef = ''
+  let resultText = ''
+  const assistantTexts = []
+  const partialTexts = []
+  for (const event of events) {
+    if (typeof event.session_id === 'string') sessionRef = event.session_id
+    if (event.type === 'result' && typeof event.result === 'string') {
+      resultText = event.result
+      continue
+    }
+    const isRoot = event.parent_tool_use_id == null || event.parent_tool_use_id === ''
+    if (!isRoot) continue
+    if (event.type === 'assistant') {
+      const content = event.message?.content
+      const blocks = Array.isArray(content) ? content : [content]
+      for (const block of blocks) {
+        if (block?.type === 'text' && typeof block.text === 'string') {
+          assistantTexts.push(block.text)
+        }
       }
     }
-  } catch { /* fall back to raw output */ }
-  return { text: raw, sessionRef: '' }
+    if (event.type === 'stream_event' && event.event?.type === 'content_block_delta'
+        && event.event.delta?.type === 'text_delta'
+        && typeof event.event.delta.text === 'string') {
+      partialTexts.push(event.event.delta.text)
+    }
+  }
+  return {
+    text: (resultText || assistantTexts.join('') || partialTexts.join('')).trim(),
+    sessionRef,
+  }
 }
 
 function parseWorkBuddyOutput(stdout) {
@@ -822,14 +877,9 @@ function parseOpenCodeOutput(stdout) {
 }
 
 function structuredCliError(stdout) {
-  try {
-    const value = JSON.parse(String(stdout || '').trim())
-    const events = Array.isArray(value) ? value : [value]
-    const failed = events.findLast(event => event?.is_error || event?.subtype?.startsWith('error'))
-    return String(failed?.error?.message || failed?.result || '').trim()
-  } catch {
-    return ''
-  }
+  const failed = parseJsonOutputEvents(stdout)
+    .findLast(event => event?.is_error || event?.subtype?.startsWith('error'))
+  return String(failed?.error?.message || failed?.result || '').trim()
 }
 
 function hermesSessionRef(stderr) {
@@ -1042,6 +1092,173 @@ function codexRuntimeEvents(event) {
   }]
 }
 
+function streamMessageBlocks(event) {
+  const content = event?.message?.content
+  if (Array.isArray(content)) return content
+  return content && typeof content === 'object' ? [content] : []
+}
+
+function streamBlockId(event, update, index = update?.index, messageId = '') {
+  const parent = event?.parent_tool_use_id || 'root'
+  const message = messageId || update?.message_id || event?.message?.id || event?.uuid || 'message'
+  return `${parent}:${message}:${Number.isInteger(index) ? index : 'block'}`
+}
+
+function createClaudeQwenRuntimeState() {
+  return {
+    blocks: new Map(),
+    completedTools: new Set(),
+    messageIds: new Map(),
+    plans: new Map(),
+    reasoning: new Map(),
+    startedTools: new Set(),
+    toolTitles: new Map(),
+  }
+}
+
+function reasoningLifecycleEvent(state, id, status, summary = '') {
+  const signature = `${status}:${summary}`
+  if (state.reasoning.get(id) === signature) return null
+  state.reasoning.set(id, signature)
+  return {
+    id,
+    type: 'reasoning_summary',
+    title: 'reasoning',
+    status,
+    ...(summary ? { summary } : {}),
+  }
+}
+
+function planLifecycleEvent(state, value, id, fallbackStatus = 'running') {
+  const summary = typeof value?.summary === 'string'
+    ? value.summary
+    : typeof value?.plan?.summary === 'string' ? value.plan.summary : ''
+  const status = runtimeEventStatus(value?.status, fallbackStatus)
+  const signature = `${status}:${summary}`
+  if (state.plans.get(id) === signature) return null
+  state.plans.set(id, signature)
+  return {
+    id,
+    type: 'plan',
+    title: 'plan',
+    status,
+    ...(summary ? { summary } : {}),
+  }
+}
+
+function toolStartLifecycleEvent(state, block, fallbackId = '') {
+  const id = String(block?.id || block?.tool_use_id || fallbackId)
+  if (id && state.startedTools.has(id)) return null
+  const title = runtimeToolTitle({ type: 'tool_use', name: block?.name })
+  if (id) {
+    state.startedTools.add(id)
+    state.toolTitles.set(id, title)
+  }
+  return {
+    ...(id ? { id } : {}),
+    type: 'tool_start',
+    title,
+    status: 'running',
+  }
+}
+
+function toolResultLifecycleEvent(state, block, fallbackId = '') {
+  const id = String(block?.tool_use_id || block?.toolUseId || block?.id || fallbackId)
+  if (id && state.completedTools.has(id)) return null
+  if (id) state.completedTools.add(id)
+  return {
+    ...(id ? { id } : {}),
+    type: 'tool_result_summary',
+    title: state.toolTitles.get(id) || runtimeToolTitle({ type: 'tool_result' }),
+    status: block?.is_error || block?.isError ? 'failed' : 'completed',
+  }
+}
+
+function claudeQwenRuntimeEvents(event, state) {
+  if (!event || typeof event !== 'object') return []
+  if (event.type === 'stream_event') {
+    const update = event.event
+    if (!update || typeof update !== 'object') return []
+    const parent = event.parent_tool_use_id || 'root'
+    if (update.type === 'message_start' && typeof update.message?.id === 'string') {
+      state.messageIds.set(parent, update.message.id)
+      return []
+    }
+    const messageId = update.message_id || state.messageIds.get(parent) || ''
+    const id = streamBlockId(event, update, update.index, messageId)
+    if (update.type === 'content_block_start') {
+      const block = update.content_block
+      if (!block || typeof block !== 'object') return []
+      state.blocks.set(id, block)
+      if (block.type === 'tool_use') {
+        return [toolStartLifecycleEvent(state, block, id)].filter(Boolean)
+      }
+      if (block.type === 'thinking') {
+        return [reasoningLifecycleEvent(state, `reasoning:${id}`, 'running')].filter(Boolean)
+      }
+      if (block.type === 'plan') {
+        return [planLifecycleEvent(state, block, `plan:${id}`)].filter(Boolean)
+      }
+      return []
+    }
+    if (update.type === 'content_block_delta') {
+      if ((event.parent_tool_use_id == null || event.parent_tool_use_id === '')
+          && update.delta?.type === 'text_delta' && typeof update.delta.text === 'string') {
+        return [{ type: 'answer_delta', status: 'running', delta: update.delta.text }]
+      }
+      if (update.delta?.type === 'thinking_delta') {
+        return [reasoningLifecycleEvent(state, `reasoning:${id}`, 'running')].filter(Boolean)
+      }
+      return []
+    }
+    if (update.type === 'content_block_stop' && state.blocks.get(id)?.type === 'thinking') {
+      return [reasoningLifecycleEvent(state, `reasoning:${id}`, 'completed')].filter(Boolean)
+    }
+    return []
+  }
+
+  const events = []
+  if (event.type === 'assistant') {
+    streamMessageBlocks(event).forEach((block, index) => {
+      const id = streamBlockId(event, null, index)
+      if (block?.type === 'tool_use') {
+        events.push(toolStartLifecycleEvent(state, block, id))
+      } else if (block?.type === 'thinking') {
+        events.push(reasoningLifecycleEvent(state, `reasoning:${id}`, 'completed'))
+      } else if (block?.type === 'reasoning_summary') {
+        events.push(reasoningLifecycleEvent(
+          state,
+          `reasoning:${id}`,
+          runtimeEventStatus(block.status, 'completed'),
+          typeof block.summary === 'string' ? block.summary : '',
+        ))
+      } else if (block?.type === 'plan') {
+        events.push(planLifecycleEvent(state, block, `plan:${id}`, 'completed'))
+      }
+    })
+  } else if (event.type === 'user') {
+    streamMessageBlocks(event).forEach((block, index) => {
+      if (block?.type === 'tool_result') {
+        events.push(toolResultLifecycleEvent(state, block, streamBlockId(event, null, index)))
+      }
+    })
+  } else if (event.type === 'tool_use') {
+    events.push(toolStartLifecycleEvent(state, event))
+  } else if (event.type === 'tool_result') {
+    events.push(toolResultLifecycleEvent(state, event))
+  } else if (['plan', 'plan_update'].includes(event.type)) {
+    events.push(planLifecycleEvent(state, event, String(event.id || 'plan')))
+  } else if (event.type === 'reasoning_summary') {
+    events.push(reasoningLifecycleEvent(
+      state,
+      String(event.id || 'reasoning'),
+      runtimeEventStatus(event.status, 'running'),
+      typeof event.summary === 'string' ? event.summary : '',
+    ))
+  }
+  return events.filter(Boolean)
+}
+
 function jsonCliRuntimeEvents(kind, event) {
   if (!event || typeof event !== 'object') return []
   if (kind === 'kimi' && event.role === 'assistant' && typeof event.content === 'string') {
@@ -1185,7 +1402,7 @@ function normalizeOutput(kind, stdout, sessionRef = '') {
     return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
   }
   if (['claude', 'qwen'].includes(kind)) {
-    const parsed = parseResultOutput(stdout)
+    const parsed = parseClaudeQwenOutput(stdout)
     return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
   }
   return { text: String(stdout || '').trim(), sessionRef }
@@ -1690,7 +1907,10 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         emitProgress({ title: 'write_file', status: 'completed' })
       }
     }
-    const runtimeStreamParser = ['codex', 'kimi', 'mimo', 'gemini', 'opencode'].includes(agent.kind)
+    const claudeQwenRuntimeState = createClaudeQwenRuntimeState()
+    const runtimeStreamParser = [
+      'codex', 'kimi', 'mimo', 'claude', 'qwen', 'gemini', 'opencode',
+    ].includes(agent.kind)
       ? createJsonLineParser((event) => {
           if (agent.kind === 'codex') {
             const progressEvent = codexProgressEvent(event)
@@ -1698,7 +1918,9 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           }
           const events = agent.kind === 'codex'
             ? codexRuntimeEvents(event)
-            : jsonCliRuntimeEvents(agent.kind, event)
+            : ['claude', 'qwen'].includes(agent.kind)
+                ? claudeQwenRuntimeEvents(event, claudeQwenRuntimeState)
+                : jsonCliRuntimeEvents(agent.kind, event)
           for (const runtimeEvent of events) runtimeEvents.emit(runtimeEvent)
         })
       : null

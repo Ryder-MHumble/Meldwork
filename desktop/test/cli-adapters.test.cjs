@@ -1193,10 +1193,11 @@ setInterval(() => {}, 1000)
   )
 })
 
-test('Claude uses JSON output and resumes its native session', () => {
+test('Claude uses partial stream JSON and resumes its native session', () => {
   const spec = invocation('claude', '/tmp/claude', '/tmp/work', 'claude-session')
   assert.deepEqual(spec.args, [
-    '--print', '--output-format', 'json', '--permission-mode', 'plan',
+    '--print', '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
+    '--permission-mode', 'plan',
     '--resume', 'claude-session',
   ])
   assert.equal(spec.promptArg, true)
@@ -1228,27 +1229,45 @@ test('MiMo JSON output returns final text and session id', () => {
   })
 })
 
-test('Claude JSON output returns the final reply and session id', () => {
-  const raw = JSON.stringify({
-    type: 'result', result: 'Claude reply', session_id: 'claude-session',
-  })
-  assert.deepEqual(normalizeOutput('claude', raw), {
-    text: 'Claude reply',
-    sessionRef: 'claude-session',
-  })
+test('Claude and Qwen stream JSON output returns the final reply and session id', () => {
+  for (const kind of ['claude', 'qwen']) {
+    const raw = [
+      JSON.stringify({ type: 'system', subtype: 'init', session_id: `${kind}-session` }),
+      JSON.stringify({
+        type: 'stream_event', session_id: `${kind}-session`, parent_tool_use_id: null,
+        event: {
+          type: 'content_block_delta', index: 0,
+          delta: { type: 'text_delta', text: `${kind} partial` },
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant', session_id: `${kind}-session`, parent_tool_use_id: null,
+        message: { content: [{ type: 'text', text: `${kind} assistant` }] },
+      }),
+      JSON.stringify({
+        type: 'result', result: `${kind} final`, session_id: `${kind}-session`,
+      }),
+    ].join('\n')
+    assert.deepEqual(normalizeOutput(kind, raw), {
+      text: `${kind} final`,
+      sessionRef: `${kind}-session`,
+    })
+  }
 })
 
 test('Qwen uses plan mode by default and auto-edit after authorization', () => {
   const chat = invocation('qwen', '/tmp/qwen', '/tmp/work', 'qwen-session')
   assert.deepEqual(chat.args, [
-    '--output-format', 'json', '--approval-mode', 'plan', '--resume', 'qwen-session',
+    '--output-format', 'stream-json', '--include-partial-messages',
+    '--approval-mode', 'plan', '--resume', 'qwen-session',
   ])
 
   const configure = invocation('qwen', '/tmp/qwen', '/tmp/work', '', {
     sandbox: 'workspace-write',
   })
   assert.deepEqual(configure.args, [
-    '--output-format', 'json', '--approval-mode', 'auto-edit',
+    '--output-format', 'stream-json', '--include-partial-messages',
+    '--approval-mode', 'auto-edit',
   ])
 })
 
@@ -1257,9 +1276,197 @@ test('Qwen selects OpenAI auth when the shared provider is enabled', () => {
     provider: { id: 'openai', model: 'glm' },
   })
   assert.deepEqual(spec.args, [
-    '--output-format', 'json', '--approval-mode', 'plan',
+    '--output-format', 'stream-json', '--include-partial-messages',
+    '--approval-mode', 'plan',
     '--auth-type', 'openai', '--model', 'glm',
   ])
+})
+
+test('Claude and Qwen stream answers and safe tool lifecycle events without final duplication', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-claude-qwen-events-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  for (const kind of ['claude', 'qwen']) {
+    const cli = executable(directory, `${kind}-events.cjs`, `
+const sessionId = '${kind}-stream-session'
+const events = [
+  {
+    type: 'system', subtype: 'init', session_id: sessionId,
+    cwd: '/Users/private/workspace', executable_path: '/private/bin/${kind}',
+    env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+  },
+  {
+    type: 'stream_event', uuid: 'reasoning-start', session_id: sessionId,
+    parent_tool_use_id: null,
+    event: {
+      type: 'content_block_start', message_id: 'message-reasoning', index: 0,
+      content_block: { type: 'thinking', thinking: '' },
+    },
+  },
+  {
+    type: 'stream_event', uuid: 'reasoning-delta', session_id: sessionId,
+    parent_tool_use_id: null,
+    event: {
+      type: 'content_block_delta', message_id: 'message-reasoning', index: 0,
+      delta: {
+        type: 'thinking_delta',
+        thinking: 'hidden reasoning with command=cat /Users/private/workspace/secret.txt',
+      },
+    },
+  },
+  {
+    type: 'stream_event', uuid: 'reasoning-stop', session_id: sessionId,
+    parent_tool_use_id: null,
+    event: { type: 'content_block_stop', message_id: 'message-reasoning', index: 0 },
+  },
+  {
+    type: 'assistant', uuid: 'message-reasoning', session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      id: 'message-reasoning',
+      content: [{
+        type: 'thinking',
+        thinking: 'hidden final thought with OPENAI_API_KEY=' + process.env.OPENAI_API_KEY,
+      }],
+    },
+  },
+  {
+    type: 'stream_event', uuid: 'tool-start', session_id: sessionId,
+    parent_tool_use_id: null,
+    event: {
+      type: 'content_block_start', message_id: 'message-tool', index: 0,
+      content_block: {
+        type: 'tool_use', id: 'tool-1', name: 'Bash',
+        input: {
+          command: 'rg -n token /Users/private/workspace',
+          cwd: '/Users/private/workspace',
+          env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+        },
+      },
+    },
+  },
+  {
+    type: 'assistant', uuid: 'message-tool', session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      id: 'message-tool',
+      content: [{
+        type: 'tool_use', id: 'tool-1', name: 'Bash',
+        input: { command: 'duplicate command must stay private' },
+      }],
+    },
+  },
+  {
+    type: 'user', uuid: 'tool-result', session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      content: [{
+        type: 'tool_result', tool_use_id: 'tool-1', is_error: false,
+        content: 'raw tool output /Users/private/workspace ' + process.env.OPENAI_API_KEY,
+      }],
+    },
+  },
+  {
+    type: 'plan', id: 'plan-1', status: 'running',
+    summary: 'Inspect evidence\\ncommand=rg /Users/private/workspace\\nOPENAI_API_KEY=' + process.env.OPENAI_API_KEY,
+  },
+  {
+    type: 'reasoning_summary', id: 'reasoning-summary-1', status: 'completed',
+    summary: 'Compared the available evidence.',
+  },
+  {
+    type: 'stream_event', uuid: 'subagent-text', session_id: sessionId,
+    parent_tool_use_id: 'tool-task',
+    event: {
+      type: 'content_block_delta', message_id: 'subagent-message', index: 0,
+      delta: { type: 'text_delta', text: 'private subagent answer' },
+    },
+  },
+  {
+    type: 'stream_event', uuid: 'answer-one', session_id: sessionId,
+    parent_tool_use_id: null,
+    event: {
+      type: 'content_block_delta', message_id: 'message-answer', index: 0,
+      delta: { type: 'text_delta', text: 'first ' },
+    },
+  },
+  {
+    type: 'stream_event', uuid: 'answer-two', session_id: sessionId,
+    parent_tool_use_id: null,
+    event: {
+      type: 'content_block_delta', message_id: 'message-answer', index: 0,
+      delta: { type: 'text_delta', text: 'second' },
+    },
+  },
+  {
+    type: 'assistant', uuid: 'message-answer', session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      id: 'message-answer',
+      content: [{ type: 'text', text: 'first second' }],
+    },
+  },
+  {
+    type: 'result', subtype: 'success', is_error: false,
+    result: 'first second', session_id: sessionId,
+  },
+]
+let index = 0
+const send = () => {
+  process.stdout.write(JSON.stringify(events[index++]) + '\\n')
+  if (index < events.length) return setTimeout(send, 10)
+  setTimeout(() => process.exit(0), 20)
+}
+send()
+`)
+    const secret = `${kind}-provider-secret`
+    const events = []
+    let firstDeltaResolve
+    const firstDelta = new Promise(resolve => { firstDeltaResolve = resolve })
+    let resultResolved = false
+    const resultPromise = runAgent(
+      { kind, executable: cli, name: kind },
+      'hello',
+      directory,
+      {
+        env: { OPENAI_API_KEY: secret },
+        onEvent: (event) => {
+          events.push(event)
+          if (event.type === 'answer_delta') firstDeltaResolve()
+        },
+      },
+    ).then((result) => {
+      resultResolved = true
+      return result
+    })
+
+    await within(firstDelta)
+    assert.equal(resultResolved, false, kind)
+    const result = await resultPromise
+    assert.deepEqual(result, {
+      text: 'first second',
+      sessionRef: `${kind}-stream-session`,
+    })
+    assert.deepEqual(
+      events.filter(event => event.type === 'answer_delta').map(event => event.delta),
+      ['first ', 'second'],
+      kind,
+    )
+    assert.equal(events.filter(event => event.type === 'tool_start').length, 1, kind)
+    assert.equal(events.filter(event => event.type === 'tool_result_summary').length, 1, kind)
+    assert.equal(events.filter(event => event.type === 'plan').length, 1, kind)
+    const reasoningEvents = events.filter(event => event.type === 'reasoning_summary')
+    assert.deepEqual(reasoningEvents.slice(0, 2).map(event => event.status), [
+      'running', 'completed',
+    ], kind)
+    assert.equal(reasoningEvents[0].summary, undefined, kind)
+    assert.equal(reasoningEvents.at(-1).summary, 'Compared the available evidence.', kind)
+    assert.doesNotMatch(
+      JSON.stringify(events),
+      /hidden reasoning|hidden final thought|private subagent answer|raw tool output|duplicate command|rg -n|Users|private\/workspace|OPENAI_API_KEY|provider-secret|executable_path/i,
+      kind,
+    )
+  }
 })
 
 test('Gemini uses stream JSON with explicit approval modes and resumes its native session', () => {

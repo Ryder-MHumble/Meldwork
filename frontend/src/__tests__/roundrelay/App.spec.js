@@ -1515,6 +1515,7 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.composer-context-row\s*\{[^}]*border-bottom:\s*0;/s)
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border-radius:\s*var\(--radius\);/s)
+    expect(source).toMatch(/body\.trace-drawer-open\s*\{[^}]*overflow:\s*hidden;/s)
     expect(source).not.toContain('.stop-button-motion')
     expect(appSource).toContain('<SendOutline v-else aria-hidden="true" />')
     expect(appSource).toContain('<StopCircleOutline aria-hidden="true" />')
@@ -1597,6 +1598,7 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.trace-event-list').text()).toContain('Reviewing files')
     expect(wrapper.get('.trace-event-list').text()).toContain('Running')
+    expect(wrapper.get('.trace-event-time').text()).not.toBe('2026-07-29T08:02:00Z')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
@@ -3913,6 +3915,73 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('shows a failed direct Agent trace inline without opening the group panel', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-failed-trace',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex failure trace',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'failed-root',
+          groupId: 'direct-failed-trace',
+          role: 'user',
+          content: 'Run the failing task',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'failed-system',
+          groupId: 'direct-failed-trace',
+          role: 'system',
+          agentKind: 'codex',
+          content: 'Codex failed: process failed',
+          system: {
+            key: 'system.agentCallFailed',
+            params: { agent: 'Codex', reason: 'process failed' },
+          },
+          trace: {
+            runId: 'run-failed-direct',
+            agentRunId: 'agent-failed-direct',
+            status: 'failed',
+            summary: 'The process exited before returning a conclusion.',
+            events: [{
+              evidenceId: 'E-R0-CODEX-01',
+              type: 'tool_result_summary',
+              status: 'failed',
+              title: 'Process',
+              summary: 'Exit code 1',
+            }],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const details = wrapper.get('.trace-system-details')
+    expect(details.element.open).toBe(false)
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+
+    details.element.open = true
+    await details.trigger('toggle')
+    await flushPromises()
+    expect(details.element.open).toBe(true)
+    expect(details.text()).toContain('The process exited before returning a conclusion.')
+    expect(details.text()).toContain('Tool result')
+    expect(details.text()).toContain('Exit code 1')
+    expect(details.text()).toContain('Failed')
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('opens the selected Agent execution details in a group trace panel', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({
@@ -3970,6 +4039,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
     expect(wrapper.get('.trace-panel-header strong').text()).toBe('Hermes')
     expect(wrapper.get('.trace-agent-tab.active strong').text()).toBe('Hermes')
+    expect(wrapper.get('.trace-agent-tab.active').attributes('aria-pressed')).toBe('true')
     expect(wrapper.get('.trace-conclusion').text()).toContain('Hermes conclusion')
     expect(wrapper.get('.trace-event-list').text()).toContain('Tool result')
     wrapper.unmount()

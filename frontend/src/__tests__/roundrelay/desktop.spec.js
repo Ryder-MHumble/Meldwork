@@ -255,6 +255,56 @@ describe('run event normalization', () => {
     expect(replay.runs[0].agentRuns[0].events).toHaveLength(1)
   })
 
+  it('keeps a group marked running until every target Agent reaches a terminal state', () => {
+    const base = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1',
+        groupId: 'group-1',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [],
+      }],
+    })
+    const codexDone = mergeRunEvent(base, event({
+      agentRunId: 'agent-codex', agentKind: 'codex', seq: 30,
+      type: 'status', delta: undefined, status: 'completed',
+    }))
+    const hermesDone = mergeRunEvent(codexDone, event({
+      agentRunId: 'agent-hermes', agentKind: 'hermes', seq: 31,
+      type: 'status', delta: undefined, status: 'completed',
+    }))
+
+    expect(codexDone.runningGroupIds).toContain('group-1')
+    expect(hermesDone.runningGroupIds).not.toContain('group-1')
+
+    const autoBase = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-auto',
+        groupId: 'group-1',
+        mode: 'auto',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [],
+      }],
+    })
+    const autoCodexDone = mergeRunEvent(autoBase, event({
+      runId: 'run-auto', agentRunId: 'agent-auto-codex', agentKind: 'codex', seq: 40,
+      type: 'status', delta: undefined, status: 'completed',
+    }))
+    const autoRoundDone = mergeRunEvent(autoCodexDone, event({
+      runId: 'run-auto', agentRunId: 'agent-auto-hermes', agentKind: 'hermes', seq: 41,
+      type: 'status', delta: undefined, status: 'completed',
+    }))
+
+    expect(autoRoundDone.runningGroupIds).toContain('group-1')
+  })
+
   it('drops late events after the durable traced message has replaced the active run', () => {
     const snapshot = normalizeSnapshot({
       agents: [],

@@ -1076,29 +1076,65 @@
                   ]"
                 >
                 <template v-if="message.role === 'system'">
-                  <div class="system-message">
-                    <WarningOutline />
-                    <span>{{ translateSystemMessage(message) }}</span>
-                    <button
-                      v-if="activeGroup.conversationType !== 'direct' && message.agentKind && messageHasTrace(message)"
-                      class="message-trace-button"
-                      type="button"
-                      :title="t('trace.viewProcess')"
-                      :aria-label="t('trace.viewProcess')"
-                      @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                  <div class="system-message-stack">
+                    <div class="system-message">
+                      <WarningOutline />
+                      <span>{{ translateSystemMessage(message) }}</span>
+                      <button
+                        v-if="activeGroup.conversationType !== 'direct' && message.agentKind && messageHasTrace(message)"
+                        class="message-trace-button"
+                        type="button"
+                        :title="t('trace.viewProcess')"
+                        :aria-label="t('trace.viewProcess')"
+                        @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                      >
+                        <TerminalOutline />
+                      </button>
+                      <button
+                        v-if="isDismissibleSystemWarning(message)"
+                        class="message-dismiss-button"
+                        type="button"
+                        :title="t('common.dismiss')"
+                        :aria-label="t('common.dismiss')"
+                        @click="dismissSystemMessage(message.id)"
+                      >
+                        <CloseOutline />
+                      </button>
+                    </div>
+                    <details
+                      v-if="activeGroup.conversationType === 'direct' && message.agentKind && messageHasTrace(message)"
+                      class="execution-details trace-inline-details trace-system-details"
+                      :open="isDirectTraceOpen(message)"
+                      @toggle="syncDirectTraceDisclosure(message, $event)"
                     >
-                      <TerminalOutline />
-                    </button>
-                    <button
-                      v-if="isDismissibleSystemWarning(message)"
-                      class="message-dismiss-button"
-                      type="button"
-                      :title="t('common.dismiss')"
-                      :aria-label="t('common.dismiss')"
-                      @click="dismissSystemMessage(message.id)"
-                    >
-                      <CloseOutline />
-                    </button>
+                      <summary>
+                        <TerminalOutline />
+                        <span>{{ t('trace.process') }}</span>
+                        <small>{{ messageTraceEvents(message).length }}</small>
+                        <time v-if="messageTraceStatus(message)">{{ runStatusLabel(messageTraceStatus(message)) }}</time>
+                      </summary>
+                      <p v-if="messageTraceSummary(message)" class="trace-inline-summary">
+                        {{ messageTraceSummary(message) }}
+                      </p>
+                      <ol v-if="messageTraceEvents(message).length">
+                        <li
+                          v-for="(event, index) in messageTraceEvents(message)"
+                          :key="`${messageTraceKey(message)}-${index}`"
+                          class="trace-inline-event"
+                        >
+                          <div class="trace-inline-event-heading">
+                            <span>
+                              <strong>{{ traceEventTypeLabel(event.type) }}</strong>
+                              <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
+                            </span>
+                            <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
+                          </div>
+                          <p v-if="event.summary">{{ event.summary }}</p>
+                          <pre v-if="event.detail">{{ event.detail }}</pre>
+                        </li>
+                      </ol>
+                      <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
+                    </details>
                   </div>
                 </template>
                 <template v-else>
