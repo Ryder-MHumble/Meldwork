@@ -4,7 +4,14 @@ export function publicAsset(path) {
 
 export const AGENTS = Object.freeze([
   { kind: 'codex', label: 'Codex', logo: publicAsset('agent-logos/codex.svg'), providerMode: 'responses', imageLimit: 4 },
-  { kind: 'hermes', label: 'Hermes', logo: publicAsset('agent-logos/hermes.svg'), providerMode: 'compatible', imageLimit: 1 },
+  {
+    kind: 'hermes',
+    label: 'Hermes',
+    logo: publicAsset('agent-logos/hermes.svg'),
+    darkLogo: publicAsset('agent-logos/hermes.png'),
+    providerMode: 'compatible',
+    imageLimit: 1,
+  },
   { kind: 'openclaw', label: 'OpenClaw', logo: publicAsset('agent-logos/openclaw-transparent.png'), providerMode: 'compatible', imageLimit: 0 },
   { kind: 'workbuddy', label: 'WorkBuddy', logo: publicAsset('agent-logos/workbuddy.png'), providerMode: 'experimental', imageLimit: 0 },
   { kind: 'kimi', label: 'Kimi Code', logo: publicAsset('agent-logos/kimi.png'), providerMode: 'native', imageLimit: 0 },
@@ -25,6 +32,7 @@ export function agentLabel(kind) {
   return agentProfile(kind).label
 }
 
-export function agentLogo(kind) {
-  return agentProfile(kind).logo
+export function agentLogo(kind, displayTheme = '') {
+  const profile = agentProfile(kind)
+  return displayTheme === 'dark' && profile.darkLogo ? profile.darkLogo : profile.logo
 }

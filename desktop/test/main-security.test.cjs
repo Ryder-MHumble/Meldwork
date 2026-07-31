@@ -50,6 +50,7 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-agent-provider:status',
   'local-agent-provider:probe',
   'local-agent-provider:save',
+  'local-agent-provider:activate',
   'local-agent-provider:delete',
   'local-knowledge-base:status',
   'local-knowledge-base:open-guide',
@@ -104,6 +105,7 @@ function loadMain(userData, options = {}) {
   let singleInstanceLockCalls = 0
   let attachmentConstructionCount = 0
   const providerConfiguredKinds = new Set(options.providerConfigured === true ? ['hermes'] : [])
+  const providerActivePresets = new Map(options.providerConfigured === true ? [['hermes', 'custom']] : [])
 
   class TestWorkspace extends EventEmitter {
     constructor(input) {
@@ -278,6 +280,7 @@ function loadMain(userData, options = {}) {
     constructor(input) {
       this.input = input
       this.saved = []
+      this.activated = []
       this.deleted = []
       this.statusCalls = []
       providerInstances.push(this)
@@ -286,22 +289,40 @@ function loadMain(userData, options = {}) {
     status(kind, input) {
       this.statusCalls.push({ kind, input })
       return providerConfiguredKinds.has(kind)
-        ? { ...PROVIDER_METADATA, encryptionAvailable: true, configured: true }
+        ? {
+            ...PROVIDER_METADATA,
+            activePreset: providerActivePresets.get(kind) || 'custom',
+            profiles: {
+              [providerActivePresets.get(kind) || 'custom']: { ...PROVIDER_METADATA, configured: true },
+            },
+            encryptionAvailable: true,
+            configured: true,
+          }
         : {
             provider: '', baseUrl: '', model: '',
-            encryptionAvailable: true, configured: false,
+            activePreset: 'official', profiles: {}, encryptionAvailable: true, configured: false,
           }
     }
 
     save(kind, input) {
       this.saved.push({ kind, input })
       providerConfiguredKinds.add(kind)
+      providerActivePresets.set(kind, input.preset)
       return this.status(kind)
     }
 
-    delete(kind) {
-      this.deleted.push(kind)
+    activate(kind, preset) {
+      this.activated.push({ kind, preset })
+      providerActivePresets.set(kind, preset)
+      if (preset === 'official') providerConfiguredKinds.delete(kind)
+      else providerConfiguredKinds.add(kind)
+      return this.status(kind)
+    }
+
+    delete(kind, preset) {
+      this.deleted.push({ kind, preset })
       providerConfiguredKinds.delete(kind)
+      providerActivePresets.set(kind, 'official')
       return this.status(kind)
     }
 
@@ -955,7 +976,7 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
-  const input = { ...PROVIDER_METADATA, apiKey: 'renderer-provider-key' }
+  const input = { ...PROVIDER_METADATA, apiKey: 'renderer-provider-key', preset: 'custom' }
 
   const initial = await harness.ipcHandlers.get('local-agent-provider:status')(
     harness.event(), 'hermes',
@@ -976,17 +997,24 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   assert.equal(saved.configured, true)
   assert.equal(harness.workspaceInstances[0].refreshCount, 1)
 
+  const activated = await harness.ipcHandlers.get('local-agent-provider:activate')(
+    harness.event(), 'hermes', 'custom',
+  )
+  assert.deepEqual(harness.providerInstances[0].activated, [{ kind: 'hermes', preset: 'custom' }])
+  assert.equal(activated.activePreset, 'custom')
+  assert.equal(harness.workspaceInstances[0].refreshCount, 2)
+
   await assert.rejects(
     async () => harness.ipcHandlers.get('local-agent-provider:status')(harness.event(), 'not-an-agent'),
     { message: 'PROVIDER_AGENT_UNSUPPORTED' },
   )
 
   const deleted = await harness.ipcHandlers.get('local-agent-provider:delete')(
-    harness.event(), 'hermes',
+    harness.event(), 'hermes', 'custom',
   )
-  assert.deepEqual(harness.providerInstances[0].deleted, ['hermes'])
+  assert.deepEqual(harness.providerInstances[0].deleted, [{ kind: 'hermes', preset: 'custom' }])
   assert.equal(deleted.configured, false)
-  assert.equal(harness.workspaceInstances[0].refreshCount, 2)
+  assert.equal(harness.workspaceInstances[0].refreshCount, 3)
 })
 
 test('Knowledge base IPC exposes status, safe guides, and a local Obsidian directory picker', async (t) => {
@@ -1259,6 +1287,44 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.HERMES_INFERENCE_MODEL, PROVIDER_METADATA.model)
   assert.equal(options.env.ANTHROPIC_API_KEY, 'native-hermes-key')
   assert.equal(options.env.CURRENT_RUN, '1')
+})
+
+test('OpenClaw keeps native readiness and execution when no Meldwork Provider profile is active', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-native-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const credentialChecks = []
+  const { harness } = loadMain(directory, {
+    moduleMocks: {
+      './local-agent-readiness.cjs': {
+        nativeCredentialEnvironment: kind => kind === 'openclaw'
+          ? { OPENCLAW_NATIVE_CONFIG: 'available' }
+          : {},
+        resolveNativeCredentialState: async (kind, input) => {
+          credentialChecks.push({ kind, input })
+          return { state: 'ready', source: 'native-credential' }
+        },
+      },
+    },
+  })
+  await harness.ready()
+  const workspace = harness.workspaceInstances[0]
+
+  const readiness = await workspace.input.credentialState('openclaw', {
+    executable: '/tmp/openclaw',
+  })
+  assert.deepEqual(readiness, { state: 'ready', source: 'native-credential' })
+  assert.deepEqual(credentialChecks, [{
+    kind: 'openclaw',
+    input: { executable: '/tmp/openclaw' },
+  }])
+
+  await workspace.input.runAgent(
+    { kind: 'openclaw', executable: '/tmp/openclaw' },
+    'hello', directory, { sessionRef: 'agent:main:desktop-native-openclaw' },
+  )
+  const options = harness.runAgentCalls[0][3]
+  assert.equal(options.env.OPENCLAW_NATIVE_CONFIG, 'available')
+  assert.equal(Object.hasOwn(options.env, 'MANAGED_OPENCLAW'), false)
 })
 
 test('manual Agent refreshes remain serialized', async (t) => {

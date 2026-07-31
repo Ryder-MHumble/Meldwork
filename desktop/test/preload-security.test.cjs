@@ -70,7 +70,7 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.equal('cancelConfigure' in api.localWorkspace, false)
   assert.deepEqual(
     Object.keys(api.localAgentProvider).sort(),
-    ['delete', 'probe', 'save', 'status'],
+    ['activate', 'delete', 'probe', 'save', 'status'],
   )
   assert.equal('envForAgent' in api.localAgentProvider, false)
   assert.equal('read' in api.localAgentProvider, false)
@@ -79,17 +79,19 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   await api.localAgentProvider.probe('hermes')
   await api.localAgentProvider.save('hermes', {
     provider: 'Example', baseUrl: 'https://api.example.com/v1',
-    model: 'example-model', apiKey: 'test-renderer-key',
+    model: 'example-model', apiKey: 'test-renderer-key', preset: 'custom',
   })
-  await api.localAgentProvider.delete('hermes')
+  await api.localAgentProvider.activate('hermes', 'custom')
+  await api.localAgentProvider.delete('hermes', 'custom')
   assert.deepEqual(invocations.map(call => call.channel), [
     'local-agent-provider:status',
     'local-agent-provider:probe',
     'local-agent-provider:save',
+    'local-agent-provider:activate',
     'local-agent-provider:delete',
   ])
   assert.deepEqual(invocations.map(call => call.args[0]), [
-    'hermes', 'hermes', 'hermes', 'hermes',
+    'hermes', 'hermes', 'hermes', 'hermes', 'hermes',
   ])
 })
 

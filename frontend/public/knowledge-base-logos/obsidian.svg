@@ -1,4 +1,5 @@
 <svg fill="none" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Obsidian">
+  <!-- Source: https://obsidian.md/brand -->
   <title>Obsidian</title>
 	<radialGradient id="logo-bottom-left" cx="0" cy="0" gradientTransform="matrix(-59 -225 150 -39 161.4 470)" gradientUnits="userSpaceOnUse" r="1">
 		<stop offset="0" stop-color="#fff" stop-opacity=".4"/>

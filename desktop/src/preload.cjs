@@ -95,7 +95,8 @@ if (isLocalDocument) Object.assign(desktopApi, {
     status: kind => ipcRenderer.invoke('local-agent-provider:status', kind),
     probe: kind => ipcRenderer.invoke('local-agent-provider:probe', kind),
     save: (kind, input) => ipcRenderer.invoke('local-agent-provider:save', kind, input),
-    delete: kind => ipcRenderer.invoke('local-agent-provider:delete', kind),
+    activate: (kind, preset) => ipcRenderer.invoke('local-agent-provider:activate', kind, preset),
+    delete: (kind, preset) => ipcRenderer.invoke('local-agent-provider:delete', kind, preset),
   }),
   localKnowledgeBase: Object.freeze({
     status: () => ipcRenderer.invoke('local-knowledge-base:status'),

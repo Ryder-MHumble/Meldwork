@@ -51,6 +51,7 @@ describe('renderer security policy', () => {
     expect(hermesSource).not.toMatch(/<(rect|image)\b/)
     expect(AGENTS.find(agent => agent.kind === 'codex')?.logo).toBe('./agent-logos/codex.svg')
     expect(AGENTS.find(agent => agent.kind === 'hermes')?.logo).toBe('./agent-logos/hermes.svg')
+    expect(AGENTS.find(agent => agent.kind === 'hermes')?.darkLogo).toBe('./agent-logos/hermes.png')
     expect(AGENTS.find(agent => agent.kind === 'openclaw')?.logo).toBe('./agent-logos/openclaw-transparent.png')
 
     const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')

@@ -1,0 +1,172 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" fill="none" role="img" aria-labelledby="title desc">
+  <title id="title">Meldwork Trace V3 brand board</title>
+  <desc id="desc">A brand-system board showing the V3 mark, wordmark, app icon, navigation use, supported Agent field, README application, construction logic, and palette.</desc>
+
+  <defs>
+    <g id="trace-mark">
+      <path
+        d="M13 57V33C13 23.4 18.3 17 26.2 17C34.1 17 38.8 23.4 38.8 32.8V56.5C38.8 39.1 44.4 27 52.9 27C61.1 27 65.9 33.5 65.9 42.5V47.5C65.9 53.8 69.1 57 74.7 57"
+        stroke="currentColor"
+        stroke-width="9"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <circle cx="85.5" cy="57" r="4.8" fill="#EF5A45" />
+    </g>
+    <path
+      id="word-outline"
+      d="M80.27 43L80.27 20.09L87.19 20.09L91.34 35.72L95.45 20.09L102.39 20.09L102.39 43L98.09 43L98.09 24.97L93.55 43L89.09 43L84.56 24.97L84.56 43ZM116.56 37.72L120.94 38.45Q120.09 40.86 118.27 42.12Q116.45 43.38 113.72 43.38Q109.39 43.38 107.31 40.55Q105.67 38.28 105.67 34.83Q105.67 30.7 107.83 28.37Q109.98 26.03 113.28 26.03Q116.98 26.03 119.13 28.48Q121.27 30.92 121.17 35.97L110.17 35.97Q110.22 37.92 111.23 39.01Q112.25 40.09 113.77 40.09Q114.8 40.09 115.5 39.53Q116.2 38.97 116.56 37.72ZM116.81 33.28Q116.77 31.38 115.83 30.38Q114.89 29.39 113.55 29.39Q112.11 29.39 111.17 30.44Q110.23 31.48 110.25 33.28ZM124.75 43L124.75 20.09L129.14 20.09L129.14 43ZM148.86 43L144.78 43L144.78 40.56Q143.77 41.98 142.38 42.68Q141 43.38 139.59 43.38Q136.73 43.38 134.7 41.07Q132.66 38.77 132.66 34.64Q132.66 30.42 134.64 28.23Q136.63 26.03 139.66 26.03Q142.44 26.03 144.47 28.34L144.47 20.09L148.86 20.09ZM137.14 34.34Q137.14 37 137.88 38.19Q138.94 39.91 140.84 39.91Q142.36 39.91 143.42 38.62Q144.48 37.33 144.48 34.77Q144.48 31.91 143.45 30.65Q142.42 29.39 140.81 29.39Q139.25 29.39 138.2 30.63Q137.14 31.88 137.14 34.34ZM156.28 43L151.03 26.41L155.3 26.41L158.41 37.28L161.27 26.41L165.5 26.41L168.27 37.28L171.44 26.41L175.77 26.41L170.44 43L166.22 43L163.36 32.33L160.55 43ZM177.06 34.47Q177.06 32.28 178.14 30.23Q179.22 28.19 181.2 27.11Q183.17 26.03 185.61 26.03Q189.38 26.03 191.78 28.48Q194.19 30.92 194.19 34.66Q194.19 38.42 191.76 40.9Q189.33 43.38 185.64 43.38Q183.36 43.38 181.29 42.34Q179.22 41.31 178.14 39.32Q177.06 37.33 177.06 34.47ZM181.56 34.7Q181.56 37.17 182.73 38.48Q183.91 39.8 185.63 39.8Q187.34 39.8 188.51 38.48Q189.67 37.17 189.67 34.67Q189.67 32.23 188.51 30.92Q187.34 29.61 185.63 29.61Q183.91 29.61 182.73 30.92Q181.56 32.23 181.56 34.7ZM201.83 43L197.44 43L197.44 26.41L201.52 26.41L201.52 28.77Q202.56 27.09 203.4 26.56Q204.23 26.03 205.3 26.03Q206.8 26.03 208.19 26.86L206.83 30.69Q205.72 29.97 204.77 29.97Q203.84 29.97 203.2 30.48Q202.56 30.98 202.2 32.31Q201.83 33.64 201.83 37.88ZM209.92 43L209.92 20.09L214.31 20.09L214.31 32.25L219.45 26.41L224.86 26.41L219.19 32.47L225.27 43L220.53 43L216.36 35.55L214.31 37.69L214.31 43Z"
+    />
+    <g id="trace-wordmark">
+      <use href="#trace-mark" />
+      <use href="#word-outline" transform="translate(12 0) scale(1.35)" fill="currentColor" />
+    </g>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#DDE0E4" />
+
+  <!-- Light wordmark cover -->
+  <rect x="60" y="60" width="760" height="390" rx="8" fill="#FFFFFF" />
+  <text x="96" y="108" fill="#858B94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="2">01 / WORDMARK</text>
+  <g transform="translate(96 145) scale(2.05)" color="#17191C">
+    <use href="#trace-wordmark" />
+  </g>
+  <text x="98" y="380" fill="#17191C" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="650">TRACE / V3</text>
+  <text x="98" y="410" fill="#6F757E" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="17">Continuous Agent work. Separate human acceptance.</text>
+
+  <!-- Dark README / navigation application -->
+  <rect x="840" y="60" width="700" height="390" rx="8" fill="#0E1013" />
+  <text x="876" y="108" fill="#777F8A" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="2">02 / DARK APPLICATION</text>
+  <g transform="translate(875 130) scale(1.25)" color="#F7F8FA">
+    <use href="#trace-mark" />
+  </g>
+  <text x="1006" y="198" fill="#F7F8FA" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="30" font-weight="700">Meldwork</text>
+  <text x="876" y="270" fill="#F7F8FA" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="38" font-weight="680">Agents change.</text>
+  <text x="876" y="318" fill="#F7F8FA" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="38" font-weight="680">Work continues.</text>
+  <rect x="876" y="350" width="610" height="62" rx="6" fill="#181B20" stroke="#2F343C" stroke-width="2" />
+  <g transform="translate(893 353) scale(0.66)" color="#F7F8FA">
+    <use href="#trace-mark" />
+  </g>
+  <text x="970" y="387" fill="#E7E9ED" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="16" font-weight="620">Persistent workspace for general agents</text>
+  <rect x="1348" y="368" width="112" height="28" rx="4" fill="#242931" />
+  <text x="1404" y="387" text-anchor="middle" fill="#A9B0BA" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="11" font-weight="700" letter-spacing="1">LOCAL-FIRST</text>
+
+  <!-- Supported Agent field -->
+  <rect x="60" y="470" width="720" height="470" rx="8" fill="#14171B" />
+  <text x="90" y="515" fill="#79818C" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="2">03 / AGENT FIELD</text>
+  <g transform="translate(60 470)">
+    <g stroke="#59616D" stroke-width="2">
+      <path d="M360 250V104H99" />
+      <path d="M274 94V104" />
+      <path d="M504 104H360" />
+      <path d="M360 250H639V174" />
+      <path d="M360 250H614V299" />
+      <path d="M360 250V404H549V399" />
+      <path d="M360 404H364" />
+      <path d="M360 404H194V394" />
+      <path d="M360 250H84V284" />
+      <path d="M179 219V250" />
+    </g>
+    <g fill="#EF5A45">
+      <circle cx="360" cy="104" r="4" />
+      <circle cx="360" cy="250" r="4" />
+      <circle cx="360" cy="404" r="4" />
+    </g>
+
+    <circle cx="360" cy="250" r="70" fill="#F7F8FA" stroke="#FFFFFF" stroke-width="8" />
+    <g transform="translate(312 214)" color="#17191C">
+      <use href="#trace-mark" />
+    </g>
+
+    <g transform="translate(70 80)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/codex.svg" x="11" y="11" width="36" height="36" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">Codex</text>
+    </g>
+    <g transform="translate(245 65)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/claude.png" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">Claude</text>
+    </g>
+    <g transform="translate(475 75)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/kimi.png" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">Kimi</text>
+    </g>
+    <g transform="translate(610 145)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/mimo.svg" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">MiMo</text>
+    </g>
+    <g transform="translate(585 270)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/workbuddy.png" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">WorkBuddy</text>
+    </g>
+    <g transform="translate(520 370)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/gemini.svg" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">Gemini</text>
+    </g>
+    <g transform="translate(335 375)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/opencode.svg" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">OpenCode</text>
+    </g>
+    <g transform="translate(165 365)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/qwen.svg" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">Qwen</text>
+    </g>
+    <g transform="translate(55 255)">
+      <rect width="58" height="58" rx="14" fill="#F2F3F5" stroke="#C9CDD3" />
+      <image href="../agent-logos/hermes.svg" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">Hermes</text>
+    </g>
+    <g transform="translate(150 190)">
+      <rect width="58" height="58" rx="14" fill="#22262C" stroke="#383E47" />
+      <image href="../agent-logos/openclaw-transparent.png" x="10" y="10" width="38" height="38" preserveAspectRatio="xMidYMid meet" />
+      <text x="29" y="78" text-anchor="middle" fill="#AEB4BD" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="600">OpenClaw</text>
+    </g>
+  </g>
+
+  <!-- App icon and navigation sizes -->
+  <rect x="800" y="470" width="340" height="470" rx="8" fill="#FFFFFF" />
+  <text x="830" y="515" fill="#858B94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="2">04 / APP + NAV</text>
+  <rect x="875" y="550" width="190" height="190" rx="42" fill="#0E1013" />
+  <g transform="translate(894 581) scale(1.78)" color="#F7F8FA">
+    <use href="#trace-mark" />
+  </g>
+  <rect x="830" y="790" width="280" height="52" rx="6" fill="#F4F5F7" />
+  <g transform="translate(844 793) scale(0.5)" color="#17191C">
+    <use href="#trace-mark" />
+  </g>
+  <text x="905" y="822" fill="#17191C" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="650">Light navigation</text>
+  <rect x="830" y="856" width="280" height="52" rx="6" fill="#171A1F" />
+  <g transform="translate(844 859) scale(0.5)" color="#F7F8FA">
+    <use href="#trace-mark" />
+  </g>
+  <text x="905" y="888" fill="#F7F8FA" font-family="ui-sans-serif, system-ui, sans-serif" font-size="15" font-weight="650">Dark navigation</text>
+
+  <!-- Construction and palette -->
+  <rect x="1160" y="470" width="380" height="470" rx="8" fill="#F7F8F9" />
+  <text x="1190" y="515" fill="#858B94" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="700" letter-spacing="2">05 / TRACE + ACCEPTANCE</text>
+  <line x1="1190" y1="680" x2="1510" y2="680" stroke="#D4D8DE" stroke-width="2" stroke-dasharray="7 8" />
+  <g transform="translate(1193 555) scale(3.05)" color="#17191C">
+    <use href="#trace-mark" />
+  </g>
+  <text x="1190" y="775" fill="#17191C" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700">AGENT TRACE</text>
+  <path d="M1245 757V724" stroke="#17191C" stroke-width="2" />
+  <text x="1310" y="812" fill="#757B84" font-family="ui-sans-serif, system-ui, sans-serif" font-size="12" font-weight="650">REVIEW GAP</text>
+  <path d="M1360 793V730" stroke="#A9AFB7" stroke-width="2" />
+  <text x="1400" y="775" fill="#EF5A45" font-family="ui-sans-serif, system-ui, sans-serif" font-size="13" font-weight="700">ACCEPTANCE</text>
+  <path d="M1454 757V734" stroke="#EF5A45" stroke-width="2" />
+  <circle cx="1212" cy="860" r="22" fill="#17191C" />
+  <circle cx="1280" cy="860" r="22" fill="#FFFFFF" stroke="#D8DCE1" />
+  <circle cx="1348" cy="860" r="22" fill="#EF5A45" />
+  <circle cx="1416" cy="860" r="22" fill="#0E1013" />
+  <text x="1190" y="916" fill="#777D86" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700" letter-spacing="1.2">INK / PAPER / CORAL / CARBON</text>
+
+  <text x="60" y="976" fill="#7C828A" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700" letter-spacing="1.8">MELDWORK / TRACE V3 / IDENTITY SYSTEM</text>
+  <text x="1540" y="976" text-anchor="end" fill="#7C828A" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" font-weight="700">03</text>
+</svg>

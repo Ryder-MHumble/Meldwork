@@ -521,6 +521,9 @@ class LocalWorkspace extends EventEmitter {
       const runtimeMissing = runtime?.credentialState === 'missing'
       const verifiedReady = runtime?.credentialState === 'ready'
         || this.state.messages.some(message => message.role === 'agent' && message.agentKind === agent.kind)
+      const nativeReadySource = nativeState === 'ready'
+        ? (native.source || 'native-credential')
+        : ''
       const credentialState = sharedProviderReady
         ? 'ready'
         : sharedProviderRequired
@@ -541,13 +544,13 @@ class LocalWorkspace extends EventEmitter {
         installed: true,
         credentialState,
         availabilitySource: sharedProviderReady
-          ? 'shared-provider'
+          ? (!runtimeMissing && nativeReadySource ? nativeReadySource : 'shared-provider')
           : runtimeMissing
               ? 'runtime-auth-failure'
             : nativeState === 'missing'
               ? (native.source || 'none')
-              : nativeState === 'ready'
-                ? (native.source || 'native-credential')
+              : nativeReadySource
+                ? nativeReadySource
                 : verifiedReady
                   ? 'verified-run'
                   : 'unverified',

@@ -182,6 +182,9 @@ const OFFICIAL_PROVIDER_BASE_URLS = Object.freeze({
 })
 
 function providerPresetFromStatus(kind, status = {}) {
+  if (['official', 'openrouter', 'custom'].includes(status.activePreset)) {
+    return status.activePreset
+  }
   const provider = String(status.provider || '').trim().toLowerCase()
   const baseUrl = String(status.baseUrl || '').trim().replace(/\/+$/, '')
   if (/openrouter/i.test(provider) || /openrouter\.ai$/i.test(new URL(baseUrl || 'https://example.com').hostname)) {
@@ -288,10 +291,7 @@ function providerOptionsFor(kind, generic, context = {}, status = {}) {
 function providerOptions(kind, context = {}) {
   if (!EXTERNAL_PROVIDER_KINDS.has(kind)) return {}
   const status = providerStore?.status(kind) || {}
-  if (!status.configured) {
-    if (kind === 'openclaw') throw new Error('PROVIDER_CREDENTIAL_REQUIRED')
-    return {}
-  }
+  if (!status.configured) return {}
   return providerOptionsFor(
     kind,
     providerStore.envForAgent(kind),
@@ -577,12 +577,9 @@ function createWorkspace() {
     importAgentOutputs: input => importAgentOutputs(input, availableAttachmentStore()),
     validateSkillSelections: (kind, selections) => skillCatalog.validateSelections(kind, selections),
     imageAttachmentLimit,
-    credentialState: (kind, agent) => {
-      if (kind === 'openclaw' && !providerStore?.status(kind).configured) {
-        return { state: 'missing', source: 'agent-provider-required' }
-      }
-      return resolveNativeCredentialState(kind, { executable: agent?.executable })
-    },
+    credentialState: (kind, agent) => (
+      resolveNativeCredentialState(kind, { executable: agent?.executable })
+    ),
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
     runAgent: async (agent, prompt, workdir, options = {}) => {
       const injected = providerOptions(agent.kind, {
@@ -649,7 +646,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 680,
     title: 'Meldwork',
-    backgroundColor: '#f6f3ed',
+    backgroundColor: '#f3f6f8',
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -799,12 +796,18 @@ function registerIpc() {
       provider: input?.provider,
       baseUrl: input?.baseUrl,
       model: input?.model,
+      preset: input?.preset,
     })
     await refreshLocalAgentState()
     return result
   })
-  registerTrustedHandle('local-agent-provider:delete', async (kind) => {
-    const result = providerStore.delete(providerAgentKind(kind))
+  registerTrustedHandle('local-agent-provider:activate', async (kind, preset) => {
+    const result = providerStore.activate(providerAgentKind(kind), preset)
+    await refreshLocalAgentState()
+    return result
+  })
+  registerTrustedHandle('local-agent-provider:delete', async (kind, preset) => {
+    const result = providerStore.delete(providerAgentKind(kind), preset)
     await refreshLocalAgentState()
     return result
   })

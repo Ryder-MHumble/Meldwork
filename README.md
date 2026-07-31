@@ -1,99 +1,151 @@
 <p align="center">
-  <img src="frontend/public/logos/meldwork-mark.svg" alt="Meldwork" width="132">
+  <img src="frontend/public/logos/meldwork-readme-banner-en.png" alt="Meldwork - Agents change. Work continues." width="100%">
+</p>
+
+<p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
 # Meldwork
 
-**Bring the local Agent CLIs already on your machine into one persistent workspace.**
+**Agents change. Work continues.**
 
-Meldwork is building an open, local-first work system for agents across vendors. The current MVP brings multiple local AI Agent CLIs into the same local conversation and working directory, discovers the Agents already available on your computer, keeps conversations persistent, preserves resumable native sessions where compatible CLIs expose them, and coordinates manual or bounded automatic discussions without requiring a hosted orchestration service.
+Meldwork is a local-first desktop workspace for general-purpose AI agents.
 
-The long-term product direction is an open-source, local-first work system for agents across vendors. This repository is still `UNLICENSED`; the public open-source launch must not happen until a project license is selected and added.
+AI agents are no longer one narrow product category. Tools that began with coding, research, personal assistance, or operations are converging into general-purpose systems that can reason, use tools, handle files, and carry multi-step work. People will use more than one of them. The work still needs one place to continue.
 
-## Product Direction
+Meldwork is not another Agent, and it is not a coding-only Agent aggregator. It keeps conversations, compatible native sessions, collaboration state, and human control in one persistent workspace while work moves between different Agents.
 
-The target product promise is **Different agents. Work you can verify.** It describes the evidence-and-acceptance loop Meldwork intends to build, not a claim that the current MVP already verifies Agent output.
+> **Current MVP:** Meldwork connects the supported local Agent CLIs listed below. The product direction is an open connector layer for local, cloud, custom, and channel-native Agents, but arbitrary Agent connectors are not shipped yet. This repository also remains `UNLICENSED` until a public software license is selected.
 
-The current MVP proves local Agent discovery, guarded execution, persistent conversations, and native-session continuity where upstream CLIs support it. The next milestone is not a larger adapter count; it is an outcome loop that turns Agent activity into work a user can inspect and adopt:
+## Better Agents do not solve fragmented work
+
+When real work moves between Agents, users still have to:
+
+- rebuild context across disconnected sessions and interfaces;
+- collect decisions, files, and intermediate results from different places;
+- decide manually which Agent should answer, challenge, revise, or continue;
+- remember which Agent still holds which part of the task;
+- reconcile different Provider traffic, permissions, and tool behavior;
+- treat a fluent answer as completion because there is no durable work record.
+
+This affects research, planning, writing, operations, analysis, design, development, and review. Coding is one use case, not the product boundary.
+
+## One workspace for the work
+
+| Fragmented Agent use | With the current Meldwork MVP |
+| --- | --- |
+| Context trapped in separate sessions | Persistent direct and group conversations in one local workspace |
+| Re-explaining the task after every switch | Native-session continuity where the upstream Agent exposes a compatible resume mechanism |
+| Manually routing work across several interfaces | Direct responses or user-bounded multi-Agent discussions with visible run state |
+| Unclear write and Provider behavior | Explicit per-Agent Provider profiles and visible per-conversation write mode where enforceable |
+| A hosted orchestration account becomes the new dependency | Groups, messages, and orchestration state remain on the user's machine |
+
+Local-first does not mean every model runs offline. Network traffic still follows the Agent and Provider configuration the user selects. Meldwork keeps its workspace and control state local.
+
+## General Agents, modeled by real capabilities
+
+Codex, Claude Code, Hermes, OpenClaw, and similar tools may have different origins, but their capabilities increasingly extend beyond a single coding workflow. Meldwork treats them as Agents and keeps their actual differences explicit: supported inputs, Skills, session behavior, Provider configuration, permissions, and output handling.
+
+The name of an upstream tool does not define Meldwork's category. Continuity of work across Agents does.
+
+## What works today
+
+### Discover supported local Agents
+
+Refresh one catalog to find supported Agent CLIs already installed or available through an allowlisted installer recipe. Executable paths stay in the Electron main process.
+
+### Keep work in persistent conversations
+
+Create multiple direct conversations for the same Agent, return later, or bring selected Agents into a group around the same body of work.
+
+### Continue native sessions where possible
+
+For compatible CLI versions, Meldwork keeps one logical native session per Agent and conversation. A resumed Agent receives only the group messages it has not already seen.
+
+### Bring in another Agent without rebuilding the workflow
+
+Run one response or a bounded automatic discussion from 1 to 10 rounds. Each Agent has a visible queued, running, completed, or failed state, and the user decides what to accept.
+
+### Carry useful context and outputs
+
+Reference validated local Skills with `@`, attach supported PNG or JPEG images, and collect supported image, audio, or video outputs from the authorized workspace's `.meldwork-output` directory. Capability checks remain Agent-specific.
+
+### Keep execution boundaries explicit
+
+Executable paths, attachment paths, session references, and child processes stay in the Electron main process. Compatible Provider credentials use operating-system-backed secure storage and are not returned to the renderer after saving.
+
+## Any Agent is the direction, not the current claim
+
+The product principle is simple:
+
+> **If it can act as an Agent, it should be able to join Meldwork.**
+
+The current MVP starts with fixed adapters for supported local CLIs. The next architecture milestone is a publicly documented Agent connector contract and capability manifest so new local runtimes, cloud Agents, and channel-native Agents can join without being hardcoded into the client.
+
+| Horizon | Product outcome |
+| --- | --- |
+| **Now: local MVP** | Supported local Agent discovery, persistent direct/group conversations, compatible native-session resume, bounded discussions, Skills, images, and explicit local boundaries |
+| **Next: open connection layer** | Connector contract, capability manifest, structured tasks, comparable runs, artifacts, evidence, and explicit human acceptance |
+| **Later: after validation** | Cloud-Agent handoff, Meldwork Channels, typed workflows, team policy, cost controls, and enterprise governance |
+
+These later capabilities are roadmap direction, not shipped behavior.
+
+## Initial Agent connections
+
+The current codebase contains adapters and allowlisted installer recipes for:
+
+**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code**
+
+These are the first supported connections, not Meldwork's definition of what an Agent can be. An implemented adapter is also not the same as release-certified compatibility; availability depends on the upstream CLI, operating system, authentication, model configuration, and version.
+
+## A practical workflow
 
 ```text
-Task -> Runs -> Artifacts -> Evidence -> Human acceptance and adoption
+Start with one Agent
+        ↓
+Keep the work in one persistent conversation
+        ↓
+Bring in another Agent when a different capability or perspective helps
+        ↓
+Continue in the same workspace instead of rebuilding context
+        ↓
+Inspect the result and decide what to adopt
 ```
 
-Meldwork should use one Agent by default and add independent attempts or adversarial review only when task risk or uncertainty justifies the extra time and cost. Cloud Agents, Channels, Workflows, and team governance remain roadmap options until this loop demonstrates repeatable value.
+Use one Agent when one is enough. Add another when the value of a different capability, independent attempt, or adversarial review justifies the extra time and cost.
 
-## Why Meldwork
+## Who Meldwork is for
 
-- **One workspace for different Agents.** Bring Codex, Claude Code, Kimi Code, MiMo Code, and other local CLIs into direct or group conversations.
-- **Persistent collaborative context.** For compatible CLI versions that expose resumable sessions, continue with one native session per Agent and conversation; resumed prompts add only the group messages that Agent has not already seen.
-- **Local orchestration with explicit boundaries.** Agent execution, groups, messages, and orchestration stay on the user's machine. Provider traffic still follows each selected Agent's configuration.
-- **Narrow desktop security boundary.** Executable paths, attachment paths, and native session references stay in the Electron main process. Stored Provider credentials are never returned to the renderer after saving; newly entered credentials cross only the validated Provider IPC. The renderer has no unrestricted shell access.
+- People who regularly move research, planning, creation, operations, development, or review work between multiple Agents.
+- AI-native teams whose members use different Agent vendors or specialized capabilities.
+- Work that benefits from a second perspective without losing the original context.
+- Users who want to preserve existing Agent accounts, Provider relationships, and a local workspace boundary.
 
-## Core Capabilities
+Meldwork is not yet the right choice if you only use one Agent for isolated tasks, need a managed cloud execution queue today, or require audited enterprise controls and release-certified Windows support.
 
-- Discover installed Agent CLIs without exposing executable paths to the renderer.
-- Create multiple persistent direct conversations per Agent, then rename or delete each local conversation independently.
-- Run one response at a time or an automatic discussion with a user-selected 1-10 round limit (6 by default).
-- Preserve one logical native session per Agent and conversation where the selected CLI supports resume, with automatic migration from older topic-scoped references.
-- Show per-Agent queued/running/completed state, automatic round progress, background direct-chat completion markers, and local desktop notifications.
-- Reference validated local Skills with `@` and attach PNG or JPEG images with capability checks.
-- Request read-only modes by default where an Agent can enforce them, with explicit write opt-in only when the adapter can preserve the workspace boundary. These are adapter-level controls, not an operating-system sandbox.
-- Install supported missing Agents through fixed, allowlisted recipes. Upstream packages and scripts are not yet digest- or signature-pinned.
-- Store compatible provider credentials with operating-system-backed secure storage.
+## Try the MVP locally
 
-## Supported Agents
-
-| Agent | Adapter implemented | Installer recipes | Release validation | Provider and permission behavior |
-| --- | --- | --- | --- | --- |
-| Codex | Yes | macOS and Windows | Pending target-device matrix | Uses its existing Responses-compatible configuration |
-| Hermes | Yes | macOS and Windows | Pending target-device matrix | Supports a shared OpenAI-compatible Provider |
-| OpenClaw | Yes | macOS and Windows | Pending target-device matrix | Supports a managed OpenAI-compatible Provider |
-| WorkBuddy | Yes | macOS and Windows | Pending target-device matrix | Experimental shared Provider support |
-| Kimi Code | Yes | macOS and Windows | Pending target-device matrix | Uses its native configuration and ACP plan mode for read-only work |
-| MiMo Code | Yes | macOS and Windows | Pending target-device matrix | Uses native configuration; Meldwork invokes the `plan` Agent and does not enable the global permission-bypass flag |
-| Claude Code | Yes | macOS and Windows | Pending target-device matrix | Uses its existing Anthropic-compatible configuration |
-| Gemini CLI | Yes | macOS and Windows | Pending target-device matrix | Uses its existing authentication and Provider settings |
-| OpenCode | Yes | macOS and Windows | Pending target-device matrix | Uses its existing Provider settings |
-| Qwen Code | Yes | macOS and Windows | Pending target-device matrix | Supports a shared OpenAI-compatible Provider |
-
-These entries describe implemented adapters and installer recipes, not release-certified compatibility. Availability still depends on each upstream CLI, operating-system support, authentication, model configuration, and version compatibility. Live-Agent compatibility and real-device Windows validation remain pending.
-
-## Privacy And Architecture
-
-```text
-Vue renderer
-    | validated preload APIs
-Electron main process
-    |-- Agent discovery and execution
-    |-- local group and message storage
-    |-- local Skill discovery and validation
-    |-- app-owned local image attachment storage and previews
-    |-- provider credential storage
-    `-- user-authorized provider and installer network access
-```
-
-The Electron main process owns filesystem paths, child processes, Agent configuration, and persistence. Provider credentials use Electron `safeStorage`; if operating-system encryption is unavailable, Meldwork refuses to persist them in plaintext. Conversations and participants remain local. Network activity occurs only through the selected Agent or Provider, guided installer downloads, or explicit external links.
-
-Internal compatibility identifiers such as `window.roundrelayDesktop`, existing storage filenames, and `com.roundrelay.desktop` are intentionally retained during the brand transition so current local data and the preload contract continue to work.
-
-## Development
-
-Prerequisites: Node.js 20.19 or newer, npm, and macOS for the currently configured release packaging targets.
+Prerequisites: Node.js 20.19 or newer, npm, and macOS for the currently configured desktop packaging target.
 
 ```bash
 npm --prefix frontend ci
 npm --prefix desktop ci
 
-# Renderer-only preview
-npm --prefix frontend run dev
-
-# Electron desktop application
+# Start the Electron desktop app
 npm --prefix desktop run dev
 ```
 
-The browser preview cannot execute Agents because it intentionally has no Electron bridge.
+For a renderer-only preview:
 
-## Tests And Builds
+```bash
+npm --prefix frontend run dev
+```
+
+The browser preview intentionally cannot execute local Agents because it has no Electron bridge.
+
+<details>
+<summary><strong>Development checks</strong></summary>
 
 ```bash
 npm --prefix frontend test
@@ -105,19 +157,26 @@ npm --prefix desktop run pack
 
 Generated packages are written to `desktop/dist/` and are not committed.
 
-## Repository Layout
+</details>
 
-```text
-frontend/       Vue renderer and product assets
-desktop/        Electron main process, preload bridge, Agent runtime, and tests
-documentation/  Architecture, security, workflows, and launch material
-.github/         Continuous integration workflows
-```
+<details>
+<summary><strong>Architecture and security boundaries</strong></summary>
 
-The architecture review entry point is [`documentation/architecture.md`](documentation/architecture.md). Draft launch messaging lives in [`documentation/launch-kit.md`](documentation/launch-kit.md).
+The Vue renderer reaches Agent functionality only through validated preload APIs. The Electron main process owns filesystem paths, child processes, Agent configuration, persistence, and secure credential storage. The renderer has no unrestricted shell API.
 
-## Release Status
+New conversations currently allow workspace writes by default; users can disable write mode per conversation. Adapter-level read-only modes reduce accidental writes where upstream CLIs can enforce them, but they are not an operating-system sandbox. Guided installers use fixed allowlisted recipes; upstream packages and scripts are not yet digest- or signature-pinned.
 
-Meldwork is under active development. Local discovery, persistent direct/group conversations, guarded heterogeneous-Agent execution, automatic discussion, `@` Skill references, image attachments, provider storage, frontend tests, desktop tests, and macOS packaging configuration are implemented.
+Internal identifiers such as `window.roundrelayDesktop`, existing storage filenames, and `com.roundrelay.desktop` are intentionally retained during the brand transition to preserve the current local-data and preload contracts.
 
-Before a public open-source release, the project still needs a selected license, a target-device Agent compatibility matrix, and signed/notarized macOS distribution. Windows support should remain implementation-level until it passes a real-device release matrix.
+</details>
+
+## Project status
+
+Meldwork is a market-validation MVP, not a finished platform. Before a public release, the project still needs:
+
+- a selected and committed software license;
+- target-device compatibility tests for supported Agents;
+- a public connector contract before "any Agent" is presented as shipped capability;
+- signed and notarized macOS distribution;
+- real-device Windows validation before Windows support is marketed as production-ready;
+- product validation that persistent cross-Agent work creates enough value to justify a new workspace.

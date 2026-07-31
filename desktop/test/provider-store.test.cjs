@@ -10,9 +10,31 @@ const PROVIDER = Object.freeze({
   baseUrl: 'https://api.example.com/v1',
   model: 'example-model',
 })
+const OPENROUTER_PROVIDER = Object.freeze({
+  provider: 'OpenRouter',
+  baseUrl: 'https://openrouter.ai/api/v1',
+  model: 'openrouter/example-model',
+})
 
-function credential(apiKey = 'test-provider-key', metadata = PROVIDER) {
-  return { ...metadata, apiKey }
+function credential(apiKey = 'test-provider-key', metadata = PROVIDER, preset = 'custom') {
+  return { ...metadata, apiKey, preset }
+}
+
+function emptyStatus(encryptionAvailable) {
+  return {
+    provider: '', baseUrl: '', model: '', activePreset: 'official', profiles: {},
+    encryptionAvailable, configured: false,
+  }
+}
+
+function configuredStatus(metadata = PROVIDER, preset = 'custom') {
+  return {
+    ...metadata,
+    activePreset: preset,
+    profiles: { [preset]: { ...metadata, configured: true } },
+    encryptionAvailable: true,
+    configured: true,
+  }
 }
 
 function encryptedSafeStorage(available = true) {
@@ -37,13 +59,11 @@ test('status exposes user-configured metadata without the API key', (t) => {
   const { directory, store } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
-  assert.deepEqual(store.status('hermes'), {
-    provider: '', baseUrl: '', model: '', encryptionAvailable: null, configured: false,
-  })
+  assert.deepEqual(store.status('hermes'), emptyStatus(null))
 
   store.save('hermes', credential())
   const status = store.status('hermes')
-  assert.deepEqual(status, { ...PROVIDER, encryptionAvailable: true, configured: true })
+  assert.deepEqual(status, configuredStatus())
   assert.equal('apiKey' in status, false)
 })
 
@@ -68,9 +88,7 @@ test('save encrypts the API key, writes atomically, and restricts file permissio
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const apiKey = 'test-key-never-plaintext'
 
-  assert.deepEqual(store.save('hermes', credential(apiKey)), {
-    ...PROVIDER, encryptionAvailable: true, configured: true,
-  })
+  assert.deepEqual(store.save('hermes', credential(apiKey)), configuredStatus())
   const stored = fs.readFileSync(storagePath, 'utf8')
   assert.equal(stored.includes(apiKey), false)
   assert.equal(fs.statSync(storagePath).mode & 0o777, 0o600)
@@ -80,7 +98,7 @@ test('save encrypts the API key, writes atomically, and restricts file permissio
   )
 })
 
-test('save accepts only the complete four-field Provider payload', (t) => {
+test('save accepts only the complete five-field Provider payload', (t) => {
   const { directory, store } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
@@ -91,8 +109,14 @@ test('save accepts only the complete four-field Provider payload', (t) => {
     { message: 'PROVIDER_INVALID_CREDENTIAL' },
   )
   assert.throws(
-    () => store.save('hermes', { apiKey: 'key', provider: 'Example', baseUrl: '', model: 'model' }),
+    () => store.save('hermes', {
+      apiKey: 'key', provider: 'Example', baseUrl: '', model: 'model', preset: 'custom',
+    }),
     { message: 'PROVIDER_INVALID_METADATA' },
+  )
+  assert.throws(
+    () => store.save('hermes', credential('key', PROVIDER, 'unknown')),
+    { message: 'PROVIDER_PRESET_UNSUPPORTED' },
   )
 })
 
@@ -108,13 +132,47 @@ test('envForAgent decrypts the configured Provider', (t) => {
   })
 })
 
+test('multiple Provider profiles stay encrypted and can be activated independently', (t) => {
+  const { directory, store } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  store.save('hermes', credential('openrouter-key', OPENROUTER_PROVIDER, 'openrouter'))
+  store.save('hermes', credential('custom-key', PROVIDER, 'custom'))
+
+  assert.deepEqual(store.status('hermes'), {
+    ...PROVIDER,
+    activePreset: 'custom',
+    profiles: {
+      openrouter: { ...OPENROUTER_PROVIDER, configured: true },
+      custom: { ...PROVIDER, configured: true },
+    },
+    encryptionAvailable: true,
+    configured: true,
+  })
+
+  store.activate('hermes', 'openrouter')
+  assert.equal(store.status('hermes').activePreset, 'openrouter')
+  assert.deepEqual(store.envForAgent('hermes'), {
+    OPENAI_API_KEY: 'openrouter-key',
+    OPENAI_BASE_URL: OPENROUTER_PROVIDER.baseUrl,
+    OPENAI_MODEL: OPENROUTER_PROVIDER.model,
+  })
+
+  const afterDelete = store.delete('hermes', 'openrouter')
+  assert.equal(afterDelete.activePreset, 'official')
+  assert.equal(afterDelete.configured, false)
+  assert.deepEqual(afterDelete.profiles, {
+    custom: { ...PROVIDER, configured: true },
+  })
+  store.activate('hermes', 'custom')
+  assert.equal(store.envForAgent('hermes').OPENAI_API_KEY, 'custom-key')
+})
+
 test('encryption unavailability fails closed for status, save, and reads', (t) => {
   const { directory, storagePath, store } = fixture(encryptedSafeStorage(false))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
-  assert.deepEqual(store.status('hermes', { probeEncryption: true }), {
-    provider: '', baseUrl: '', model: '', encryptionAvailable: false, configured: false,
-  })
+  assert.deepEqual(store.status('hermes', { probeEncryption: true }), emptyStatus(false))
   assert.throws(() => store.save('hermes', credential()), {
     message: 'PROVIDER_ENCRYPTION_UNAVAILABLE',
   })
@@ -145,9 +203,7 @@ test('corrupt credentials stay unavailable and are never returned', (t) => {
     mode: 0o600,
   })
 
-  assert.deepEqual(store.status('hermes'), {
-    provider: '', baseUrl: '', model: '', encryptionAvailable: true, configured: false,
-  })
+  assert.deepEqual(store.status('hermes'), emptyStatus(true))
   assert.throws(() => store.envForAgent('hermes'), {
     message: 'PROVIDER_CREDENTIAL_UNAVAILABLE',
   })
@@ -160,9 +216,7 @@ test('delete removes the local credential even when encryption is unavailable', 
   store.save('hermes', credential())
   safeStorage.isEncryptionAvailable = () => false
 
-  assert.deepEqual(store.delete('hermes'), {
-    provider: '', baseUrl: '', model: '', encryptionAvailable: false, configured: false,
-  })
+  assert.deepEqual(store.delete('hermes'), emptyStatus(false))
   assert.equal(fs.existsSync(storagePath), false)
   assert.doesNotThrow(() => store.delete('hermes'))
 })
@@ -216,10 +270,46 @@ test('legacy shared credentials migrate into independent Agent entries on mutati
 
   store.save('qwen', credential('new-qwen-key', { ...PROVIDER, model: 'new-qwen-model' }))
   const migrated = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
-  assert.equal(migrated.version, 2)
+  assert.equal(migrated.version, 3)
   assert.deepEqual(Object.keys(migrated.agents).sort(), ['hermes', 'qwen'])
   assert.equal(store.envForAgent('hermes').OPENAI_API_KEY, 'legacy-key')
   assert.equal(store.envForAgent('qwen').OPENAI_API_KEY, 'new-qwen-key')
+})
+
+test('single-profile Agent credentials migrate to multi-profile storage on mutation', (t) => {
+  const { directory, storagePath, store } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const encrypted = encryptedSafeStorage().encryptString('stored-openrouter-key').toString('base64')
+  fs.writeFileSync(storagePath, JSON.stringify({
+    version: 2,
+    agents: {
+      hermes: { ...OPENROUTER_PROVIDER, encrypted },
+    },
+  }), { mode: 0o600 })
+
+  assert.equal(store.status('hermes').activePreset, 'openrouter')
+  assert.equal(store.envForAgent('hermes').OPENAI_API_KEY, 'stored-openrouter-key')
+
+  store.save('qwen', credential('new-qwen-key', { ...PROVIDER, model: 'qwen-model' }))
+  const migrated = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
+  assert.equal(migrated.version, 3)
+  assert.equal(migrated.agents.hermes.activePreset, 'openrouter')
+  assert.equal(migrated.agents.qwen.activePreset, 'custom')
+})
+
+test('malformed multi-profile documents fail as unavailable credentials', (t) => {
+  const { directory, storagePath, store } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  fs.writeFileSync(storagePath, JSON.stringify({
+    version: 3,
+    agents: {
+      hermes: { activePreset: 'unknown', profiles: {} },
+    },
+  }), { mode: 0o600 })
+
+  assert.throws(() => store.envForAgent('hermes'), {
+    message: 'PROVIDER_CREDENTIAL_UNAVAILABLE',
+  })
 })
 
 test('Provider operations reject unsupported Agent kinds', (t) => {

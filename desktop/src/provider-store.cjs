@@ -2,9 +2,11 @@ const fs = require('node:fs')
 
 const { atomicWritePrivateFile } = require('./private-file.cjs')
 
-const STORE_VERSION = 2
+const STORE_VERSION = 3
+const SINGLE_PROFILE_STORE_VERSION = 2
 const LEGACY_STORE_VERSION = 1
 const PROVIDER_KIND = /^[a-z0-9][a-z0-9-]{0,31}$/
+const PROVIDER_PRESETS = new Set(['official', 'openrouter', 'custom'])
 const EMPTY_METADATA = Object.freeze({ provider: '', baseUrl: '', model: '' })
 
 function normalizeMetadata(input) {
@@ -31,6 +33,18 @@ function sortedKeys(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? Reflect.ownKeys(value).sort().join(',')
     : ''
+}
+
+function inferStoredPreset(entry) {
+  const provider = String(entry?.provider || '').toLowerCase()
+  const baseUrl = String(entry?.baseUrl || '')
+  return /openrouter/i.test(provider) || /(^|\.)openrouter\.ai$/i.test(hostname(baseUrl))
+    ? 'openrouter'
+    : 'custom'
+}
+
+function hostname(value) {
+  try { return new URL(value).hostname } catch { return '' }
 }
 
 class ProviderStore {
@@ -63,6 +77,8 @@ class ProviderStore {
         provider: '',
         baseUrl: '',
         model: '',
+        activePreset: 'official',
+        profiles: {},
         encryptionAvailable: null,
         configured: false,
       }
@@ -71,13 +87,29 @@ class ProviderStore {
     const encryptionAvailable = this.encryptionAvailable()
     let metadata = EMPTY_METADATA
     let configured = false
+    let activePreset = 'official'
+    const profiles = {}
     if (encryptionAvailable && credentialStored) {
       try {
-        const entry = this.readDocument().agents[targetKind]
-        if (entry) {
-          this.decryptEntry(entry)
-          metadata = entry
-          configured = true
+        const agent = this.readDocument().agents[targetKind]
+        if (agent) {
+          activePreset = agent.activePreset
+          for (const [preset, entry] of Object.entries(agent.profiles)) {
+            try {
+              this.decryptEntry(entry)
+              profiles[preset] = {
+                provider: entry.provider,
+                baseUrl: entry.baseUrl,
+                model: entry.model,
+                configured: true,
+              }
+            } catch { /* keep an unreadable profile unavailable */ }
+          }
+          const activeEntry = profiles[activePreset]
+          if (activeEntry) {
+            metadata = activeEntry
+            configured = true
+          }
         }
       } catch { /* unreadable credentials stay unavailable */ }
     }
@@ -85,6 +117,8 @@ class ProviderStore {
       provider: metadata.provider,
       baseUrl: metadata.baseUrl,
       model: metadata.model,
+      activePreset,
+      profiles,
       encryptionAvailable,
       configured,
     }
@@ -92,7 +126,7 @@ class ProviderStore {
 
   save(kind, input) {
     const targetKind = this.normalizeKind(kind)
-    if (sortedKeys(input) !== 'apiKey,baseUrl,model,provider'
+    if (sortedKeys(input) !== 'apiKey,baseUrl,model,preset,provider'
         || typeof input.apiKey !== 'string' || !input.apiKey.trim()
         || input.apiKey.trim().length > 8192) {
       throw new Error('PROVIDER_INVALID_CREDENTIAL')
@@ -100,6 +134,7 @@ class ProviderStore {
     this.requireEncryption()
 
     const apiKey = input.apiKey.trim()
+    const preset = this.normalizePreset(input.preset)
     const metadata = normalizeMetadata(input)
     let encrypted
     try {
@@ -115,19 +150,53 @@ class ProviderStore {
     const document = fs.existsSync(this.storagePath)
       ? this.readDocument()
       : { version: STORE_VERSION, agents: {} }
-    document.agents[targetKind] = {
+    const agent = document.agents[targetKind] || { activePreset: 'official', profiles: {} }
+    agent.profiles[preset] = {
       ...metadata,
       encrypted: encrypted.toString('base64'),
     }
+    agent.activePreset = preset
+    document.agents[targetKind] = agent
     atomicWritePrivateFile(this.storagePath, JSON.stringify(document))
     return this.status(targetKind)
   }
 
-  delete(kind) {
+  activate(kind, preset) {
+    const targetKind = this.normalizeKind(kind)
+    const targetPreset = this.normalizePreset(preset)
+    if (!fs.existsSync(this.storagePath)) {
+      if (targetPreset !== 'official') throw new Error('PROVIDER_PROFILE_UNAVAILABLE')
+      return this.status(targetKind, { probeEncryption: true })
+    }
+    this.requireEncryption()
+    const document = this.readDocument()
+    const agent = document.agents[targetKind] || { activePreset: 'official', profiles: {} }
+    if (targetPreset !== 'official' && !agent.profiles[targetPreset]) {
+      throw new Error('PROVIDER_PROFILE_UNAVAILABLE')
+    }
+    if (agent.profiles[targetPreset]) this.decryptEntry(agent.profiles[targetPreset])
+    agent.activePreset = targetPreset
+    document.agents[targetKind] = agent
+    atomicWritePrivateFile(this.storagePath, JSON.stringify(document))
+    return this.status(targetKind)
+  }
+
+  delete(kind, preset = '') {
     const targetKind = this.normalizeKind(kind)
     if (fs.existsSync(this.storagePath)) {
       const document = this.readDocument()
-      delete document.agents[targetKind]
+      if (preset) {
+        const targetPreset = this.normalizePreset(preset)
+        const agent = document.agents[targetKind]
+        if (agent) {
+          delete agent.profiles[targetPreset]
+          if (agent.activePreset === targetPreset) agent.activePreset = 'official'
+          if (Object.keys(agent.profiles).length) document.agents[targetKind] = agent
+          else delete document.agents[targetKind]
+        }
+      } else {
+        delete document.agents[targetKind]
+      }
       if (Object.keys(document.agents).length) {
         atomicWritePrivateFile(this.storagePath, JSON.stringify(document))
       } else {
@@ -140,7 +209,8 @@ class ProviderStore {
   envForAgent(kind) {
     const targetKind = this.normalizeKind(kind)
     this.requireEncryption()
-    const entry = this.readDocument().agents[targetKind]
+    const agent = this.readDocument().agents[targetKind]
+    const entry = agent?.profiles?.[agent.activePreset]
     if (!entry) throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
     return {
       OPENAI_API_KEY: this.decryptEntry(entry),
@@ -158,6 +228,12 @@ class ProviderStore {
     if (!PROVIDER_KIND.test(normalized) || !this.allowedKinds.has(normalized)) {
       throw new Error('PROVIDER_AGENT_UNSUPPORTED')
     }
+    return normalized
+  }
+
+  normalizePreset(preset) {
+    const normalized = String(preset || '').trim().toLowerCase()
+    if (!PROVIDER_PRESETS.has(normalized)) throw new Error('PROVIDER_PRESET_UNSUPPORTED')
     return normalized
   }
 
@@ -194,10 +270,29 @@ class ProviderStore {
         model: payload.model,
         encrypted: payload.encrypted,
       })
+      const preset = inferStoredPreset(entry)
       return {
         version: STORE_VERSION,
-        agents: Object.fromEntries([...this.allowedKinds].map(kind => [kind, { ...entry }])),
+        agents: Object.fromEntries([...this.allowedKinds].map(kind => [kind, {
+          activePreset: preset,
+          profiles: { [preset]: { ...entry } },
+        }])),
       }
+    }
+    if (payload?.version === SINGLE_PROFILE_STORE_VERSION) {
+      if (sortedKeys(payload) !== 'agents,version'
+          || !payload.agents || typeof payload.agents !== 'object'
+          || Array.isArray(payload.agents)) {
+        throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
+      }
+      const agents = {}
+      for (const [kind, rawEntry] of Object.entries(payload.agents)) {
+        if (!this.allowedKinds.has(kind)) throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
+        const entry = this.normalizeEntry(rawEntry)
+        const preset = inferStoredPreset(entry)
+        agents[kind] = { activePreset: preset, profiles: { [preset]: entry } }
+      }
+      return { version: STORE_VERSION, agents }
     }
     if (sortedKeys(payload) !== 'agents,version'
         || payload.version !== STORE_VERSION
@@ -208,9 +303,31 @@ class ProviderStore {
     const agents = {}
     for (const [kind, entry] of Object.entries(payload.agents)) {
       if (!this.allowedKinds.has(kind)) throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
-      agents[kind] = this.normalizeEntry(entry)
+      agents[kind] = this.normalizeAgentEntry(entry)
     }
     return { version: STORE_VERSION, agents }
+  }
+
+  normalizeAgentEntry(entry) {
+    try {
+      if (sortedKeys(entry) !== 'activePreset,profiles'
+          || !entry.profiles || typeof entry.profiles !== 'object'
+          || Array.isArray(entry.profiles)) {
+        throw new Error('invalid agent entry')
+      }
+      const activePreset = this.normalizePreset(entry.activePreset)
+      const profiles = {}
+      for (const [preset, profile] of Object.entries(entry.profiles)) {
+        const normalizedPreset = this.normalizePreset(preset)
+        profiles[normalizedPreset] = this.normalizeEntry(profile)
+      }
+      if (activePreset !== 'official' && !profiles[activePreset]) {
+        throw new Error('missing active profile')
+      }
+      return { activePreset, profiles }
+    } catch {
+      throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
+    }
   }
 
   normalizeEntry(entry) {

@@ -85,6 +85,30 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(readinessAgents.find(agent => agent.kind === 'kimi').executable, '/tmp/kimi')
 })
 
+test('native readiness remains visible while a Meldwork Provider profile is active', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let codexNativeState = { state: 'ready', source: 'native-auth-status' }
+  options.credentialState = async kind => kind === 'codex'
+    ? codexNativeState
+    : { state: 'ready', source: 'native-credential' }
+  options.sharedProviderReady = kind => kind === 'codex'
+  const workspace = new LocalWorkspace(options)
+
+  let snapshot = await workspace.refreshAgents()
+  let codex = snapshot.agents.find(agent => agent.kind === 'codex')
+  assert.equal(codex.credentialState, 'ready')
+  assert.equal(codex.availabilitySource, 'native-auth-status')
+  assert.equal(codex.available, true)
+
+  codexNativeState = { state: 'missing', source: 'native-auth-status' }
+  snapshot = await workspace.refreshAgents()
+  codex = snapshot.agents.find(agent => agent.kind === 'codex')
+  assert.equal(codex.credentialState, 'ready')
+  assert.equal(codex.availabilitySource, 'shared-provider')
+  assert.equal(codex.available, true)
+})
+
 test('an unverified installed Agent stays unavailable until credentials are detected', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

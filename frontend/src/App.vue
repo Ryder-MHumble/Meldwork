@@ -22,9 +22,11 @@
         <header class="brand-row">
           <button
             class="brand-button"
+            :class="{ active: activeView === 'home' }"
             type="button"
             :title="t('nav.home')"
             :aria-label="t('nav.home')"
+            :aria-current="activeView === 'home' ? 'page' : undefined"
             @click="goHome"
           >
             <img :src="productMark" alt="" />
@@ -272,6 +274,7 @@
             :class="{ active: activeView === 'settings' }"
             type="button"
             :title="t('nav.settings')"
+            :aria-current="activeView === 'settings' ? 'page' : undefined"
             @click="openSystemSettings('agents')"
           >
             <SettingsOutline />
@@ -449,16 +452,18 @@
                   <h2>{{ t('knowledgeBase.title') }}</h2>
                   <p>{{ t('knowledgeBase.subtitle') }}</p>
                 </div>
-                <button class="secondary-button compact" type="button" :disabled="knowledgeBaseLoading" @click="loadKnowledgeBaseStatuses">
-                  <RefreshOutline :class="{ spinning: knowledgeBaseLoading }" />
-                  {{ t('knowledgeBase.refresh') }}
-                </button>
+                <div class="knowledge-base-header-actions">
+                  <span class="knowledge-base-ready-summary" role="status" aria-live="polite">
+                    {{ knowledgeBaseLoading
+                      ? t('knowledgeBase.status.checking')
+                      : t('knowledgeBase.readyCount', { ready: readyKnowledgeBaseCount, total: localKnowledgeBaseEntries.length }) }}
+                  </span>
+                  <button class="secondary-button compact" type="button" :disabled="knowledgeBaseLoading" @click="loadKnowledgeBaseStatuses">
+                    <RefreshOutline :class="{ spinning: knowledgeBaseLoading }" />
+                    {{ t('knowledgeBase.refresh') }}
+                  </button>
+                </div>
               </header>
-              <div class="manager-toolbar" role="status" aria-live="polite">
-                <span>{{ knowledgeBaseLoading
-                  ? t('knowledgeBase.status.checking')
-                  : t('knowledgeBase.readyCount', { ready: readyKnowledgeBaseCount, total: localKnowledgeBaseEntries.length }) }}</span>
-              </div>
               <div class="knowledge-base-groups">
                 <section
                   v-for="group in knowledgeBaseGroups"
@@ -469,37 +474,53 @@
                 >
                   <header class="knowledge-base-group-header">
                     <h3 :id="`knowledge-base-group-${group.id}`">{{ t(group.titleKey) }}</h3>
+                    <p v-if="group.planned">{{ t('knowledgeBase.group.plannedHint') }}</p>
                   </header>
-                  <div class="knowledge-base-grid">
+                  <div v-if="group.planned" class="knowledge-base-planned-list">
+                    <article
+                      v-for="source in group.sources"
+                      :key="source.kind"
+                      class="knowledge-base-planned-item"
+                    >
+                      <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
+                      <div class="knowledge-base-planned-copy">
+                        <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                        <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
+                      </div>
+                      <span class="knowledge-base-planned-status">
+                        <CloudOutline />
+                        {{ knowledgeBaseStatusLabel(source) }}
+                      </span>
+                      <button class="knowledge-base-doc-link" type="button" @click="runKnowledgeBasePrimaryAction(source)">
+                        {{ knowledgeBasePrimaryActionLabel(source) }}
+                        <ChevronForwardOutline />
+                      </button>
+                    </article>
+                  </div>
+                  <div v-else class="knowledge-base-grid">
                     <article
                       v-for="source in group.sources"
                       :key="source.kind"
                       class="knowledge-base-card"
-                      :class="{ planned: group.planned, pending: knowledgeBasePending(source) }"
+                      :class="{ pending: knowledgeBasePending(source) }"
                     >
                       <header class="knowledge-base-card-header">
                         <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
                         <div class="knowledge-base-card-copy">
-                          <div class="knowledge-base-card-title">
-                            <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
-                            <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
-                              <component :is="knowledgeBaseIcon(source)" :class="{ spinning: knowledgeBasePending(source) }" />
-                              {{ knowledgeBaseStatusLabel(source) }}
-                            </span>
-                          </div>
+                          <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
                           <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
                         </div>
-                      </header>
-                      <div class="knowledge-base-tags">
-                        <span
-                          v-for="tag in knowledgeBaseTags(source)"
-                          :key="tag.label"
-                          class="knowledge-base-tag"
-                          :class="tag.tone"
-                        >
-                          {{ tag.label }}
+                        <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
+                          <component :is="knowledgeBaseIcon(source)" :class="{ spinning: knowledgeBasePending(source) }" />
+                          {{ knowledgeBaseStatusLabel(source) }}
                         </span>
-                      </div>
+                      </header>
+                      <dl class="knowledge-base-facts">
+                        <div v-for="fact in knowledgeBaseFacts(source)" :key="fact.key">
+                          <dt>{{ fact.label }}</dt>
+                          <dd :class="fact.tone">{{ fact.value }}</dd>
+                        </div>
+                      </dl>
                       <p class="knowledge-base-hint">{{ knowledgeBaseHint(source) }}</p>
                       <p v-if="knowledgeBaseLocationLabel(source)" class="knowledge-base-path">
                         <code>{{ knowledgeBaseLocationLabel(source) }}</code>
@@ -512,6 +533,7 @@
                         >
                           <RefreshOutline v-if="knowledgeBasePending(source)" class="spinning" />
                           {{ knowledgeBasePrimaryActionLabel(source) }}
+                          <ChevronForwardOutline v-if="!knowledgeBasePending(source)" />
                         </button>
                       </footer>
                     </article>
@@ -540,10 +562,9 @@
                   @click="selectProviderAgent(agent.kind)"
                 >
                   <img :src="agent.logo" alt="" />
-                  <span>
+                  <span class="provider-agent-copy">
                     <strong>{{ agent.label }}</strong>
                     <small :class="providerStatusTone(agent.kind)">{{ providerStatusLabel(agent.kind) }}</small>
-                    <small class="provider-agent-mode">{{ providerCapabilityLabel(agent) }}</small>
                   </span>
                   <CheckmarkCircleOutline v-if="providerReady(agent.kind)" class="ready" />
                   <RefreshOutline v-else-if="!hasProviderStatus(agent.kind)" class="spinning" />
@@ -551,31 +572,24 @@
                 </button>
               </nav>
 
-              <form class="provider-editor form-stack" :aria-busy="String(providerNativeStatusPending)" @submit.prevent="saveProvider">
+              <form class="provider-editor form-stack" :aria-busy="String(!hasProviderStatus(selectedProviderKind))" @submit.prevent="saveProvider">
                 <header v-if="selectedProviderAgent" class="provider-editor-header">
                   <img :src="selectedProviderAgent.logo" alt="" />
-                  <div>
+                  <div class="provider-editor-title">
                     <h2>{{ t('provider.agentTitle', { agent: selectedProviderAgent.label }) }}</h2>
-                    <p>{{ agentDescription(selectedProviderAgent.kind) }}</p>
-                    <small class="provider-capability-label">{{ providerCapabilityLabel(selectedProviderAgent) }}</small>
+                    <div class="provider-editor-tags">
+                      <span :class="providerStatusTone(selectedProviderKind)">{{ providerStatusLabel(selectedProviderKind) }}</span>
+                      <span>{{ providerCapabilityLabel(selectedProviderAgent) }}</span>
+                      <span class="active">{{ t('provider.activeProfile', { provider: providerPresetLabel(providerActivePreset) }) }}</span>
+                    </div>
                   </div>
                 </header>
-                <div class="provider-status" role="status" aria-live="polite" :class="{ configured: providerReady(selectedProviderKind), checking: !hasProviderStatus(selectedProviderKind) }">
-                  <CheckmarkCircleOutline v-if="providerReady(selectedProviderKind)" />
-                  <RefreshOutline v-else-if="!hasProviderStatus(selectedProviderKind)" class="spinning" />
-                  <WarningOutline v-else />
-                  <span>{{ providerStatusLabel(selectedProviderKind) }}</span>
-                </div>
-                <p class="provider-agent-hint">{{ t('provider.agentSpecificHint') }}</p>
-                <p
-                  v-if="nativeProviderReady(selectedProviderAgent) && hasProviderStatus(selectedProviderKind) && !providerStatus.error && !providerStatus.configured"
-                  class="provider-native-detected-note"
-                >
-                  <CheckmarkCircleOutline />
-                  <span>{{ t('provider.nativeDetectedHint') }}</span>
-                </p>
+
                 <section class="provider-source-section" :aria-label="t('provider.source')">
-                  <span>{{ t('provider.source') }}</span>
+                  <div class="provider-source-heading">
+                    <span>{{ t('provider.source') }}</span>
+                    <small v-if="selectedProviderPreset">{{ providerPresetHint(selectedProviderPreset.id) }}</small>
+                  </div>
                   <div class="provider-source-options">
                     <button
                       v-for="preset in selectedProviderPresets"
@@ -587,93 +601,70 @@
                       @click="applyProviderPreset(preset.id)"
                     >
                       <strong>{{ providerPresetLabel(preset.id) }}</strong>
-                      <small>{{ providerPresetHint(preset.id) }}</small>
+                      <small :class="{ active: providerPresetActive(preset.id), configured: providerPresetConfigured(preset.id) }">
+                        {{ providerPresetStateLabel(preset.id) }}
+                      </small>
                     </button>
                   </div>
                 </section>
-                <section
-                  v-if="providerNativeOfficialMode"
-                  class="provider-native-card"
-                  :class="{ warning: providerNativeOverrideActive || providerNativeStatusError }"
-                >
-                  <RefreshOutline v-if="providerNativeStatusPending" class="spinning" />
-                  <WarningOutline v-else-if="providerNativeOverrideActive || providerNativeStatusError" />
-                  <TerminalOutline v-else />
-                  <div>
-                    <strong>{{ t(providerNativeStatusPending
-                      ? 'provider.nativeStatusCheckingTitle'
-                      : providerNativeStatusError
-                        ? 'provider.nativeStatusErrorTitle'
-                        : providerNativeOverrideActive
-                          ? 'provider.nativeOverrideTitle'
-                          : 'provider.nativeTitle') }}</strong>
-                    <p>{{ t(providerNativeStatusPending
-                      ? 'provider.nativeStatusCheckingBody'
-                      : providerNativeStatusError
-                        ? 'provider.nativeStatusErrorBody'
-                        : providerNativeOverrideActive
-                          ? 'provider.nativeOverrideBody'
-                          : 'provider.nativeBody') }}</p>
-                  </div>
-                </section>
+
+                <div v-if="providerStatus.error" class="provider-inline-warning" role="status">
+                  <span>{{ t('provider.unavailable') }}</span>
+                  <button type="button" :disabled="saving" @click="retryProviderStatus(selectedProviderKind)">
+                    <RefreshOutline />
+                    {{ t('common.retry') }}
+                  </button>
+                </div>
                 <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
                   {{ t('provider.encryptionUnavailable') }}
                 </p>
-                <label v-if="!providerNativeOfficialMode">
-                  <span>{{ t('provider.name') }}</span>
-                  <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" maxlength="80" :disabled="saving" required />
-                </label>
-                <label v-if="!providerNativeOfficialMode">
-                  <span>{{ t('provider.baseUrl') }}</span>
-                  <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" maxlength="300" :disabled="saving" required />
-                </label>
-                <label v-if="!providerNativeOfficialMode">
-                  <span>{{ t('provider.model') }}</span>
-                  <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" maxlength="160" :disabled="saving" required />
-                </label>
-                <label v-if="!providerNativeOfficialMode">
-                  <span>{{ t('provider.apiKey') }}</span>
-                  <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" maxlength="8192" :disabled="saving" required />
-                </label>
-                <section class="provider-doc-card">
-                  <div>
-                    <strong>{{ t('provider.configGuide') }}</strong>
-                    <p>{{ t(selectedProviderProfile.docsKey) }}</p>
-                  </div>
-                  <dl>
-                    <div v-if="selectedProviderProfile.configFile">
-                      <dt>{{ t('provider.configFile') }}</dt>
-                      <dd><code>{{ selectedProviderProfile.configFile }}</code></dd>
-                    </div>
-                    <div v-if="selectedProviderRuntimeKeys.length">
-                      <dt>{{ t('provider.runtimeKeys') }}</dt>
-                      <dd>
-                        <code v-for="key in selectedProviderRuntimeKeys" :key="key">{{ key }}</code>
-                      </dd>
-                    </div>
-                  </dl>
-                </section>
+
+                <div v-if="selectedProviderPresetConfigured" class="provider-profile-summary">
+                  <span :class="{ active: selectedProviderPresetActive }">
+                    {{ selectedProviderPresetActive ? t('provider.active') : t('provider.configured') }}
+                  </span>
+                  <span v-if="providerNativeOfficialMode">{{ t('provider.nativeReady') }}</span>
+                  <span v-else-if="selectedProviderProfileStatus?.provider">{{ selectedProviderProfileStatus.provider }}</span>
+                  <span v-if="selectedProviderProfileStatus?.model">{{ selectedProviderProfileStatus.model }}</span>
+                  <code v-if="providerNativeOfficialMode && selectedProviderProfile.configFile">{{ selectedProviderProfile.configFile }}</code>
+                </div>
+
+                <div v-if="!providerNativeOfficialMode" class="provider-external-fields">
+                  <label class="provider-field-name">
+                    <span>{{ t('provider.name') }}</span>
+                    <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" maxlength="80" :disabled="saving" required />
+                  </label>
+                  <label class="provider-field-url">
+                    <span>{{ t('provider.baseUrl') }}</span>
+                    <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" maxlength="300" :disabled="saving" required />
+                  </label>
+                  <label class="provider-field-model">
+                    <span>{{ t('provider.model') }}</span>
+                    <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" maxlength="160" :disabled="saving" required />
+                  </label>
+                  <label class="provider-field-key">
+                    <span>{{ t('provider.apiKey') }}</span>
+                    <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" maxlength="8192" :disabled="saving" required />
+                  </label>
+                </div>
+
                 <p v-if="formError" class="form-error">{{ formError }}</p>
                 <footer class="provider-editor-footer">
-                  <button v-if="providerStatus.configured" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
+                  <button v-if="selectedProviderProfileSaved" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
                     <TrashOutline />
-                    {{ providerRemoveArmed
-                      ? t(providerNativeOverrideActive ? 'provider.removeOverrideConfirm' : 'provider.removeConfirm')
-                      : t(providerNativeOverrideActive ? 'provider.removeOverride' : 'provider.remove') }}
+                    {{ providerRemoveArmed ? t('provider.removeConfirm') : t('provider.remove') }}
                   </button>
                   <span class="footer-spacer" />
-                  <span v-if="providerNativeConfigSelected" class="provider-native-footer-note">
-                    {{ t('provider.nativeConfiguredHint') }}
-                  </span>
-                  <span v-else-if="providerNativeOverrideActive" class="provider-native-footer-note warning">
-                    {{ t('provider.nativeOverrideFooterHint') }}
-                  </span>
-                  <span v-else-if="providerNativeStatusError" class="provider-native-footer-note warning">
-                    {{ t('provider.nativeStatusErrorFooterHint') }}
-                  </span>
-                  <span v-else-if="providerNativeStatusPending" class="provider-native-footer-note">
-                    {{ t('provider.checking') }}
-                  </span>
+                  <button
+                    v-if="selectedProviderPresetConfigured && !selectedProviderPresetActive"
+                    class="secondary-button provider-activate-button"
+                    type="button"
+                    :disabled="saving"
+                    @click="activateProviderPreset(providerForm.preset)"
+                  >
+                    <CheckmarkCircleOutline />
+                    {{ t('provider.useProfile', { provider: providerPresetLabel(providerForm.preset) }) }}
+                  </button>
                   <button v-if="!providerNativeOfficialMode" class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
                     {{ saving ? t('common.saving') : t('provider.save') }}
                   </button>
@@ -689,40 +680,12 @@
               <h1>{{ t('home.dashboardTitle') }}</h1>
               <p>{{ t('home.dashboardSubtitle') }}</p>
             </div>
-            <div class="home-dashboard-actions">
-              <button class="secondary-button" type="button" :disabled="refreshing" @click="refreshAgents">
-                <RefreshOutline :class="{ spinning: refreshing }" />
-                <span>{{ refreshing ? t('home.refreshing') : t('home.refresh') }}</span>
-              </button>
-              <button class="primary-button" type="button" @click="openNewGroup">
-                <AddOutline />
-                <span>{{ t('nav.newGroup') }}</span>
-              </button>
+            <div class="home-workspace-state" :class="{ attention: showSetupGuide }" role="status">
+              <WarningOutline v-if="showSetupGuide" />
+              <CheckmarkCircleOutline v-else />
+              <span>{{ homeWorkspaceSummary }}</span>
             </div>
           </header>
-
-          <section class="home-overview-grid" :aria-label="t('home.overview')">
-            <article class="home-overview-item">
-              <span>{{ t('home.readyAgents') }}</span>
-              <strong>{{ readyCount }}</strong>
-              <small>{{ t('home.installedAgents', { count: installedCount }) }}</small>
-            </article>
-            <article class="home-overview-item">
-              <span>{{ t('home.connectedProviders') }}</span>
-              <strong>{{ providerConfiguredCount }}</strong>
-              <small>{{ t('home.providerTotal', { count: configurableProviderAgents.length }) }}</small>
-            </article>
-            <article class="home-overview-item">
-              <span>{{ t('home.knowledgeSources') }}</span>
-              <strong>{{ readyKnowledgeBaseCount }}</strong>
-              <small>{{ t('home.knowledgeTotal', { count: localKnowledgeBaseEntries.length }) }}</small>
-            </article>
-            <article class="home-overview-item">
-              <span>{{ t('home.conversations') }}</span>
-              <strong>{{ snapshot.groups.length }}</strong>
-              <small>{{ t('home.activeRuns', { count: snapshot.runningGroupIds.length }) }}</small>
-            </article>
-          </section>
 
           <div class="home-dashboard-grid">
             <section class="home-panel home-recent-panel">
@@ -731,15 +694,12 @@
                   <h2>{{ t('home.recentTitle') }}</h2>
                   <p>{{ t('home.recentSubtitle') }}</p>
                 </div>
-                <button class="icon-button" type="button" :title="t('home.openSettings')" :aria-label="t('home.openSettings')" @click="openSystemSettings('agents')">
-                  <SettingsOutline />
-                </button>
               </header>
               <div v-if="recentGroups.length" class="home-recent-list">
                 <button v-for="group in recentGroups" :key="group.id" class="home-recent-item" type="button" @click="selectGroup(group.id)">
                   <span class="home-recent-avatar">
                     <ChatbubblesOutline v-if="group.conversationType !== 'direct'" />
-                    <img v-else :src="agentLogo(group.directAgentKind)" alt="" />
+                    <img v-else :src="agentLogo(group.directAgentKind, theme)" alt="" />
                   </span>
                   <span class="home-recent-copy">
                     <strong>{{ groupName(group) }}</strong>
@@ -761,9 +721,6 @@
                   <h2>{{ t('home.agentStatusTitle') }}</h2>
                   <p>{{ t('home.agentStatusSubtitle') }}</p>
                 </div>
-                <button class="icon-button" type="button" :title="t('home.manage')" :aria-label="t('home.manage')" @click="openAgentManager">
-                  <TerminalOutline />
-                </button>
               </header>
               <div v-if="homeAgentPreview.length" class="home-agent-list">
                 <button v-for="agent in homeAgentPreview" :key="agent.kind" type="button" class="home-agent-item" @click="openDirect(agent)">
@@ -772,23 +729,13 @@
                     <strong>{{ agent.label }}</strong>
                     <small>{{ providerSummaryLabel(agent) }}</small>
                   </span>
-                  <CheckmarkCircleOutline />
+                  <ChevronForwardOutline />
                 </button>
               </div>
               <div v-else class="home-panel-empty">
                 <TerminalOutline />
                 <p>{{ t('home.noReadyAgents') }}</p>
               </div>
-              <footer class="home-panel-footer">
-                <button class="secondary-button compact" type="button" @click="openAgentManager">
-                  <SettingsOutline />
-                  {{ t('home.manage') }}
-                </button>
-                <button class="secondary-button compact" type="button" @click="openProvider()">
-                  <KeyOutline />
-                  {{ t('systemSettings.providers') }}
-                </button>
-              </footer>
             </section>
           </div>
 
@@ -847,13 +794,13 @@
           <header class="conversation-header" :class="{ 'editing-title': inlineTitleEditing }">
             <div class="conversation-identity">
               <div v-if="activeGroup.conversationType === 'direct'" class="conversation-avatar single">
-                <img :src="agentLogo(activeGroup.directAgentKind)" alt="" />
+                <img :src="agentLogo(activeGroup.directAgentKind, theme)" alt="" />
               </div>
               <div v-else class="conversation-avatar stack">
                 <img
                   v-for="kind in activeGroup.agentKinds.slice(0, 3)"
                   :key="kind"
-                  :src="agentLogo(kind)"
+                  :src="agentLogo(kind, theme)"
                   alt=""
                 />
               </div>
@@ -1011,10 +958,10 @@
                   <img
                     v-if="message.role === 'agent'"
                     class="message-avatar"
-                    :src="agentLogo(message.agentKind)"
+                    :src="agentLogo(message.agentKind, theme)"
                     :alt="agentLabel(message.agentKind)"
                   />
-                  <div class="message-body">
+                  <div class="message-body" :class="{ 'has-topic-replies': isTopicRoot(message) }">
                     <div class="message-meta">
                       <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
                       <time>{{ formatTime(message.createdAt) }}</time>
@@ -1066,7 +1013,7 @@
                           :aria-label="t('composer.mentionedAgents')"
                         >
                           <span v-for="kind in messageTargetKinds(message)" :key="kind">
-                            <img :src="agentLogo(kind)" alt="" />
+                            <img :src="agentLogo(kind, theme)" alt="" />
                             {{ agentLabel(kind) }}
                           </span>
                         </div>
@@ -1091,7 +1038,7 @@
                           <img
                             v-for="kind in topicReplyAgentKinds(message.id)"
                             :key="kind"
-                            :src="agentLogo(kind)"
+                            :src="agentLogo(kind, theme)"
                             :alt="agentLabel(kind)"
                           />
                         </span>
@@ -1151,14 +1098,14 @@
                 >
                   <header class="run-status-header">
                     <div v-if="activeGroup.conversationType === 'direct'" class="direct-run-indicator" aria-hidden="true">
-                      <img :src="agentLogo(activeRun.currentKind || activeGroup.directAgentKind)" alt="" />
+                      <img :src="agentLogo(activeRun.currentKind || activeGroup.directAgentKind, theme)" alt="" />
                       <div class="typing-bars"><span /><span /><span /></div>
                     </div>
                     <div v-else class="relay-run-indicator" aria-hidden="true">
                       <img
                         v-for="kind in runTargetKinds.slice(0, 4)"
                         :key="kind"
-                        :src="agentLogo(kind)"
+                        :src="agentLogo(kind, theme)"
                         alt=""
                         :class="{
                           current: runAgentStatus(kind) === 'running',
@@ -1187,7 +1134,7 @@
                       :data-status="runAgentStatus(kind)"
                       :style="{ '--reveal-index': index }"
                     >
-                      <img :src="agentLogo(kind)" alt="" />
+                      <img :src="agentLogo(kind, theme)" alt="" />
                       <strong>{{ agentLabel(kind) }}</strong>
                       <span class="run-agent-state">
                         <span
@@ -1250,7 +1197,7 @@
                   >
                     <img
                       v-if="option.type === 'agent'"
-                      :src="agentLogo(option.value)"
+                      :src="agentLogo(option.value, theme)"
                       alt=""
                     />
                     <span>
@@ -1294,8 +1241,7 @@
                     </button>
                   </div>
 
-                  <div class="target-row">
-                    <span>{{ t('composer.targets') }}</span>
+                  <div class="target-row" :aria-label="t('composer.targets')">
                     <div class="target-avatar-stack" role="group" :aria-label="t('composer.targets')">
                       <button
                         v-for="(kind, index) in activeGroup.agentKinds"
@@ -1312,7 +1258,7 @@
                         :disabled="Boolean(activeRun) || sending || discussionMode === 'auto'"
                         @click="toggleTarget(kind)"
                       >
-                        <img :src="agentLogo(kind)" alt="" />
+                        <img :src="agentLogo(kind, theme)" alt="" />
                         <span class="visually-hidden">{{ agentLabel(kind) }}</span>
                       </button>
                     </div>
@@ -1414,7 +1360,7 @@
                     :aria-label="t('composer.mentionedAgents')"
                   >
                     <span v-for="kind in selectedAgentKinds" :key="kind" class="selected-agent-tag">
-                      <img :src="agentLogo(kind)" alt="" />
+                      <img :src="agentLogo(kind, theme)" alt="" />
                       {{ agentLabel(kind) }}
                       <button
                         type="button"
@@ -1450,7 +1396,7 @@
                       type="button"
                       :title="attachmentActionLabel"
                       :aria-label="attachmentActionLabel"
-                      :disabled="Boolean(activeRun) || sending || importingAttachment || !composerTargetsReady || composerImageLimit <= composerAttachments.length"
+                      :disabled="Boolean(activeRun) || sending || importingAttachment || (composerImageLimit > 0 && composerImageLimit <= composerAttachments.length)"
                       @click="pickImages"
                     >
                       <RefreshOutline v-if="importingAttachment" class="spinning" />
@@ -1736,6 +1682,14 @@
             </footer>
           </form>
 
+          <section v-else-if="modal === 'unlimited-confirm'" class="modal-body confirmation-modal-body">
+            <p>{{ t('composer.unlimitedConfirm') }}</p>
+            <footer class="modal-footer confirmation-modal-footer">
+              <button class="secondary-button" type="button" @click="closeModal">{{ t('common.cancel') }}</button>
+              <button class="primary-button" type="button" @click="confirmUnlimitedRounds">{{ t('common.confirm') }}</button>
+            </footer>
+          </section>
+
               <section v-else-if="modal === 'agent-detail' && selectedAgentDetail" class="modal-body agent-detail-body">
             <div class="agent-detail-hero">
               <img :src="selectedAgentDetail.logo" :alt="selectedAgentDetail.label" />
@@ -1901,7 +1855,8 @@ const NATIVE_PROVIDER_READY_SOURCES = new Set(['native-credential', 'native-auth
 const COMING_SOON_KNOWLEDGE_BASE_KINDS = new Set(['notion', 'confluence', 'googledrive', 'sharepoint'])
 const EXTERNAL_PROVIDER_KINDS = new Set(AGENTS.map(agent => agent.kind))
 const EMPTY_PROVIDER_STATUS = Object.freeze({
-  provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true, error: false,
+  provider: '', baseUrl: '', model: '', activePreset: 'official', profiles: {},
+  configured: false, encryptionAvailable: true, error: false,
 })
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
@@ -2278,7 +2233,7 @@ const mergedCatalog = computed(() => AGENTS.map((profile) => {
     ...installedProfile,
     ...detected,
     label: profile.label,
-    logo: profile.logo,
+    logo: agentLogo(profile.kind, theme.value),
     providerMode: profile.providerMode,
     imageLimit: Number(detected.imageAttachmentLimit ?? installedProfile.imageAttachmentLimit ?? profile.imageLimit) || 0,
     installed: Boolean(installedProfile.installed || detected.installed),
@@ -2338,7 +2293,19 @@ const agentDetailSkillSummary = computed(() => {
   if (!agentDetailSkillItems.value.length) return t('agent.skillsUnavailable')
   return t('agent.localSkills', { count: agentDetailSkillItems.value.length })
 })
-const showSetupGuide = computed(() => onboardingCompleted.value && !snapshot.value.groups.length)
+const showSetupGuide = computed(() => (
+  onboardingCompleted.value
+  && !snapshot.value.groups.length
+  && readyCount.value === 0
+))
+const homeWorkspaceSummary = computed(() => (
+  showSetupGuide.value
+    ? t('home.setupNeeded')
+    : t('home.workspaceSummary', {
+        agents: readyCount.value,
+        conversations: snapshot.value.groups.length,
+      })
+))
 const setupGuideMessage = computed(() => {
   if (!readyCount.value) return t('setupGuide.detectBody')
   if (configurableProviderAgents.value.length && !providerConfiguredCount.value) return t('setupGuide.providerBody')
@@ -2356,29 +2323,22 @@ const selectedProviderPreset = computed(() => (
   || selectedProviderPresets.value[0]
   || null
 ))
-const selectedProviderRuntimeKeys = computed(() => selectedProviderProfile.value.runtimeKeys || [])
+const providerActivePreset = computed(() => (
+  providerStatus.value.activePreset || inferProviderPreset(selectedProviderKind.value, providerStatus.value)
+))
+const selectedProviderProfileStatus = computed(() => (
+  providerProfilesFor(selectedProviderKind.value)[providerForm.preset] || null
+))
+const selectedProviderProfileSaved = computed(() => Boolean(selectedProviderProfileStatus.value?.configured))
+const selectedProviderPresetActive = computed(() => providerActivePreset.value === providerForm.preset)
+const selectedProviderPresetConfigured = computed(() => (
+  selectedProviderProfileSaved.value
+  || (providerForm.preset === 'official' && nativeProviderReady(selectedProviderAgent.value))
+))
 const providerNativeOfficialMode = computed(() => (
-  selectedProviderAgent.value?.providerMode === 'native' && providerForm.preset === 'official'
-))
-const providerNativeStatusPending = computed(() => (
-  providerNativeOfficialMode.value && !hasProviderStatus(selectedProviderKind.value)
-))
-const providerNativeStatusError = computed(() => (
-  providerNativeOfficialMode.value
-  && hasProviderStatus(selectedProviderKind.value)
-  && providerStatus.value.error
-))
-const providerNativeOverrideActive = computed(() => (
-  providerNativeOfficialMode.value
-  && hasProviderStatus(selectedProviderKind.value)
-  && !providerStatus.value.error
-  && providerStatus.value.configured
-))
-const providerNativeConfigSelected = computed(() => (
-  providerNativeOfficialMode.value
-  && hasProviderStatus(selectedProviderKind.value)
-  && !providerStatus.value.error
-  && !providerStatus.value.configured
+  providerForm.preset === 'official'
+  && !selectedProviderProfileSaved.value
+  && nativeProviderReady(selectedProviderAgent.value)
 ))
 const roundProgressPercent = computed(() => {
   const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
@@ -2394,6 +2354,7 @@ const modalTitle = computed(() => ({
   settings: settingsIntent.value === 'rename'
     ? t(activeGroup.value?.conversationType === 'direct' ? 'settings.renameDirectTitle' : 'settings.renameGroupTitle')
     : t('settings.title'),
+  'unlimited-confirm': t('composer.unlimitedConfirmTitle'),
   'agent-detail': selectedAgentDetail.value?.label || t('systemSettings.openAgentDetailDefault'),
 })[modal.value] || '')
 const modalSubtitle = computed(() => ({
@@ -2530,6 +2491,23 @@ function providerStatusFor(kind) {
   return providerStatuses.value[kind] || EMPTY_PROVIDER_STATUS
 }
 
+function providerProfilesFor(kind) {
+  const status = providerStatusFor(kind)
+  if (status.profiles && typeof status.profiles === 'object' && !Array.isArray(status.profiles)) {
+    return status.profiles
+  }
+  if (!status.configured) return {}
+  const preset = status.activePreset || inferProviderPreset(kind, status)
+  return {
+    [preset]: {
+      provider: status.provider,
+      baseUrl: status.baseUrl,
+      model: status.model,
+      configured: true,
+    },
+  }
+}
+
 function hasProviderStatus(kind) {
   return Object.prototype.hasOwnProperty.call(providerStatuses.value, String(kind || ''))
 }
@@ -2578,6 +2556,20 @@ function providerPresetHint(id) {
   return t(`provider.presetHint.${id}`)
 }
 
+function providerPresetConfigured(presetId) {
+  if (providerProfilesFor(selectedProviderKind.value)[presetId]?.configured) return true
+  return presetId === 'official' && nativeProviderReady(selectedProviderAgent.value)
+}
+
+function providerPresetActive(presetId) {
+  return providerActivePreset.value === presetId
+}
+
+function providerPresetStateLabel(presetId) {
+  if (providerPresetActive(presetId)) return t('provider.active')
+  return providerPresetConfigured(presetId) ? t('provider.configured') : t('provider.notConfigured')
+}
+
 function providerPresetFor(kind, presetId) {
   const profile = providerProfile(kind)
   return profile.presets.find(preset => preset.id === presetId) || profile.presets[0] || null
@@ -2586,10 +2578,11 @@ function providerPresetFor(kind, presetId) {
 function fillProviderFormFromPreset(kind, presetId) {
   const preset = providerPresetFor(kind, presetId)
   if (!preset) return
+  const saved = providerProfilesFor(kind)[preset.id]
   providerForm.preset = preset.id
-  providerForm.provider = preset.provider || ''
-  providerForm.baseUrl = preset.baseUrl || ''
-  providerForm.model = preset.model || ''
+  providerForm.provider = saved?.provider || preset.provider || ''
+  providerForm.baseUrl = saved?.baseUrl || preset.baseUrl || ''
+  providerForm.model = saved?.model || preset.model || ''
 }
 
 function applyProviderPreset(presetId) {
@@ -3941,10 +3934,12 @@ async function cancelInstall() {
 
 function requestUnlimitedRounds() {
   if (unlimitedRounds.value) return
-  const confirmed = typeof window.confirm === 'function'
-    ? window.confirm(t('composer.unlimitedConfirm'))
-    : true
-  if (confirmed) unlimitedRounds.value = true
+  modal.value = 'unlimited-confirm'
+}
+
+function confirmUnlimitedRounds() {
+  unlimitedRounds.value = true
+  closeModal()
 }
 
 async function loadProviderStatus(kind, probeEncryption = false) {
@@ -3958,6 +3953,17 @@ async function loadProviderStatus(kind, probeEncryption = false) {
     providerStatuses.value = { ...providerStatuses.value, [kind]: unavailable }
     return unavailable
   }
+}
+
+async function retryProviderStatus(kind) {
+  const targetKind = String(kind || '')
+  if (!EXTERNAL_PROVIDER_KINDS.has(targetKind) || saving.value) return EMPTY_PROVIDER_STATUS
+  const nextStatuses = { ...providerStatuses.value }
+  delete nextStatuses[targetKind]
+  providerStatuses.value = nextStatuses
+  const status = await loadProviderStatus(targetKind, true)
+  if (selectedProviderKind.value === targetKind && !status.error) syncProviderForm(targetKind)
+  return status
 }
 
 async function loadProviderStatuses() {
@@ -4031,14 +4037,12 @@ async function loadKnowledgeBaseStatuses() {
 
 function syncProviderForm(kind) {
   const status = providerStatusFor(kind)
-  const preset = inferProviderPreset(kind, status)
-  if (status.configured) {
-    providerForm.preset = preset
-    providerForm.provider = status.provider || ''
-    providerForm.baseUrl = status.baseUrl || ''
-    providerForm.model = status.model || ''
-  } else {
-    fillProviderFormFromPreset(kind, preset)
+  const preset = status.activePreset || inferProviderPreset(kind, status)
+  fillProviderFormFromPreset(kind, preset)
+  if (status.configured && !providerProfilesFor(kind)[preset]) {
+    providerForm.provider = status.provider || providerForm.provider
+    providerForm.baseUrl = status.baseUrl || providerForm.baseUrl
+    providerForm.model = status.model || providerForm.model
   }
   providerForm.apiKey = ''
 }
@@ -4058,6 +4062,26 @@ function openProvider(kind = '') {
   openSystemSettings('providers', EXTERNAL_PROVIDER_KINDS.has(kind) ? kind : selectedProviderKind.value)
 }
 
+async function activateProviderPreset(presetId) {
+  if (saving.value || providerPresetActive(presetId) || !providerPresetConfigured(presetId)) return
+  if (typeof provider.value?.activate !== 'function') {
+    formError.value = t('provider.switchUnavailable')
+    return
+  }
+  saving.value = true
+  formError.value = ''
+  try {
+    const kind = selectedProviderKind.value
+    await provider.value.activate(kind, presetId)
+    await Promise.all([loadProviderStatus(kind), refreshAgents()])
+    syncProviderForm(kind)
+  } catch (error) {
+    formError.value = translateError(error)
+  } finally {
+    saving.value = false
+  }
+}
+
 async function saveProvider() {
   formError.value = ''
   if (providerNativeOfficialMode.value) return
@@ -4073,6 +4097,7 @@ async function saveProvider() {
   try {
     const kind = selectedProviderKind.value
     await provider.value.save(kind, {
+      preset: providerForm.preset,
       provider: providerForm.provider,
       baseUrl: providerForm.baseUrl,
       model: providerForm.model,
@@ -4218,63 +4243,32 @@ function knowledgeBaseStatusLabel(source) {
   return t('knowledgeBase.status.checking')
 }
 
-function knowledgeBaseTags(source) {
+function knowledgeBaseFacts(source) {
   if (!source) return []
-  if (knowledgeBaseComingSoon(source)) {
-    return [
-      { label: knowledgeBaseModeLabel(source), tone: 'checking' },
-      { label: t('knowledgeBase.tag.comingSoon'), tone: 'checking' },
-    ]
-  }
-  if (knowledgeBasePending(source)) {
-    return [{ label: t('knowledgeBase.tag.checking'), tone: 'checking' }]
-  }
-  if (source.probeState === 'unknown') {
-    return [{ label: t('knowledgeBase.status.unknown'), tone: 'checking' }]
-  }
-  const tags = [{
-    label: knowledgeBaseModeLabel(source),
-    tone: knowledgeBaseConfigured(source) ? 'connected' : 'checking',
-  }]
-  if (source.probeState === 'error') {
-    tags.push({
-      label: t('knowledgeBase.status.error'),
-      tone: 'warning',
-    })
-    return tags
-  }
-  if (source.accessMode === 'cli') {
-    tags.push({
-      label: source.installed ? t('knowledgeBase.tag.cliInstalled') : t('knowledgeBase.tag.cliMissing'),
-      tone: source.installed ? 'connected' : 'warning',
-    })
-    tags.push({
-      label: source.loginState === 'ready' ? t('knowledgeBase.tag.loggedIn') : t('knowledgeBase.tag.needsLogin'),
-      tone: source.loginState === 'ready' ? 'connected' : 'warning',
-    })
-  } else if (source.accessMode === 'vault') {
-    tags.push({
-      label: source.installed ? t('knowledgeBase.tag.appInstalled') : t('knowledgeBase.tag.appMissing'),
-      tone: source.installed ? 'connected' : 'warning',
-    })
-    tags.push({
-      label: source.vaultPath ? t('knowledgeBase.tag.directoryReady') : t('knowledgeBase.tag.directoryMissing'),
-      tone: source.vaultPath ? 'connected' : 'warning',
-    })
-  }
-  tags.push({
-    label: knowledgeBaseCanRead(source)
-      ? t('knowledgeBase.tag.readEnabled')
-      : t('knowledgeBase.tag.readMissing'),
-    tone: knowledgeBaseCanRead(source) ? 'connected' : 'warning',
-  })
-  tags.push({
-    label: knowledgeBaseCanWrite(source)
-      ? t('knowledgeBase.tag.writeEnabled')
-      : t('knowledgeBase.tag.writeMissing'),
-    tone: knowledgeBaseCanWrite(source) ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
-  })
-  return tags
+  const pending = knowledgeBasePending(source)
+  const unresolved = source.probeState === 'unknown' || source.probeState === 'error'
+  const canRead = knowledgeBaseCanRead(source)
+  const canWrite = knowledgeBaseCanWrite(source)
+  return [
+    {
+      key: 'connection',
+      label: t('knowledgeBase.fact.connection'),
+      value: knowledgeBaseModeLabel(source),
+      tone: 'neutral',
+    },
+    {
+      key: 'read',
+      label: t('knowledgeBase.fact.read'),
+      value: pending ? t('knowledgeBase.status.checking') : canRead ? t('knowledgeBase.tag.readEnabled') : t('knowledgeBase.tag.readMissing'),
+      tone: pending || unresolved ? 'checking' : canRead ? 'connected' : 'warning',
+    },
+    {
+      key: 'write',
+      label: t('knowledgeBase.fact.write'),
+      value: pending ? t('knowledgeBase.status.checking') : canWrite ? t('knowledgeBase.tag.writeEnabled') : t('knowledgeBase.tag.writeMissing'),
+      tone: pending || unresolved ? 'checking' : canWrite ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
+    },
+  ]
 }
 
 function knowledgeBaseHint(source) {
@@ -4411,10 +4405,12 @@ async function removeProvider() {
   saving.value = true
   try {
     const kind = selectedProviderKind.value
-    await provider.value.delete(kind)
+    const preset = providerForm.preset
+    await provider.value.delete(kind, preset)
     await Promise.all([loadProviderStatus(kind), refreshAgents()])
     providerRemoveArmed.value = false
-    syncProviderForm(kind)
+    fillProviderFormFromPreset(kind, preset)
+    providerForm.apiKey = ''
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -4608,14 +4604,6 @@ function handleWindowKeydown(event) {
     sidebarDeleteGroupId.value = ''
     return
   }
-  if (roundSettingsOpen.value) {
-    roundSettingsOpen.value = false
-    return
-  }
-  if (skillMenuOpen.value) {
-    skillMenuOpen.value = false
-    return
-  }
   if (onboardingVisible.value) {
     completeOnboarding()
     return
@@ -4624,7 +4612,18 @@ function handleWindowKeydown(event) {
     deleteArmed.value = false
     return
   }
-  if (modal.value) closeModal()
+  if (modal.value) {
+    closeModal()
+    return
+  }
+  if (roundSettingsOpen.value) {
+    roundSettingsOpen.value = false
+    return
+  }
+  if (skillMenuOpen.value) {
+    skillMenuOpen.value = false
+    return
+  }
 }
 
 function handleWindowPointerDown(event) {
