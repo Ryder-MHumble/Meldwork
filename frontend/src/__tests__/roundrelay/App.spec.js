@@ -132,41 +132,63 @@ function createBridge() {
         label: 'Feishu Docs',
         badge: 'FS',
         type: 'cloud',
+        accessMode: 'cli',
         installed: false,
+        configured: false,
         loginState: 'missing',
         permissionState: 'unknown',
-        commandPath: '',
+        commandName: '',
         vaultPath: '',
-        installCommand: 'npm install -g @lark-opdev/cli@latest -f',
+        readable: false,
+        writable: false,
+        probeState: 'ready',
+        errorCode: '',
+        ready: false,
+        installCommand: 'npm install -g @larksuite/cli@latest',
         statusCommand: 'lark-cli auth status',
         loginCommand: 'lark-cli auth login',
-        permissionCommand: 'lark-cli auth check',
+        permissionCommand: 'lark-cli docs +search --query . --page-size 1 --as user',
       },
       {
         kind: 'dingtalk',
         label: 'DingTalk Docs',
         badge: 'DT',
         type: 'cloud',
+        accessMode: 'cli',
         installed: true,
+        configured: false,
         loginState: 'ready',
         permissionState: 'ready',
-        commandPath: '/usr/local/bin/dws',
+        commandName: 'dws',
         vaultPath: '',
+        readable: false,
+        writable: false,
+        probeState: 'ready',
+        errorCode: '',
+        ready: true,
         installCommand: 'npm install -g dingtalk-workspace-cli --registry=https://registry.npmmirror.com',
         statusCommand: 'dws auth status',
         loginCommand: 'dws auth login',
-        permissionCommand: 'dws auth status',
+        permissionCommand: 'dws doc list --page-size 1',
       },
       {
         kind: 'obsidian',
         label: 'Obsidian',
         badge: 'OB',
         type: 'local',
+        accessMode: 'vault',
         installed: true,
+        configured: false,
         loginState: 'ready',
         permissionState: 'ready',
-        commandPath: '/Applications/Obsidian.app',
+        commandName: 'Obsidian app',
         vaultPath: '',
+        vaultDetails: { exists: false, directory: false, readable: false, writable: false },
+        readable: false,
+        writable: false,
+        probeState: 'ready',
+        errorCode: '',
+        ready: false,
       },
     ])),
     openGuide: vi.fn(async () => true),
@@ -176,41 +198,63 @@ function createBridge() {
         label: 'Feishu Docs',
         badge: 'FS',
         type: 'cloud',
+        accessMode: 'cli',
         installed: false,
+        configured: false,
         loginState: 'missing',
         permissionState: 'unknown',
-        commandPath: '',
+        commandName: '',
         vaultPath: '',
-        installCommand: 'npm install -g @lark-opdev/cli@latest -f',
+        readable: false,
+        writable: false,
+        probeState: 'ready',
+        errorCode: '',
+        ready: false,
+        installCommand: 'npm install -g @larksuite/cli@latest',
         statusCommand: 'lark-cli auth status',
         loginCommand: 'lark-cli auth login',
-        permissionCommand: 'lark-cli auth check',
+        permissionCommand: 'lark-cli docs +search --query . --page-size 1 --as user',
       },
       {
         kind: 'dingtalk',
         label: 'DingTalk Docs',
         badge: 'DT',
         type: 'cloud',
+        accessMode: 'cli',
         installed: true,
+        configured: false,
         loginState: 'ready',
         permissionState: 'ready',
-        commandPath: '/usr/local/bin/dws',
+        commandName: 'dws',
         vaultPath: '',
+        readable: false,
+        writable: false,
+        probeState: 'ready',
+        errorCode: '',
+        ready: true,
         installCommand: 'npm install -g dingtalk-workspace-cli --registry=https://registry.npmmirror.com',
         statusCommand: 'dws auth status',
         loginCommand: 'dws auth login',
-        permissionCommand: 'dws auth status',
+        permissionCommand: 'dws doc list --page-size 1',
       },
       {
         kind: 'obsidian',
         label: 'Obsidian',
         badge: 'OB',
         type: 'local',
+        accessMode: 'vault',
         installed: true,
+        configured: false,
         loginState: 'ready',
         permissionState: 'ready',
-        commandPath: '/Applications/Obsidian.app',
+        commandName: 'Obsidian app',
         vaultPath: '/Users/rydersun/Documents/Knowledge',
+        vaultDetails: { exists: true, directory: true, readable: true, writable: true },
+        readable: false,
+        writable: false,
+        probeState: 'ready',
+        errorCode: '',
+        ready: true,
       },
     ])),
   }
@@ -350,20 +394,116 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('defers Provider reads until the settings Provider page opens', async () => {
+  it('loads home status once at boot and re-probes knowledge bases only from their tab', async () => {
     const { wrapper, bridge } = await mountApp()
 
-    expect(bridge.localAgentProvider.status).not.toHaveBeenCalled()
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length)
+    expect(bridge.localAgentProvider.status.mock.calls.map(([kind]) => kind).sort())
+      .toEqual(AGENTS.map(agent => agent.kind).sort())
     expect(bridge.localAgentProvider.probe).not.toHaveBeenCalled()
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
+    expect(wrapper.findAll('.home-overview-item')[1].get('strong').text()).toBe('0')
+    expect(wrapper.findAll('.home-overview-item')[2].get('strong').text()).toBe('1')
+
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.get('.system-settings-page').exists()).toBe(true)
-    expect(bridge.localAgentProvider.status).not.toHaveBeenCalled()
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length)
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
 
     await wrapper.findAll('.settings-tabs button')[1].trigger('click')
     await flushPromises()
-    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length)
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length * 2)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledTimes(1)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledWith('codex')
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
+
+    await wrapper.findAll('.settings-tabs button')[0].trigger('click')
+    await flushPromises()
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
+
+    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await flushPromises()
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('shows verified native CLI Provider readiness separately from a saved profile', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.agents[0].availabilitySource = 'native-credential'
+    })
+
+    expect(wrapper.findAll('.home-overview-item')[1].get('strong').text()).toBe('1')
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await flushPromises()
+
+    const codexProvider = wrapper.findAll('.provider-agent-list button')
+      .find(button => button.text().includes('Codex'))
+    expect(codexProvider.text()).toContain('Native config ready')
+    expect(codexProvider.find('svg.ready').exists()).toBe(true)
+    expect(wrapper.get('.provider-status').text()).toContain('Native config ready')
+    expect(wrapper.get('.provider-native-detected-note').text()).toContain('Meldwork-managed override')
+    expect(wrapper.find('.provider-editor .danger-button').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('counts a successful native Agent run as Provider readiness', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.agents[0].availabilitySource = 'verified-run'
+    })
+
+    expect(wrapper.findAll('.home-overview-item')[1].get('strong').text()).toBe('1')
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await flushPromises()
+
+    const codexProvider = wrapper.findAll('.provider-agent-list button')
+      .find(button => button.text().includes('Codex'))
+    expect(codexProvider.text()).toContain('Native config ready')
+    expect(codexProvider.find('svg.ready').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('keeps a newly selected Provider Agent while the initial status refresh is pending', async () => {
+    const slowRefresh = deferred()
+    const slowCodexProbe = deferred()
+    let statusCalls = 0
+    const statusFor = kind => ({
+      kind,
+      provider: '',
+      baseUrl: '',
+      model: '',
+      configured: false,
+      encryptionAvailable: true,
+    })
+    const { wrapper } = await mountApp(({ bridge }) => {
+      bridge.localAgentProvider.status.mockImplementation((kind) => {
+        statusCalls += 1
+        const status = statusFor(kind)
+        return statusCalls <= AGENTS.length
+          ? Promise.resolve(status)
+          : slowRefresh.promise.then(() => status)
+      })
+      bridge.localAgentProvider.probe.mockImplementation(kind => (
+        kind === 'codex' ? slowCodexProbe.promise : Promise.resolve(statusFor(kind))
+      ))
+    })
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    const hermesProvider = wrapper.findAll('.provider-agent-list button')
+      .find(button => button.text().includes('Hermes'))
+    await hermesProvider.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.provider-agent-list button.active').text()).toContain('Hermes')
+
+    slowRefresh.resolve()
+    await flushPromises()
+    expect(wrapper.get('.provider-agent-list button.active').text()).toContain('Hermes')
+
+    slowCodexProbe.resolve(statusFor('codex'))
+    await flushPromises()
+    expect(wrapper.get('.provider-agent-list button.active').text()).toContain('Hermes')
     wrapper.unmount()
   })
 
@@ -383,6 +523,7 @@ describe('RoundRelay workbench', () => {
       bridge.localAgentProvider.probe.mockImplementation(bridge.localAgentProvider.status)
     })
 
+    expect(wrapper.findAll('.home-overview-item')[1].get('strong').text()).toBe('1')
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     await wrapper.findAll('.settings-tabs button')[1].trigger('click')
     await wrapper.findAll('.provider-agent-list button')
@@ -392,7 +533,7 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.find('.provider-agent-list svg.ready').exists()).toBe(true)
     expect(wrapper.get('.provider-editor-header h2').text()).toContain('Hermes')
-    expect(wrapper.get('.provider-status').text()).toContain('Connected')
+    expect(wrapper.get('.provider-status').text()).toContain('Configured')
     wrapper.unmount()
   })
 
@@ -400,13 +541,36 @@ describe('RoundRelay workbench', () => {
     const { wrapper, bridge } = await mountApp()
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await wrapper.vm.selectSystemSettingsSection('knowledge-bases')
     await flushPromises()
 
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalled()
-    expect(wrapper.get('.knowledge-base-panel').text()).toContain('Knowledge sources')
-    expect(wrapper.get('.knowledge-base-panel').text()).toContain('Feishu Docs')
-    expect(wrapper.get('.knowledge-base-panel').text()).toContain('DingTalk Docs')
-    expect(wrapper.get('.knowledge-base-panel').text()).toContain('Obsidian')
+    const panelText = wrapper.get('.knowledge-base-panel').text()
+    expect(panelText).toContain('Knowledge sources')
+    expect(panelText).toContain('Feishu Docs')
+    expect(panelText).toContain('DingTalk Docs')
+    expect(panelText).toContain('Obsidian')
+    expect(panelText).toContain('Notion')
+    expect(panelText).toContain('Confluence')
+    expect(panelText).toContain('Google Drive')
+    expect(panelText).toContain('SharePoint')
+
+    for (const label of ['Notion', 'Confluence', 'Google Drive', 'SharePoint']) {
+      const plannedCard = wrapper.findAll('.knowledge-base-card')
+        .find(card => card.text().includes(label))
+      expect(plannedCard.get('.knowledge-base-status').text()).toContain('Coming soon')
+      expect(plannedCard.text()).toContain('Connection is not available in this version')
+      expect(plannedCard.get('.knowledge-base-actions button').text()).toContain('View official docs')
+      expect(plannedCard.text()).not.toContain('Not configured')
+    }
+
+    const notionCard = wrapper.findAll('.knowledge-base-card')
+      .find(card => card.text().includes('Notion'))
+    await notionCard.get('.knowledge-base-actions button').trigger('click')
+    await flushPromises()
+    expect(bridge.localKnowledgeBase.openGuide).toHaveBeenCalledWith('notion', 'install')
+    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(2)
 
     const obsidianCard = wrapper.findAll('.knowledge-base-card')
       .find(card => card.text().includes('Obsidian'))
@@ -420,18 +584,75 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('shows every configured Agent and switches language and theme', async () => {
+  it('shows knowledge probe failures without misreporting a missing CLI', async () => {
+    const { wrapper } = await mountApp(({ bridge }) => {
+      bridge.localKnowledgeBase.status.mockRejectedValue(Object.assign(
+        new Error('probe unavailable'),
+        { code: 'KNOWLEDGE_BASE_PROBE_FAILED' },
+      ))
+    })
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await flushPromises()
+
+    const feishuCard = wrapper.findAll('.knowledge-base-card')
+      .find(card => card.text().includes('Feishu Docs'))
+    expect(feishuCard.exists()).toBe(true)
+    expect(feishuCard.get('.knowledge-base-status').text()).toContain('Detection failed')
+    expect(feishuCard.text()).toContain('The local probe failed')
+    expect(feishuCard.text()).not.toContain('CLI not installed')
+    expect(feishuCard.text()).not.toContain('CLI missing')
+    wrapper.unmount()
+  })
+
+  it('shows the workspace home, keeps full Agent management in Settings, and switches language and theme', async () => {
     const { wrapper } = await mountApp()
 
+    expect(wrapper.get('.home-dashboard-header h1').text()).toBe('Meldwork workspace')
+    expect(wrapper.findAll('.agent-card')).toHaveLength(0)
+    expect(wrapper.get('.brand-button img').attributes('src')).toBe('./logos/meldwork-mark-v3.svg')
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.findAll('.agent-card')).toHaveLength(AGENTS.length)
-    expect(wrapper.get('.home-header h1').text()).toBe('Local Agents')
+    expect(wrapper.get('.system-settings-header h1').text()).toBe('Settings')
 
     const controls = wrapper.findAll('.sidebar-footer-actions button')
     await controls[0].trigger('click')
-    expect(wrapper.get('.home-header h1').text()).toBe('本地 Agent')
+    expect(wrapper.get('.system-settings-header h1').text()).toBe('设置')
 
     await controls[1].trigger('click')
     expect(document.documentElement.dataset.theme).toBe('dark')
+    expect(wrapper.get('.brand-button img').attributes('src')).toBe('./logos/meldwork-mark-v3-dark.svg')
+    wrapper.unmount()
+  })
+
+  it('returns to the workspace home from both conversations and Settings', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-home-navigation',
+        conversationType: 'group',
+        name: 'Home navigation',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.find('.conversation-pane').exists()).toBe(true)
+    await wrapper.get('.brand-button').trigger('click')
+    expect(wrapper.find('.home-dashboard').exists()).toBe(true)
+    expect(wrapper.find('.conversation-pane').exists()).toBe(false)
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    expect(wrapper.find('.system-settings-page').exists()).toBe(true)
+    await wrapper.get('.brand-button').trigger('click')
+    expect(wrapper.find('.home-dashboard').exists()).toBe(true)
+    expect(wrapper.find('.system-settings-page').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -762,6 +983,7 @@ describe('RoundRelay workbench', () => {
   it('creates direct chats and local Agent groups', async () => {
     const { wrapper, bridge, state } = await mountApp()
 
+    let createdGroup = null
     const directGroup = {
       id: 'direct-codex',
       conversationType: 'direct',
@@ -774,9 +996,21 @@ describe('RoundRelay workbench', () => {
       updatedAt: '2026-07-29T08:00:00Z',
     }
     bridge.localWorkspace.createGroup.mockResolvedValueOnce(directGroup)
-    bridge.localWorkspace.get.mockImplementation(async () => ({ ...state, groups: [directGroup] }))
+    bridge.localWorkspace.createGroup.mockImplementationOnce(async input => {
+      createdGroup = {
+        id: 'group-1',
+        createdAt: '2026-07-29T09:00:00Z',
+        updatedAt: '2026-07-29T09:00:00Z',
+        ...structuredClone(input),
+      }
+      return structuredClone(createdGroup)
+    })
+    bridge.localWorkspace.get.mockImplementation(async () => ({
+      ...state,
+      groups: createdGroup ? [directGroup, createdGroup] : [directGroup],
+    }))
 
-    await wrapper.findAll('.agent-card')[0].get('.agent-card-actions button').trigger('click')
+    await wrapper.findAll('.home-agent-item')[0].trigger('click')
     await flushPromises()
     expect(bridge.localWorkspace.createGroup).toHaveBeenCalledWith({
       conversationType: 'direct',
@@ -828,7 +1062,7 @@ describe('RoundRelay workbench', () => {
     })
     bridge.localWorkspace.get.mockImplementation(async () => ({ ...state, groups: [directGroup] }))
 
-    const openChat = wrapper.findAll('.agent-card')[0].get('.agent-card-actions button')
+    const openChat = wrapper.findAll('.sidebar-agent-new')[0]
     openChat.element.click()
     openChat.element.click()
     await wrapper.vm.$nextTick()
@@ -1139,7 +1373,7 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.findAll('.agent-mention-option')).toHaveLength(1)
     expect(wrapper.get('.agent-mention-option').text()).toContain('Codex')
-    expect(wrapper.get('.agent-mention-option').text()).toContain('Repository-scale coding')
+    expect(wrapper.get('.agent-mention-option').text()).toContain('Structured reasoning')
     await wrapper.get('.agent-mention-option').trigger('click')
     expect(wrapper.get('.selected-agent-tag').text()).toContain('Codex')
     expect(wrapper.get('.mode-segmented [data-mode="manual"]').classes()).toContain('active')
@@ -1519,7 +1753,8 @@ describe('RoundRelay workbench', () => {
     bridge.agentInstaller.skills.mockClear()
     total = 3
 
-    await wrapper.get('.home-header .secondary-button').trigger('click')
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.get('.manager-toolbar .secondary-button').trigger('click')
     await flushPromises()
 
     expect(bridge.agentInstaller.skills.mock.calls.map(([kind]) => kind).sort()).toEqual(['codex', 'hermes'])
@@ -2040,9 +2275,10 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.findAll('.sidebar-agent')).toHaveLength(1)
     expect(wrapper.get('.sidebar-agent-main').text()).toContain('Codex')
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.get('.agent-card .agent-capability-list').text()).toContain('12 local skills')
     expect(wrapper.get('.agent-card .agent-capability-list').text()).toContain('Up to 4 images')
-    expect(wrapper.get('.agent-card .agent-capability-list').text()).toContain('Responses API')
+    expect(wrapper.get('.agent-card .agent-capability-list').text()).toContain('Not configured')
 
     await wrapper.get('.sidebar-agent-new').trigger('click')
     await flushPromises()
@@ -2072,14 +2308,15 @@ describe('RoundRelay workbench', () => {
     )
 
     await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
-    expect(wrapper.get('.settings-delete-popover').text()).toContain('Native CLI sessions are not deleted')
-    expect(wrapper.get('.settings-delete-popover .danger-button').text()).toContain('Confirm delete')
+    expect(wrapper.find('.modal.medium').exists()).toBe(false)
+    expect(wrapper.get('.sidebar-delete-popover').text()).toContain('Delete this conversation?')
+    expect(wrapper.get('.sidebar-delete-popover').text()).toContain('Native CLI sessions are not deleted')
+    expect(wrapper.get('.sidebar-delete-popover .danger-button').text()).toContain('Confirm delete')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
-    expect(wrapper.find('.settings-delete-popover').exists()).toBe(false)
-    expect(wrapper.find('.modal.medium').exists()).toBe(true)
-    await wrapper.get('.settings-delete-trigger').trigger('click')
-    await wrapper.get('.settings-delete-popover .danger-button').trigger('click')
+    expect(wrapper.find('.sidebar-delete-popover').exists()).toBe(false)
+    await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
+    await wrapper.get('.sidebar-delete-popover .danger-button').trigger('click')
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('direct-codex-1')
     wrapper.unmount()
@@ -2183,8 +2420,9 @@ describe('RoundRelay workbench', () => {
     )
 
     await wrapper.get('.group-conversation-row .direct-session-action.danger').trigger('click')
-    expect(wrapper.get('.settings-delete-popover .danger-button').text()).toContain('Confirm delete')
-    await wrapper.get('.settings-delete-popover .danger-button').trigger('click')
+    expect(wrapper.find('.modal.medium').exists()).toBe(false)
+    expect(wrapper.get('.sidebar-delete-popover .danger-button').text()).toContain('Confirm delete')
+    await wrapper.get('.sidebar-delete-popover .danger-button').trigger('click')
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('group-sidebar-actions')
     wrapper.unmount()

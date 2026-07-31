@@ -30,7 +30,8 @@ describe('renderer security policy', () => {
 
   it('keeps public asset URLs relative for file-based Electron builds', () => {
     const indexSource = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
-    expect(publicAsset('logos/meldwork-mark.svg')).toBe('./logos/meldwork-mark.svg')
+    expect(publicAsset('logos/meldwork-mark-v3.svg')).toBe('./logos/meldwork-mark-v3.svg')
+    expect(publicAsset('logos/meldwork-mark-v3-dark.svg')).toBe('./logos/meldwork-mark-v3-dark.svg')
     expect(indexSource).toContain('href="./logos/meldwork-favicon-16.png"')
     expect(indexSource).toContain('href="./logos/meldwork-favicon-32.png"')
     expect(indexSource).toContain('href="./logos/meldwork-favicon.png"')
