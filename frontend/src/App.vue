@@ -260,45 +260,62 @@
                   {{ t('installer.refresh') }}
                 </button>
               </div>
-              <div class="manager-list">
-                <article v-for="agent in mergedCatalog" :key="agent.kind" class="manager-row" :class="{ focused: focusedAgentKind === agent.kind }">
-                  <img :src="agent.logo" :alt="agent.label" />
-                  <div class="manager-copy">
-                    <div>
-                      <strong>{{ agent.label }}</strong>
-                      <span class="agent-state" :class="agentState(agent).tone">
-                        <component :is="agentState(agent).icon" />
-                        {{ agentState(agent).label }}
+              <div class="agent-grid settings-agent-grid">
+                <article
+                  v-for="agent in mergedCatalog"
+                  :key="agent.kind"
+                  class="agent-card settings-agent-card"
+                  :class="{ focused: focusedAgentKind === agent.kind }"
+                >
+                  <button
+                    class="agent-card-main"
+                    type="button"
+                    :title="t('systemSettings.openAgentDetail', { agent: agent.label })"
+                    @click="openAgentDetail(agent)"
+                  >
+                    <img :src="agent.logo" :alt="agent.label" />
+                    <span class="agent-card-copy">
+                      <span class="agent-name-row">
+                        <strong>{{ agent.label }}</strong>
+                        <span class="agent-state" :class="agentState(agent).tone">
+                          <component :is="agentState(agent).icon" />
+                          {{ agentState(agent).label }}
+                        </span>
                       </span>
-                    </div>
-                    <p>{{ agentDescription(agent.kind) }}</p>
-                    <small>{{ providerModeLabel(agent.providerMode) }}</small>
-                    <small v-if="agent.version">{{ t('agent.detectedVersion', { version: agent.version }) }}</small>
-                    <div v-if="installConfirmKind === agent.kind" class="install-confirm">
-                      <strong>{{ t('installer.confirm', { agent: agent.label }) }}</strong>
-                      <span>{{ t('installer.confirmHint') }}</span>
-                    </div>
-                    <div v-if="installerState.kind === agent.kind && installerState.phase !== 'idle'" class="install-progress">
-                      <span>{{ installerPhaseLabel }}</span>
-                    </div>
+                      <span class="agent-card-description">{{ agentDescription(agent.kind) }}</span>
+                      <span class="agent-capability-list">
+                        <span v-if="agent.ready">{{ agentSkillLabel(agent.kind) }}</span>
+                        <span>{{ agentImageLabel(agent) }}</span>
+                        <span>{{ providerSummaryLabel(agent) }}</span>
+                      </span>
+                      <span v-if="agent.version" class="agent-version">
+                        {{ t('agent.detectedVersion', { version: agent.version }) }}
+                      </span>
+                    </span>
+                    <ChevronForwardOutline class="card-chevron" />
+                  </button>
+                  <div v-if="installConfirmKind === agent.kind" class="install-confirm">
+                    <strong>{{ t('installer.confirm', { agent: agent.label }) }}</strong>
+                    <span>{{ t('installer.confirmHint') }}</span>
                   </div>
-                  <div class="manager-actions">
+                  <div v-if="installerState.kind === agent.kind && installerState.phase !== 'idle'" class="install-progress">
+                    <span>{{ installerPhaseLabel }}</span>
+                  </div>
+                  <div class="agent-card-actions settings-agent-actions">
                     <button
                       v-if="agent.ready"
-                      class="secondary-button compact"
                       type="button"
                       :disabled="isDirectCreationPending(agent.kind)"
-                      @click="openDirect(agent)"
+                      @click.stop="openDirect(agent)"
                     >
                       <ChatbubbleEllipsesOutline />
                       {{ t('home.openChat') }}
                     </button>
                     <button
                       v-else-if="!agent.installed && agent.installSupported"
-                      class="primary-button compact"
                       type="button"
                       :disabled="installerBusy && installerState.kind !== agent.kind"
-                      @click="requestInstall(agent)"
+                      @click.stop="requestInstall(agent)"
                     >
                       <DownloadOutline />
                       {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
@@ -308,17 +325,15 @@
                     </span>
                     <button
                       v-if="installerState.kind === agent.kind && installerState.canCancel"
-                      class="secondary-button compact"
                       type="button"
-                      @click="cancelInstall"
+                      @click.stop="cancelInstall"
                     >
                       {{ t('installer.cancel') }}
                     </button>
                     <button
                       v-else-if="supportsExternalProvider(agent)"
-                      class="secondary-button compact"
                       type="button"
-                      @click="openProvider(agent.kind)"
+                      @click.stop="openProvider(agent.kind)"
                     >
                       <KeyOutline />
                       {{ t('systemSettings.providerForAgent') }}
@@ -340,9 +355,10 @@
                   <img :src="agent.logo" alt="" />
                   <span>
                     <strong>{{ agent.label }}</strong>
-                    <small>{{ providerStatusFor(agent.kind).configured ? t('provider.configured') : t('provider.notConfigured') }}</small>
+                    <small :class="providerStatusTone(agent.kind)">{{ providerStatusLabel(agent.kind) }}</small>
                   </span>
                   <CheckmarkCircleOutline v-if="providerStatusFor(agent.kind).configured" class="ready" />
+                  <RefreshOutline v-else-if="!hasProviderStatus(agent.kind)" class="spinning" />
                   <ChevronForwardOutline v-else />
                 </button>
               </nav>
@@ -355,10 +371,11 @@
                     <p>{{ agentDescription(selectedProviderAgent.kind) }}</p>
                   </div>
                 </header>
-                <div class="provider-status" :class="{ configured: providerStatus.configured }">
+                <div class="provider-status" :class="{ configured: providerStatus.configured, checking: !hasProviderStatus(selectedProviderKind) }">
                   <CheckmarkCircleOutline v-if="providerStatus.configured" />
+                  <RefreshOutline v-else-if="!hasProviderStatus(selectedProviderKind)" class="spinning" />
                   <WarningOutline v-else />
-                  <span>{{ providerStatus.configured ? t('provider.configured') : t('provider.notConfigured') }}</span>
+                  <span>{{ providerStatusLabel(selectedProviderKind) }}</span>
                 </div>
                 <p class="provider-agent-hint">{{ t('provider.agentSpecificHint') }}</p>
                 <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
@@ -417,6 +434,55 @@
           <div class="home-summary">
             <strong>{{ t('home.readyCount', { ready: readyCount, installed: installedCount }) }}</strong>
           </div>
+
+          <section v-if="showSetupGuide" class="setup-guide" :aria-label="t('setupGuide.title')">
+            <header>
+              <div>
+                <h2>{{ t('setupGuide.title') }}</h2>
+                <p>{{ setupGuideMessage }}</p>
+              </div>
+            </header>
+            <ol>
+              <li :class="{ complete: installedCount > 0 }">
+                <CheckmarkCircleOutline v-if="installedCount > 0" />
+                <RefreshOutline v-else />
+                <span>
+                  <strong>{{ t('setupGuide.detectTitle') }}</strong>
+                  <small>{{ t('setupGuide.detectBody') }}</small>
+                </span>
+              </li>
+              <li :class="{ complete: providerConfiguredCount > 0 || !configurableProviderAgents.length }">
+                <CheckmarkCircleOutline v-if="providerConfiguredCount > 0 || !configurableProviderAgents.length" />
+                <KeyOutline v-else />
+                <span>
+                  <strong>{{ t('setupGuide.providerTitle') }}</strong>
+                  <small>{{ t('setupGuide.providerBody') }}</small>
+                </span>
+              </li>
+              <li :class="{ complete: readyCount > 0 }">
+                <CheckmarkCircleOutline v-if="readyCount > 0" />
+                <ChatbubblesOutline v-else />
+                <span>
+                  <strong>{{ t('setupGuide.chatTitle') }}</strong>
+                  <small>{{ t('setupGuide.chatBody') }}</small>
+                </span>
+              </li>
+            </ol>
+            <footer>
+              <button class="secondary-button" type="button" :disabled="refreshing" @click="refreshAgents">
+                <RefreshOutline :class="{ spinning: refreshing }" />
+                {{ refreshing ? t('home.refreshing') : t('home.refresh') }}
+              </button>
+              <button class="secondary-button" type="button" @click="openProvider()">
+                <KeyOutline />
+                {{ t('systemSettings.providers') }}
+              </button>
+              <button class="primary-button" type="button" :disabled="readyCount < 2" @click="openNewGroup">
+                <ChatbubblesOutline />
+                {{ t('nav.newGroup') }}
+              </button>
+            </footer>
+          </section>
 
           <div class="agent-grid">
             <article v-for="agent in mergedCatalog" :key="agent.kind" class="agent-card">
@@ -911,10 +977,11 @@
                     <span>{{ t('composer.targets') }}</span>
                     <div class="target-avatar-stack" role="group" :aria-label="t('composer.targets')">
                       <button
-                        v-for="kind in activeGroup.agentKinds"
+                        v-for="(kind, index) in activeGroup.agentKinds"
                         :key="kind"
                         class="target-chip"
                         :class="{ selected: isComposerTargetSelected(kind) }"
+                        :style="{ '--stack-index': index }"
                         type="button"
                         :title="agentLabel(kind)"
                         :aria-label="discussionMode === 'auto'
@@ -926,7 +993,6 @@
                       >
                         <img :src="agentLogo(kind)" alt="" />
                         <span class="visually-hidden">{{ agentLabel(kind) }}</span>
-                        <CheckmarkCircleOutline v-if="isComposerTargetSelected(kind)" class="target-selected-mark" />
                       </button>
                     </div>
                   </div>
@@ -944,6 +1010,7 @@
                       :aria-label="t('composer.maxRounds')"
                       aria-haspopup="dialog"
                       :aria-expanded="roundSettingsOpen ? 'true' : 'false'"
+                      :class="{ unlimited: unlimitedRounds }"
                       :disabled="Boolean(activeRun) || sending"
                       @click="roundSettingsOpen = !roundSettingsOpen"
                     >
@@ -962,29 +1029,43 @@
                           {{ unlimitedRounds ? t('composer.unlimitedRounds') : t('composer.autoRounds', { count: maxRounds }) }}
                         </output>
                       </header>
-                      <input
-                        v-model.number="maxRounds"
-                        class="round-range-input"
-                        type="range"
-                        min="1"
-                        max="10"
-                        step="1"
-                        :disabled="unlimitedRounds"
-                        :aria-label="t('composer.maxRounds')"
-                        :aria-valuetext="t('composer.autoRounds', { count: maxRounds })"
-                      />
-                      <div class="round-range-labels" aria-hidden="true">
-                        <span>1</span>
-                        <span>10</span>
-                      </div>
-                      <label class="round-unlimited-row">
-                        <span>{{ t('composer.unlimitedRounds') }}</span>
+                      <div v-if="!unlimitedRounds" class="round-range-panel">
                         <input
-                          v-model="unlimitedRounds"
-                          class="round-unlimited-toggle"
-                          type="checkbox"
+                          v-model.number="maxRounds"
+                          class="round-range-input"
+                          type="range"
+                          min="1"
+                          max="10"
+                          step="1"
+                          :style="{ '--round-progress': roundProgressPercent }"
+                          :aria-label="t('composer.maxRounds')"
+                          :aria-valuetext="t('composer.autoRounds', { count: maxRounds })"
                         />
-                      </label>
+                        <div class="round-range-labels" aria-hidden="true">
+                          <span>1</span>
+                          <span>10</span>
+                        </div>
+                      </div>
+                      <div v-else class="round-unlimited-active">
+                        <strong>{{ t('composer.unlimitedRounds') }}</strong>
+                        <small>{{ t('composer.unlimitedHint') }}</small>
+                      </div>
+                      <button
+                        v-if="!unlimitedRounds"
+                        class="round-unlimited-button"
+                        type="button"
+                        @click="requestUnlimitedRounds"
+                      >
+                        {{ t('composer.unlimitedRounds') }}
+                      </button>
+                      <button
+                        v-else
+                        class="round-bounded-button"
+                        type="button"
+                        @click="unlimitedRounds = false"
+                      >
+                        {{ t('composer.useBoundedRounds') }}
+                      </button>
                     </section>
                   </div>
                 </div>
@@ -1134,50 +1215,26 @@
             </article>
           </transition>
           <footer class="onboarding-footer">
-            <div class="onboarding-carousel-controls">
-              <button
-                class="icon-button"
-                type="button"
-                :title="t('onboarding.previous')"
-                :aria-label="t('onboarding.previous')"
-                @click="moveOnboarding(-1)"
-              >
-                <ChevronBackOutline />
-              </button>
-              <div class="onboarding-dots" :aria-label="t('onboarding.progress')">
-                <button
-                  v-for="(_slide, index) in onboardingSlides"
-                  :key="index"
-                  class="onboarding-dot"
-                  :class="{ active: onboardingIndex === index }"
-                  type="button"
-                  :aria-label="t('onboarding.goToSlide', { count: index + 1 })"
-                  :aria-current="onboardingIndex === index ? 'step' : undefined"
-                  @click="onboardingIndex = index"
-                />
-              </div>
-              <button
-                class="icon-button"
-                type="button"
-                :title="t('onboarding.next')"
-                :aria-label="t('onboarding.next')"
-                @click="moveOnboarding(1)"
-              >
-                <ChevronForwardOutline />
-              </button>
+            <div class="onboarding-dots" :aria-label="t('onboarding.progress')">
+              <span
+                v-for="(_slide, index) in onboardingSlides"
+                :key="index"
+                class="onboarding-dot"
+                :class="{ active: onboardingIndex === index }"
+                :aria-label="t('onboarding.goToSlide', { count: index + 1 })"
+                :aria-current="onboardingIndex === index ? 'step' : undefined"
+              />
             </div>
             <button
               class="primary-button onboarding-primary"
               type="button"
-              :disabled="onboardingOnLastSlide && onboardingDetecting"
-              @click="advanceOnboarding"
+              :class="{ loading: !onboardingReady }"
+              :disabled="!onboardingReady"
+              @click="completeOnboarding"
             >
-              <RefreshOutline v-if="onboardingOnLastSlide && onboardingDetecting" class="spinning" />
-              <CheckmarkCircleOutline v-else-if="onboardingOnLastSlide" />
-              <ChevronForwardOutline v-else />
-              {{ onboardingOnLastSlide
-                ? (onboardingDetecting ? t('onboarding.detecting') : t('onboarding.start'))
-                : t('onboarding.continue') }}
+              <span v-if="!onboardingReady" class="loading-dots" aria-hidden="true"><i /><i /><i /></span>
+              <CheckmarkCircleOutline v-else />
+              {{ onboardingReady ? t('onboarding.start') : onboardingLoadingLabel }}
             </button>
           </footer>
         </section>
@@ -1187,7 +1244,7 @@
         <section
           ref="modalDialog"
           class="modal"
-          :class="{ medium: modal === 'new-group' || modal === 'settings' }"
+          :class="{ medium: modal === 'new-group' || modal === 'settings', 'agent-detail-modal': modal === 'agent-detail' }"
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-title"
@@ -1319,6 +1376,84 @@
             </footer>
           </form>
 
+          <section v-else-if="modal === 'agent-detail' && selectedAgentDetail" class="modal-body agent-detail-body">
+            <div class="agent-detail-hero">
+              <img :src="selectedAgentDetail.logo" :alt="selectedAgentDetail.label" />
+              <div>
+                <span class="agent-state" :class="agentState(selectedAgentDetail).tone">
+                  <component :is="agentState(selectedAgentDetail).icon" />
+                  {{ agentState(selectedAgentDetail).label }}
+                </span>
+                <p>{{ agentDescription(selectedAgentDetail.kind) }}</p>
+              </div>
+            </div>
+
+            <div class="agent-detail-metrics">
+              <span>
+                <strong>{{ t('agentDetail.skills') }}</strong>
+                <small>{{ agentDetailSkillSummary }}</small>
+              </span>
+              <span>
+                <strong>{{ t('agentDetail.provider') }}</strong>
+                <small>{{ providerSummaryLabel(selectedAgentDetail) }}</small>
+              </span>
+              <span>
+                <strong>{{ t('agentDetail.images') }}</strong>
+                <small>{{ agentImageLabel(selectedAgentDetail) }}</small>
+              </span>
+            </div>
+
+            <section class="agent-detail-section">
+              <h3>{{ t('agentDetail.soul') }}</h3>
+              <p>{{ t(`agent.soul.${selectedAgentDetail.kind}`) }}</p>
+            </section>
+
+            <section class="agent-detail-section">
+              <h3>{{ t('agentDetail.localSkills') }}</h3>
+              <p v-if="agentDetailSkillsLoading" class="agent-detail-muted">{{ t('agent.skillsLoading') }}</p>
+              <p v-else-if="!agentDetailSkillItems.length" class="agent-detail-muted">{{ t('agent.skillsUnavailable') }}</p>
+              <div v-else class="agent-detail-skill-grid">
+                <span v-for="skill in agentDetailSkillItems" :key="skillKey(skill)">
+                  <strong>@{{ skill.name || skill.slug }}</strong>
+                  <small>{{ skill.namespace }}</small>
+                </span>
+              </div>
+            </section>
+
+            <footer class="modal-footer agent-detail-footer">
+              <button class="secondary-button" type="button" @click="closeModal">{{ t('common.close') }}</button>
+              <button
+                v-if="supportsExternalProvider(selectedAgentDetail)"
+                class="secondary-button"
+                type="button"
+                @click="openProvider(selectedAgentDetail.kind)"
+              >
+                <KeyOutline />
+                {{ t('systemSettings.providerForAgent') }}
+              </button>
+              <button
+                v-if="selectedAgentDetail.ready"
+                class="primary-button"
+                type="button"
+                :disabled="isDirectCreationPending(selectedAgentDetail.kind)"
+                @click="openDirect(selectedAgentDetail)"
+              >
+                <ChatbubbleEllipsesOutline />
+                {{ t('home.openChat') }}
+              </button>
+              <button
+                v-else-if="!selectedAgentDetail.installed && selectedAgentDetail.installSupported"
+                class="primary-button"
+                type="button"
+                :disabled="installerBusy && installerState.kind !== selectedAgentDetail.kind"
+                @click="requestInstall(selectedAgentDetail)"
+              >
+                <DownloadOutline />
+                {{ t('installer.install') }}
+              </button>
+            </footer>
+          </section>
+
         </section>
       </div>
 
@@ -1387,6 +1522,7 @@ const MAX_ATTACHMENTS = 4
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const COMPOSER_INPUT_MIN_HEIGHT = 58
 const COMPOSER_INPUT_MAX_HEIGHT = 180
+const ONBOARDING_SLIDE_MS = 1450
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
 const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
@@ -1427,8 +1563,10 @@ const composerAttachments = ref([])
 const attachmentImportOperations = ref([])
 const composerContextVersion = ref(0)
 const onboardingVisible = ref(false)
+const onboardingCompleted = ref(onboardingSeen())
 const onboardingIndex = ref(0)
 const onboardingDetecting = ref(false)
+const onboardingPlaybackComplete = ref(false)
 const discussionMode = ref('auto')
 const maxRounds = ref(6)
 const unlimitedRounds = ref(false)
@@ -1458,9 +1596,11 @@ const onboardingDialog = ref(null)
 const modalDialog = ref(null)
 const roundSettingsControl = ref(null)
 let toastTimer = null
+let onboardingPlaybackTimer = null
 const copiedMessageTimers = new Map()
 let skillLoadToken = 0
 let agentSkillStatsToken = 0
+let agentDetailSkillToken = 0
 let attachmentImportSequence = 0
 let unsubscribeWorkspace = null
 let unsubscribeInstaller = null
@@ -1504,6 +1644,11 @@ const onboardingSlides = computed(() => [
     body: t('onboarding.discoverBody'),
   },
   {
+    image: publicAsset('onboarding/provider-setup.svg'),
+    title: t('onboarding.providerTitle'),
+    body: t('onboarding.providerBody'),
+  },
+  {
     image: publicAsset('onboarding/agent-collaboration.png'),
     title: t('onboarding.collaborationTitle'),
     body: t('onboarding.collaborationBody'),
@@ -1513,10 +1658,19 @@ const onboardingSlides = computed(() => [
     title: t('onboarding.toolsTitle'),
     body: t('onboarding.toolsBody'),
   },
+  {
+    image: publicAsset('onboarding/auto-discussion.svg'),
+    title: t('onboarding.autoTitle'),
+    body: t('onboarding.autoBody'),
+  },
 ])
 const onboardingSlide = computed(() => onboardingSlides.value[onboardingIndex.value] || onboardingSlides.value[0])
 const onboardingLastIndex = computed(() => Math.max(0, onboardingSlides.value.length - 1))
 const onboardingOnLastSlide = computed(() => onboardingIndex.value === onboardingLastIndex.value)
+const onboardingReady = computed(() => onboardingPlaybackComplete.value && !onboardingDetecting.value)
+const onboardingLoadingLabel = computed(() => (
+  onboardingDetecting.value ? t('onboarding.detecting') : t('onboarding.loading')
+))
 
 const directGroups = computed(() => snapshot.value.groups
   .filter(group => group.conversationType === 'direct')
@@ -1759,10 +1913,31 @@ const installedCount = computed(() => mergedCatalog.value.filter(agent => agent.
 const configurableProviderAgents = computed(() => mergedCatalog.value.filter(agent => (
   EXTERNAL_PROVIDER_KINDS.has(agent.kind)
 )))
+const providerConfiguredCount = computed(() => configurableProviderAgents.value.filter(agent => providerStatusFor(agent.kind).configured).length)
+const selectedAgentDetailKind = ref('')
+const agentDetailSkillItems = ref([])
+const agentDetailSkillsLoading = ref(false)
+const selectedAgentDetail = computed(() => mergedCatalog.value.find(agent => agent.kind === selectedAgentDetailKind.value) || null)
+const agentDetailSkillSummary = computed(() => {
+  if (agentDetailSkillsLoading.value) return t('agent.skillsLoading')
+  if (!agentDetailSkillItems.value.length) return t('agent.skillsUnavailable')
+  return t('agent.localSkills', { count: agentDetailSkillItems.value.length })
+})
+const showSetupGuide = computed(() => onboardingCompleted.value && !snapshot.value.groups.length)
+const setupGuideMessage = computed(() => {
+  if (!readyCount.value) return t('setupGuide.detectBody')
+  if (configurableProviderAgents.value.length && !providerConfiguredCount.value) return t('setupGuide.providerBody')
+  if (!snapshot.value.groups.length) return t('setupGuide.chatBody')
+  return t('setupGuide.readyBody')
+})
 const selectedProviderAgent = computed(() => configurableProviderAgents.value.find(
   agent => agent.kind === selectedProviderKind.value,
 ) || configurableProviderAgents.value[0] || null)
 const providerStatus = computed(() => providerStatusFor(selectedProviderKind.value))
+const roundProgressPercent = computed(() => {
+  const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
+  return `${((bounded - 1) / 9) * 100}%`
+})
 
 const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
 const settingsForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
@@ -1773,8 +1948,11 @@ const modalTitle = computed(() => ({
   settings: settingsIntent.value === 'rename'
     ? t(activeGroup.value?.conversationType === 'direct' ? 'settings.renameDirectTitle' : 'settings.renameGroupTitle')
     : t('settings.title'),
+  'agent-detail': selectedAgentDetail.value?.label || t('systemSettings.openAgentDetailDefault'),
 })[modal.value] || '')
-const modalSubtitle = computed(() => '')
+const modalSubtitle = computed(() => ({
+  'agent-detail': agentDetailSkillSummary.value,
+})[modal.value] || '')
 
 const installerBusy = computed(() => !['', 'idle', 'completed', 'cancelled', 'failed'].includes(installerState.value.phase))
 const installerPhaseLabel = computed(() => t(`installer.phase.${installerState.value.phase}`))
@@ -1820,6 +1998,27 @@ function providerStatusFor(kind) {
   return providerStatuses.value[kind] || EMPTY_PROVIDER_STATUS
 }
 
+function hasProviderStatus(kind) {
+  return Object.prototype.hasOwnProperty.call(providerStatuses.value, String(kind || ''))
+}
+
+function providerStatusLabel(kind) {
+  if (!hasProviderStatus(kind)) return t('provider.checking')
+  return providerStatusFor(kind).configured ? t('provider.connected') : t('provider.notConfigured')
+}
+
+function providerStatusTone(kind) {
+  if (!hasProviderStatus(kind)) return 'checking'
+  return providerStatusFor(kind).configured ? 'connected' : 'warning'
+}
+
+function providerSummaryLabel(agent) {
+  if (!agent) return ''
+  if (supportsExternalProvider(agent)) return providerStatusLabel(agent.kind)
+  if (agent.ready) return t('provider.nativeConnected')
+  return providerModeLabel(agent.providerMode)
+}
+
 function conversationPermissionLabel(group) {
   const kinds = Array.isArray(group?.agentKinds) ? group.agentKinds : []
   const enforced = kinds.length && kinds.every(kind => READ_ONLY_ENFORCED_AGENT_KINDS.has(kind))
@@ -1863,6 +2062,29 @@ async function loadAgentSkillStats() {
     loading: false,
     total: Number.isFinite(total) ? total : NaN,
   }]))
+}
+
+async function loadAgentDetailSkills(kind) {
+  const targetKind = String(kind || '')
+  const token = ++agentDetailSkillToken
+  agentDetailSkillItems.value = []
+  if (!targetKind || typeof installer.value?.skills !== 'function') {
+    agentDetailSkillsLoading.value = false
+    return
+  }
+  agentDetailSkillsLoading.value = true
+  try {
+    const result = await installer.value.skills(targetKind)
+    const skills = (Array.isArray(result?.skills) ? result.skills : [])
+      .map(skill => normalizeSkill(skill, targetKind))
+      .filter(Boolean)
+      .slice(0, 12)
+    if (token === agentDetailSkillToken) agentDetailSkillItems.value = result?.supported === false ? [] : skills
+  } catch {
+    if (token === agentDetailSkillToken) agentDetailSkillItems.value = []
+  } finally {
+    if (token === agentDetailSkillToken) agentDetailSkillsLoading.value = false
+  }
 }
 
 function topicReplyCount(rootId) {
@@ -2127,27 +2349,52 @@ function onboardingSeen() {
   try { return localStorage.getItem(ONBOARDING_KEY) === '1' } catch { return false }
 }
 
-function completeOnboarding() {
+function completeOnboarding(options = {}) {
   try { localStorage.setItem(ONBOARDING_KEY, '1') } catch { /* noop */ }
+  onboardingCompleted.value = true
+  clearOnboardingPlayback()
+  const shouldRestoreHistory = modalHistoryPushed && options.fromHistory !== true
+  modalHistoryPushed = false
   onboardingVisible.value = false
+  if (shouldRestoreHistory) history.back()
 }
 
-function advanceOnboarding() {
-  if (!onboardingOnLastSlide.value) {
-    onboardingIndex.value += 1
+function clearOnboardingPlayback() {
+  if (onboardingPlaybackTimer) clearTimeout(onboardingPlaybackTimer)
+  onboardingPlaybackTimer = null
+}
+
+function startOnboardingPlayback() {
+  clearOnboardingPlayback()
+  onboardingPlaybackComplete.value = false
+  if (onboardingSlides.value.length <= 1) {
+    onboardingPlaybackComplete.value = true
     return
   }
-  if (!onboardingDetecting.value) completeOnboarding()
-}
-
-function moveOnboarding(direction) {
-  const count = onboardingSlides.value.length
-  onboardingIndex.value = (onboardingIndex.value + direction + count) % count
+  const step = () => {
+    if (!onboardingVisible.value) return
+    if (!onboardingOnLastSlide.value) {
+      onboardingIndex.value = Math.min(onboardingIndex.value + 1, onboardingLastIndex.value)
+      onboardingPlaybackTimer = setTimeout(step, ONBOARDING_SLIDE_MS)
+      return
+    }
+    onboardingPlaybackComplete.value = true
+    clearOnboardingPlayback()
+  }
+  onboardingPlaybackTimer = setTimeout(step, ONBOARDING_SLIDE_MS)
 }
 
 function beginOnboardingDetection() {
   onboardingDetecting.value = true
   void refreshAgents().finally(() => { onboardingDetecting.value = false })
+}
+
+function openOnboarding() {
+  onboardingIndex.value = 0
+  onboardingPlaybackComplete.value = false
+  onboardingVisible.value = true
+  startOnboardingPlayback()
+  beginOnboardingDetection()
 }
 
 function settleWithin(promise, timeoutMs = 1200) {
@@ -3013,6 +3260,20 @@ function selectSystemSettingsSection(section) {
   }
 }
 
+function openAgentDetail(agent) {
+  if (!agent || saving.value) return
+  systemSettingsOpen.value = true
+  systemSettingsSection.value = 'agents'
+  focusedAgentKind.value = agent.kind
+  installConfirmKind.value = ''
+  formError.value = ''
+  selectedAgentDetailKind.value = agent.kind
+  agentDetailSkillItems.value = []
+  agentDetailSkillsLoading.value = false
+  modal.value = 'agent-detail'
+  void loadAgentDetailSkills(agent.kind)
+}
+
 async function requestInstall(agent) {
   if (installConfirmKind.value !== agent.kind) {
     installConfirmKind.value = agent.kind
@@ -3028,6 +3289,14 @@ async function requestInstall(agent) {
 
 async function cancelInstall() {
   try { await installer.value.cancel(installerState.value.taskId) } catch (error) { showError(error) }
+}
+
+function requestUnlimitedRounds() {
+  if (unlimitedRounds.value) return
+  const confirmed = typeof window.confirm === 'function'
+    ? window.confirm(t('composer.unlimitedConfirm'))
+    : true
+  if (confirmed) unlimitedRounds.value = true
 }
 
 async function loadProviderStatus(kind, probeEncryption = false) {
@@ -3127,6 +3396,10 @@ function closeModal(options = {}) {
   deleteArmed.value = false
   providerRemoveArmed.value = false
   installConfirmKind.value = ''
+  selectedAgentDetailKind.value = ''
+  agentDetailSkillToken += 1
+  agentDetailSkillItems.value = []
+  agentDetailSkillsLoading.value = false
   return true
 }
 
@@ -3253,10 +3526,8 @@ async function boot() {
   } finally {
     booting.value = false
   }
-  if (!onboardingSeen()) {
-    onboardingIndex.value = 0
-    onboardingVisible.value = true
-    beginOnboardingDetection()
+  if (!onboardingCompleted.value) {
+    openOnboarding()
   } else {
     void refreshAgents()
   }
@@ -3325,12 +3596,19 @@ function handlePopState() {
     return
   }
   modalHistoryPushed = false
-  if (onboardingVisible.value) completeOnboarding()
+  if (onboardingVisible.value) completeOnboarding({ fromHistory: true })
   else closeModal()
 }
 
 watch(theme, applyTheme)
-watch(onboardingVisible, (value) => { if (value) focusOverlay(onboardingDialog) })
+watch(onboardingVisible, (value) => {
+  if (value) {
+    focusOverlay(onboardingDialog)
+    if (!onboardingPlaybackTimer && !onboardingPlaybackComplete.value) startOnboardingPlayback()
+    return
+  }
+  clearOnboardingPlayback()
+})
 watch(modal, (value, previous) => {
   if (value && !previous) {
     const active = document.activeElement
@@ -3428,8 +3706,10 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', handleWindowPointerDown)
   window.removeEventListener('popstate', handlePopState)
   document.body.classList.remove('modal-open')
+  clearOnboardingPlayback()
   skillLoadToken += 1
   agentSkillStatsToken += 1
+  agentDetailSkillToken += 1
   unsubscribeWorkspace?.()
   unsubscribeInstaller?.()
   unsubscribeRunFinished?.()
