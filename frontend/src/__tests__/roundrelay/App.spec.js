@@ -2264,6 +2264,14 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps the inline title editor focused without an outer accent ring', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+
+    expect(source).toMatch(/\.inline-title-form input\s*\{[^}]*border:\s*1px solid transparent;[^}]*outline:\s*none;[^}]*box-shadow:\s*inset 0 -1px 0 var\(--border-strong\);/s)
+    expect(source).toMatch(/\.inline-title-form input:focus-visible\s*\{[^}]*outline:\s*none;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/s)
+    expect(source).toMatch(/\.inline-title-form input::selection\s*\{[^}]*var\(--accent\) 28%/s)
+  })
+
   it('mentions one Agent, scopes its Skills, and sends only to that Agent', async () => {
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({

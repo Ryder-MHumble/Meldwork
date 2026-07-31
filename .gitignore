@@ -21,7 +21,6 @@ release/
 latest*.yml
 
 # Documentation is part of the public repository.
-README.zh-CN.md
 .github/brand/
 
 # Test and coverage output
