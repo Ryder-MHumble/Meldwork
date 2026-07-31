@@ -2,6 +2,15 @@ const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const path = require('node:path')
 const { randomUUID } = require('node:crypto')
+const {
+  RunHarness,
+  evidenceCapsuleText,
+  nextSessionMeta,
+  normalizeSessionMeta,
+  normalizeTraceCapsule,
+  packContextEntries,
+  shouldRotateSession,
+} = require('./run-harness.cjs')
 
 const AGENT_LABELS = {
   codex: 'Codex',
@@ -18,15 +27,18 @@ const AGENT_LABELS = {
 const AUTO_CONSENSUS_MARKER = /\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\]/gi
 const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\][ \t]*$/i
 const DEFAULT_AUTO_RUN_TIMEOUT_MS = 30 * 60 * 1000
+const DEFAULT_RUN_SILENCE_WARNING_MS = 20 * 1000
 const DEFAULT_AUTO_ROUNDS = 6
 const MAX_AUTO_ROUNDS = 10
 const MAX_MESSAGE_ATTACHMENTS = 4
 const MAX_SKILL_HINTS = 4
+const MAX_KNOWLEDGE_BASE_HINTS = 4
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const STABLE_USER_TURNS_PER_EDGE = 3
 const STABLE_USER_TURN_TEXT_LIMIT = 700
 const RECENT_TRANSCRIPT_MESSAGE_LIMIT = 20
-const RECENT_TRANSCRIPT_TEXT_LIMIT = 12000
+const STABLE_CONTEXT_TEXT_LIMIT = 3000
+const RECENT_TRANSCRIPT_TEXT_LIMIT = 9000
 const USER_ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
 const ATTACHMENT_MIME_TYPES = new Set([
   ...USER_ATTACHMENT_MIME_TYPES,
@@ -34,6 +46,7 @@ const ATTACHMENT_MIME_TYPES = new Set([
   'video/mp4', 'video/quicktime', 'video/webm',
 ])
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const KNOWLEDGE_BASE_KINDS = new Set(['feishu', 'dingtalk', 'obsidian'])
 const RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
 ])
@@ -44,10 +57,11 @@ const PROGRESS_TITLES = new Set([
 
 function emptyState() {
   return {
-    version: 2,
+    version: 3,
     groups: [],
     messages: [],
     sessions: {},
+    sessionMeta: {},
     agentPreferences: {},
     agentRuntime: {},
   }
@@ -152,6 +166,24 @@ function normalizeSkillHint(input) {
   return { targetKind, namespace, slug, name }
 }
 
+function normalizeKnowledgeBaseHint(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const kind = cleanInline(input.kind, 40)
+  const name = cleanInline(input.name, 100)
+  const accessMode = cleanInline(input.accessMode, 20)
+  const targetKinds = normalizeTargetKinds(input.targetKinds)
+  if (!KNOWLEDGE_BASE_KINDS.has(kind) || !name || !['cli', 'vault'].includes(accessMode)
+      || !targetKinds.length) return null
+  if (accessMode === 'vault') {
+    const location = cleanText(input.location, 1000)
+    if (!path.isAbsolute(location)) return null
+    return { kind, name, accessMode, targetKinds, location: path.normalize(location) }
+  }
+  const commandName = cleanInline(input.commandName, 80)
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(commandName)) return null
+  return { kind, name, accessMode, targetKinds, commandName }
+}
+
 function normalizeTargetKinds(input) {
   return [...new Set((Array.isArray(input) ? input : [])
     .map(kind => cleanInline(kind, 40))
@@ -163,6 +195,19 @@ function skillHintsPrompt(hints) {
   return [
     'The user explicitly selected these local skills for this Agent. Load and follow them when relevant:',
     ...hints.map(skill => `- ${skill.namespace}/${skill.slug}: ${skill.name}`),
+  ].join('\n')
+}
+
+function knowledgeBaseHintsPrompt(hints) {
+  if (!hints.length) return ''
+  return [
+    'The user explicitly granted this Agent read access to these configured knowledge bases for this task. Use them when relevant, identify the source used in the answer, and do not modify source content:',
+    ...hints.map((source) => {
+      if (source.accessMode === 'vault') {
+        return `- ${source.name} (${source.kind}): read from the local vault at ${source.location}`
+      }
+      return `- ${source.name} (${source.kind}): use the configured ${source.commandName} command-line connection with read-only operations`
+    }),
   ].join('\n')
 }
 
@@ -233,6 +278,10 @@ function normalizeLoadedMessage(input) {
     if (toolCalls.length) message.toolCalls = toolCalls
     if (attachments.length) message.attachments = attachments
   }
+  if (role === 'agent' || (role === 'system' && agentKind)) {
+    const trace = normalizeTraceCapsule(input.trace)
+    if (trace) message.trace = trace
+  }
   if (role === 'user') {
     const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
       .slice(0, MAX_MESSAGE_ATTACHMENTS)
@@ -242,9 +291,14 @@ function normalizeLoadedMessage(input) {
       .slice(0, MAX_SKILL_HINTS)
       .map(normalizeSkillHint)
       .filter(Boolean)
+    const knowledgeBaseHints = (Array.isArray(input.knowledgeBaseHints) ? input.knowledgeBaseHints : [])
+      .slice(0, MAX_KNOWLEDGE_BASE_HINTS)
+      .map(normalizeKnowledgeBaseHint)
+      .filter(Boolean)
     const targetKinds = normalizeTargetKinds(input.targetKinds)
     if (attachments.length) message.attachments = attachments
     if (skillHints.length) message.skillHints = skillHints
+    if (knowledgeBaseHints.length) message.knowledgeBaseHints = knowledgeBaseHints
     if (targetKinds.length) message.targetKinds = targetKinds
   }
   return message
@@ -263,6 +317,7 @@ class LocalWorkspace extends EventEmitter {
     this.captureAgentOutputsFn = options.captureAgentOutputs || (async () => null)
     this.importAgentOutputsFn = options.importAgentOutputs || (async () => [])
     this.validateSkillSelectionsFn = options.validateSkillSelections || ((_kind, selections) => selections)
+    this.validateKnowledgeBaseSelectionsFn = options.validateKnowledgeBaseSelections || ((_kinds, selections) => selections)
     this.imageAttachmentLimitFn = options.imageAttachmentLimit || (() => 0)
     this.credentialStateFn = options.credentialState || (async () => ({ state: 'unknown', source: 'unverified' }))
     this.sharedProviderReadyFn = options.sharedProviderReady || (() => false)
@@ -270,8 +325,13 @@ class LocalWorkspace extends EventEmitter {
       && options.autoRunTimeoutMs > 0
       ? options.autoRunTimeoutMs
       : DEFAULT_AUTO_RUN_TIMEOUT_MS
+    this.runSilenceWarningMs = Number.isFinite(options.runSilenceWarningMs)
+      && options.runSilenceWarningMs > 0
+      ? options.runSilenceWarningMs
+      : DEFAULT_RUN_SILENCE_WARNING_MS
     this.now = options.now || (() => new Date().toISOString())
     this.createId = options.createId || randomUUID
+    this.createRunId = options.createRunId || randomUUID
     this.detectedAgents = []
     this.preparingRuns = new Map()
     this.activeRuns = new Map()
@@ -282,7 +342,7 @@ class LocalWorkspace extends EventEmitter {
   load() {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.storagePath, 'utf8'))
-      if (![1, 2].includes(parsed?.version) || !Array.isArray(parsed.groups)
+      if (![1, 2, 3].includes(parsed?.version) || !Array.isArray(parsed.groups)
           || !Array.isArray(parsed.messages) || typeof parsed.sessions !== 'object') {
         return emptyState()
       }
@@ -293,13 +353,23 @@ class LocalWorkspace extends EventEmitter {
       const messages = parsed.messages
         .map(normalizeLoadedMessage)
         .filter(message => message && groupIds.has(message.groupId))
+      const sessionMeta = {}
+      if (parsed.sessionMeta && typeof parsed.sessionMeta === 'object'
+          && !Array.isArray(parsed.sessionMeta)) {
+        for (const [key, value] of Object.entries(parsed.sessionMeta).slice(0, 1000)) {
+          if (/^[A-Za-z0-9._:-]{1,240}$/.test(key)) {
+            sessionMeta[key] = normalizeSessionMeta(value)
+          }
+        }
+      }
       return {
-        version: 2,
+        version: 3,
         groups,
         messages,
         sessions: parsed.sessions && typeof parsed.sessions === 'object' && !Array.isArray(parsed.sessions)
           ? { ...parsed.sessions }
           : {},
+        sessionMeta,
         agentPreferences: parsed.agentPreferences
           && typeof parsed.agentPreferences === 'object' && !Array.isArray(parsed.agentPreferences)
           ? { ...parsed.agentPreferences }
@@ -337,6 +407,7 @@ class LocalWorkspace extends EventEmitter {
         const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
         return {
           groupId,
+          runId: run.runId || '',
           phase,
           mode,
           targetKinds: run.targetKinds || [],
@@ -349,6 +420,7 @@ class LocalWorkspace extends EventEmitter {
           progress: cleanProgressSteps(run.progress),
           threadRootId: run.threadRootId || '',
           startedAt: run.startedAt || Date.now(),
+          agentRuns: run.harness?.snapshot?.() || [],
         }
       }),
     }
@@ -369,6 +441,7 @@ class LocalWorkspace extends EventEmitter {
       resolveDone()
     }
     controller.mode = mode
+    controller.runId = String(this.createRunId() || '')
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
     controller.failedKinds = []
@@ -382,6 +455,8 @@ class LocalWorkspace extends EventEmitter {
       : 0
     controller.startedAt = Date.now()
     controller.stopReason = ''
+    controller.harness = null
+    controller.silenceTimers = new Map()
     return controller
   }
 
@@ -468,10 +543,12 @@ class LocalWorkspace extends EventEmitter {
   finishRun(groupId, controller, status) {
     if (controller.finished) return
     controller.finished = true
+    this.clearRunSilence(controller)
     const ownsActiveRun = this.activeRuns.get(groupId) === controller
     if (ownsActiveRun) this.activeRuns.delete(groupId)
     const payload = {
       groupId: cleanText(groupId, 100),
+      runId: cleanText(controller.runId, 120),
       mode: controller.mode === 'auto' ? 'auto' : 'manual',
       status: RUN_STATUSES.has(status) ? status : 'failed',
       threadRootId: cleanText(controller.threadRootId, 100),
@@ -502,6 +579,7 @@ class LocalWorkspace extends EventEmitter {
         kind,
         threadRootId,
         { key: 'system.agentCallFailed', params: { agent: label, reason } },
+        { trace: error?.runTrace },
       )
     }
     return { label, reason }
@@ -648,6 +726,9 @@ class LocalWorkspace extends EventEmitter {
         for (const key of Object.keys(this.state.sessions)) {
           if (key.startsWith(`${group.id}:`)) delete this.state.sessions[key]
         }
+        for (const key of Object.keys(this.state.sessionMeta)) {
+          if (key.startsWith(`${group.id}:`)) delete this.state.sessionMeta[key]
+        }
       }
     }
     if (input.allowWrite != null) group.allowWrite = input.allowWrite === true
@@ -672,6 +753,9 @@ class LocalWorkspace extends EventEmitter {
     this.state.messages = this.state.messages.filter(message => message.groupId !== groupId)
     for (const key of Object.keys(this.state.sessions)) {
       if (key.startsWith(`${groupId}:`)) delete this.state.sessions[key]
+    }
+    for (const key of Object.keys(this.state.sessionMeta)) {
+      if (key.startsWith(`${groupId}:`)) delete this.state.sessionMeta[key]
     }
     this.save()
     this.emitChanged()
@@ -713,6 +797,10 @@ class LocalWorkspace extends EventEmitter {
       if (toolCalls.length) message.toolCalls = toolCalls
       if (attachments.length) message.attachments = attachments
     }
+    if (role === 'agent' || (role === 'system' && agentKind)) {
+      const trace = normalizeTraceCapsule(metadata.trace)
+      if (trace) message.trace = trace
+   }
     if (role === 'user') {
       const attachments = (Array.isArray(metadata.attachments) ? metadata.attachments : [])
         .map(normalizeAttachmentMetadata)
@@ -720,9 +808,13 @@ class LocalWorkspace extends EventEmitter {
       const skillHints = (Array.isArray(metadata.skillHints) ? metadata.skillHints : [])
         .map(normalizeSkillHint)
         .filter(Boolean)
+      const knowledgeBaseHints = (Array.isArray(metadata.knowledgeBaseHints) ? metadata.knowledgeBaseHints : [])
+        .map(normalizeKnowledgeBaseHint)
+        .filter(Boolean)
       const targetKinds = normalizeTargetKinds(metadata.targetKinds)
       if (attachments.length) message.attachments = attachments
       if (skillHints.length) message.skillHints = skillHints
+      if (knowledgeBaseHints.length) message.knowledgeBaseHints = knowledgeBaseHints
       if (targetKinds.length) message.targetKinds = targetKinds
     }
     this.state.messages.push(message)
@@ -814,6 +906,16 @@ class LocalWorkspace extends EventEmitter {
     this.save()
   }
 
+  persistSessionMeta(key, meta) {
+    const next = normalizeSessionMeta(meta)
+    if (!this.state.sessionMeta || typeof this.state.sessionMeta !== 'object') {
+      this.state.sessionMeta = {}
+    }
+    this.state.sessionMeta[key] = next
+    this.save()
+    return next
+  }
+
   promptMessageText(message, limit = 20000) {
     const attachmentNote = message.attachments?.length
       ? `[Attached files: ${message.attachments.map(item => item.name).join(', ')}]`
@@ -821,32 +923,36 @@ class LocalWorkspace extends EventEmitter {
     return cleanText([message.content, attachmentNote].filter(Boolean).join(' '), limit)
   }
 
-  stableUserInstructions(groupId, threadRootId = '') {
-    const userMessages = this.state.messages.filter(message => (
-      message.groupId === groupId && message.role === 'user'
-    ))
-    const selected = [
-      ...userMessages.slice(0, STABLE_USER_TURNS_PER_EDGE),
-      ...userMessages.slice(-STABLE_USER_TURNS_PER_EDGE),
-    ]
-    const currentRoot = cleanText(threadRootId, 100)
-    if (currentRoot) {
-      const rootMessage = userMessages.find(message => message.id === currentRoot)
-      if (rootMessage) selected.push(rootMessage)
-    }
-    const seen = new Set()
-    return selected
-      .filter((message) => {
-        if (seen.has(message.id)) return false
-        seen.add(message.id)
-        return true
-      })
-      .map(message => `- ${this.promptMessageText(message, STABLE_USER_TURN_TEXT_LIMIT)}`)
-      .filter(line => line !== '- ')
+ stableUserInstructions(groupId, threadRootId = '') {
+    return this.stableUserMessages(groupId, threadRootId)
+      .map(message => this.promptMessageText(message, STABLE_USER_TURN_TEXT_LIMIT))
+      .filter(Boolean)
       .join('\n')
   }
 
-  recentTranscript(groupId, afterAgentKind = '') {
+  stableUserMessages(groupId, threadRootId = '') {
+   const userMessages = this.state.messages.filter(message => (
+     message.groupId === groupId && message.role === 'user'
+   ))
+   const selected = [
+     ...userMessages.slice(0, STABLE_USER_TURNS_PER_EDGE),
+     ...userMessages.slice(-STABLE_USER_TURNS_PER_EDGE),
+   ]
+   const currentRoot = cleanText(threadRootId, 100)
+   if (currentRoot) {
+     const rootMessage = userMessages.find(message => message.id === currentRoot)
+     if (rootMessage) selected.push(rootMessage)
+   }
+   const seen = new Set()
+    return selected
+     .filter((message) => {
+       if (seen.has(message.id)) return false
+       seen.add(message.id)
+       return true
+     })
+  }
+
+  recentTranscriptEntries(groupId, afterAgentKind = '') {
     let afterIndex = -1
     if (afterAgentKind) {
       for (let index = this.state.messages.length - 1; index >= 0; index -= 1) {
@@ -864,13 +970,56 @@ class LocalWorkspace extends EventEmitter {
           && ['user', 'agent'].includes(message.role)
       ))
       .slice(-RECENT_TRANSCRIPT_MESSAGE_LIMIT)
-      .map(message => `${message.senderName}: ${this.promptMessageText(message)}`)
-      .join('\n')
-      .slice(-RECENT_TRANSCRIPT_TEXT_LIMIT)
+ }
+
+ recentTranscript(groupId, afterAgentKind = '') {
+    return this.packedPromptContext(groupId, afterAgentKind).recentText
+ }
+
+  packedPromptContext(groupId, afterAgentKind = '', threadRootId = '') {
+    const stable = packContextEntries(
+      this.stableUserMessages(groupId, threadRootId).map(message => ({
+        id: message.id,
+        sender: message.senderName,
+        text: this.promptMessageText(message, STABLE_USER_TURN_TEXT_LIMIT),
+        priority: 3,
+      })),
+      { budget: STABLE_CONTEXT_TEXT_LIMIT, entryLimit: STABLE_USER_TURN_TEXT_LIMIT, maxEntries: 8 },
+    )
+    const recent = packContextEntries(
+      this.recentTranscriptEntries(groupId, afterAgentKind).map(message => {
+        const traced = message.role === 'agent' && message.trace
+        return {
+          id: message.id,
+          sender: traced ? '' : message.senderName,
+          text: traced ? evidenceCapsuleText(message) : this.promptMessageText(message),
+          priority: message.role === 'user' ? 3 : (traced ? 2 : 1),
+        }
+      }),
+      { budget: RECENT_TRANSCRIPT_TEXT_LIMIT, entryLimit: 3000, maxEntries: RECENT_TRANSCRIPT_MESSAGE_LIMIT },
+    )
+    const sourceMessageIds = [...new Set([
+      ...stable.sourceMessageIds,
+      ...recent.sourceMessageIds,
+    ])].slice(0, 20)
+    return {
+      stableText: stable.text || '(none)',
+      recentText: recent.text || '(none)',
+      sourceMessageIds,
+      context: {
+        includedCount: sourceMessageIds.length,
+        omittedCount: stable.omittedCount + recent.omittedCount,
+        charCount: stable.charCount + recent.charCount,
+      },
+    }
   }
 
-  promptFor(group, kind, mode, threadRootId = '', skillHints = [], transcriptAfterKind = '') {
-    const label = AGENT_LABELS[kind] || kind
+ promptFor(
+   group, kind, mode, threadRootId = '', skillHints = [], knowledgeBaseHints = [],
+    transcriptAfterKind = '', contextPackage = null,
+ ) {
+    const packed = contextPackage || this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
+   const label = AGENT_LABELS[kind] || kind
     const instruction = mode === 'auto'
       ? [
           'Read the most recent messages, respond directly to the previous participant, and advance the discussion. Do not speak for other Agents.',
@@ -894,26 +1043,88 @@ class LocalWorkspace extends EventEmitter {
       `Group topic: ${cleanText(group.topic, 200) || '(not specified)'}`,
       instruction,
       mediaDelivery,
-      'Stable user instructions and constraints:',
-      this.stableUserInstructions(group.id, threadRootId) || '(none)',
-      'Recent conversation across the group:',
-      this.recentTranscript(group.id, transcriptAfterKind) || '(none)',
-      skillHintsPrompt(skillHints),
-    ].filter(Boolean).join('\n')
+     'Stable user instructions and constraints:',
+      packed.stableText,
+     'Recent conversation across the group:',
+      packed.recentText,
+     skillHintsPrompt(skillHints),
+     knowledgeBaseHintsPrompt(knowledgeBaseHints),
+   ].filter(Boolean).join('\n')
+ }
+
+  ensureRunHarness(group, controller, threadRootId = '') {
+    if (!controller) return null
+    if (!controller.harness) {
+      controller.harness = new RunHarness({
+        runId: controller.runId || randomUUID(),
+        groupId: group.id,
+        threadRootId,
+        targetKinds: controller.targetKinds,
+        createId: randomUUID,
+      })
+    }
+    return controller.harness
+  }
+
+  emitRunEvent(event) {
+    if (!event) return
+    try { this.emit('run-event', event) } catch {}
+  }
+
+  clearAgentSilence(controller, kind, round) {
+    const key = `${kind}:${round}`
+    const timer = controller?.silenceTimers?.get(key)
+    if (timer) clearTimeout(timer)
+    controller?.silenceTimers?.delete(key)
+  }
+
+  armAgentSilence(controller, kind, round) {
+    if (!controller || !this.runSilenceWarningMs) return
+    this.clearAgentSilence(controller, kind, round)
+    const timer = setTimeout(() => {
+      const warning = controller.harness?.markSilent(kind, round)
+      if (warning) this.emitRunEvent(warning)
+    }, this.runSilenceWarningMs)
+    timer.unref?.()
+    controller.silenceTimers.set(`${kind}:${round}`, timer)
+  }
+
+  clearRunSilence(controller) {
+    for (const timer of controller?.silenceTimers?.values?.() || []) clearTimeout(timer)
+    controller?.silenceTimers?.clear?.()
   }
 
   async invokeAgent(group, kind, mode, signal, threadRootId = '', context = {}) {
     const agent = this.detectedAgents.find(item => item.kind === kind && item.available)
-    if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
-    const key = this.sessionKey(group.id, kind)
-    const storedSessionRef = String(this.state.sessions[key] || '')
-    const sessionRef = this.sessionRef(
+   if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
+   const key = this.sessionKey(group.id, kind)
+   const storedSessionRef = String(this.state.sessions[key] || '')
+    const activeRun = this.activeRuns.get(group.id)
+    const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
+    let sessionRef = this.sessionRef(
       group, kind, context.sessionThreadRootId || threadRootId,
     )
-    const transcriptAfterKind = storedSessionRef && storedSessionRef === sessionRef ? kind : ''
-    const startedAt = Date.now()
-    const activeRun = this.activeRuns.get(group.id)
-    const onProgress = (step) => {
+    const sessionMeta = normalizeSessionMeta(this.state.sessionMeta[key])
+    let sessionRotated = false
+    if (kind !== 'openclaw' && sessionRef && shouldRotateSession(sessionMeta)) {
+      delete this.state.sessions[key]
+      sessionRef = ''
+      sessionRotated = true
+      this.save()
+    }
+    const transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
+      ? kind
+      : ''
+    const packedContext = this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
+    const harness = this.ensureRunHarness(group, activeRun, threadRootId)
+    const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
+    if (harnessRun) {
+      this.emitRunEvent(harnessRun)
+      this.armAgentSilence(activeRun, kind, round)
+      this.emitChanged()
+    }
+   const startedAt = Date.now()
+   const onProgress = (step) => {
       if (!activeRun || activeRun.currentKind !== kind) return
       const next = [...(activeRun.progress || [])]
       const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
@@ -927,16 +1138,76 @@ class LocalWorkspace extends EventEmitter {
       activeRun.progress = next.slice(-8)
       this.emitChanged()
     }
+    let autoDeltaBuffer = ''
+    const consensusMarkers = [
+      '[[ROUNDRELAY_CONSENSUS:agree]]',
+      '[[ROUNDRELAY_CONSENSUS:continue]]',
+    ]
+    const emitHarnessEvent = (rawEvent) => {
+      if (!harness || !harnessRun || !rawEvent) return
+      const event = harness.ingest(kind, round, rawEvent)
+      if (!event) return
+      this.emitRunEvent(event)
+      this.armAgentSilence(activeRun, kind, round)
+      if (event.type !== 'answer_delta' || event.seq % 8 === 0) this.emitChanged()
+    }
+    const emitRuntimeEvent = (rawEvent) => {
+      if (!rawEvent || rawEvent.type !== 'answer_delta') {
+        emitHarnessEvent(rawEvent)
+        return
+      }
+      if (mode !== 'auto') {
+        emitHarnessEvent(rawEvent)
+        return
+      }
+      autoDeltaBuffer += String(rawEvent.delta || '')
+      for (const marker of consensusMarkers) {
+        autoDeltaBuffer = autoDeltaBuffer.split(marker).join('')
+      }
+      let hold = 0
+      for (const marker of consensusMarkers) {
+        for (let size = 1; size < marker.length; size += 1) {
+          if (autoDeltaBuffer.endsWith(marker.slice(0, size))) hold = Math.max(hold, size)
+        }
+      }
+      const safe = hold ? autoDeltaBuffer.slice(0, -hold) : autoDeltaBuffer
+      autoDeltaBuffer = hold ? autoDeltaBuffer.slice(-hold) : ''
+      if (safe) emitHarnessEvent({ ...rawEvent, delta: safe })
+    }
+    const flushRuntimeEvent = () => {
+      if (!autoDeltaBuffer) return
+      const safe = consensusMarkers.reduce(
+        (value, marker) => value.split(marker).join(''),
+        autoDeltaBuffer,
+      )
+      autoDeltaBuffer = ''
+      if (safe) emitHarnessEvent({ type: 'answer_delta', status: 'running', delta: safe })
+    }
     let outputBaseline = null
     if (group.allowWrite) {
       try { outputBaseline = await this.captureAgentOutputsFn(group.workdir) } catch { /* best effort */ }
     }
     let result
+    let harnessFinished = false
+    const finishHarness = (status, finalText = '') => {
+      if (!harness || !harnessRun || harnessFinished) return null
+      flushRuntimeEvent()
+      this.clearAgentSilence(activeRun, kind, round)
+      const finished = harness.finishAgent(kind, round, status, finalText, {
+        ...packedContext.context,
+        sessionRotated,
+      })
+      harnessFinished = true
+      this.emitRunEvent(finished.event)
+      this.emitChanged()
+      return finished.capsule
+    }
     try {
       result = await this.runAgentFn(
         agent,
         this.promptFor(
-          group, kind, mode, threadRootId, context.skillHints || [], transcriptAfterKind,
+          group, kind, mode, threadRootId, context.skillHints || [],
+          context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
         ),
         group.workdir,
         {
@@ -945,6 +1216,7 @@ class LocalWorkspace extends EventEmitter {
           signal,
           sandbox: group.allowWrite ? 'workspace-write' : undefined,
           onProgress,
+          onEvent: emitRuntimeEvent,
           attachments: context.attachments || [],
           ...(kind === 'hermes'
             ? { skills: (context.skillHints || []).map(skill => skill.slug) }
@@ -952,10 +1224,7 @@ class LocalWorkspace extends EventEmitter {
         },
       )
       this.markRuntimeCredential(kind, 'ready')
-    } catch (error) {
-      if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
-      throw error
-    }
+
     this.persistSessionRef(key, result.sessionRef)
     const reply = mode === 'auto'
       ? parseAutoReply(result.text)
@@ -982,6 +1251,8 @@ class LocalWorkspace extends EventEmitter {
           .filter(Boolean)
       } catch { /* the reply remains available when no valid media was produced */ }
     }
+    const finalStatus = result.completed === false ? 'partial' : 'completed'
+    const trace = finishHarness(finalStatus, reply.text)
     const message = this.addMessage(
       group.id,
       'agent',
@@ -989,9 +1260,32 @@ class LocalWorkspace extends EventEmitter {
       kind,
       threadRootId,
       null,
-      { elapsedMs: Date.now() - startedAt, toolCalls, attachments },
+      { elapsedMs: Date.now() - startedAt, toolCalls, attachments, trace },
     )
+    this.persistSessionMeta(key, nextSessionMeta(sessionMeta, {
+      promptChars: this.promptFor(
+        group, kind, mode, threadRootId, context.skillHints || [],
+        context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
+      ).length,
+      replyChars: reply.text.length,
+      rotated: sessionRotated,
+    }))
     return { message, consensus: reply.consensus && result.completed !== false }
+    } catch (error) {
+      if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
+      const status = signal?.aborted
+        ? (activeRun?.stopReason === 'timeout' ? 'timeout' : 'stopped')
+        : 'failed'
+      const trace = finishHarness(status)
+      if (trace && error && (typeof error === 'object' || typeof error === 'function')) {
+        Object.defineProperty(error, 'runTrace', {
+          value: trace,
+          enumerable: false,
+          configurable: true,
+        })
+      }
+      throw error
+    }
   }
 
   async resolveAttachments(attachmentRefs) {
@@ -1043,11 +1337,34 @@ class LocalWorkspace extends EventEmitter {
       }
       skillHintsByKind.set(kind, validated)
     }
+    const requestedKnowledgeBaseHints = input.knowledgeBaseHints || []
+    const validatedKnowledgeBaseHints = await this.validateKnowledgeBaseSelectionsFn(
+      targetKinds,
+      requestedKnowledgeBaseHints,
+    )
+    if (reservation.signal.aborted || this.shuttingDown) {
+      throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+    }
+    const knowledgeBaseHints = (Array.isArray(validatedKnowledgeBaseHints)
+      ? validatedKnowledgeBaseHints
+      : []).map(normalizeKnowledgeBaseHint).filter(Boolean)
+    if (knowledgeBaseHints.length !== requestedKnowledgeBaseHints.length
+        || knowledgeBaseHints.some(source => (
+          source.targetKinds.some(kind => !targetKinds.includes(kind))
+        ))) {
+      throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+    }
+    const knowledgeBaseHintsByKind = new Map(targetKinds.map(kind => [
+      kind,
+      knowledgeBaseHints.filter(source => source.targetKinds.includes(kind)),
+    ]))
     return {
       text,
       attachments,
       skillHintsByKind,
       skillHints: targetKinds.flatMap(kind => skillHintsByKind.get(kind) || []),
+      knowledgeBaseHintsByKind,
+      knowledgeBaseHints,
     }
   }
 
@@ -1069,7 +1386,8 @@ class LocalWorkspace extends EventEmitter {
       try {
         let rootAttachments = preparedContext?.attachments
         let rootSkillsByKind = preparedContext?.skillHintsByKind
-        if (!rootAttachments || !rootSkillsByKind) {
+        let rootKnowledgeBasesByKind = preparedContext?.knowledgeBaseHintsByKind
+        if (!rootAttachments || !rootSkillsByKind || !rootKnowledgeBasesByKind) {
           const rootMessage = this.state.messages.find(message => (
             message.id === threadRootId && message.groupId === group.id && message.role === 'user'
           ))
@@ -1093,6 +1411,20 @@ class LocalWorkspace extends EventEmitter {
               rootSkillsByKind.set(kind, [])
             }
           }
+          let storedKnowledgeBaseHints = []
+          try {
+            const validated = await this.validateKnowledgeBaseSelectionsFn(
+              controller.targetKinds,
+              rootMessage?.knowledgeBaseHints || [],
+            )
+            storedKnowledgeBaseHints = (Array.isArray(validated) ? validated : [])
+              .map(normalizeKnowledgeBaseHint)
+              .filter(Boolean)
+          } catch { /* unavailable knowledge bases are omitted when resuming */ }
+          rootKnowledgeBasesByKind = new Map(controller.targetKinds.map(kind => [
+            kind,
+            storedKnowledgeBaseHints.filter(source => source.targetKinds.includes(kind)),
+          ]))
         }
         const attachmentRecipients = new Set()
         let consensusReached = false
@@ -1121,6 +1453,7 @@ class LocalWorkspace extends EventEmitter {
                 group, kind, 'auto', controller.signal, threadRootId, {
                   attachments,
                   skillHints: rootSkillsByKind.get(kind) || [],
+                  knowledgeBaseHints: rootKnowledgeBasesByKind.get(kind) || [],
                 },
               )
               if (attachments.length) attachmentRecipients.add(kind)
@@ -1236,6 +1569,23 @@ class LocalWorkspace extends EventEmitter {
     if (requestedSkillHints.some(skill => !targetKinds.includes(String(skill?.targetKind || '')))) {
       throw new Error('LOCAL_SKILL_SELECTION_INVALID')
     }
+    if (input.knowledgeBaseHints != null && !Array.isArray(input.knowledgeBaseHints)) {
+      throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+    }
+    const requestedKnowledgeBaseHints = input.knowledgeBaseHints || []
+    if (requestedKnowledgeBaseHints.length > MAX_KNOWLEDGE_BASE_HINTS) {
+      throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+    }
+    const requestedKnowledgeKinds = new Set()
+    for (const source of requestedKnowledgeBaseHints) {
+      const kind = cleanInline(source?.kind, 40)
+      const sourceTargets = normalizeTargetKinds(source?.targetKinds)
+      if (!KNOWLEDGE_BASE_KINDS.has(kind) || requestedKnowledgeKinds.has(kind)
+          || !sourceTargets.length || sourceTargets.some(target => !targetKinds.includes(target))) {
+        throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+      }
+      requestedKnowledgeKinds.add(kind)
+    }
     const unlimitedRounds = mode === 'auto' && input.unlimitedRounds === true
     const maxRounds = mode === 'auto' && !unlimitedRounds
       ? normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
@@ -1263,6 +1613,7 @@ class LocalWorkspace extends EventEmitter {
             {
               attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
               skillHints: prepared.skillHints,
+              knowledgeBaseHints: prepared.knowledgeBaseHints,
               targetKinds: mentionedAgentKinds,
             },
           )
@@ -1301,6 +1652,7 @@ class LocalWorkspace extends EventEmitter {
           {
             attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
             skillHints: prepared.skillHints,
+            knowledgeBaseHints: prepared.knowledgeBaseHints,
             targetKinds: mentionedAgentKinds,
           },
         )
@@ -1314,6 +1666,7 @@ class LocalWorkspace extends EventEmitter {
           try {
             await this.invokeAgent(group, kind, 'manual', controller.signal, threadRootId, {
               skillHints: prepared.skillHintsByKind.get(kind) || [],
+              knowledgeBaseHints: prepared.knowledgeBaseHintsByKind.get(kind) || [],
               attachments: prepared.attachments.map(attachment => attachment.path),
               sessionThreadRootId: requestedThreadRootId || threadRootId,
             })

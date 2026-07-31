@@ -511,6 +511,20 @@ function loadMain(userData, options = {}) {
     './provider-store.cjs': { ProviderStore: TestProviderStore },
     './knowledge-base-store.cjs': { KnowledgeBaseStore: TestKnowledgeBaseStore },
     './local-knowledge-base.cjs': {
+      knowledgeBaseSelectionHint: (source, targetKinds) => {
+        if (options.knowledgeBaseSelectionHint) {
+          return options.knowledgeBaseSelectionHint(source, targetKinds)
+        }
+        return source?.ready ? {
+          kind: source.kind,
+          name: source.label || source.kind,
+          accessMode: source.accessMode,
+          targetKinds,
+          ...(source.accessMode === 'vault'
+            ? { location: source.vaultPath }
+            : { commandName: source.commandName }),
+        } : null
+      },
       knowledgeBaseGuideUrl: (kind, action) => (
         options.knowledgeBaseGuideUrl?.(kind, action) || `https://example.com/${kind}/${action}`
       ),
@@ -702,6 +716,7 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.equal(harness.installerInstances[0].detectedCount, 1)
   assert.equal(typeof harness.workspaceInstances[0].input.resolveAttachments, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.validateSkillSelections, 'function')
+  assert.equal(typeof harness.workspaceInstances[0].input.validateKnowledgeBaseSelections, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.imageAttachmentLimit, 'function')
   assert.deepEqual(harness.attachmentInstances[0].cleanupCalls, [[]])
   assert.equal(harness.windows.length, 1)
@@ -790,6 +805,62 @@ test('run completion uses sanitized renderer events and a localized background n
     groupId: 'group-1', status: 'completed', targetKinds: [], completedKinds: [],
   })
   assert.equal(harness.notificationInstances.length, 1)
+})
+
+test('runtime trace IPC forwards only sanitized allowlisted fields', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-run-event-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const window = harness.windows[0]
+  const workspace = harness.workspaceInstances[0]
+
+  workspace.emit('run-event', {
+    runId: 'run-1',
+    agentRunId: 'run-1:1:codex:agent-1',
+    groupId: 'group-1',
+    threadRootId: 'thread-1',
+    agentKind: 'codex',
+    round: 1,
+    seq: 2,
+    timestamp: 100,
+    id: 'tool-1',
+    type: 'tool_result_summary',
+    status: 'completed',
+    title: 'search',
+    summary: 'Read /Users/private/work with token=private-value',
+    command: 'rg private',
+    executable: '/tmp/codex',
+    sessionRef: 'private-session',
+    env: { SECRET: 'private' },
+  })
+
+  assert.deepEqual(window.webContents.sent.at(-1), [
+    'local-workspace:run-event',
+    {
+      runId: 'run-1',
+      agentRunId: 'run-1:1:codex:agent-1',
+      groupId: 'group-1',
+      threadRootId: 'thread-1',
+      agentKind: 'codex',
+      round: 1,
+      seq: 2,
+      timestamp: 100,
+      status: 'completed',
+      id: 'tool-1',
+      type: 'tool_result_summary',
+      title: 'search',
+      summary: 'Read [path] with token=[redacted]',
+    },
+  ])
+
+  const sentCount = window.webContents.sent.length
+  workspace.emit('run-event', {
+    runId: 'run-2', agentRunId: 'agent-2', groupId: 'group-1',
+    agentKind: '../../private', round: 1, seq: 1, timestamp: 100,
+    type: 'status', status: 'running',
+  })
+  assert.equal(window.webContents.sent.length, sentCount)
 })
 
 test('a completion notification restores a closed window and opens its local group', async (t) => {
@@ -1081,6 +1152,51 @@ test('Knowledge base status IPC shares concurrent source probes', async (t) => {
 
   assert.deepEqual(await status(harness.event()), expected)
   assert.equal(harness.knowledgeBaseResolveCalls.length, 2)
+})
+
+test('Knowledge base selections derive safe access from main-process source status', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-selection-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const source = {
+    kind: 'dingtalk',
+    label: 'DingTalk',
+    accessMode: 'cli',
+    commandName: 'dws',
+    ready: true,
+  }
+  const hintCalls = []
+  const { harness } = loadMain(directory, {
+    knowledgeBaseSources: [source],
+    knowledgeBaseSelectionHint: (cachedSource, targetKinds) => {
+      hintCalls.push({ cachedSource, targetKinds })
+      return cachedSource?.kind === 'dingtalk' ? {
+        kind: 'dingtalk',
+        name: 'DingTalk',
+        accessMode: 'cli',
+        commandName: cachedSource.commandName,
+        targetKinds,
+      } : null
+    },
+  })
+  await harness.ready()
+
+  const validate = harness.workspaceInstances[0].input.validateKnowledgeBaseSelections
+  const validated = await validate(['codex', 'hermes'], [{
+    kind: 'dingtalk',
+    targetKinds: ['hermes'],
+    commandName: 'renderer-controlled-command',
+  }])
+
+  assert.deepEqual(validated, [{
+    kind: 'dingtalk', name: 'DingTalk', accessMode: 'cli',
+    commandName: 'dws', targetKinds: ['hermes'],
+  }])
+  assert.deepEqual(hintCalls, [{ cachedSource: source, targetKinds: ['hermes'] }])
+  assert.equal(harness.knowledgeBaseResolveCalls.length, 1)
+
+  await assert.rejects(validate(['codex'], [{
+    kind: 'dingtalk', targetKinds: ['hermes'],
+  }]), { message: 'LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID' })
 })
 
 test('directory picker uses the operating system localized title', async (t) => {

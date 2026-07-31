@@ -4,6 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../../App.vue'
 import { AGENTS } from '../../catalog.js'
+import RunTracePanel from '../../components/RunTracePanel.vue'
 import { setLocale } from '../../i18n.js'
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
@@ -49,6 +50,7 @@ function imageAttachment(id, name = `${id}.png`) {
 function createBridge() {
   const state = baseSnapshot()
   let workspaceChanged = null
+  let runEvent = null
   let runFinished = null
   let openGroup = null
   const snapshot = value => structuredClone(value || state)
@@ -75,6 +77,12 @@ function createBridge() {
       workspaceChanged = callback
       return vi.fn(() => {
         if (workspaceChanged === callback) workspaceChanged = null
+      })
+    }),
+    onRunEvent: vi.fn((callback) => {
+      runEvent = callback
+      return vi.fn(() => {
+        if (runEvent === callback) runEvent = null
       })
     }),
     onRunFinished: vi.fn((callback) => {
@@ -304,6 +312,9 @@ function createBridge() {
     state,
     emitWorkspaceChanged(value = state) {
       workspaceChanged?.(snapshot(value))
+    },
+    emitRunEvent(value) {
+      runEvent?.(structuredClone(value))
     },
     emitRunFinished(value) {
       runFinished?.(structuredClone(value))
@@ -930,10 +941,12 @@ describe('RoundRelay workbench', () => {
   it('shows local knowledge sources and can pick an Obsidian vault', async () => {
     const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     expect(styles).toMatch(/\.knowledge-base-toolbar\s*\{/s)
-    expect(styles).toMatch(/\.knowledge-base-item\s*,\s*\.knowledge-base-future-item\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s)
-    expect(styles).toMatch(/\.knowledge-base-item-main\s*\{[^}]*grid-template-columns:\s*38px minmax\(0, 1fr\);/s)
+    expect(styles).toMatch(/\.knowledge-base-list,\s*\.knowledge-base-future-list\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s)
+    expect(styles).toMatch(/\.knowledge-base-item\s*,\s*\.knowledge-base-future-item\s*\{[^}]*border:\s*0;[^}]*background:\s*color-mix/s)
+    expect(styles).toMatch(/\.knowledge-base-item-main\s*\{[^}]*grid-template-columns:\s*48px minmax\(0, 1fr\);/s)
     expect(styles).toMatch(/\.knowledge-base-tag-row\s*\{[^}]*flex-wrap:\s*wrap;/s)
-    expect(styles).toMatch(/\.knowledge-base-tag\s*\{[^}]*border-radius:\s*999px;/s)
+    expect(styles).toMatch(/\.knowledge-base-tag\s*\{[^}]*border-radius:\s*4px;/s)
+    expect(styles).toMatch(/\.knowledge-base-future-item\s*\{[^}]*pointer-events:\s*none;/s)
     for (const [filename, source] of [
       ['feishu.svg', 'https://open.feishu.cn/'],
       ['dingtalk.svg', 'https://www.dingtalk.com/'],
@@ -975,7 +988,9 @@ describe('RoundRelay workbench', () => {
       const plannedItem = wrapper.findAll('.knowledge-base-future-item')
         .find(item => item.text().includes(label))
       expect(plannedItem.get('.knowledge-base-status').text()).toContain('Coming soon')
-      expect(plannedItem.get('.knowledge-base-action').text()).toContain('View official docs')
+      expect(plannedItem.attributes('aria-disabled')).toBe('true')
+      expect(plannedItem.get('.knowledge-base-action').text()).toContain('Coming soon')
+      expect(plannedItem.get('.knowledge-base-action').attributes()).toHaveProperty('disabled')
       expect(plannedItem.text()).not.toContain('Not configured')
     }
 
@@ -983,8 +998,7 @@ describe('RoundRelay workbench', () => {
       .find(item => item.text().includes('Notion'))
     await notionItem.get('.knowledge-base-action').trigger('click')
     await flushPromises()
-    expect(bridge.localKnowledgeBase.openGuide).toHaveBeenCalledWith('notion', 'install')
-    expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(2)
+    expect(bridge.localKnowledgeBase.openGuide).not.toHaveBeenCalled()
 
     const obsidianItem = wrapper.findAll('.knowledge-base-item')
       .find(item => item.text().includes('Obsidian'))
@@ -1045,11 +1059,10 @@ describe('RoundRelay workbench', () => {
         .find(item => item.text().includes(label))
       expect(card.get('.knowledge-base-status').text()).toContain('Ready')
       const tags = card.findAll('.knowledge-base-tag')
-      expect(tags).toHaveLength(3)
+      expect(tags).toHaveLength(1)
       expect(tags[0].text()).toContain('Official CLI')
-      expect(tags[1].text()).toContain('Read enabled')
-      expect(tags[2].text()).toContain('Write not verified')
-      expect(tags[2].text()).not.toContain('Write enabled')
+      expect(card.text()).not.toContain('Read enabled')
+      expect(card.text()).not.toContain('Write not verified')
     }
     wrapper.unmount()
   })
@@ -1069,9 +1082,7 @@ describe('RoundRelay workbench', () => {
     for (const item of localItems) {
       expect(item.get('.knowledge-base-status').text()).toContain('Checking')
       const tags = item.findAll('.knowledge-base-tag')
-      expect(tags).toHaveLength(3)
-      expect(tags[1].text()).toBe('Checking')
-      expect(tags[2].text()).toBe('Checking')
+      expect(tags).toHaveLength(1)
       expect(item.get('.knowledge-base-action').text()).toContain('Checking')
       expect(item.get('.knowledge-base-action').attributes()).toHaveProperty('disabled')
       expect(item.text()).not.toMatch(/CLI not installed|CLI missing|Obsidian not installed|App missing|Vault not selected/)
@@ -1083,8 +1094,8 @@ describe('RoundRelay workbench', () => {
     expect(plannedItems).toHaveLength(4)
     for (const item of plannedItems) {
       expect(item.get('.knowledge-base-status').text()).toContain('Coming soon')
-      expect(item.get('.knowledge-base-action').text()).toContain('View official docs')
-      expect(item.get('.knowledge-base-action').attributes()).not.toHaveProperty('disabled')
+      expect(item.get('.knowledge-base-action').text()).toContain('Coming soon')
+      expect(item.get('.knowledge-base-action').attributes()).toHaveProperty('disabled')
     }
 
     statusResult.resolve([])
@@ -1095,8 +1106,9 @@ describe('RoundRelay workbench', () => {
     const unknownItems = wrapper.findAll('.knowledge-base-item')
     for (const item of unknownItems) {
       expect(item.get('.knowledge-base-status').text()).toContain('Could not verify')
-      expect(item.findAll('.knowledge-base-tag')[1].text()).toContain('Read not verified')
-      expect(item.findAll('.knowledge-base-tag')[2].text()).toContain('Write not verified')
+      expect(item.findAll('.knowledge-base-tag')).toHaveLength(1)
+      expect(item.text()).not.toContain('Read not verified')
+      expect(item.text()).not.toContain('Write not verified')
       expect(item.get('.knowledge-base-action').text()).toContain('Recheck')
       expect(item.get('.knowledge-base-action').attributes()).not.toHaveProperty('disabled')
       expect(item.text()).not.toMatch(/CLI not installed|CLI missing|Obsidian not installed|App missing|Vault not selected/)
@@ -1162,6 +1174,62 @@ describe('RoundRelay workbench', () => {
     await controls[1].trigger('click')
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(wrapper.get('.brand-button img').attributes('src')).toBe('./logos/meldwork-mark-v3-dark.svg')
+    wrapper.unmount()
+  })
+
+  it('uses the Meldwork wordmark and automatically rotates empty copy in direct and group chats', async () => {
+    vi.useFakeTimers()
+    setLocale('zh')
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(styles).not.toContain('.conversation-empty-refresh')
+    expect(styles).toMatch(/\.empty-showcase-enter-active,\s*\.empty-showcase-leave-active\s*\{[^}]*transition:\s*opacity 0\.16s ease,\s*transform 0\.16s ease;/s)
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'direct-empty-codex',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Codex',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: true,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'group-empty',
+          conversationType: 'group',
+          name: 'Agent review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T09:00:00Z',
+          updatedAt: '2026-07-29T09:00:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    expect(wrapper.get('.conversation-empty-wordmark').attributes('src')).toBe('./logos/meldwork-wordmark-v3.svg')
+    expect(wrapper.find('.empty-icon').exists()).toBe(false)
+    expect(wrapper.find('.conversation-empty-refresh').exists()).toBe(false)
+    expect(wrapper.get('.conversation-empty').text()).not.toContain('开始对话')
+    expect(wrapper.get('.conversation-empty').text()).not.toContain('给 Codex 发送一个任务')
+    expect(wrapper.get('.conversation-empty-copy').text()).toContain('先从一个 Agent 开始')
+    expect(wrapper.get('.conversation-empty-copy').text()).not.toMatch(/[。.]$/)
+
+    await vi.advanceTimersByTimeAsync(2_800)
+    await flushPromises()
+    expect(wrapper.get('.conversation-empty-copy').text()).toContain('再把 Agent 们叫到一起')
+
+    await wrapper.findAll('.sidebar-footer-actions button')[1].trigger('click')
+    expect(wrapper.get('.conversation-empty-wordmark').attributes('src')).toBe('./logos/meldwork-wordmark-v3-dark.svg')
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.conversation-empty-wordmark').attributes('src')).toBe('./logos/meldwork-wordmark-v3-dark.svg')
+    expect(wrapper.get('.conversation-empty').text()).not.toContain('先发送讨论主题')
     wrapper.unmount()
   })
 
@@ -1370,7 +1438,7 @@ describe('RoundRelay workbench', () => {
     expect(source).not.toMatch(/\.settings-tabs\s*\{[^}]*border-bottom:\s*1px solid var\(--border\);/s)
     expect(source).toMatch(/\.settings-tabs button\.active\s*\{[^}]*border-bottom-color:\s*var\(--accent\);/s)
     expect(source).toMatch(/\.skill-menu\s*\{[^}]*border:\s*0;/s)
-    expect(source).toMatch(/\.skill-option\.agent-mention-option small\s*\{[^}]*-webkit-line-clamp:\s*2;/s)
+    expect(source).toMatch(/\.skill-option\.agent-mention-option \.skill-option-copy small,[^{]+\.skill-option\.knowledge-base-mention-option \.skill-option-copy small\s*\{[^}]*-webkit-line-clamp:\s*2;/s)
     expect(source).toMatch(/\.modal-pop-enter-active,[^{]+\.modal-pop-leave-active\s*\{[^}]*transform 0\.18s cubic-bezier\(0\.16, 1, 0\.3, 1\);/s)
     expect(source).toMatch(/\.direct-session-action\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row:hover \.direct-session-action,[^{]+\.direct-session-row:focus-within \.direct-session-action\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*auto;/s)
@@ -1391,6 +1459,9 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.target-row\s*\{[^}]*background:\s*transparent;/s)
     expect(source).toMatch(/\.agent-card\s*\{[^}]*border:\s*0;[^}]*background:\s*color-mix/s)
     expect(source).toMatch(/\.agent-capability-list > span\s*\{[^}]*border:\s*0;/s)
+    expect(source).toMatch(/\.agent-version\s*\{[^}]*max-width:\s*min\(20ch, 40%\);/s)
+    expect(source).toMatch(/\.agent-card-meta-row\s*\{[^}]*display:\s*flex;[^}]*padding:\s*0 16px 14px 77px;/s)
+    expect(source).toMatch(/\.settings-agent-actions\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*padding:\s*0;/s)
     expect(source).toMatch(/\.settings-agent-card\.focused\s*\{[^}]*box-shadow:\s*none;/s)
     expect(source).not.toContain('img[src$="/hermes.svg"],\n:root[data-theme="dark"] img[src$="/opencode.svg"]')
     expect(appSource).toContain('composer-attachment-button')
@@ -1425,6 +1496,12 @@ describe('RoundRelay workbench', () => {
     expect(source).toContain('.turn-rail button:has(+ button + button + button:hover)')
     expect(source).toMatch(/\.turn-rail button:hover > span:first-child,[^{]+\{[^}]*--turn-offset:\s*10px;[^}]*--turn-scale:\s*2\.4;/s)
     expect(source).toMatch(/\.turn-rail button > span:first-child\s*\{[^}]*transform-origin:\s*left center;/s)
+    expect(source).toMatch(/\.turn-rail button > span:first-child\s*\{[^}]*width:\s*var\(--turn-width\);[^}]*height:\s*var\(--turn-height\);[^}]*border:\s*0;[^}]*border-radius:\s*999px;/s)
+    expect(source).toMatch(/\.turn-rail button > span:first-child\s*\{[^}]*transform:\s*translateX\(var\(--turn-offset\)\) scaleX\(var\(--turn-scale\)\);/s)
+    expect(source).not.toMatch(/\.turn-rail button > span:first-child\s*\{[^}]*border-radius:\s*50%;/s)
+    expect(source).not.toMatch(/\.turn-rail button > span:first-child\s*\{[^}]*box-shadow:\s*0 0 0 1px/s)
+    expect(source).toMatch(/\.turn-rail-tooltip\s*\{[^}]*border:\s*0;[^}]*border-radius:\s*11px 11px 11px 5px;/s)
+    expect(source).toMatch(/\.turn-rail-tooltip::before\s*\{[^}]*clip-path:\s*polygon\(100% 0, 0 50%, 100% 100%\);/s)
     expect(source).not.toContain('.turn-rail::before')
     expect(source).toMatch(/\.message-row\.topic-reply\s*\{[^}]*border-left:\s*0;/s)
     expect(source).toMatch(/\.message-row\.group-message\.agent \.message-body::before\s*\{[^}]*background:\s*var\(--agent-accent\);/s)
@@ -1443,6 +1520,130 @@ describe('RoundRelay workbench', () => {
     expect(appSource).toContain('<StopCircleOutline aria-hidden="true" />')
     expect(appSource).not.toContain('<PlayOutline')
     expect(appSource).not.toContain('<ArrowUpOutline')
+  })
+
+  it('merges live run events into the trace panel and closes it with Escape or browser back', async () => {
+    const pushState = vi.spyOn(history, 'pushState')
+    const back = vi.spyOn(history, 'back').mockImplementation(() => {})
+    const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Trace review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'root-1',
+        groupId: 'group-1',
+        role: 'user',
+        content: 'Inspect the implementation',
+        targetKinds: ['codex', 'hermes'],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['group-1']
+      state.runs = [{
+        runId: 'run-1',
+        groupId: 'group-1',
+        threadRootId: 'root-1',
+        phase: 'running',
+        mode: 'auto',
+        targetKinds: ['codex', 'hermes'],
+        completedKinds: [],
+        failedKinds: [],
+        currentKind: 'codex',
+        currentRound: 1,
+        maxRounds: 4,
+        progress: [],
+        agentRuns: [{
+          agentRunId: 'agent-run-codex',
+          kind: 'codex',
+          round: 1,
+          status: 'running',
+          output: '',
+          events: [],
+          sourceMessageIds: ['root-1'],
+          seenSeqs: [],
+        }],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.run-agent-row:not([disabled])').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
+    expect(pushState).toHaveBeenCalledWith({ roundrelayTracePanel: true }, '', window.location.href)
+
+    emitRunEvent({
+      runId: 'run-1',
+      agentRunId: 'agent-run-codex',
+      groupId: 'group-1',
+      threadRootId: 'root-1',
+      agentKind: 'codex',
+      round: 1,
+      seq: 1,
+      type: 'reasoning_summary',
+      status: 'running',
+      title: 'Reviewing files',
+      summary: 'Checking the sidebar implementation.',
+      timestamp: '2026-07-29T08:02:00Z',
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.trace-event-list').text()).toContain('Reviewing files')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Running')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(back).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('.run-agent-row:not([disabled])').trigger('click')
+    await flushPromises()
+    window.dispatchEvent(new PopStateEvent('popstate'))
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(back).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('traps keyboard focus inside the responsive trace drawer', async () => {
+    const wrapper = mount(RunTracePanel, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        drawer: true,
+        items: [{
+          agentRunId: 'agent-run-codex',
+          agentKind: 'codex',
+          round: 1,
+          status: 'running',
+          output: '',
+          summary: '',
+          events: [],
+          sourceMessageIds: [],
+          context: {},
+        }],
+        selectedAgentRunId: 'agent-run-codex',
+      },
+    })
+    const buttons = wrapper.findAll('.run-trace-panel button')
+    const first = buttons[0].element
+    const last = buttons.at(-1).element
+
+    last.focus()
+    await wrapper.get('.run-trace-panel').trigger('keydown', { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+
+    first.focus()
+    await wrapper.get('.run-trace-panel').trigger('keydown', { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(last)
+    wrapper.unmount()
   })
 
   it('saves the exact Provider payload exposed by preload', async () => {
@@ -1618,6 +1819,7 @@ describe('RoundRelay workbench', () => {
       text: 'Continue the review',
       targetKinds: ['codex', 'hermes'],
       skillHints: [],
+      knowledgeBaseHints: [],
       attachments: [],
       mode: 'auto',
       maxRounds: 6,
@@ -1669,6 +1871,7 @@ describe('RoundRelay workbench', () => {
       text: 'Continue until consensus',
       targetKinds: ['codex', 'hermes'],
       skillHints: [],
+      knowledgeBaseHints: [],
       attachments: [],
       mode: 'auto',
       maxRounds: 6,
@@ -2077,11 +2280,12 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.mode-segmented [data-mode="manual"]').classes()).toContain('active')
     expect(wrapper.get('.mode-segmented [data-mode="auto"]').attributes()).toHaveProperty('disabled')
 
+    expect(bridge.agentInstaller.skills.mock.calls).toEqual(expect.arrayContaining([['codex'], ['hermes']]))
     bridge.agentInstaller.skills.mockClear()
     await textarea.setValue('@rev')
     await flushPromises()
 
-    expect(bridge.agentInstaller.skills.mock.calls).toEqual([['codex']])
+    expect(bridge.agentInstaller.skills).not.toHaveBeenCalled()
     expect(wrapper.findAll('.skill-option')).toHaveLength(1)
     expect(wrapper.get('.skill-option').text()).toContain('Review code')
     expect(wrapper.get('.skill-option').text()).not.toContain('Research')
@@ -2092,7 +2296,7 @@ describe('RoundRelay workbench', () => {
 
     await textarea.setValue('@review')
     await flushPromises()
-    expect(bridge.agentInstaller.skills.mock.calls).toEqual([['codex']])
+    expect(bridge.agentInstaller.skills).not.toHaveBeenCalled()
 
     await textarea.trigger('keydown', { key: 'Enter' })
     expect(textarea.attributes('aria-expanded')).toBe('false')
@@ -2106,6 +2310,7 @@ describe('RoundRelay workbench', () => {
       targetKinds: ['codex'],
       mentionedAgentKinds: ['codex'],
       skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
+      knowledgeBaseHints: [],
       attachments: [],
       mode: 'manual',
       maxRounds: 6,
@@ -2197,10 +2402,62 @@ describe('RoundRelay workbench', () => {
       targetKinds: ['codex', 'hermes'],
       mentionedAgentKinds: ['codex', 'hermes'],
       skillHints: [],
+      knowledgeBaseHints: [],
       attachments: [],
       mode: 'manual',
       maxRounds: 6,
     })
+    wrapper.unmount()
+  })
+
+  it('mentions a ready knowledge base for multiple selected Agents and sends its scoped access', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-knowledge',
+        conversationType: 'group',
+        name: 'Knowledge review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@cod')
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('@her')
+    await flushPromises()
+    await wrapper.get('.agent-mention-option').trigger('click')
+
+    await textarea.setValue('@ding')
+    await flushPromises()
+    const option = wrapper.get('.knowledge-base-mention-option')
+    expect(option.get('img').attributes('src')).toBe('./knowledge-base-logos/dingtalk.svg')
+    expect(option.text()).toContain('Search DingTalk documents through the configured dws connection')
+    expect(option.text()).toContain('Knowledge')
+    await option.trigger('click')
+    expect(wrapper.get('.selected-knowledge-base').text()).toContain('@DingTalk Docs')
+
+    await textarea.setValue('Compare the internal references')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-knowledge',
+      text: 'Compare the internal references',
+      targetKinds: ['codex', 'hermes'],
+      mentionedAgentKinds: ['codex', 'hermes'],
+      skillHints: [],
+      knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['codex', 'hermes'] }],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+    expect(wrapper.find('.selected-knowledge-base').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -2266,7 +2523,7 @@ describe('RoundRelay workbench', () => {
     await textarea.setValue('@review')
     await flushPromises()
 
-    expect(bridge.agentInstaller.skills.mock.calls).toEqual([['codex']])
+    expect(bridge.agentInstaller.skills).not.toHaveBeenCalled()
     expect(wrapper.find('.agent-mention-option').exists()).toBe(false)
     expect(wrapper.get('.skill-option').text()).toContain('Review code')
     await textarea.trigger('keydown', { key: 'Enter' })
@@ -2279,6 +2536,7 @@ describe('RoundRelay workbench', () => {
       text: 'Review this implementation',
       targetKinds: ['codex'],
       skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
+      knowledgeBaseHints: [],
       attachments: [],
       mode: 'manual',
       maxRounds: 6,
@@ -2332,6 +2590,7 @@ describe('RoundRelay workbench', () => {
       text: '',
       targetKinds: ['codex'],
       skillHints: [],
+      knowledgeBaseHints: [],
       attachments: [{ id: 'attachment-1', name: 'diagram.png', mimeType: 'image/png', size: 3 }],
       mode: 'manual',
       maxRounds: 6,
@@ -3060,10 +3319,12 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.direct-session-list::before/)
     expect(source).toMatch(/\.direct-session-list > \.sidebar-more-button::before/)
     expect(source).toMatch(/--session-tree-line:\s*color-mix\(in srgb,\s*var\(--border\)\s*78%,\s*transparent\);/)
-    expect(source).toMatch(/\.direct-session-list > :last-child::before\s*\{[^}]*border-bottom-left-radius:\s*7px;/s)
+    expect(source).toMatch(/\.direct-session-list::before\s*\{[^}]*border-left:\s*1px solid var\(--session-tree-line\);[^}]*border-bottom-left-radius:\s*7px;/s)
+    expect(source).toMatch(/\.direct-session-list > :last-child::before\s*\{[^}]*content:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row\.active\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*var\(--surface-active\);/s)
     expect(source).toMatch(/\.direct-session-row\.active::after\s*\{[^}]*background:\s*var\(--accent\);/s)
-    expect(source).toMatch(/\.sidebar-delete-popover\s*\{[^}]*position:\s*fixed;[^}]*transform:\s*translateY\(calc\(-100% \+ 18px\)\);/s)
+    expect(source).toMatch(/\.sidebar-delete-popover\s*\{[^}]*position:\s*fixed;[^}]*border:\s*0;[^}]*transform:\s*translateY\(calc\(-100% \+ 18px\)\);/s)
+    expect(source).toMatch(/\.sidebar-delete-popover::after\s*\{[^}]*border:\s*0;/s)
     expect(source).not.toMatch(/\.group-conversation-list::before/)
     expect(source).not.toMatch(/\.group-conversation-row::before/)
 
@@ -3580,6 +3841,310 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.findAll('.run-agent-row')[0].attributes('data-status')).toBe('failed')
     expect(wrapper.findAll('.run-agent-row .run-agent-logo')[0].attributes('data-status')).toBe('failed')
     expect(wrapper.findAll('.run-agent-row')[0].find('.run-agent-motion[data-status="failed"] svg').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('streams direct Agent answer deltas inline without opening the group trace panel', async () => {
+    const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-trace',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex trace',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'direct-root',
+        groupId: 'direct-trace',
+        role: 'user',
+        content: 'Stream this answer',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['direct-trace']
+      state.runs = [{
+        runId: 'run-direct',
+        groupId: 'direct-trace',
+        threadRootId: 'direct-root',
+        targetKinds: ['codex'],
+        currentKind: 'codex',
+        agentRuns: [{
+          agentRunId: 'agent-direct',
+          kind: 'codex',
+          round: 1,
+          status: 'running',
+          output: '',
+          events: [],
+        }],
+      }]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    emitRunEvent({
+      runId: 'run-direct', agentRunId: 'agent-direct', groupId: 'direct-trace',
+      threadRootId: 'direct-root', agentKind: 'codex', round: 1, seq: 1,
+      type: 'answer_delta', status: 'running', delta: 'First',
+    })
+    await flushPromises()
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-copy-surface').text()).toContain('First')
+    const traceDetails = wrapper.get('.trace-inline-details')
+    expect(traceDetails.exists()).toBe(true)
+    expect(traceDetails.element.open).toBe(false)
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.message-trace-button').exists()).toBe(false)
+
+    traceDetails.element.open = true
+    await traceDetails.trigger('toggle')
+    await flushPromises()
+    expect(traceDetails.element.open).toBe(true)
+
+    emitRunEvent({
+      runId: 'run-direct', agentRunId: 'agent-direct', groupId: 'direct-trace',
+      threadRootId: 'direct-root', agentKind: 'codex', round: 1, seq: 2,
+      type: 'answer_delta', status: 'running', delta: ' answer',
+    })
+    await flushPromises()
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-copy-surface').text()).toContain('First answer')
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+    wrapper.unmount()
+  })
+
+  it('opens the selected Agent execution details in a group trace panel', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-trace',
+        conversationType: 'group',
+        name: 'Trace review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'group-root',
+        groupId: 'group-trace',
+        role: 'user',
+        content: 'Compare the approaches',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['group-trace']
+      state.runs = [{
+        runId: 'run-group',
+        groupId: 'group-trace',
+        threadRootId: 'group-root',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'hermes',
+        agentRuns: [
+          {
+            agentRunId: 'agent-codex',
+            kind: 'codex',
+            round: 1,
+            status: 'completed',
+            output: 'Codex conclusion',
+            events: [{ seq: 1, type: 'reasoning_summary', status: 'completed', summary: 'Codex evidence' }],
+          },
+          {
+            agentRunId: 'agent-hermes',
+            kind: 'hermes',
+            round: 1,
+            status: 'running',
+            output: 'Hermes conclusion',
+            events: [{ seq: 2, type: 'tool_result_summary', status: 'completed', title: 'Research', summary: 'Hermes evidence' }],
+          },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const hermesRow = wrapper.findAll('.run-agent-row').find(row => row.get('strong').text() === 'Hermes')
+    expect(hermesRow).toBeTruthy()
+    await hermesRow.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
+    expect(wrapper.get('.trace-panel-header strong').text()).toBe('Hermes')
+    expect(wrapper.get('.trace-agent-tab.active strong').text()).toBe('Hermes')
+    expect(wrapper.get('.trace-conclusion').text()).toContain('Hermes conclusion')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Tool result')
+    wrapper.unmount()
+  })
+
+  it('closes the group trace panel with Escape and restores the Agent row focus', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-trace-focus',
+        conversationType: 'group',
+        name: 'Trace focus',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.runningGroupIds = ['group-trace-focus']
+      state.runs = [{
+        runId: 'run-focus',
+        groupId: 'group-trace-focus',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [
+          { agentRunId: 'agent-focus-codex', kind: 'codex', round: 1, status: 'running', output: 'Codex', events: [] },
+          { agentRunId: 'agent-focus-hermes', kind: 'hermes', round: 1, status: 'running', output: 'Hermes', events: [] },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const opener = wrapper.findAll('.run-agent-row').find(row => row.get('strong').text() === 'Hermes')
+    await opener.trigger('click')
+    await flushPromises()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(document.activeElement).toBe(opener.element)
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('replaces a provisional group answer with its durable trace capsule', async () => {
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'group-durable-trace',
+        conversationType: 'group',
+        name: 'Durable trace',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.messages.push({
+        id: 'durable-root',
+        groupId: 'group-durable-trace',
+        role: 'user',
+        content: 'Keep the evidence',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      nextState.runningGroupIds = ['group-durable-trace']
+      nextState.runs = [{
+        runId: 'run-durable',
+        groupId: 'group-durable-trace',
+        threadRootId: 'durable-root',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [{
+          agentRunId: 'agent-durable',
+          kind: 'codex',
+          round: 1,
+          status: 'running',
+          output: 'live output',
+          events: [{ seq: 1, type: 'reasoning_summary', status: 'running', summary: 'live reasoning' }],
+        }],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('live output')
+
+    state.runs = []
+    state.runningGroupIds = []
+    state.messages.push({
+      id: 'durable-agent',
+      groupId: 'group-durable-trace',
+      role: 'agent',
+      agentKind: 'codex',
+      threadRootId: 'durable-root',
+      content: 'durable output',
+      createdAt: '2026-07-29T08:02:00Z',
+      trace: {
+        runId: 'run-durable',
+        agentRunId: 'agent-durable',
+        status: 'completed',
+        summary: 'durable summary',
+        events: [{
+          evidenceId: 'E-R1-CODEX-01',
+          type: 'reasoning_summary',
+          status: 'completed',
+          summary: 'durable event',
+        }],
+      },
+    })
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('durable output')
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).not.toContain('live output')
+    await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.trace-summary-copy').text()).toContain('durable summary')
+    expect(wrapper.get('.trace-conclusion').text()).toContain('durable output')
+    wrapper.unmount()
+  })
+
+  it('does not force-scroll a direct stream while the user is reading above the bottom', async () => {
+    const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-scroll',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Scroll protection',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'scroll-root',
+        groupId: 'direct-scroll',
+        role: 'user',
+        content: 'Read this carefully',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['direct-scroll']
+      state.runs = [{
+        runId: 'run-scroll',
+        groupId: 'direct-scroll',
+        threadRootId: 'scroll-root',
+        targetKinds: ['codex'],
+        agentRuns: [{ agentRunId: 'agent-scroll', kind: 'codex', round: 1, status: 'running', output: '', events: [] }],
+      }]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const scroller = wrapper.get('.message-scroll').element
+    let scrollTop = 400
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => { scrollTop = value },
+      },
+    })
+    await wrapper.get('.message-scroll').trigger('scroll')
+    emitRunEvent({
+      runId: 'run-scroll', agentRunId: 'agent-scroll', groupId: 'direct-scroll',
+      threadRootId: 'scroll-root', agentKind: 'codex', round: 1, seq: 1,
+      type: 'answer_delta', status: 'running', delta: 'new output',
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('new output')
+    expect(scrollTop).toBe(400)
     wrapper.unmount()
   })
 

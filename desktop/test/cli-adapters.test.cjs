@@ -228,8 +228,12 @@ send()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
   const progress = []
+  const events = []
   let firstProgressResolve
   const firstProgress = new Promise(resolve => { firstProgressResolve = resolve })
+  let answerEventResolve
+  const answerEvent = new Promise(resolve => { answerEventResolve = resolve })
+  let resultResolved = false
   const resultPromise = runAgent(
     { kind: 'codex', executable: cli, name: 'Codex' },
     'hello',
@@ -239,11 +243,20 @@ send()
         progress.push(step)
         firstProgressResolve()
       },
+      onEvent: event => {
+        events.push(event)
+        if (event.type === 'answer_delta') answerEventResolve()
+      },
     },
-  )
+  ).then((result) => {
+    resultResolved = true
+    return result
+  })
 
   await within(firstProgress)
   assert.equal(progress.length > 0, true)
+  await within(answerEvent)
+  assert.equal(resultResolved, false)
   const result = await resultPromise
 
   assert.equal(result.text, 'final reply')
@@ -256,6 +269,20 @@ send()
   assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'in_progress'), true)
   assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'completed'), true)
   assert.doesNotMatch(JSON.stringify(progress), /secret|Users|workspace|rg -n/)
+  assert.deepEqual(events.map(event => [event.type, event.status]), [
+    ['status', 'running'],
+    ['tool_start', 'running'],
+    ['tool_result_summary', 'completed'],
+    ['tool_start', 'running'],
+    ['tool_result_summary', 'completed'],
+    ['answer_delta', 'running'],
+    ['status', 'completed'],
+  ])
+  assert.equal(events.find(event => event.type === 'answer_delta')?.delta, 'final reply')
+  assert.equal(events.every(event => Object.keys(event).every(key => (
+    ['id', 'type', 'status', 'title', 'summary', 'detail', 'delta'].includes(key)
+  ))), true)
+  assert.doesNotMatch(JSON.stringify(events), /secret|Users|workspace|rg -n|command_execution/)
 })
 
 test('Hermes uses quiet query mode and resumes the native session id without a shell', () => {
@@ -783,6 +810,42 @@ input.on('line', (line) => {
       jsonrpc: '2.0', method: 'session/update',
       params: {
         sessionId,
+        update: {
+          sessionUpdate: 'agent_thought_chunk',
+          content: {
+            type: 'text',
+            text: 'PRIVATE_CHAIN_OF_THOUGHT command=rg /Users/private/workspace',
+          },
+        },
+      },
+    })
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call', toolCallId: 'tool-1',
+          title: 'command=rg /Users/private/workspace', kind: 'search', status: 'in_progress',
+          rawInput: { command: 'rg /Users/private/workspace' },
+          locations: [{ path: '/Users/private/workspace' }],
+        },
+      },
+    })
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId,
+        update: {
+          sessionUpdate: 'tool_call_update', toolCallId: 'tool-1',
+          title: 'stderr=private tool output', kind: 'search', status: 'completed',
+          rawOutput: 'private tool output',
+        },
+      },
+    })
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
       },
     })
@@ -796,17 +859,36 @@ input.on('line', (line) => {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const env = { ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile }
   const createdSessionRefs = []
+  const createdEvents = []
 
   const created = await runAgent(
     { kind: 'kimi', executable: cli, name: 'Kimi' },
     'first prompt',
     workdir,
-    { env, onSessionRef: sessionRef => createdSessionRefs.push(sessionRef) },
+    {
+      env,
+      onSessionRef: sessionRef => createdSessionRefs.push(sessionRef),
+      onEvent: event => createdEvents.push(event),
+    },
   )
   assert.equal(created.text, `new|plan|cancelled|first prompt|${workdir}`)
   assert.equal(created.sessionRef, 'kimi-acp-session')
   assert.equal(created.completed, true)
   assert.deepEqual(createdSessionRefs, ['kimi-acp-session'])
+  assert.equal(createdEvents.some(event => event.type === 'answer_delta'), true)
+  assert.equal(
+    createdEvents.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
+    'new|plan|cancelled|first prompt|[path]',
+  )
+  assert.deepEqual(createdEvents.slice(0, 3), [
+    { type: 'reasoning_summary', status: 'running', title: 'reasoning' },
+    { id: 'tool-1', type: 'tool_start', status: 'running', title: 'search' },
+    { id: 'tool-1', type: 'tool_result_summary', status: 'completed', title: 'search' },
+  ])
+  assert.doesNotMatch(
+    JSON.stringify(createdEvents),
+    /PRIVATE_CHAIN_OF_THOUGHT|command|rg |Users|private tool output|stderr/i,
+  )
 
   const resumedSessionRefs = []
   const resumed = await runAgent(
@@ -1210,6 +1292,53 @@ test('Gemini stream JSON output returns assistant chunks and the native session 
   })
 })
 
+test('runAgent streams Gemini answer deltas without duplicating the final reply', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-gemini-events-'))
+  const cli = executable(directory, 'gemini-events.cjs', `
+const events = [
+  { type: 'init', session_id: 'gemini-event-session' },
+  { type: 'message', role: 'assistant', content: 'first ' },
+  { type: 'message', role: 'assistant', content: 'second' },
+]
+let index = 0
+const send = () => {
+  process.stdout.write(JSON.stringify(events[index++]) + '\\n')
+  if (index < events.length) return setTimeout(send, 20)
+  setTimeout(() => process.exit(0), 30)
+}
+send()
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const events = []
+  let firstDeltaResolve
+  const firstDelta = new Promise(resolve => { firstDeltaResolve = resolve })
+  let resultResolved = false
+  const resultPromise = runAgent(
+    { kind: 'gemini', executable: cli, name: 'Gemini' },
+    'hello',
+    directory,
+    {
+      onEvent: event => {
+        events.push(event)
+        if (event.type === 'answer_delta') firstDeltaResolve()
+      },
+    },
+  ).then((result) => {
+    resultResolved = true
+    return result
+  })
+
+  await within(firstDelta)
+  assert.equal(resultResolved, false)
+  const result = await resultPromise
+  const deltas = events.filter(event => event.type === 'answer_delta')
+  assert.equal(result.text, 'first second')
+  assert.equal(result.sessionRef, 'gemini-event-session')
+  assert.deepEqual(deltas.map(event => event.delta), ['first ', 'second'])
+  assert.equal(deltas.map(event => event.delta).join(''), result.text)
+})
+
 test('OpenCode uses JSON events and resumes the requested session without auto approval', () => {
   const chat = invocation('opencode', '/tmp/opencode', '/tmp/work', 'opencode-session')
   assert.deepEqual(chat.args, [
@@ -1309,6 +1438,70 @@ test('supported local CLIs run in the selected workdir and return native session
     assert.equal(result.text, workdir, fixture.kind)
     assert.equal(result.sessionRef, `${fixture.kind}-session`, fixture.kind)
   }
+})
+
+test('final JSON agents emit one sanitized fallback answer event', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-final-events-'))
+  const cli = executable(directory, 'final-events.cjs', `
+process.stdout.write(JSON.stringify({
+  type: 'result',
+  result: [
+    'final answer',
+    'command=rg -n token /Users/private/workspace/file.txt',
+    'OPENAI_API_KEY=' + process.env.OPENAI_API_KEY,
+    'stderr=permission denied',
+  ].join('\\n'),
+  session_id: 'final-event-session',
+}))
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const secret = 'provider-secret-for-runtime-event'
+  const events = []
+
+  const result = await runAgent(
+    { kind: 'qwen', executable: cli, name: 'Qwen' },
+    'hello',
+    directory,
+    {
+      env: { OPENAI_API_KEY: secret },
+      onEvent: event => events.push(event),
+    },
+  )
+
+  assert.equal(result.sessionRef, 'final-event-session')
+  assert.equal(result.text.includes('[redacted]'), true)
+  assert.equal(events.length, 1)
+  assert.deepEqual(
+    { type: events[0].type, status: events[0].status },
+    { type: 'answer_delta', status: 'completed' },
+  )
+  assert.match(events[0].delta, /final answer/)
+  assert.doesNotMatch(
+    JSON.stringify(events),
+    /command|rg -n|Users|private|workspace|provider-secret|stderr|permission denied/i,
+  )
+})
+
+test('runtime event callback failures do not change the Agent result', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-event-callback-'))
+  const cli = executable(directory, 'event-callback.cjs', `
+process.stdout.write(JSON.stringify({
+  type: 'result', result: 'callback-safe reply', session_id: 'callback-session',
+}))
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'claude', executable: cli, name: 'Claude' },
+    'hello',
+    directory,
+    { onEvent: () => { throw new Error('renderer callback failed') } },
+  )
+
+  assert.deepEqual(result, {
+    text: 'callback-safe reply',
+    sessionRef: 'callback-session',
+  })
 })
 
 test('runAgent forces OpenCode read-only permissions without changing user configuration', async (t) => {

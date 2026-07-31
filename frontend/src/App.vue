@@ -1,5 +1,9 @@
 <template>
-  <main class="app-shell" :class="{ 'sidebar-collapsed': sidebarCollapsed }" :data-theme="theme">
+  <main
+    class="app-shell"
+    :class="{ 'sidebar-collapsed': sidebarCollapsed, 'trace-panel-open': tracePanelOpen }"
+    :data-theme="theme"
+  >
     <section v-if="booting" class="boot-state" aria-live="polite">
       <img class="boot-logo" :src="productAppIcon" alt="Meldwork" />
       <p>{{ t('app.loading') }}</p>
@@ -16,8 +20,8 @@
       <aside
         class="sidebar"
         :class="{ collapsed: sidebarCollapsed }"
-        :inert="blockingOverlayOpen ? '' : undefined"
-        :aria-hidden="blockingOverlayOpen ? 'true' : undefined"
+        :inert="contentInteractionBlocked ? '' : undefined"
+        :aria-hidden="contentInteractionBlocked ? 'true' : undefined"
       >
         <header class="brand-row">
           <button
@@ -294,8 +298,8 @@
 
       <section
         class="workspace-pane"
-        :inert="blockingOverlayOpen ? '' : undefined"
-        :aria-hidden="blockingOverlayOpen ? 'true' : undefined"
+        :inert="contentInteractionBlocked ? '' : undefined"
+        :aria-hidden="contentInteractionBlocked ? 'true' : undefined"
       >
         <section v-if="activeView === 'settings'" class="system-settings-page">
           <header class="system-settings-header">
@@ -375,9 +379,6 @@
                         <span>{{ agentImageLabel(agent) }}</span>
                         <span>{{ providerSummaryLabel(agent) }}</span>
                       </span>
-                      <span v-if="agent.version" class="agent-version">
-                        {{ t('agent.detectedVersion', { version: agent.version }) }}
-                      </span>
                     </span>
                     <ChevronForwardOutline class="card-chevron" />
                   </button>
@@ -388,43 +389,52 @@
                   <div v-if="installerState.kind === agent.kind && installerState.phase !== 'idle'" class="install-progress">
                     <span>{{ installerPhaseLabel }}</span>
                   </div>
-                  <div class="agent-card-actions settings-agent-actions">
-                    <button
-                      v-if="agent.ready"
-                      type="button"
-                      :disabled="isDirectCreationPending(agent.kind)"
-                      @click.stop="openDirect(agent)"
+                  <div class="agent-card-meta-row">
+                    <span
+                      v-if="agent.version"
+                      class="agent-version"
+                      :title="t('agent.detectedVersion', { version: agent.version })"
                     >
-                      <ChatbubbleEllipsesOutline />
-                      {{ t('home.openChat') }}
-                    </button>
-                    <button
-                      v-else-if="!agent.installed && agent.installSupported"
-                      type="button"
-                      :disabled="installerBusy && installerState.kind !== agent.kind"
-                      @click.stop="requestInstall(agent)"
-                    >
-                      <DownloadOutline />
-                      {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
-                    </button>
-                    <span v-else-if="!agent.installed" class="manager-note">
-                      {{ agent.installErrorCode === 'INSTALL_AGENT_NODE_REQUIRED' ? t('installer.nodeRequired') : t('installer.unsupported') }}
+                      {{ t('agent.detectedVersion', { version: agent.version }) }}
                     </span>
-                    <button
-                      v-if="installerState.kind === agent.kind && installerState.canCancel"
-                      type="button"
-                      @click.stop="cancelInstall"
-                    >
-                      {{ t('installer.cancel') }}
-                    </button>
-                    <button
-                      v-else-if="supportsExternalProvider(agent)"
-                      type="button"
-                      @click.stop="openProvider(agent.kind)"
-                    >
-                      <KeyOutline />
-                      {{ t('systemSettings.providerForAgent') }}
-                    </button>
+                    <div class="agent-card-actions settings-agent-actions">
+                      <button
+                        v-if="agent.ready"
+                        type="button"
+                        :disabled="isDirectCreationPending(agent.kind)"
+                        @click.stop="openDirect(agent)"
+                      >
+                        <ChatbubbleEllipsesOutline />
+                        {{ t('home.openChat') }}
+                      </button>
+                      <button
+                        v-else-if="!agent.installed && agent.installSupported"
+                        type="button"
+                        :disabled="installerBusy && installerState.kind !== agent.kind"
+                        @click.stop="requestInstall(agent)"
+                      >
+                        <DownloadOutline />
+                        {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
+                      </button>
+                      <span v-else-if="!agent.installed" class="manager-note">
+                        {{ agent.installErrorCode === 'INSTALL_AGENT_NODE_REQUIRED' ? t('installer.nodeRequired') : t('installer.unsupported') }}
+                      </span>
+                      <button
+                        v-if="installerState.kind === agent.kind && installerState.canCancel"
+                        type="button"
+                        @click.stop="cancelInstall"
+                      >
+                        {{ t('installer.cancel') }}
+                      </button>
+                      <button
+                        v-else-if="supportsExternalProvider(agent)"
+                        type="button"
+                        @click.stop="openProvider(agent.kind)"
+                      >
+                        <KeyOutline />
+                        {{ t('systemSettings.providerForAgent') }}
+                      </button>
+                    </div>
                   </div>
                 </article>
               </div>
@@ -478,6 +488,7 @@
                               {{ tag.label }}
                             </span>
                           </div>
+                          <span class="knowledge-base-card-description">{{ t(`knowledgeBase.description.${source.kind}`) }}</span>
                           <p v-if="knowledgeBaseLocationLabel(source)" class="knowledge-base-path">
                             <code>{{ knowledgeBaseLocationLabel(source) }}</code>
                           </p>
@@ -505,18 +516,24 @@
                       v-for="source in plannedKnowledgeBaseEntries"
                       :key="source.kind"
                       class="knowledge-base-future-item"
+                      aria-disabled="true"
                     >
-                      <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
-                      <div class="knowledge-base-future-copy">
-                        <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                      <div class="knowledge-base-item-main">
+                        <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
+                        <div class="knowledge-base-item-copy">
+                          <div class="knowledge-base-item-title-row">
+                            <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                            <span class="knowledge-base-status">
+                              <CloudOutline />
+                              {{ knowledgeBaseStatusLabel(source) }}
+                            </span>
+                          </div>
+                          <span class="knowledge-base-card-description">{{ t(`knowledgeBase.description.${source.kind}`) }}</span>
+                        </div>
                       </div>
-                      <span class="knowledge-base-status">
+                      <button class="knowledge-base-action ghost" type="button" disabled>
                         <CloudOutline />
                         {{ knowledgeBaseStatusLabel(source) }}
-                      </span>
-                      <button class="knowledge-base-action ghost" type="button" @click="runKnowledgeBasePrimaryAction(source)">
-                        {{ knowledgeBasePrimaryActionLabel(source) }}
-                        <ChevronForwardOutline />
                       </button>
                     </article>
                   </div>
@@ -1009,16 +1026,15 @@
             </div>
           </header>
 
-          <div ref="messageScroller" class="message-scroll">
-            <section v-if="!timelineMessages.length && !activeRun" class="conversation-empty">
-              <div class="empty-icon">
-                <ChatbubbleEllipsesOutline />
-              </div>
-              <h2>{{ t('conversation.emptyTitle') }}</h2>
-              <p v-if="activeGroup.conversationType === 'direct'">
-                {{ t('conversation.emptyDirect', { agent: agentLabel(activeGroup.directAgentKind) }) }}
-              </p>
-              <p v-else>{{ t('conversation.emptyGroup') }}</p>
+          <div ref="messageScroller" class="message-scroll" @scroll="handleMessageScroll">
+            <section v-if="conversationEmptyVisible" class="conversation-empty">
+              <img class="conversation-empty-wordmark" :src="productWordmark" alt="Meldwork" />
+              <Transition name="empty-showcase" mode="out-in">
+                <div :key="emptyShowcaseIndex" class="conversation-empty-copy" aria-live="polite">
+                  <strong>{{ t(`conversation.emptyShowcase.${emptyShowcaseIndex}.title`) }}</strong>
+                  <p>{{ t(`conversation.emptyShowcase.${emptyShowcaseIndex}.body`) }}</p>
+                </div>
+              </Transition>
             </section>
 
             <div v-else class="message-stage">
@@ -1064,6 +1080,16 @@
                     <WarningOutline />
                     <span>{{ translateSystemMessage(message) }}</span>
                     <button
+                      v-if="activeGroup.conversationType !== 'direct' && message.agentKind && messageHasTrace(message)"
+                      class="message-trace-button"
+                      type="button"
+                      :title="t('trace.viewProcess')"
+                      :aria-label="t('trace.viewProcess')"
+                      @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                    >
+                      <TerminalOutline />
+                    </button>
+                    <button
                       v-if="isDismissibleSystemWarning(message)"
                       class="message-dismiss-button"
                       type="button"
@@ -1090,6 +1116,16 @@
                         {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
                       </span>
                       <button
+                        v-if="activeGroup.conversationType !== 'direct' && messageHasTrace(message)"
+                        class="message-trace-button"
+                        type="button"
+                        :title="t('trace.viewProcess')"
+                        :aria-label="t('trace.viewProcess')"
+                        @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                      >
+                        <TerminalOutline />
+                      </button>
+                      <button
                         v-if="message.content"
                         class="message-copy-button"
                         type="button"
@@ -1109,7 +1145,11 @@
                         :class="{ copied: isMessageCopied(message.id) }"
                         @click="copyMessageContent(message, $event)"
                       >
-                        <MarkdownMessage :content="message.content" />
+                        <MarkdownMessage v-if="message.content" :content="message.content" />
+                        <span v-else class="trace-waiting-output">
+                          <span class="typing-bars" aria-hidden="true"><span /><span /><span /></span>
+                          {{ t('trace.waitingOutput') }}
+                        </span>
                       </div>
                       <details v-if="messageExecutionSteps(message).length" class="execution-details">
                         <summary>
@@ -1124,6 +1164,40 @@
                             <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
                           </li>
                         </ol>
+                      </details>
+                      <details
+                        v-if="activeGroup.conversationType === 'direct' && messageHasTrace(message)"
+                        class="execution-details trace-inline-details"
+                        :open="isDirectTraceOpen(message)"
+                        @toggle="syncDirectTraceDisclosure(message, $event)"
+                      >
+                        <summary>
+                          <TerminalOutline />
+                          <span>{{ t('trace.process') }}</span>
+                          <small>{{ messageTraceEvents(message).length }}</small>
+                          <time v-if="messageTraceStatus(message)">{{ runStatusLabel(messageTraceStatus(message)) }}</time>
+                        </summary>
+                        <p v-if="messageTraceSummary(message)" class="trace-inline-summary">
+                          {{ messageTraceSummary(message) }}
+                        </p>
+                        <ol v-if="messageTraceEvents(message).length">
+                          <li
+                            v-for="(event, index) in messageTraceEvents(message)"
+                            :key="`${messageTraceKey(message)}-${index}`"
+                            class="trace-inline-event"
+                          >
+                            <div class="trace-inline-event-heading">
+                              <span>
+                                <strong>{{ traceEventTypeLabel(event.type) }}</strong>
+                                <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
+                              </span>
+                              <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
+                            </div>
+                            <p v-if="event.summary">{{ event.summary }}</p>
+                            <pre v-if="event.detail">{{ event.detail }}</pre>
+                          </li>
+                        </ol>
+                        <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
                       </details>
                     </template>
                     <template v-else>
@@ -1166,9 +1240,20 @@
                         <span>{{ topicReplyLabel(topicReplyCount(message.id)) }}</span>
                         <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
                       </button>
-                      <div v-if="messageSkills(message).length" class="message-skill-list">
+                      <div
+                        v-if="messageSkills(message).length || messageKnowledgeBases(message).length"
+                        class="message-skill-list"
+                      >
                         <span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
                           @{{ skill.name || skill.slug }}
+                        </span>
+                        <span
+                          v-for="source in messageKnowledgeBases(message)"
+                          :key="`knowledge:${source.kind}`"
+                          class="message-knowledge-base"
+                        >
+                          <img :src="knowledgeBaseLogo(source.kind)" alt="" />
+                          @{{ knowledgeBaseName(source.kind) }}
                         </span>
                       </div>
                     </template>
@@ -1212,7 +1297,7 @@
               </article>
 
                 <section
-                  v-if="activeRun"
+                  v-if="activeRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
                   class="run-status-panel"
                   :class="{
                     direct: activeGroup.conversationType === 'direct',
@@ -1262,12 +1347,16 @@
                     class="run-agent-list"
                     :aria-label="t('run.agents')"
                   >
-                    <div
+                    <button
                       v-for="(kind, index) in runTargetKinds"
                       :key="kind"
                       class="run-agent-row"
                       :data-status="runAgentStatus(kind)"
                       :style="{ '--reveal-index': index }"
+                      type="button"
+                      :disabled="!runAgentForKind(kind)"
+                      :aria-label="runAgentTraceLabel(kind)"
+                      @click="openTraceForAgent(kind, $event.currentTarget)"
                     >
                       <span class="run-agent-logo" :data-status="runAgentStatus(kind)" aria-hidden="true">
                         <img :src="agentLogo(kind, theme)" alt="" />
@@ -1288,9 +1377,9 @@
                         </span>
                         <small :class="runAgentStatus(kind)">{{ runStatusLabel(runAgentStatus(kind)) }}</small>
                       </span>
-                    </div>
+                    </button>
                   </div>
-                  <div v-if="activeRunProgress.length" class="execution-details run-progress-details">
+                  <div v-if="activeRunProgress.length && !activeRunHasAgentRuns" class="execution-details run-progress-details">
                     <div class="execution-progress-header">
                       <TerminalOutline />
                       <span>{{ t('run.progress') }}</span>
@@ -1317,38 +1406,42 @@
                 role="listbox"
                 :aria-label="t('composer.mentions')"
               >
-                <p v-if="skillsLoading" class="skill-menu-state">{{ t('composer.skillsLoading') }}</p>
-                <template v-else-if="composerMenuOptions.length">
+                <template v-if="composerMenuOptions.length">
                   <button
                     v-for="(option, index) in composerMenuOptions"
-                    :key="option.type === 'skill' ? skillKey(option.value) : `agent:${option.value}`"
+                    :key="composerMenuOptionKey(option)"
                     :id="`composer-mention-option-${index}`"
                     class="skill-option"
-                    :class="{ active: skillActiveIndex === index, 'agent-mention-option': option.type === 'agent' }"
+                    :class="{
+                      active: skillActiveIndex === index,
+                      'agent-mention-option': option.type === 'agent',
+                      'knowledge-base-mention-option': option.type === 'knowledge-base',
+                    }"
                     type="button"
                     role="option"
                     :aria-selected="skillActiveIndex === index"
-                    :disabled="option.type === 'skill' && selectedSkills.length >= MAX_SKILLS"
+                    :disabled="composerMenuOptionDisabled(option)"
                     @mouseenter="skillActiveIndex = index"
                     @click="selectComposerMenuOption(option)"
                   >
                     <img
-                      v-if="option.type === 'agent'"
-                      :src="agentLogo(option.value, theme)"
+                      v-if="option.type !== 'skill'"
+                      :src="composerMenuOptionLogo(option)"
                       alt=""
                     />
-                    <span>
-                      <strong>{{ option.type === 'skill' ? (option.value.name || option.value.slug) : agentLabel(option.value) }}</strong>
-                      <small>
-                        {{ option.type === 'skill'
-                          ? `${agentLabel(option.value.targetKind)} / ${option.value.namespace}`
-                          : agentDescription(option.value) }}
-                      </small>
+                    <LibraryOutline v-else class="mention-option-icon" />
+                    <span class="skill-option-copy">
+                      <strong>{{ composerMenuOptionTitle(option) }}</strong>
+                      <small>{{ composerMenuOptionDescription(option) }}</small>
                     </span>
-                    <AddOutline />
+                    <span class="mention-option-action" aria-hidden="true">
+                      <small>{{ composerMenuOptionKindLabel(option) }}</small>
+                      <AddOutline />
+                    </span>
                   </button>
                 </template>
-                <p v-else class="skill-menu-state">
+                <p v-if="skillsLoading" class="skill-menu-state compact">{{ t('composer.skillsLoading') }}</p>
+                <p v-else-if="!composerMenuOptions.length" class="skill-menu-state">
                   {{ selectedSkills.length >= MAX_SKILLS ? t('composer.skillLimit') : t('composer.noMentions') }}
                 </p>
               </section>
@@ -1544,12 +1637,12 @@
                       type="button"
                       :title="t('composer.skills')"
                       :aria-label="t('composer.skills')"
-                      :disabled="Boolean(activeRun) || sending || selectedSkills.length >= MAX_SKILLS"
+                      :disabled="Boolean(activeRun) || sending"
                       @click="openSkillMenu"
                     >
                       <AtOutline />
                     </button>
-                    <div v-if="selectedSkills.length" class="selected-skill-list">
+                    <div v-if="selectedSkills.length || selectedKnowledgeBases.length" class="selected-skill-list">
                       <span v-for="skill in selectedSkills" :key="skillKey(skill)" class="selected-skill">
                         @{{ skill.name || skill.slug }}
                         <button
@@ -1558,6 +1651,23 @@
                           :aria-label="t('composer.removeSkill')"
                           :disabled="Boolean(activeRun) || sending"
                           @click="removeSkill(skill)"
+                        >
+                          <CloseOutline />
+                        </button>
+                      </span>
+                      <span
+                        v-for="source in selectedKnowledgeBases"
+                        :key="`knowledge:${source.kind}`"
+                        class="selected-skill selected-knowledge-base"
+                      >
+                        <img :src="knowledgeBaseLogo(source.kind)" alt="" />
+                        @{{ knowledgeBaseName(source.kind) }}
+                        <button
+                          type="button"
+                          :title="t('composer.removeKnowledgeBase')"
+                          :aria-label="t('composer.removeKnowledgeBase')"
+                          :disabled="Boolean(activeRun) || sending"
+                          @click="removeKnowledgeBase(source.kind)"
                         >
                           <CloseOutline />
                         </button>
@@ -1598,6 +1708,19 @@
           </footer>
         </section>
       </section>
+
+      <RunTracePanel
+        v-if="tracePanelOpen"
+        ref="tracePanel"
+        :open="tracePanelOpen"
+        :drawer="tracePanelDrawer"
+        :items="tracePanelItems"
+        :selected-agent-run-id="selectedTraceAgentRunId"
+        :theme="theme"
+        @close="closeTracePanel"
+        @select="selectTraceAgentRun"
+        @jump-source="jumpToTraceSource"
+      />
 
       <div v-if="onboardingVisible" class="onboarding-backdrop">
         <section
@@ -1963,16 +2086,18 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import MarkdownMessage from './components/MarkdownMessage.vue'
+import RunTracePanel from './components/RunTracePanel.vue'
 import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
 import { useAttachmentPreviews } from './composables/useAttachmentPreviews.js'
 import { KNOWLEDGE_BASE_CATALOG } from './knowledgeBaseCatalog.js'
-import { desktopApi, emptySnapshot, errorCode, normalizeSnapshot } from './desktop.js'
+import { desktopApi, emptySnapshot, errorCode, mergeRunEvent, normalizeSnapshot } from './desktop.js'
 import { locale, setLocale, t, translateError, translateSystemMessage } from './i18n.js'
 import { inferProviderPreset, providerProfile } from './providerProfiles.js'
 
 const snapshot = ref(emptySnapshot())
 const ONBOARDING_KEY = 'roundrelay-onboarding-seen-v1'
 const MAX_SKILLS = 4
+const MAX_KNOWLEDGE_BASES = 4
 const MAX_ATTACHMENTS = 4
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const COMPOSER_INPUT_MIN_HEIGHT = 58
@@ -1980,6 +2105,8 @@ const COMPOSER_INPUT_MAX_HEIGHT = 180
 const DIRECT_SESSION_PREVIEW_LIMIT = 5
 const GROUP_SESSION_PREVIEW_LIMIT = 8
 const ONBOARDING_SLIDE_MS = 1450
+const EMPTY_SHOWCASE_COUNT = 3
+const EMPTY_SHOWCASE_SLIDE_MS = 2800
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
 const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
@@ -2017,6 +2144,7 @@ const targetKinds = ref([])
 const selectedAgentKinds = ref([])
 const activeMentionAgentKind = ref('')
 const selectedSkills = ref([])
+const selectedKnowledgeBases = ref([])
 const skillOptions = ref([])
 const skillMenuOpen = ref(false)
 const skillActiveIndex = ref(0)
@@ -2032,6 +2160,7 @@ const onboardingPlaybackComplete = ref(false)
 const discussionMode = ref('auto')
 const maxRounds = ref(6)
 const unlimitedRounds = ref(false)
+const emptyShowcaseIndex = ref(0)
 const roundSettingsOpen = ref(false)
 const formError = ref('')
 const deleteArmed = ref(false)
@@ -2062,11 +2191,19 @@ const collapsedSidebarAgentKinds = ref(new Set())
 const expandedSidebarAgentSessionKinds = ref(new Set())
 const groupSessionListExpanded = ref(false)
 const agentSkillStats = ref({})
+const agentSkillCatalog = ref({})
 const inlineTitleEditing = ref(false)
 const inlineTitleDraft = ref('')
 const activeTurnId = ref('')
 const copiedMessageIds = ref(new Set())
 const collapsedTopicIds = ref(new Set())
+const directTraceDisclosure = ref(new Map())
+const tracePanelOpen = ref(false)
+const selectedTraceAgentRunId = ref('')
+const tracePanel = ref(null)
+const tracePanelGroupId = ref('')
+const tracePanelDrawer = ref(typeof matchMedia === 'function' && matchMedia('(max-width: 1179px)').matches)
+const messageNearBottom = ref(true)
 const dismissedSystemMessageIds = ref(new Set())
 const finishedDirectGroupIds = ref(new Set())
 const runFinishedTurnStatuses = ref(new Map())
@@ -2080,8 +2217,11 @@ const modalDialog = ref(null)
 const roundSettingsControl = ref(null)
 let toastTimer = null
 let onboardingPlaybackTimer = null
+let emptyShowcaseTimer = null
 const copiedMessageTimers = new Map()
+const agentSkillCatalogRequests = new Map()
 let skillLoadToken = 0
+let agentSkillCatalogGeneration = 0
 let agentSkillStatsToken = 0
 let agentDetailSkillToken = 0
 let attachmentImportSequence = 0
@@ -2090,9 +2230,14 @@ const providerStatusRequestTokens = new Map()
 let unsubscribeWorkspace = null
 let unsubscribeInstaller = null
 let unsubscribeRunFinished = null
+let unsubscribeRunEvent = null
 let unsubscribeOpenGroup = null
 let modalHistoryPushed = false
 let modalFocusReturn = null
+let tracePanelHistoryPushed = false
+let tracePanelFocusReturn = null
+let tracePanelMediaQuery = null
+let tracePanelResizeHandler = null
 let pendingRequestedGroupId = ''
 const pendingRunFinishedEvents = new Map()
 
@@ -2123,6 +2268,9 @@ function initialTheme() {
 const theme = ref(initialTheme())
 const productMark = computed(() => publicAsset(
   theme.value === 'dark' ? 'logos/meldwork-mark-v3-dark.svg' : 'logos/meldwork-mark-v3.svg',
+))
+const productWordmark = computed(() => publicAsset(
+  theme.value === 'dark' ? 'logos/meldwork-wordmark-v3-dark.svg' : 'logos/meldwork-wordmark-v3.svg',
 ))
 const productAppIcon = computed(() => publicAsset('logos/meldwork-app.png'))
 const onboardingSlides = computed(() => [
@@ -2227,12 +2375,26 @@ const navTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value ===
   month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
 }))
 const activeRun = computed(() => snapshot.value.runs.find(run => run.groupId === selectedGroupId.value) || null)
+const activeRunAgentRuns = computed(() => (
+  Array.isArray(activeRun.value?.agentRuns) ? activeRun.value.agentRuns : []
+))
+const activeRunHasAgentRuns = computed(() => activeRunAgentRuns.value.length > 0)
 const activeRunProgress = computed(() => Array.isArray(activeRun.value?.progress) ? activeRun.value.progress.slice(0, 8) : [])
+const liveOutputSignature = computed(() => activeRunAgentRuns.value.map(agent => (
+  `${agent.agentRunId}:${String(agent.output || '').length}:${agent.events?.at(-1)?.seq || 0}`
+)).join('\u0000'))
+
+function latestAgentRunForKind(kind) {
+  return activeRunAgentRuns.value.filter(agent => agent.kind === kind).at(-1) || null
+}
+
 const runTargetKinds = computed(() => {
   if (!activeRun.value) return []
   const targets = Array.isArray(activeRun.value.targetKinds) && activeRun.value.targetKinds.length
     ? activeRun.value.targetKinds
-    : activeGroup.value?.agentKinds || []
+    : activeRunAgentRuns.value.length
+      ? activeRunAgentRuns.value.map(agent => agent.kind)
+      : activeGroup.value?.agentKinds || []
   return [...new Set(targets)]
 })
 const isCoordinatedRun = computed(() => (
@@ -2240,6 +2402,7 @@ const isCoordinatedRun = computed(() => (
 ))
 const activeRunAgentKind = computed(() => (
   activeRun.value?.currentKind
+  || activeRunAgentRuns.value.at(-1)?.kind
   || runTargetKinds.value[0]
   || activeGroup.value?.directAgentKind
   || ''
@@ -2247,11 +2410,17 @@ const activeRunAgentKind = computed(() => (
 const activeRunAgentStatus = computed(() => runAgentStatus(activeRunAgentKind.value))
 const runCompletedKinds = computed(() => {
   const targets = new Set(runTargetKinds.value)
-  return [...new Set(activeRun.value?.completedKinds || [])].filter(kind => targets.has(kind))
+  const completed = activeRunAgentRuns.value
+    .filter(agent => ['completed', 'succeeded'].includes(agent.status))
+    .map(agent => agent.kind)
+  return [...new Set([...(activeRun.value?.completedKinds || []), ...completed])].filter(kind => targets.has(kind))
 })
 const runFailedKinds = computed(() => {
   const targets = new Set(runTargetKinds.value)
-  return [...new Set(activeRun.value?.failedKinds || [])].filter(kind => targets.has(kind))
+  const failed = activeRunAgentRuns.value
+    .filter(agent => ['failed', 'timeout'].includes(agent.status))
+    .map(agent => agent.kind)
+  return [...new Set([...(activeRun.value?.failedKinds || []), ...failed])].filter(kind => targets.has(kind))
 })
 const activeRunLabel = computed(() => {
   if (!activeRun.value || !activeGroup.value) return ''
@@ -2276,6 +2445,85 @@ const runRoundProgress = computed(() => {
   if (!Number.isInteger(max) || max < current) return null
   return { current, max }
 })
+
+const provisionalMessages = computed(() => {
+  const run = activeRun.value
+  const group = activeGroup.value
+  if (!run || !group || !activeRunAgentRuns.value.length) return []
+  const durableAgentRunIds = new Set(activeMessages.value
+    .map(message => message?.trace?.agentRunId)
+    .filter(Boolean))
+  const rootId = run.threadRootId || topLevelUserMessages.value.at(-1)?.id || ''
+  return activeRunAgentRuns.value
+    .filter(agent => !durableAgentRunIds.has(agent.agentRunId))
+    .filter(agent => group.conversationType === 'direct' || agent.output || (agent.events || []).some(event => event.type !== 'answer_delta'))
+    .map(agent => ({
+      id: `run-message-${agent.agentRunId}`,
+      groupId: group.id,
+      role: 'agent',
+      agentKind: agent.kind,
+      content: agent.output || '',
+      createdAt: agent.startedAt || Date.now(),
+      threadRootId: rootId,
+      provisional: true,
+      liveAgentRun: agent,
+      sourceMessageIds: agent.sourceMessageIds || [],
+    }))
+})
+
+function traceRound(item) {
+  const directRound = Number(item?.round)
+  if (Number.isInteger(directRound) && directRound >= 0) return directRound
+  const evidence = item?.events?.find(event => /^E-R\d+-/i.test(String(event?.evidenceId || '')))?.evidenceId
+  const match = String(evidence || '').match(/^E-R(\d+)-/i)
+  return match ? Number(match[1]) : 0
+}
+
+const tracePanelItems = computed(() => {
+  if (activeGroup.value?.conversationType === 'direct') return []
+  const byAgentRunId = new Map()
+  for (const agent of activeRunAgentRuns.value) {
+    byAgentRunId.set(agent.agentRunId, {
+      agentRunId: agent.agentRunId,
+      agentKind: agent.kind,
+      round: agent.round,
+      status: agent.status,
+      output: agent.output || '',
+      summary: '',
+      events: agent.events || [],
+      sourceMessageIds: agent.sourceMessageIds || [],
+      truncated: agent.truncated === true,
+      context: {},
+      startedAt: agent.startedAt,
+      live: true,
+    })
+  }
+  for (const message of activeMessages.value) {
+    const trace = message?.trace
+    if (!['agent', 'system'].includes(message.role) || !message.agentKind || !trace?.agentRunId) continue
+    if (message.role === 'system' && byAgentRunId.has(trace.agentRunId)) continue
+    byAgentRunId.set(trace.agentRunId, {
+      agentRunId: trace.agentRunId,
+      agentKind: message.agentKind,
+      round: traceRound(trace),
+      status: trace.status,
+      output: message.role === 'agent' ? message.content || '' : '',
+      summary: trace.summary || '',
+      events: trace.events || [],
+      sourceMessageIds: trace.sourceMessageIds || [],
+      truncated: trace.truncated === true,
+      context: trace.context || {},
+      messageId: message.id,
+      live: false,
+    })
+  }
+  return [...byAgentRunId.values()].sort((left, right) => (
+    (Number(left.round) || 0) - (Number(right.round) || 0)
+  ))
+})
+
+const traceDrawerBlocking = computed(() => tracePanelOpen.value && tracePanelDrawer.value)
+const contentInteractionBlocked = computed(() => blockingOverlayOpen.value || traceDrawerBlocking.value)
 const turnRailItems = computed(() => topLevelUserMessages.value.map((message) => {
   const replyCount = topicReplyCount(message.id)
   const finishedStatus = runFinishedTurnStatus(message.id)
@@ -2298,11 +2546,17 @@ const activeRunTopicSignature = computed(() => {
   if (!activeRunTopicRootId.value) return ''
   return `${activeRun.value?.groupId || ''}\u0000${activeRunTopicRootId.value}`
 })
-const timelineMessages = computed(() => activeMessages.value.filter((message) => {
+const timelineMessages = computed(() => [...activeMessages.value, ...provisionalMessages.value].filter((message) => {
   if (dismissedSystemMessageIds.value.has(message.id)) return false
   const rootId = messageThreadRootId(message)
   return !rootId || isTopicExpanded(rootId)
 }))
+const conversationEmptyVisible = computed(() => (
+  activeView.value === 'conversation'
+  && Boolean(activeGroup.value)
+  && !timelineMessages.value.length
+  && !activeRun.value
+))
 const composerTargetKinds = computed(() => {
   const group = activeGroup.value
   if (!group) return []
@@ -2328,6 +2582,13 @@ const skillMenuTargetKinds = computed(() => {
     return [activeMentionAgentKind.value]
   }
   return []
+})
+const knowledgeBaseSelectionTargetKinds = computed(() => {
+  const group = activeGroup.value
+  if (!group) return []
+  return group.conversationType === 'direct'
+    ? [...group.agentKinds]
+    : [...selectedAgentKinds.value]
 })
 const filteredAgentMentionOptions = computed(() => {
   const group = activeGroup.value
@@ -2355,8 +2616,27 @@ const filteredSkillOptions = computed(() => {
     })
     .slice(0, 8)
 })
+const filteredKnowledgeBaseOptions = computed(() => {
+  if (!skillMenuTargetKinds.value.length || !knowledgeBaseSelectionTargetKinds.value.length) return []
+  const query = currentSkillTrigger.value?.query.toLocaleLowerCase() || ''
+  const targets = knowledgeBaseSelectionTargetKinds.value
+  const selected = new Map(selectedKnowledgeBases.value.map(source => [source.kind, source]))
+  return localKnowledgeBaseEntries.value
+    .filter(knowledgeBaseReady)
+    .filter((source) => {
+      const existingTargets = new Set(selected.get(source.kind)?.targetKinds || [])
+      return targets.some(kind => !existingTargets.has(kind))
+    })
+    .filter((source) => {
+      if (!query) return true
+      return [source.kind, knowledgeBaseName(source.kind), t(`composer.knowledgeBaseDescription.${source.kind}`)]
+        .some(value => String(value || '').toLocaleLowerCase().includes(query))
+    })
+    .slice(0, MAX_KNOWLEDGE_BASES)
+})
 const composerMenuOptions = computed(() => [
   ...filteredSkillOptions.value.map(skill => ({ type: 'skill', value: skill })),
+  ...filteredKnowledgeBaseOptions.value.map(source => ({ type: 'knowledge-base', value: source })),
   ...filteredAgentMentionOptions.value.map(kind => ({ type: 'agent', value: kind })),
 ])
 const activeSkillOptionId = computed(() => (
@@ -2907,22 +3187,64 @@ async function loadAgentSkillStats() {
   const next = { ...agentSkillStats.value }
   for (const kind of kinds) next[kind] = { loading: true, total: next[kind]?.total }
   agentSkillStats.value = next
-  const results = await Promise.all(kinds.map(async (kind) => {
-    try {
-      const result = await installer.value.skills(kind)
-      const total = Number.isFinite(Number(result?.total))
-        ? Number(result.total)
-        : Array.isArray(result?.skills) ? result.skills.length : NaN
-      return [kind, result?.supported === false ? NaN : total]
-    } catch {
-      return [kind, NaN]
-    }
-  }))
+  const results = await Promise.all(kinds.map(async kind => [kind, await loadAgentSkillCatalog(kind)]))
   if (token !== agentSkillStatsToken) return
-  agentSkillStats.value = Object.fromEntries(results.map(([kind, total]) => [kind, {
+  agentSkillStats.value = Object.fromEntries(results.map(([kind, catalog]) => [kind, {
     loading: false,
-    total: Number.isFinite(total) ? total : NaN,
+    total: catalog?.supported === false || !Number.isFinite(catalog?.total) ? NaN : catalog.total,
   }]))
+}
+
+function normalizeAgentSkillCatalog(result, kind) {
+  const supported = result?.supported !== false
+  const skills = supported
+    ? (Array.isArray(result?.skills) ? result.skills : [])
+      .map(skill => normalizeSkill(skill, kind))
+      .filter(Boolean)
+    : []
+  const requestedTotal = Number(result?.total)
+  return {
+    supported,
+    total: Number.isFinite(requestedTotal) ? requestedTotal : skills.length,
+    skills,
+  }
+}
+
+function invalidateAgentSkillCatalog() {
+  agentSkillCatalogGeneration += 1
+  agentSkillCatalogRequests.clear()
+  agentSkillCatalog.value = {}
+}
+
+async function loadAgentSkillCatalog(kind, options = {}) {
+  const targetKind = String(kind || '')
+  if (!targetKind || typeof installer.value?.skills !== 'function') return null
+  if (!options.refresh && agentSkillCatalog.value[targetKind]) {
+    return agentSkillCatalog.value[targetKind]
+  }
+  if (agentSkillCatalogRequests.has(targetKind)) return agentSkillCatalogRequests.get(targetKind)
+  const generation = agentSkillCatalogGeneration
+  const request = Promise.resolve(installer.value.skills(targetKind))
+    .then(result => normalizeAgentSkillCatalog(result, targetKind))
+    .catch(() => ({ supported: false, total: NaN, skills: [] }))
+    .then((catalog) => {
+      if (generation === agentSkillCatalogGeneration) {
+        agentSkillCatalog.value = { ...agentSkillCatalog.value, [targetKind]: catalog }
+      }
+      return catalog
+    })
+    .finally(() => {
+      if (agentSkillCatalogRequests.get(targetKind) === request) {
+        agentSkillCatalogRequests.delete(targetKind)
+      }
+    })
+  agentSkillCatalogRequests.set(targetKind, request)
+  return request
+}
+
+async function preloadAgentSkills(kinds) {
+  const targets = [...new Set((Array.isArray(kinds) ? kinds : []).map(kind => String(kind || '')).filter(Boolean))]
+  await Promise.all(targets.map(kind => loadAgentSkillCatalog(kind)))
 }
 
 async function loadAgentDetailSkills(kind) {
@@ -2935,12 +3257,8 @@ async function loadAgentDetailSkills(kind) {
   }
   agentDetailSkillsLoading.value = true
   try {
-    const result = await installer.value.skills(targetKind)
-    const skills = (Array.isArray(result?.skills) ? result.skills : [])
-      .map(skill => normalizeSkill(skill, targetKind))
-      .filter(Boolean)
-      .slice(0, 12)
-    if (token === agentDetailSkillToken) agentDetailSkillItems.value = result?.supported === false ? [] : skills
+    const catalog = await loadAgentSkillCatalog(targetKind)
+    if (token === agentDetailSkillToken) agentDetailSkillItems.value = catalog?.skills?.slice(0, 12) || []
   } catch {
     if (token === agentDetailSkillToken) agentDetailSkillItems.value = []
   } finally {
@@ -3061,6 +3379,60 @@ function messageExecutionSteps(message) {
   })).filter(item => item.title)
 }
 
+function messageTraceKey(message) {
+  return message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId || message?.id || ''
+}
+
+function messageTraceEvents(message) {
+  const events = message?.liveAgentRun?.events || message?.trace?.events
+  return (Array.isArray(events) ? events : []).filter(event => event?.type !== 'answer_delta')
+}
+
+function messageHasTrace(message) {
+  return Boolean(message?.provisional || message?.trace?.summary || messageTraceEvents(message).length)
+}
+
+function messageTraceSummary(message) {
+  return String(message?.trace?.summary || '').trim()
+}
+
+function messageTraceStatus(message) {
+  return String(message?.liveAgentRun?.status || message?.trace?.status || '').trim().toLowerCase()
+}
+
+function traceEventTypeLabel(type) {
+  const key = {
+    status: 'trace.eventStatus',
+    reasoning_summary: 'trace.eventReasoning',
+    plan: 'trace.eventPlan',
+    tool_start: 'trace.eventToolStart',
+    tool_update: 'trace.eventToolUpdate',
+    tool_result_summary: 'trace.eventToolResult',
+    warning: 'trace.eventWarning',
+  }[String(type || '').toLowerCase()] || 'trace.eventOther'
+  return t(key)
+}
+
+function traceEventTitle(event) {
+  const title = String(event?.title || '').trim()
+  if (!title || ['agent', 'waiting_for_output'].includes(title.toLowerCase())) return ''
+  return title
+}
+
+function isDirectTraceOpen(message) {
+  const key = messageTraceKey(message)
+  if (directTraceDisclosure.value.has(key)) return directTraceDisclosure.value.get(key)
+  return false
+}
+
+function syncDirectTraceDisclosure(message, event) {
+  const key = messageTraceKey(message)
+  if (!key) return
+  const next = new Map(directTraceDisclosure.value)
+  next.set(key, event?.target?.open === true)
+  directTraceDisclosure.value = next
+}
+
 function localizedStepTitle(step, index) {
   const key = String(step?.title || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
   const known = {
@@ -3086,14 +3458,19 @@ function runStatusLabel(status) {
   const key = {
     pending: 'pending',
     queued: 'queued',
+    preparing: 'preparing',
     running: 'running',
+    streaming: 'streaming',
+    waiting: 'waiting',
     completed: 'completed',
     succeeded: 'succeeded',
     failed: 'failed',
     skipped: 'skipped',
     partial: 'partial',
+    cancelled: 'cancelled',
     stopped: 'stopped',
     timeout: 'timeout',
+    interrupted: 'interrupted',
     'round-limit': 'roundLimit',
   }[normalized] || 'unknown'
   return t(`run.status.${key}`)
@@ -3104,15 +3481,29 @@ function runStatusTone(status) {
   if (['completed', 'succeeded'].includes(normalized)) return 'completed'
   if (['failed', 'timeout'].includes(normalized)) return 'failed'
   if (['partial', 'round-limit'].includes(normalized)) return 'partial'
-  if (['running', 'in_progress'].includes(normalized)) return 'running'
+  if (['running', 'in_progress', 'waiting'].includes(normalized)) return 'running'
   return 'queued'
+}
+
+function runAgentForKind(kind) {
+  return latestAgentRunForKind(kind)
 }
 
 function runAgentStatus(kind) {
   if (runFailedKinds.value.includes(kind)) return 'failed'
   if (activeRun.value?.currentKind === kind) return 'running'
   if (runCompletedKinds.value.includes(kind)) return 'completed'
+  const agent = runAgentForKind(kind)
+  if (agent) return runStatusTone(agent.status)
   return 'queued'
+}
+
+function runAgentTraceLabel(kind) {
+  const agent = runAgentForKind(kind)
+  return t('trace.viewAgentProcess', {
+    agent: agentLabel(kind),
+    status: runStatusLabel(agent?.status || runAgentStatus(kind)),
+  })
 }
 
 function formatElapsed(milliseconds) {
@@ -3306,6 +3697,19 @@ function skillKey(skill) {
   return [skill?.targetKind, skill?.namespace, skill?.slug].map(value => String(value || '')).join(':')
 }
 
+function knowledgeBaseDefinition(kind) {
+  return KNOWLEDGE_BASE_CATALOG.find(source => source.kind === kind) || null
+}
+
+function knowledgeBaseName(kind) {
+  const definition = knowledgeBaseDefinition(kind)
+  return definition ? t(`knowledgeBase.source.${definition.kind}`) : String(kind || '')
+}
+
+function knowledgeBaseLogo(kind) {
+  return knowledgeBaseDefinition(kind)?.logo || ''
+}
+
 function normalizeSkill(skill, requestedTarget) {
   const targetKind = String(skill?.targetKind || requestedTarget || '')
   const namespace = String(skill?.namespace || '')
@@ -3317,6 +3721,16 @@ function normalizeSkill(skill, requestedTarget) {
 
 function messageSkills(message) {
   return Array.isArray(message?.skillHints) ? message.skillHints : []
+}
+
+function messageKnowledgeBases(message) {
+  const seen = new Set()
+  return (Array.isArray(message?.knowledgeBaseHints) ? message.knowledgeBaseHints : []).filter((source) => {
+    const kind = String(source?.kind || '')
+    if (!kind || seen.has(kind)) return false
+    seen.add(kind)
+    return true
+  })
 }
 
 function messageTargetKinds(message) {
@@ -3426,6 +3840,29 @@ function toggleTheme() {
   theme.value = theme.value === 'dark' ? 'light' : 'dark'
 }
 
+function advanceEmptyShowcase() {
+  emptyShowcaseIndex.value = (emptyShowcaseIndex.value + 1) % EMPTY_SHOWCASE_COUNT
+}
+
+function clearEmptyShowcasePlayback() {
+  if (emptyShowcaseTimer) clearTimeout(emptyShowcaseTimer)
+  emptyShowcaseTimer = null
+}
+
+function startEmptyShowcasePlayback() {
+  clearEmptyShowcasePlayback()
+  if (!conversationEmptyVisible.value || EMPTY_SHOWCASE_COUNT <= 1) return
+  const step = () => {
+    if (!conversationEmptyVisible.value) {
+      clearEmptyShowcasePlayback()
+      return
+    }
+    advanceEmptyShowcase()
+    emptyShowcaseTimer = setTimeout(step, EMPTY_SHOWCASE_SLIDE_MS)
+  }
+  emptyShowcaseTimer = setTimeout(step, EMPTY_SHOWCASE_SLIDE_MS)
+}
+
 function toggleLocale() {
   setLocale(locale.value === 'zh' ? 'en' : 'zh')
 }
@@ -3437,10 +3874,78 @@ function applyTheme(value) {
   try { localStorage.setItem('roundrelay-theme', value) } catch { /* noop */ }
 }
 
+function selectTraceAgentRun(agentRunId) {
+  if (!agentRunId || !tracePanelItems.value.some(item => item.agentRunId === agentRunId)) return
+  selectedTraceAgentRunId.value = agentRunId
+}
+
+function openTracePanel(agentRunId, opener = null) {
+  if (activeGroup.value?.conversationType === 'direct') return
+  if (!tracePanelItems.value.some(item => item.agentRunId === agentRunId)) return
+  if (!tracePanelOpen.value) {
+    tracePanelFocusReturn = opener instanceof HTMLElement ? opener : document.activeElement
+    history.pushState({ roundrelayTracePanel: true }, '', window.location.href)
+    tracePanelHistoryPushed = true
+  }
+  tracePanelGroupId.value = selectedGroupId.value
+  selectedTraceAgentRunId.value = agentRunId
+  tracePanelOpen.value = true
+  void nextTick(() => tracePanel.value?.focus?.())
+}
+
+function openTraceForAgent(kind, opener = null) {
+  const agent = runAgentForKind(kind)
+  if (agent) openTracePanel(agent.agentRunId, opener)
+}
+
+function openTraceForMessage(message, opener = null) {
+  const agentRunId = message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId
+  if (agentRunId) openTracePanel(agentRunId, opener)
+}
+
+function closeTracePanel(options = {}) {
+  if (!tracePanelOpen.value) return false
+  tracePanelOpen.value = false
+  tracePanelGroupId.value = ''
+  selectedTraceAgentRunId.value = ''
+  const target = tracePanelFocusReturn
+  tracePanelFocusReturn = null
+  if (!options.fromHistory && tracePanelHistoryPushed) {
+    tracePanelHistoryPushed = false
+    history.back()
+  } else {
+    tracePanelHistoryPushed = false
+  }
+  void nextTick(() => {
+    if (target?.isConnected && typeof target.focus === 'function') target.focus()
+  })
+  return true
+}
+
+async function jumpToTraceSource(sourceId) {
+  const message = activeMessages.value.find(item => item.id === sourceId)
+  if (!message) return
+  const rootId = messageThreadRootId(message) || (message.role === 'user' ? message.id : '')
+  if (rootId && !isTopicExpanded(rootId)) {
+    const next = new Set(collapsedTopicIds.value)
+    next.delete(rootId)
+    collapsedTopicIds.value = next
+  }
+  if (tracePanelDrawer.value) closeTracePanel()
+  await nextTick()
+  document.getElementById(messageElementId(sourceId))?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+}
+
+function handleRunEvent(event) {
+  const next = mergeRunEvent(snapshot.value, event)
+  if (next !== snapshot.value) snapshot.value = next
+}
+
 function goHome() {
   activeView.value = 'home'
   sidebarDeleteGroupId.value = ''
   pendingRequestedGroupId = ''
+  closeTracePanel()
 }
 
 function selectGroup(id) {
@@ -3451,11 +3956,13 @@ function selectGroup(id) {
     return
   }
   activeView.value = 'conversation'
+  closeTracePanel()
   sidebarDeleteGroupId.value = ''
   selectedGroupId.value = id
   if (group?.conversationType === 'direct' && group.directAgentKind) {
     setSidebarAgentExpanded(group.directAgentKind, true)
   }
+  void preloadAgentSkills(group.agentKinds)
   if (finishedDirectGroupIds.value.has(id)) {
     const next = new Set(finishedDirectGroupIds.value)
     next.delete(id)
@@ -3548,6 +4055,7 @@ async function createDirectSession(agent, select = true) {
       allowWrite: true,
     })
     snapshot.value = normalizeSnapshot(await workspace.value.get())
+    void preloadAgentSkills(group.agentKinds)
     if (select) selectGroup(group.id)
     return group
   } catch (error) {
@@ -3571,6 +4079,7 @@ async function refreshAgents() {
     snapshot.value = normalizeSnapshot(nextSnapshot)
     installCatalog.value = nextCatalog || { platform: '', agents: [] }
     installerState.value = nextInstaller || installerState.value
+    invalidateAgentSkillCatalog()
     if (readyAgentSignature.value && readyAgentSignature.value === previousReadyAgentSignature) {
       await loadAgentSkillStats()
     }
@@ -3618,6 +4127,7 @@ async function createGroup() {
   try {
     const group = await workspace.value.createGroup(plainGroupPayload(groupForm))
     snapshot.value = normalizeSnapshot(await workspace.value.get())
+    void preloadAgentSkills(group.agentKinds)
     closeModal({ force: true })
     selectGroup(group.id)
   } catch (error) {
@@ -3803,34 +4313,74 @@ function isComposerTargetSelected(kind) {
 async function loadSkillsForTargets() {
   const targets = [...skillMenuTargetKinds.value]
   const token = ++skillLoadToken
-  skillOptions.value = []
   if (!targets.length || typeof installer.value?.skills !== 'function') {
+    skillOptions.value = []
     skillsLoading.value = false
     return
   }
-  skillsLoading.value = true
+  const missingTargets = targets.filter(kind => !agentSkillCatalog.value[kind])
+  const cached = targets.flatMap(kind => agentSkillCatalog.value[kind]?.skills || [])
+  skillOptions.value = uniqueSkills(cached)
+  skillsLoading.value = missingTargets.length > 0
+  if (!missingTargets.length) return
   try {
-    const results = await Promise.all(targets.map(async (kind) => {
-      try {
-        const result = await installer.value.skills(kind)
-        return (Array.isArray(result?.skills) ? result.skills : [])
-          .map(skill => normalizeSkill(skill, kind))
-          .filter(Boolean)
-      } catch {
-        return []
-      }
-    }))
+    await Promise.all(missingTargets.map(kind => loadAgentSkillCatalog(kind)))
     if (token !== skillLoadToken) return
-    const seen = new Set()
-    skillOptions.value = results.flat().filter((skill) => {
-      const key = skillKey(skill)
-      if (seen.has(key)) return false
-      seen.add(key)
-      return true
-    })
+    skillOptions.value = uniqueSkills(targets.flatMap(kind => agentSkillCatalog.value[kind]?.skills || []))
   } finally {
     if (token === skillLoadToken) skillsLoading.value = false
   }
+}
+
+function uniqueSkills(skills) {
+  const seen = new Set()
+  return skills.filter((skill) => {
+    const key = skillKey(skill)
+    if (!key || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function composerMenuOptionKey(option) {
+  if (option?.type === 'skill') return skillKey(option.value)
+  if (option?.type === 'knowledge-base') return `knowledge:${option.value?.kind}`
+  return `agent:${option?.value}`
+}
+
+function composerMenuOptionLogo(option) {
+  if (option?.type === 'knowledge-base') return option.value?.logo || ''
+  if (option?.type === 'agent') return agentLogo(option.value, theme.value)
+  return ''
+}
+
+function composerMenuOptionTitle(option) {
+  if (option?.type === 'skill') return option.value?.name || option.value?.slug || ''
+  if (option?.type === 'knowledge-base') return knowledgeBaseName(option.value?.kind)
+  return agentLabel(option?.value)
+}
+
+function composerMenuOptionDescription(option) {
+  if (option?.type === 'skill') {
+    return `${agentLabel(option.value?.targetKind)} / ${option.value?.namespace || t('composer.skills')}`
+  }
+  if (option?.type === 'knowledge-base') {
+    return t(`composer.knowledgeBaseDescription.${option.value?.kind}`)
+  }
+  return agentDescription(option?.value)
+}
+
+function composerMenuOptionKindLabel(option) {
+  return t(`composer.mentionType.${option?.type || 'skill'}`)
+}
+
+function composerMenuOptionDisabled(option) {
+  if (option?.type === 'skill') return selectedSkills.value.length >= MAX_SKILLS
+  if (option?.type === 'knowledge-base') {
+    const alreadySelected = selectedKnowledgeBases.value.some(source => source.kind === option.value?.kind)
+    return !alreadySelected && selectedKnowledgeBases.value.length >= MAX_KNOWLEDGE_BASES
+  }
+  return false
 }
 
 function resizeComposerInput() {
@@ -3864,10 +4414,6 @@ async function openSkillMenu() {
     notify(t('composer.selectTarget'))
     return
   }
-  if (selectedSkills.value.length >= MAX_SKILLS && activeGroup.value?.conversationType === 'direct') {
-    notify(t('composer.skillLimit'))
-    return
-  }
   if (!currentSkillTrigger.value) {
     const spacer = draft.value && !/\s$/.test(draft.value) ? ' ' : ''
     draft.value = `${draft.value}${spacer}@`
@@ -3889,6 +4435,7 @@ async function addAgentMention(kind) {
   discussionMode.value = 'manual'
   skillMenuOpen.value = false
   skillsLoading.value = false
+  void preloadAgentSkills([kind])
   await nextTick()
   composerInput.value?.focus()
 }
@@ -3902,6 +4449,9 @@ async function selectAgentMention(kind) {
 function removeAgentMention(kind) {
   selectedAgentKinds.value = selectedAgentKinds.value.filter(item => item !== kind)
   selectedSkills.value = selectedSkills.value.filter(skill => skill.targetKind !== kind)
+  selectedKnowledgeBases.value = selectedKnowledgeBases.value
+    .map(source => ({ ...source, targetKinds: source.targetKinds.filter(target => target !== kind) }))
+    .filter(source => source.targetKinds.length)
   activeMentionAgentKind.value = selectedAgentKinds.value.at(-1) || ''
   skillMenuOpen.value = false
   skillsLoading.value = false
@@ -3912,6 +4462,7 @@ function removeAgentMention(kind) {
 function selectComposerMenuOption(option) {
   if (option?.type === 'agent') return selectAgentMention(option.value)
   if (option?.type === 'skill') return selectSkill(option.value)
+  if (option?.type === 'knowledge-base') return selectKnowledgeBase(option.value)
   return undefined
 }
 
@@ -3934,6 +4485,30 @@ async function selectSkill(skill) {
 function removeSkill(skill) {
   const key = skillKey(skill)
   selectedSkills.value = selectedSkills.value.filter(item => skillKey(item) !== key)
+}
+
+async function selectKnowledgeBase(source) {
+  const targets = [...knowledgeBaseSelectionTargetKinds.value]
+  if (!source?.kind || !targets.length) return
+  const existing = selectedKnowledgeBases.value.find(item => item.kind === source.kind)
+  if (!existing && selectedKnowledgeBases.value.length >= MAX_KNOWLEDGE_BASES) {
+    notify(t('composer.knowledgeBaseLimit'))
+    return
+  }
+  const targetKinds = [...new Set([...(existing?.targetKinds || []), ...targets])]
+  selectedKnowledgeBases.value = [
+    ...selectedKnowledgeBases.value.filter(item => item.kind !== source.kind),
+    { kind: source.kind, targetKinds },
+  ]
+  const trigger = currentSkillTrigger.value
+  if (trigger) draft.value = `${draft.value.slice(0, trigger.start)}${draft.value.slice(trigger.end)}`
+  skillMenuOpen.value = false
+  await nextTick()
+  composerInput.value?.focus()
+}
+
+function removeKnowledgeBase(kind) {
+  selectedKnowledgeBases.value = selectedKnowledgeBases.value.filter(source => source.kind !== kind)
 }
 
 function removeAttachment(id) {
@@ -4113,15 +4688,26 @@ async function sendMessage() {
       slug: String(skill.slug),
       name: String(skill.name),
     }))
+  const knowledgeBaseHints = selectedKnowledgeBases.value
+    .map(source => ({
+      kind: String(source.kind),
+      targetKinds: source.targetKinds.filter(kind => targets.includes(kind)),
+    }))
+    .filter(source => source.kind && source.targetKinds.length)
   const previousDraft = draft.value
   const previousAgentKinds = [...selectedAgentKinds.value]
   const previousActiveMentionAgentKind = activeMentionAgentKind.value
   const previousSkills = selectedSkills.value.map(skill => ({ ...skill }))
+  const previousKnowledgeBases = selectedKnowledgeBases.value.map(source => ({
+    ...source,
+    targetKinds: [...source.targetKinds],
+  }))
   const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
   draft.value = ''
   selectedAgentKinds.value = []
   activeMentionAgentKind.value = ''
   selectedSkills.value = []
+  selectedKnowledgeBases.value = []
   composerAttachments.value = []
   skillMenuOpen.value = false
   roundSettingsOpen.value = false
@@ -4133,6 +4719,7 @@ async function sendMessage() {
       targetKinds: targets,
       ...(previousAgentKinds.length ? { mentionedAgentKinds: previousAgentKinds } : {}),
       skillHints,
+      knowledgeBaseHints,
       attachments,
       mode,
       maxRounds: maxRounds.value,
@@ -4145,6 +4732,7 @@ async function sendMessage() {
       selectedAgentKinds.value = previousAgentKinds
       activeMentionAgentKind.value = previousActiveMentionAgentKind
       selectedSkills.value = previousSkills
+      selectedKnowledgeBases.value = previousKnowledgeBases
       composerAttachments.value = previousAttachments
     } else {
       void discardAttachments(previousAttachments)
@@ -4628,24 +5216,11 @@ function knowledgeBaseStatusLabel(source) {
 
 function knowledgeBaseTagItems(source) {
   if (!source) return []
-  const pending = knowledgeBasePending(source)
-  const canRead = knowledgeBaseCanRead(source)
-  const canWrite = knowledgeBaseCanWrite(source)
   return [
     {
       key: 'mode',
       label: knowledgeBaseModeLabel(source),
       tone: 'mode',
-    },
-    {
-      key: 'read',
-      label: pending ? t('knowledgeBase.status.checking') : canRead ? t('knowledgeBase.tag.readEnabled') : t('knowledgeBase.tag.readMissing'),
-      tone: pending ? 'checking' : canRead ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
-    },
-    {
-      key: 'write',
-      label: pending ? t('knowledgeBase.status.checking') : canWrite ? t('knowledgeBase.tag.writeEnabled') : t('knowledgeBase.tag.writeMissing'),
-      tone: pending ? 'checking' : canWrite ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
     },
   ]
 }
@@ -4681,10 +5256,7 @@ function knowledgeBaseLocationLabel(source) {
 async function runKnowledgeBasePrimaryAction(source) {
   if (!source || !knowledgeBase.value) return
   if (knowledgeBasePending(source)) return
-  if (knowledgeBaseComingSoon(source)) {
-    await knowledgeBase.value.openGuide?.(source.kind, 'install')
-    return
-  }
+  if (knowledgeBaseComingSoon(source)) return
   if (source.probeState === 'error' || source.probeState === 'unknown') {
     await loadKnowledgeBaseStatuses(source.kind)
     return
@@ -4868,9 +5440,19 @@ function showError(error) {
   notify(translateError(error))
 }
 
-async function scrollToLatest() {
+function handleMessageScroll() {
+  const scroller = messageScroller.value
+  if (!scroller) return
+  const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
+  messageNearBottom.value = remaining <= 96
+}
+
+async function scrollToLatest({ force = false } = {}) {
   await nextTick()
-  if (messageScroller.value) messageScroller.value.scrollTop = messageScroller.value.scrollHeight
+  const scroller = messageScroller.value
+  if (!scroller || (!force && !messageNearBottom.value)) return
+  scroller.scrollTop = scroller.scrollHeight
+  messageNearBottom.value = true
 }
 
 async function boot() {
@@ -4882,6 +5464,7 @@ async function boot() {
   }
   try {
     unsubscribeWorkspace = workspace.value.onChanged?.((value) => { snapshot.value = normalizeSnapshot(value) }) || null
+    unsubscribeRunEvent = workspace.value.onRunEvent?.(handleRunEvent) || null
     unsubscribeRunFinished = workspace.value.onRunFinished?.(handleRunFinished) || null
     unsubscribeOpenGroup = workspace.value.onOpenGroup?.(handleOpenGroup) || null
     unsubscribeInstaller = installer.value.onChanged?.((value) => { installerState.value = value }) || null
@@ -4941,6 +5524,10 @@ function trapOverlayFocus(event) {
 
 function handleWindowKeydown(event) {
   if (trapOverlayFocus(event) || event.key !== 'Escape') return
+  if (tracePanelOpen.value) {
+    closeTracePanel()
+    return
+  }
   if (sidebarDeleteGroupId.value) {
     sidebarDeleteGroupId.value = ''
     return
@@ -4981,6 +5568,10 @@ function handleWindowPointerDown(event) {
 }
 
 function handlePopState() {
+  if (tracePanelOpen.value) {
+    closeTracePanel({ fromHistory: true })
+    return
+  }
   if (!blockingOverlayOpen.value) return
   if (modal.value && saving.value) {
     history.pushState({ roundrelayOverlay: true }, '', window.location.href)
@@ -5018,6 +5609,7 @@ watch(modal, (value, previous) => {
   })
 })
 watch(blockingOverlayOpen, (value, previous) => {
+  if (value && !previous && tracePanelOpen.value) closeTracePanel({ fromHistory: true })
   document.body.classList.toggle('modal-open', Boolean(value))
   if (value && !previous) {
     history.pushState({ roundrelayOverlay: true }, '', window.location.href)
@@ -5026,6 +5618,9 @@ watch(blockingOverlayOpen, (value, previous) => {
     modalHistoryPushed = false
     history.back()
   }
+})
+watch(traceDrawerBlocking, (value) => {
+  document.body.classList.toggle('trace-drawer-open', Boolean(value))
 })
 watch(() => snapshot.value.groups.map(group => group.id).join('\u0000'), () => {
   openPendingRequestedGroup()
@@ -5050,11 +5645,13 @@ watch(activeGroupMemberSignature, () => {
   selectedAgentKinds.value = []
   activeMentionAgentKind.value = ''
   selectedSkills.value = []
+  selectedKnowledgeBases.value = []
   composerAttachments.value = []
   void discardAttachments(abandonedAttachments)
   skillMenuOpen.value = false
   skillsLoading.value = false
-  void scrollToLatest()
+  messageNearBottom.value = true
+  void scrollToLatest({ force: true })
 })
 watch(activeRun, (value) => {
   if (!value) return
@@ -5067,6 +5664,12 @@ watch(discussionMode, (value) => {
 watch(skillTargetSignature, () => {
   const targets = new Set(composerTargetKinds.value)
   selectedSkills.value = selectedSkills.value.filter(skill => targets.has(skill.targetKind))
+  selectedKnowledgeBases.value = selectedKnowledgeBases.value
+    .map(source => ({
+      ...source,
+      targetKinds: source.targetKinds.filter(kind => targets.has(kind)),
+    }))
+    .filter(source => source.targetKinds.length)
   skillOptions.value = []
   skillActiveIndex.value = 0
   skillsLoading.value = false
@@ -5081,7 +5684,12 @@ watch(
   scheduleComposerResize,
   { flush: 'post' },
 )
-watch(() => activeMessages.value.length, scrollToLatest)
+watch(() => activeMessages.value.length, () => { void scrollToLatest() })
+watch(liveOutputSignature, () => { void scrollToLatest() })
+watch(conversationEmptyVisible, (visible) => {
+  if (visible) startEmptyShowcasePlayback()
+  else clearEmptyShowcasePlayback()
+}, { flush: 'post' })
 watch(activeRunTopicSignature, (value) => { if (value) void focusRunTopic() })
 watch(readyAgentSignature, (value) => { if (value) void loadAgentSkillStats() })
 watch(() => installerState.value.phase, (phase, previous) => {
@@ -5092,6 +5700,16 @@ onMounted(() => {
   window.addEventListener('keydown', handleWindowKeydown)
   window.addEventListener('pointerdown', handleWindowPointerDown)
   window.addEventListener('popstate', handlePopState)
+  if (typeof window.matchMedia === 'function') {
+    tracePanelMediaQuery = window.matchMedia('(max-width: 1179px)')
+    tracePanelDrawer.value = tracePanelMediaQuery.matches
+    tracePanelResizeHandler = () => { tracePanelDrawer.value = tracePanelMediaQuery?.matches === true }
+    if (typeof tracePanelMediaQuery.addEventListener === 'function') {
+      tracePanelMediaQuery.addEventListener('change', tracePanelResizeHandler)
+    } else if (typeof tracePanelMediaQuery.addListener === 'function') {
+      tracePanelMediaQuery.addListener(tracePanelResizeHandler)
+    }
+  }
   void boot()
 })
 
@@ -5104,17 +5722,29 @@ onBeforeUnmount(() => {
   window.removeEventListener('pointerdown', handleWindowPointerDown)
   window.removeEventListener('popstate', handlePopState)
   document.body.classList.remove('modal-open')
+  document.body.classList.remove('trace-drawer-open')
+  if (tracePanelMediaQuery && tracePanelResizeHandler) {
+    if (typeof tracePanelMediaQuery.removeEventListener === 'function') {
+      tracePanelMediaQuery.removeEventListener('change', tracePanelResizeHandler)
+    } else if (typeof tracePanelMediaQuery.removeListener === 'function') {
+      tracePanelMediaQuery.removeListener(tracePanelResizeHandler)
+    }
+  }
+  tracePanelMediaQuery = null
+  tracePanelResizeHandler = null
   clearOnboardingPlayback()
   skillLoadToken += 1
   agentSkillStatsToken += 1
   agentDetailSkillToken += 1
   unsubscribeWorkspace?.()
+  unsubscribeRunEvent?.()
   unsubscribeInstaller?.()
   unsubscribeRunFinished?.()
   unsubscribeOpenGroup?.()
   pendingRunFinishedEvents.clear()
   for (const timer of copiedMessageTimers.values()) clearTimeout(timer)
   copiedMessageTimers.clear()
+  clearEmptyShowcasePlayback()
   clearTimeout(toastTimer)
 })
 </script>

@@ -7,7 +7,8 @@ const { LocalWorkspace } = require('../src/local-workspace.cjs')
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-workspace-'))
-  let id = 0
+ let id = 0
+  let runId = 0
   const calls = []
   const agents = [
     { kind: 'codex', name: 'Codex CLI', executable: '/tmp/codex', version: '1' },
@@ -29,6 +30,7 @@ function fixture() {
       path: path.join(directory, 'attachments', `${ref.id}.png`),
     })),
     validateSkillSelections: (_kind, selections) => selections,
+    validateKnowledgeBaseSelections: (_kinds, selections) => selections,
     imageAttachmentLimit: kind => ({ codex: 4, hermes: 1, opencode: 4 })[kind] || 0,
     captureAgentOutputs: async () => null,
     importAgentOutputs: async () => [],
@@ -39,9 +41,10 @@ function fixture() {
         sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
       }
     },
-    now: () => '2026-07-28T00:00:00.000Z',
-    createId: () => `id-${++id}`,
-  }
+   now: () => '2026-07-28T00:00:00.000Z',
+   createId: () => `id-${++id}`,
+    createRunId: () => `run-${++runId}`,
+ }
   return { directory, calls, options }
 }
 
@@ -304,7 +307,7 @@ test('version 1 conversations migrate from the former read-only default to works
 
   const restored = new LocalWorkspace(options)
 
-  assert.equal(restored.state.version, 2)
+  assert.equal(restored.state.version, 3)
   assert.equal(restored.snapshot().groups[0].allowWrite, true)
 })
 
@@ -365,6 +368,92 @@ test('Skills are validated and injected only into their selected target Agent', 
     }),
     { message: 'LOCAL_MESSAGE_TARGET_REQUIRED' },
   )
+  assert.equal(workspace.snapshot().messages.filter(message => message.role === 'user').length, 1)
+})
+
+test('Knowledge bases are validated, persisted, and injected only into selected Agents', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const vaultPath = path.join(directory, 'Obsidian Vault')
+  const validationCalls = []
+  let injectUnexpectedTarget = false
+  options.validateKnowledgeBaseSelections = (targetKinds, selections) => {
+    validationCalls.push({ targetKinds, selections })
+    return selections.map((selection) => {
+      if (selection.kind === 'obsidian') {
+        return {
+          kind: 'obsidian',
+          name: 'Obsidian',
+          accessMode: 'vault',
+          location: vaultPath,
+          targetKinds: injectUnexpectedTarget ? ['codex', 'hermes'] : selection.targetKinds,
+        }
+      }
+      return {
+        kind: 'dingtalk',
+        name: 'DingTalk',
+        accessMode: 'cli',
+        commandName: 'dws',
+        targetKinds: selection.targetKinds,
+      }
+    })
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Knowledge routing', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const requestedHints = [
+    { kind: 'obsidian', targetKinds: ['codex'] },
+    { kind: 'dingtalk', targetKinds: ['hermes'] },
+  ]
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Compare the configured sources',
+    targetKinds: ['codex', 'hermes'],
+    knowledgeBaseHints: requestedHints,
+  })
+
+  assert.deepEqual(validationCalls[0], {
+    targetKinds: ['codex', 'hermes'],
+    selections: requestedHints,
+  })
+  assert.match(calls[0].prompt, /read from the local vault at/)
+  assert.match(calls[0].prompt, new RegExp(vaultPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(calls[0].prompt, /configured dws command-line connection/)
+  assert.match(calls[1].prompt, /configured dws command-line connection/)
+  assert.doesNotMatch(calls[1].prompt, /read from the local vault at/)
+  assert.match(calls[0].prompt, /do not modify source content/)
+
+  const storedHints = workspace.snapshot().messages[0].knowledgeBaseHints
+  assert.deepEqual(storedHints, [
+    {
+      kind: 'obsidian', name: 'Obsidian', accessMode: 'vault',
+      location: vaultPath, targetKinds: ['codex'],
+    },
+    {
+      kind: 'dingtalk', name: 'DingTalk', accessMode: 'cli',
+      commandName: 'dws', targetKinds: ['hermes'],
+    },
+  ])
+  const restored = new LocalWorkspace(options)
+  assert.deepEqual(restored.snapshot().messages[0].knowledgeBaseHints, storedHints)
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Reject an out-of-scope source',
+    targetKinds: ['codex'],
+    knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['hermes'] }],
+  }), { message: 'LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID' })
+
+  injectUnexpectedTarget = true
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Reject invalid main-process validation output',
+    targetKinds: ['codex'],
+    knowledgeBaseHints: [{ kind: 'obsidian', targetKinds: ['codex'] }],
+  }), { message: 'LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID' })
   assert.equal(workspace.snapshot().messages.filter(message => message.role === 'user').length, 1)
 })
 
@@ -1216,6 +1305,8 @@ test('one failed agent persists only its stable error code in a multi-agent mess
     key: 'system.agentCallFailed',
     params: { agent: 'Hermes', reason: 'LOCAL_AGENT_PROCESS_FAILED' },
   })
+  assert.equal(hermesError.trace.status, 'failed')
+  assert.equal(hermesError.trace.agentRunId.includes(':hermes:'), true)
   const serialized = fs.readFileSync(options.storagePath, 'utf8')
   assert.match(serialized, /LOCAL_AGENT_PROCESS_FAILED/)
   assert.doesNotMatch(serialized, /\/private\/agents\/hermes|upstream untranslated text/)
@@ -1427,6 +1518,12 @@ test('auto send preflights atomically, persists one root, and starts at round on
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
+  options.validateKnowledgeBaseSelections = (_targetKinds, selections) => selections.map(selection => ({
+    ...selection,
+    name: 'DingTalk',
+    accessMode: 'cli',
+    commandName: 'dws',
+  }))
   const workspace = new LocalWorkspace(options)
   const finished = []
   workspace.on('run-finished', result => finished.push(result))
@@ -1440,6 +1537,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
   const skill = {
     targetKind: 'hermes', namespace: 'global', slug: 'research', name: 'Research',
   }
+  const knowledgeBase = { kind: 'dingtalk', targetKinds: ['hermes'] }
 
   const started = await workspace.sendMessage({
     groupId: group.id,
@@ -1449,6 +1547,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
     targetKinds: ['codex', 'hermes'],
     attachments: [attachment],
     skillHints: [skill],
+    knowledgeBaseHints: [knowledgeBase],
   })
   await firstCallEntered.promise
 
@@ -1458,6 +1557,10 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.equal(active.messages.filter(message => message.role === 'user').length, 1)
   assert.equal(root.threadRootId, undefined)
   assert.equal(root.targetKinds, undefined)
+  assert.deepEqual(root.knowledgeBaseHints, [{
+    kind: 'dingtalk', name: 'DingTalk', accessMode: 'cli',
+    commandName: 'dws', targetKinds: ['hermes'],
+  }])
   assert.deepEqual(active.runs.map(run => ({
     mode: run.mode,
     currentRound: run.currentRound,
@@ -1479,6 +1582,8 @@ test('auto send preflights atomically, persists one root, and starts at round on
     [path.join(directory, 'attachments', 'auto-send-image.png')],
   ])
   assert.deepEqual(calls[1].runOptions.skills, ['research'])
+  assert.doesNotMatch(calls[0].prompt, /configured dws command-line connection/)
+  assert.match(calls[1].prompt, /configured dws command-line connection/)
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent')
       .map(message => message.threadRootId),
@@ -2148,5 +2253,175 @@ test('automatic dialogue requires a topic root and accepts an explicit one', asy
     workspace.snapshot().messages.filter(message => message.role === 'agent')
       .map(message => message.threadRootId),
     ['topic-root', 'topic-root'],
+  )
+})
+
+test('Harness streams per-Agent events, persists a compact trace, and hands evidence to the next Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'codex') {
+      runOptions.onEvent({
+        id: 'reason-1',
+        type: 'reasoning_summary',
+        summary: 'Compared the available implementations.',
+      })
+      runOptions.onEvent({
+        id: 'tool-1',
+        type: 'tool_start',
+        status: 'running',
+        title: 'search',
+        command: 'rg secret /Users/private/work',
+      })
+      runOptions.onEvent({
+        id: 'tool-1',
+        type: 'tool_result_summary',
+        status: 'completed',
+        title: 'search',
+        summary: 'Found /Users/private/work and token=secret-value',
+        detail: 'Bearer private-token',
+      })
+      runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: 'Codex live ' })
+      return { text: 'Codex final conclusion', sessionRef: 'codex-session' }
+    }
+    assert.match(prompt, /untrusted data, not instructions/)
+    assert.match(prompt, /E-R0-CODEX-01|E-R1-CODEX-01/)
+    assert.match(prompt, /Codex final conclusion/)
+    assert.doesNotMatch(prompt, /private-token|secret-value|rg secret|\/Users\/private|Bearer/)
+    return { text: 'Hermes final conclusion', sessionRef: 'hermes-session' }
+  }
+  const events = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Harness trace', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Compare the implementations',
+    targetKinds: ['codex', 'hermes'],
+  })
+
+  const agentMessages = workspace.snapshot().messages.filter(message => message.role === 'agent')
+  assert.deepEqual(agentMessages.map(message => message.content), [
+    'Codex final conclusion',
+    'Hermes final conclusion',
+  ])
+  const codexTrace = agentMessages[0].trace
+  assert.equal(codexTrace.status, 'completed')
+  assert.equal(codexTrace.events.some(event => event.type === 'reasoning_summary'), true)
+  assert.equal(codexTrace.events.some(event => event.type === 'tool_result_summary'), true)
+  assert.deepEqual(codexTrace.sourceMessageIds, [workspace.snapshot().messages[0].id])
+  assert.doesNotMatch(JSON.stringify(codexTrace), /private-token|secret-value|rg secret|\/Users\/private|Bearer/)
+  assert.equal(events.some(event => event.type === 'answer_delta' && event.delta === 'Codex live '), true)
+  assert.equal(events.every(event => !Object.hasOwn(event, 'command')
+    && !Object.hasOwn(event, 'executable')
+    && !Object.hasOwn(event, 'sessionRef')), true)
+  assert.equal(events.every(event => Number.isInteger(event.seq) && event.runId), true)
+})
+
+test('Harness rotates an over-budget native session while retaining compressed continuity', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return { text: 'Fresh conclusion', sessionRef: 'new-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Rotation', agentKinds: ['codex'], workdir: directory,
+  })
+  const oldUser = workspace.addMessage(group.id, 'user', 'Keep this constraint')
+  workspace.addMessage(group.id, 'agent', 'Previous conclusion', 'codex', oldUser.id)
+  const key = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[key] = 'old-session'
+  workspace.state.sessionMeta[key] = { turns: 18, estimatedChars: 48000 }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue with a fresh context',
+    targetKinds: ['codex'],
+  })
+
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.match(calls[0].prompt, /Previous conclusion/)
+  const trace = workspace.snapshot().messages.at(-1).trace
+  assert.equal(trace.context.sessionRotated, true)
+  assert.equal(workspace.state.sessions[key], 'new-session')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  assert.equal(workspace.state.sessionMeta[key].estimatedChars > calls[0].prompt.length, true)
+})
+
+test('Harness emits a soft waiting warning without cancelling a long-running Agent', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runSilenceWarningMs = 5
+  const gate = deferred()
+  options.runAgent = async () => {
+    await gate.promise
+    return { text: 'Eventually finished', sessionRef: 'codex-session' }
+  }
+  const events = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Silence warning', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: 'Wait', targetKinds: ['codex'] })
+  await new Promise(resolve => setTimeout(resolve, 25))
+  const warning = events.find(event => event.type === 'warning')
+  assert.equal(warning?.status, 'waiting')
+  assert.equal(warning?.title, 'waiting_for_output')
+  assert.equal(workspace.snapshot().runningGroupIds.includes(group.id), true)
+  gate.resolve()
+  await send
+  assert.equal(workspace.snapshot().messages.at(-1).content, 'Eventually finished')
+})
+
+test('Automatic Harness conclusions stream without exposing the consensus control marker', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    runOptions.onEvent({ type: 'reasoning_summary', summary: agent.kind + ' compared the proposals' })
+    runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: agent.kind + ' conclusion\n[[ROUNDRELAY_CONSENSUS:' })
+    runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: 'agree]]' })
+    return {
+      text: agent.kind + ' conclusion\n[[ROUNDRELAY_CONSENSUS:agree]]',
+      sessionRef: runOptions.sessionRef || agent.kind + '-session',
+    }
+  }
+  const events = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Automatic harness', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Reach consensus',
+    mode: 'auto',
+    maxRounds: 1,
+  })
+  assert.equal(started.started, true)
+  await workspace.activeRuns.get(group.id).promise
+
+  const answerText = events.filter(event => event.type === 'answer_delta')
+    .map(event => event.delta)
+    .join('')
+  assert.doesNotMatch(answerText, /ROUNDRELAY_CONSENSUS/)
+  assert.equal(events.some(event => event.type === 'reasoning_summary'), true)
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => message.content),
+    ['codex conclusion', 'hermes conclusion'],
   )
 })

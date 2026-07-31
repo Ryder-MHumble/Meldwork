@@ -19,10 +19,12 @@ const {
   resolveNativeCredentialState,
 } = require('./local-agent-readiness.cjs')
 const { LocalWorkspace } = require('./local-workspace.cjs')
+const { normalizeRunEvent } = require('./run-harness.cjs')
 const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
 const { managedOpenClawOptions } = require('./openclaw-runtime.cjs')
 const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
 const {
+  knowledgeBaseSelectionHint,
   knowledgeBaseGuideUrl,
   resolveKnowledgeBaseSources,
 } = require('./local-knowledge-base.cjs')
@@ -46,11 +48,13 @@ let mainWindow = null
 let workspace = null
 let workspaceChangedListener = null
 let workspaceRunFinishedListener = null
+let workspaceRunEventListener = null
 let installer = null
 let localAgentRefreshQueue = Promise.resolve()
 let providerStore = null
 let knowledgeBaseStore = null
 let knowledgeBaseStatusPromise = null
+const knowledgeBaseSourcesCache = new Map()
 let attachmentStore = null
 let skillCatalog = null
 let shutdownStarted = false
@@ -524,6 +528,22 @@ function normalizeRunFinished(input) {
   }
 }
 
+function normalizeRendererRunEvent(input) {
+  const event = normalizeRunEvent(input)
+  if (!event || !LOCAL_AGENT_KINDS.has(event.agentKind)) return null
+  if (!LOCAL_IDENTIFIER.test(event.groupId)) return null
+  if (event.threadRootId && !LOCAL_IDENTIFIER.test(event.threadRootId)) return null
+  return event
+}
+
+function notifyWorkspaceRunEvent(input) {
+  if (!mainWindow || mainWindow.isDestroyed()
+      || !isTrustedLocalWebContents(mainWindow.webContents)) return
+  const event = normalizeRendererRunEvent(input)
+  if (!event) return
+  mainWindow.webContents.send('local-workspace:run-event', event)
+}
+
 function flushPendingOpenGroup() {
   if (!pendingOpenGroupId || !mainWindow || mainWindow.isDestroyed()
       || !isTrustedLocalWebContents(mainWindow.webContents)) return false
@@ -569,6 +589,61 @@ function notifyRunFinished(input) {
   notification.show()
 }
 
+function rememberKnowledgeBaseSources(sources) {
+  for (const source of Array.isArray(sources) ? sources : []) {
+    const kind = String(source?.kind || '')
+    if (kind) knowledgeBaseSourcesCache.set(kind, source)
+  }
+  return sources
+}
+
+async function loadKnowledgeBaseSources(kind = '') {
+  const selectedKind = String(kind || '').trim()
+  if (knowledgeBaseStatusPromise) {
+    const shared = await knowledgeBaseStatusPromise
+    if (!selectedKind || shared.some(source => source?.kind === selectedKind)) return shared
+  }
+  const request = resolveKnowledgeBaseSources({
+    store: knowledgeBaseStore,
+    home: app.getPath('home'),
+    kind: selectedKind,
+  }).then(rememberKnowledgeBaseSources)
+  knowledgeBaseStatusPromise = request
+  try {
+    return await request
+  } finally {
+    if (knowledgeBaseStatusPromise === request) knowledgeBaseStatusPromise = null
+  }
+}
+
+async function validateKnowledgeBaseSelections(targetKinds, selections) {
+  const targets = [...new Set((Array.isArray(targetKinds) ? targetKinds : [])
+    .map(kind => String(kind || ''))
+    .filter(kind => LOCAL_AGENT_KINDS.has(kind)))]
+  const requested = Array.isArray(selections) ? selections : []
+  if (!requested.length) return []
+  if (!targets.length) throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+  const requestedKinds = [...new Set(requested.map(source => String(source?.kind || '')))]
+  if (requestedKinds.some(kind => !knowledgeBaseSourcesCache.has(kind))) {
+    await loadKnowledgeBaseSources()
+  }
+  return requested.map((selection) => {
+    const selectionTargets = [...new Set((Array.isArray(selection?.targetKinds) ? selection.targetKinds : [])
+      .map(kind => String(kind || ''))
+      .filter(kind => targets.includes(kind)))]
+    if (!selectionTargets.length
+        || selectionTargets.length !== new Set(selection?.targetKinds || []).size) {
+      throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+    }
+    const hint = knowledgeBaseSelectionHint(
+      knowledgeBaseSourcesCache.get(String(selection?.kind || '')),
+      selectionTargets,
+    )
+    if (!hint) throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+    return hint
+  })
+}
+
 function createWorkspace() {
   return new LocalWorkspace({
     storagePath: workspaceStoragePath(),
@@ -577,6 +652,7 @@ function createWorkspace() {
     captureAgentOutputs: workdir => captureAgentOutputState(workdir),
     importAgentOutputs: input => importAgentOutputs(input, availableAttachmentStore()),
     validateSkillSelections: (kind, selections) => skillCatalog.validateSelections(kind, selections),
+    validateKnowledgeBaseSelections,
     imageAttachmentLimit,
     credentialState: (kind, agent) => (
       resolveNativeCredentialState(kind, { executable: agent?.executable })
@@ -635,8 +711,10 @@ function initializeWorkspace() {
   workspace = next
   workspaceChangedListener = notifyWorkspaceChanged
   workspaceRunFinishedListener = notifyRunFinished
+  workspaceRunEventListener = notifyWorkspaceRunEvent
   next.on('changed', workspaceChangedListener)
   next.on('run-finished', workspaceRunFinishedListener)
+  next.on('run-event', workspaceRunEventListener)
   return next
 }
 
@@ -813,18 +891,7 @@ function registerIpc() {
     return result
   })
   registerTrustedHandle('local-knowledge-base:status', async (kind = '') => {
-    if (knowledgeBaseStatusPromise) return knowledgeBaseStatusPromise
-    const request = resolveKnowledgeBaseSources({
-      store: knowledgeBaseStore,
-      home: app.getPath('home'),
-      kind: String(kind || '').trim(),
-    })
-    knowledgeBaseStatusPromise = request
-    try {
-      return await request
-    } finally {
-      if (knowledgeBaseStatusPromise === request) knowledgeBaseStatusPromise = null
-    }
+    return loadKnowledgeBaseSources(kind)
   })
   registerTrustedHandle('local-knowledge-base:open-guide', async (kind, action) => {
     const url = knowledgeBaseGuideUrl(String(kind || ''), String(action || ''))
@@ -839,10 +906,7 @@ function registerIpc() {
     if (shutdownStarted) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
     if (result.canceled) return knowledgeBaseStore.state()
     knowledgeBaseStore.saveObsidianVaultPath(result.filePaths[0] || '')
-    return resolveKnowledgeBaseSources({
-      store: knowledgeBaseStore,
-      home: app.getPath('home'),
-    })
+    return loadKnowledgeBaseSources()
   })
 }
 

@@ -62,7 +62,7 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
     Object.keys(api.localWorkspace).sort(),
     [
       'createGroup', 'defaultDirectory', 'deleteGroup', 'get', 'onChanged',
-      'onOpenGroup', 'onRunFinished', 'pickDirectory', 'refreshAgents', 'send',
+      'onOpenGroup', 'onRunEvent', 'onRunFinished', 'pickDirectory', 'refreshAgents', 'send',
       'startAuto', 'stop', 'updateGroup',
     ].sort(),
   )
@@ -120,21 +120,31 @@ test('local preload exposes only narrow knowledge source methods', async () => {
 test('local preload exposes cancellable read-only run lifecycle subscriptions', () => {
   const { api, invocations, listeners } = loadPreload('file:')
   const finished = []
+  const events = []
   const opened = []
   const cancelFinished = api.localWorkspace.onRunFinished(result => finished.push(result))
+  const cancelEvent = api.localWorkspace.onRunEvent(event => events.push(event))
   const cancelOpened = api.localWorkspace.onOpenGroup(request => opened.push(request))
 
   listeners.get('local-workspace:run-finished')({}, {
     groupId: 'group-1', status: 'completed',
   })
+  listeners.get('local-workspace:run-event')({}, {
+    runId: 'run-1', agentRunId: 'agent-1', type: 'status', status: 'running',
+  })
   listeners.get('local-workspace:open-group')({}, { groupId: 'group-1' })
   assert.deepEqual(finished, [{ groupId: 'group-1', status: 'completed' }])
+  assert.deepEqual(events, [{
+    runId: 'run-1', agentRunId: 'agent-1', type: 'status', status: 'running',
+  }])
   assert.deepEqual(opened, [{ groupId: 'group-1' }])
   assert.deepEqual(invocations, [])
 
   cancelFinished()
+  cancelEvent()
   cancelOpened()
   assert.equal(listeners.has('local-workspace:run-finished'), false)
+  assert.equal(listeners.has('local-workspace:run-event'), false)
   assert.equal(listeners.has('local-workspace:open-group'), false)
 })
 

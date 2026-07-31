@@ -62,6 +62,11 @@ if (isLocalDocument) Object.assign(desktopApi, {
       ipcRenderer.on('local-workspace:run-finished', listener)
       return () => ipcRenderer.removeListener('local-workspace:run-finished', listener)
     },
+    onRunEvent: callback => {
+      const listener = (_event, event) => callback(event)
+      ipcRenderer.on('local-workspace:run-event', listener)
+      return () => ipcRenderer.removeListener('local-workspace:run-event', listener)
+    },
     onOpenGroup: callback => {
       const listener = (_event, request) => callback(request)
       ipcRenderer.on('local-workspace:open-group', listener)

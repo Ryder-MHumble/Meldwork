@@ -3,7 +3,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 
-const { resolveKnowledgeBaseSources } = require('../src/local-knowledge-base.cjs')
+const {
+  knowledgeBaseSelectionHint,
+  resolveKnowledgeBaseSources,
+} = require('../src/local-knowledge-base.cjs')
 
 const MOCK_BIN = '/mock/bin'
 const MOCK_HOME = '/mock/home'
@@ -51,6 +54,52 @@ function sourceByKind(sources, kind) {
   assert.ok(source, `Expected ${kind} knowledge source`)
   return source
 }
+
+test('knowledge base mentions expose only validated read access details', () => {
+  assert.deepEqual(knowledgeBaseSelectionHint({
+    kind: 'dingtalk',
+    label: '钉钉文档',
+    accessMode: 'cli',
+    installed: true,
+    loginState: 'ready',
+    permissionState: 'ready',
+    readable: true,
+    probeState: 'ready',
+    commandName: 'dws',
+  }, ['codex', 'hermes']), {
+    kind: 'dingtalk',
+    name: '钉钉文档',
+    accessMode: 'cli',
+    commandName: 'dws',
+    targetKinds: ['codex', 'hermes'],
+  })
+  assert.deepEqual(knowledgeBaseSelectionHint({
+    kind: 'obsidian',
+    label: 'Obsidian',
+    accessMode: 'vault',
+    installed: true,
+    configured: true,
+    readable: true,
+    probeState: 'ready',
+    vaultPath: '/mock/home/Notes',
+  }, ['codex']), {
+    kind: 'obsidian',
+    name: 'Obsidian',
+    accessMode: 'vault',
+    location: '/mock/home/Notes',
+    targetKinds: ['codex'],
+  })
+  assert.equal(knowledgeBaseSelectionHint({
+    kind: 'dingtalk',
+    accessMode: 'cli',
+    installed: true,
+    loginState: 'ready',
+    permissionState: 'needs-grant',
+    readable: false,
+    probeState: 'ready',
+    commandName: 'dws',
+  }, ['codex']), null)
+})
 
 test('Feishu reports an installed CLI separately from a missing user login', async () => {
   const calls = []

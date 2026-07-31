@@ -32,6 +32,27 @@ const IMAGE_ATTACHMENT_LIMITS = Object.freeze({
 const MAX_NATIVE_SKILLS = 4
 const NATIVE_SKILL_NAME = /^[\p{L}\p{N}._-]{1,100}$/u
 const MAX_PROGRESS_STEPS = 8
+const RUNTIME_EVENT_TYPES = new Set([
+  'status',
+  'answer_delta',
+  'reasoning_summary',
+  'plan',
+  'tool_start',
+  'tool_update',
+  'tool_result_summary',
+  'warning',
+])
+const RUNTIME_EVENT_STATUSES = new Set([
+  'queued', 'running', 'waiting', 'completed', 'partial', 'failed', 'stopped', 'timeout',
+])
+const RUNTIME_EVENT_LIMITS = Object.freeze({
+  id: 100,
+  status: 24,
+  title: 120,
+  summary: 2000,
+  detail: 4000,
+  delta: 4000,
+})
 const TERMINATE_GRACE_MS = 500
 const KILL_SETTLE_MS = 500
 const ACP_CANCEL_GRACE_MS = 250
@@ -884,6 +905,232 @@ function redactChildSecrets(value, env) {
   return result
 }
 
+function runtimeEventStatus(value, fallback = '') {
+  const normalized = String(value || '').toLowerCase()
+  const aliases = {
+    pending: 'queued',
+    in_progress: 'running',
+    cancelled: 'stopped',
+    canceled: 'stopped',
+    success: 'completed',
+    error: 'failed',
+  }
+  const status = aliases[normalized] || normalized
+  return RUNTIME_EVENT_STATUSES.has(status) ? status : fallback
+}
+
+function sanitizeRuntimeEventText(value, childEnv, limit, singleLine = false, trim = true) {
+  let text = stripAnsi(redactChildSecrets(value, childEnv))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/file:\/\/\/[^\s"'`<>|,;)}\]]+/gi, '[path]')
+    .replace(/(?<![A-Za-z0-9:])(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|,;)}\]]+/g, '[path]')
+    .replace(/(?<![A-Za-z0-9:])\/(?!\/)[^\s"'`<>|,;)}\]]+/g, '[path]')
+    .replace(/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|authorization)[A-Za-z0-9_.-]*)\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)/gi, 'credential=[redacted]')
+    .replace(/\bbearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]')
+    .replace(/(["']?)(?:command|cmd)\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n]+)/gi, '[operation hidden]')
+    .replace(/(["']?)stderr\1\s*[:=]\s*[^\r\n]*/gi, '[diagnostic hidden]')
+  if (singleLine) text = text.replace(/\s+/g, ' ')
+  return (trim ? text.trim() : text).slice(0, limit)
+}
+
+function createRuntimeEventEmitter(options, childEnv) {
+  const callback = typeof options.onEvent === 'function' ? options.onEvent : null
+  let emittedAnswerDelta = false
+  const deliver = (event) => {
+    if (!callback) return
+    try {
+      const pending = callback(event)
+      if (pending && typeof pending.catch === 'function') pending.catch(() => {})
+    } catch { /* runtime events are best-effort */ }
+  }
+  const emit = (input) => {
+    if (!callback || !input || !RUNTIME_EVENT_TYPES.has(input.type)) return
+    const base = { type: input.type }
+    const rawId = sanitizeRuntimeEventText(input.id, childEnv, RUNTIME_EVENT_LIMITS.id, true)
+    if (/^[A-Za-z0-9._:-]{1,100}$/.test(rawId)) base.id = rawId
+    const status = runtimeEventStatus(input.status)
+    if (status) base.status = status
+    for (const field of ['title', 'summary', 'detail']) {
+      const text = sanitizeRuntimeEventText(
+        input[field],
+        childEnv,
+        RUNTIME_EVENT_LIMITS[field],
+        field === 'title',
+      )
+      if (text) base[field] = text
+    }
+    if (input.type !== 'answer_delta') {
+      deliver(base)
+      return
+    }
+    const delta = sanitizeRuntimeEventText(
+      input.delta,
+      childEnv,
+      Number.MAX_SAFE_INTEGER,
+      false,
+      false,
+    )
+    if (!delta) return
+    emittedAnswerDelta = true
+    for (let offset = 0; offset < delta.length; offset += RUNTIME_EVENT_LIMITS.delta) {
+      deliver({
+        ...base,
+        delta: delta.slice(offset, offset + RUNTIME_EVENT_LIMITS.delta),
+      })
+    }
+  }
+  return {
+    emit,
+    emitFinalAnswer(text) {
+      if (!emittedAnswerDelta) {
+        emit({ type: 'answer_delta', status: 'completed', delta: text })
+      }
+    },
+  }
+}
+
+function runtimeToolTitle(event) {
+  const part = event?.part && typeof event.part === 'object' ? event.part : {}
+  const classified = codexProgressTitle({
+    type: [event?.type, event?.sessionUpdate, part.type, event?.kind, part.kind]
+      .filter(Boolean).join(' '),
+    name: event?.name || event?.toolName || part.name,
+    tool: event?.tool || event?.tool_name || part.tool,
+  })
+  return classified === 'process' ? 'tool' : classified
+}
+
+function runtimeEventId(event) {
+  const part = event?.part && typeof event.part === 'object' ? event.part : {}
+  return event?.toolCallId || event?.tool_call_id || event?.id
+    || part.toolCallId || part.tool_call_id || part.id || ''
+}
+
+function codexRuntimeEvents(event) {
+  if (event?.type === 'turn.started') {
+    return [{ id: 'turn', type: 'status', title: 'process', status: 'running' }]
+  }
+  if (event?.type === 'turn.completed') {
+    return [{ id: 'turn', type: 'status', title: 'process', status: 'completed' }]
+  }
+  if (!['item.started', 'item.completed'].includes(event?.type) || !event.item) return []
+  const item = event.item
+  if (event.type === 'item.completed' && item.type === 'agent_message'
+      && typeof item.text === 'string') {
+    return [{ type: 'answer_delta', status: 'running', delta: item.text }]
+  }
+  if (event.type === 'item.completed' && item.type === 'reasoning') {
+    return [{
+      type: 'reasoning_summary',
+      title: 'reasoning',
+      status: 'completed',
+      ...(typeof item.summary === 'string' ? { summary: item.summary } : {}),
+    }]
+  }
+  if (event.type === 'item.completed' && item.type === 'plan') {
+    const summary = typeof item.summary === 'string' ? item.summary : item.text
+    return typeof summary === 'string'
+      ? [{ type: 'plan', title: 'plan', summary }]
+      : []
+  }
+  const progress = codexProgressEvent(event)
+  if (!progress) return []
+  return [{
+    ...progress,
+    type: event.type === 'item.started' ? 'tool_start' : 'tool_result_summary',
+    status: runtimeEventStatus(progress.status, 'completed'),
+  }]
+}
+
+function jsonCliRuntimeEvents(kind, event) {
+  if (!event || typeof event !== 'object') return []
+  if (kind === 'kimi' && event.role === 'assistant' && typeof event.content === 'string') {
+    return [{ type: 'answer_delta', status: 'running', delta: event.content }]
+  }
+  if (kind === 'gemini' && event.type === 'message' && event.role === 'assistant'
+      && typeof event.content === 'string') {
+    return [{ type: 'answer_delta', status: 'running', delta: event.content }]
+  }
+  if (kind === 'mimo' && event.type === 'text' && typeof event.part?.text === 'string') {
+    return [{ type: 'answer_delta', status: 'running', delta: event.part.text }]
+  }
+  if (kind === 'opencode' && event.type === 'text' && event.part?.type === 'text'
+      && typeof event.part.text === 'string') {
+    return [{ type: 'answer_delta', status: 'running', delta: event.part.text }]
+  }
+
+  const type = String(event.type || event.part?.type || '').toLowerCase()
+  if (/\bplan(?:_update|_removed)?\b/.test(type)) {
+    const summary = typeof event.summary === 'string'
+      ? event.summary
+      : typeof event.content === 'string' ? event.content : event.text
+    return [{
+      id: runtimeEventId(event),
+      type: 'plan',
+      title: 'plan',
+      status: /removed/.test(type) ? 'stopped' : runtimeEventStatus(event.status),
+      ...(typeof summary === 'string' ? { summary } : {}),
+    }]
+  }
+  if (!/tool|function_call/.test(type)) return []
+  const status = runtimeEventStatus(
+    event.status || event.part?.status || event.part?.state?.status,
+  )
+  const completed = ['completed', 'failed', 'stopped', 'timeout'].includes(status)
+    || /result|complete|finish|end/.test(type)
+  const update = /update|progress/.test(type)
+  return [{
+    id: runtimeEventId(event),
+    type: completed ? 'tool_result_summary' : update ? 'tool_update' : 'tool_start',
+    title: runtimeToolTitle(event),
+    status: status || (completed ? 'completed' : 'running'),
+  }]
+}
+
+function acpPlanSummary(update) {
+  const plan = update.sessionUpdate === 'plan_update' ? update.plan : update
+  if (Array.isArray(plan?.entries)) {
+    return plan.entries.slice(0, 12).map(entry => {
+      const status = runtimeEventStatus(entry?.status)
+      return `${status ? `[${status}] ` : ''}${String(entry?.content || '')}`
+    }).filter(Boolean).join('\n')
+  }
+  return typeof plan?.content === 'string' ? plan.content : ''
+}
+
+function acpRuntimeEvents(update) {
+  if (!update || typeof update !== 'object') return []
+  if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+    return [{ type: 'answer_delta', status: 'running', delta: update.content.text }]
+  }
+  if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
+    return [{ type: 'reasoning_summary', title: 'reasoning', status: 'running' }]
+  }
+  if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
+    const status = runtimeEventStatus(update.status)
+    const completed = ['completed', 'failed', 'stopped', 'timeout'].includes(status)
+    return [{
+      id: update.toolCallId,
+      type: completed
+        ? 'tool_result_summary'
+        : update.sessionUpdate === 'tool_call' ? 'tool_start' : 'tool_update',
+      title: runtimeToolTitle(update),
+      status: status || (update.sessionUpdate === 'tool_call' ? 'running' : 'waiting'),
+    }]
+  }
+  if (['plan', 'plan_update', 'plan_removed'].includes(update.sessionUpdate)) {
+    const summary = acpPlanSummary(update)
+    return [{
+      id: update.id || update.plan?.id,
+      type: 'plan',
+      title: 'plan',
+      status: update.sessionUpdate === 'plan_removed' ? 'stopped' : 'running',
+      ...(summary ? { summary } : {}),
+    }]
+  }
+  return []
+}
+
 function agentExecutionError(code, diagnostic = '') {
   const error = new Error(code)
   const detail = String(diagnostic || '').trim()
@@ -1210,6 +1457,7 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
   const spawnFn = options.spawnFn || spawn
   const prepared = prepareCommand(spec.command, spec.args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
+  const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
   let sdk
   try {
     sdk = await loadAcpSdk()
@@ -1301,6 +1549,7 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
       if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         reply.push(update.content.text)
       }
+      for (const event of acpRuntimeEvents(update)) runtimeEvents.emit(event)
     },
   }
   const protocol = (async () => {
@@ -1329,6 +1578,7 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
     })
     const text = redactChildSecrets(reply.join('').trim(), childEnv)
     if (!text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
+    runtimeEvents.emitFinalAnswer(text)
     return {
       text,
       sessionRef: publicSessionRef,
@@ -1364,6 +1614,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   if (spec.suffixArgs) args.push(...spec.suffixArgs)
   const prepared = prepareCommand(spec.command, args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
+  const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
   let hermesMessageWatermark = null
   if (agent.kind === 'hermes') {
     const watermarkFn = options.hermesMessageWatermarkFn || readHermesMessageWatermark
@@ -1439,10 +1690,16 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         emitProgress({ title: 'write_file', status: 'completed' })
       }
     }
-    const codexProgressParser = agent.kind === 'codex'
+    const runtimeStreamParser = ['codex', 'kimi', 'mimo', 'gemini', 'opencode'].includes(agent.kind)
       ? createJsonLineParser((event) => {
-          const progressEvent = codexProgressEvent(event)
-          if (progressEvent) emitProgress(progressEvent)
+          if (agent.kind === 'codex') {
+            const progressEvent = codexProgressEvent(event)
+            if (progressEvent) emitProgress(progressEvent)
+          }
+          const events = agent.kind === 'codex'
+            ? codexRuntimeEvents(event)
+            : jsonCliRuntimeEvents(agent.kind, event)
+          for (const runtimeEvent of events) runtimeEvents.emit(runtimeEvent)
         })
       : null
     const finish = (callback) => {
@@ -1500,7 +1757,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     child.stdout.on('data', (chunk) => {
       stdoutBytes += chunk.length
       if (stdoutBytes <= 10 * 1024 * 1024) stdout.push(chunk)
-      codexProgressParser?.write(chunk)
+      runtimeStreamParser?.write(chunk)
       emitHermesProgress('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
@@ -1520,7 +1777,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       void (async () => {
         emitHermesProgress('stdout', null, true)
         emitHermesProgress('stderr', null, true)
-        codexProgressParser?.end()
+        runtimeStreamParser?.end()
         if (stopRequested || options.signal?.aborted) {
           reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
           return
@@ -1580,6 +1837,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         }
         const output = { text: redactedText, sessionRef: publicSessionRef }
         if (result.progress?.length) output.progress = result.progress
+        runtimeEvents.emitFinalAnswer(redactedText)
         resolve(output)
       })().catch(error => reject(error))
     }))
