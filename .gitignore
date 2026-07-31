@@ -20,9 +20,7 @@ release/
 *.blockmap
 latest*.yml
 
-# Local documentation drafts
-/docs/
-/documentation/
+# Documentation is part of the public repository.
 README.zh-CN.md
 .github/brand/
 

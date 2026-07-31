@@ -7,6 +7,20 @@ const { prepareCommand, searchPath } = require('./cli-adapters.cjs')
 
 const execFileAsync = promisify(execFile)
 const EXEC_TIMEOUT_MS = 4500
+const KNOWLEDGE_PROBE_ENV_KEYS = Object.freeze([
+  'HOME', 'USER', 'LOGNAME', 'SHELL',
+  'TMPDIR', 'TMP', 'TEMP',
+  'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  'TERM', 'COLORTERM', 'NO_COLOR',
+  'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
+  'XDG_RUNTIME_DIR',
+  'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
+  'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+  'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
+  'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
+  'OS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'NUMBER_OF_PROCESSORS',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+])
 
 const KNOWLEDGE_BASE_SOURCES = Object.freeze([
   {
@@ -125,6 +139,24 @@ function splitSearchPath(options) {
     .map(value => platform === 'win32' ? value.toLowerCase() : value)
 }
 
+function environmentValue(env, name) {
+  const match = Object.keys(env || {}).find(key => key.toLowerCase() === name.toLowerCase())
+  return match ? env[match] : ''
+}
+
+function knowledgeProbeEnvironment(options = {}) {
+  const { platform, env, home } = runtimeOptions(options)
+  const childEnv = {}
+  for (const name of KNOWLEDGE_PROBE_ENV_KEYS) {
+    const value = environmentValue(env, name)
+    if (typeof value === 'string' && value) childEnv[name] = value
+  }
+  if (platform === 'win32') childEnv.USERPROFILE ||= home
+  else childEnv.HOME ||= home
+  childEnv.PATH = searchPath(options)
+  return childEnv
+}
+
 async function pathExists(filename, options = {}) {
   if (!filename) return false
   try {
@@ -186,15 +218,10 @@ async function resolveCommandPath(candidates, options = {}) {
 }
 
 async function runProbe(command, args, options = {}) {
-  const { platform, env, pathApi } = runtimeOptions(options)
+  const { platform, pathApi } = runtimeOptions(options)
   try {
     const prepared = prepareCommand(command, args, { platform })
-    const childEnv = {
-      ...env,
-      PATH: searchPath(options),
-    }
-    if (platform === 'win32') childEnv.USERPROFILE ||= os.homedir()
-    else childEnv.HOME ||= os.homedir()
+    const childEnv = knowledgeProbeEnvironment(options)
     const result = await (options.execFileFn || execFileAsync)(prepared.command, prepared.args, {
       timeout: EXEC_TIMEOUT_MS,
       windowsHide: true,
@@ -483,7 +510,11 @@ async function probeRemoteSource(source, options = {}) {
 async function resolveKnowledgeBaseSources(options = {}) {
   const storeState = options.store?.state?.() || { obsidianVaultPath: '' }
   const sources = []
-  for (const source of KNOWLEDGE_BASE_SOURCES) {
+  const targetKind = String(options.kind || '').trim()
+  const catalog = targetKind
+    ? KNOWLEDGE_BASE_SOURCES.filter(source => source.kind === targetKind)
+    : KNOWLEDGE_BASE_SOURCES
+  for (const source of catalog) {
     let resolved
     try {
       resolved = source.accessMode === 'vault'
@@ -506,7 +537,7 @@ async function resolveKnowledgeBaseSources(options = {}) {
         readable: false,
         writable: false,
         probeState: 'error',
-        errorCode: String(error?.code || error?.message || 'PROBE_FAILED'),
+        errorCode: stableProbeErrorCode(error),
       }
     }
     const vaultPath = source.kind === 'obsidian' ? String(storeState.obsidianVaultPath || '') : ''
@@ -537,9 +568,6 @@ async function resolveKnowledgeBaseSources(options = {}) {
       badge: source.badge,
       type: source.type,
       accessMode: source.accessMode,
-      installUrl: source.installUrl,
-      loginUrl: source.loginUrl,
-      permissionUrl: source.permissionUrl,
       installCommand: source.installCommand || '',
       loginCommand: resolved.loginCommand || source.loginCommand || '',
       statusCommand: resolved.statusCommand || source.statusCommand || '',

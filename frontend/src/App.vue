@@ -100,12 +100,13 @@
                   v-for="group in visibleDirectGroupsFor(agent.kind)"
                   :key="group.id"
                   class="direct-session-row"
-                  :class="{ active: selectedGroupId === group.id }"
+                  :class="{ active: activeView === 'conversation' && selectedGroupId === group.id }"
                 >
                   <button
                     class="direct-session-open"
                     type="button"
                     :title="t('nav.openDirect', { name: groupName(group) })"
+                    :aria-current="activeView === 'conversation' && selectedGroupId === group.id ? 'page' : undefined"
                     @click="selectGroup(group.id)"
                   >
                     <span>{{ groupName(group) }}</span>
@@ -135,28 +136,10 @@
                       :title="t('nav.deleteDirect', { name: groupName(group) })"
                       :aria-label="t('nav.deleteDirect', { name: groupName(group) })"
                       :disabled="isGroupRunning(group.id)"
-                      @click="openSidebarConversationDelete(group)"
+                      @click="openSidebarConversationDelete(group, $event)"
                     >
                       <TrashOutline />
                     </button>
-                    <span
-                      v-if="sidebarDeleteGroupId === group.id"
-                      class="settings-delete-popover sidebar-delete-popover"
-                      role="dialog"
-                      aria-modal="false"
-                      :aria-labelledby="`sidebar-delete-title-${group.id}`"
-                    >
-                      <strong :id="`sidebar-delete-title-${group.id}`">{{ t('settings.deletePrompt') }}</strong>
-                      <p>{{ t('settings.deleteHint') }}</p>
-                      <span class="settings-delete-actions">
-                        <button class="secondary-button compact" type="button" :disabled="saving" @click="dismissSidebarDeleteConfirmation">
-                          {{ t('common.cancel') }}
-                        </button>
-                        <button class="danger-button" type="button" :disabled="saving" @click="deleteSidebarConversation(group)">
-                          {{ t('settings.deleteConfirm') }}
-                        </button>
-                      </span>
-                    </span>
                   </span>
                 </div>
                 <button
@@ -191,12 +174,13 @@
                 v-for="group in visibleGroupGroups"
                 :key="group.id"
                 class="group-conversation-row"
-                :class="{ active: selectedGroupId === group.id }"
+                :class="{ active: activeView === 'conversation' && selectedGroupId === group.id }"
               >
                 <button
                   class="conversation-link"
                   type="button"
                   :title="t('nav.openGroup', { name: groupName(group) })"
+                  :aria-current="activeView === 'conversation' && selectedGroupId === group.id ? 'page' : undefined"
                   @click="selectGroup(group.id)"
                 >
                   <span class="group-avatar"><ChatbubblesOutline /></span>
@@ -223,28 +207,10 @@
                       :title="t('nav.deleteGroup', { name: groupName(group) })"
                       :aria-label="t('nav.deleteGroup', { name: groupName(group) })"
                       :disabled="isGroupRunning(group.id)"
-                      @click="openSidebarConversationDelete(group)"
+                      @click="openSidebarConversationDelete(group, $event)"
                     >
                       <TrashOutline />
                     </button>
-                    <span
-                      v-if="sidebarDeleteGroupId === group.id"
-                      class="settings-delete-popover sidebar-delete-popover"
-                      role="dialog"
-                      aria-modal="false"
-                      :aria-labelledby="`sidebar-delete-title-${group.id}`"
-                    >
-                      <strong :id="`sidebar-delete-title-${group.id}`">{{ t('settings.deletePrompt') }}</strong>
-                      <p>{{ t('settings.deleteHint') }}</p>
-                      <span class="settings-delete-actions">
-                        <button class="secondary-button compact" type="button" :disabled="saving" @click="dismissSidebarDeleteConfirmation">
-                          {{ t('common.cancel') }}
-                        </button>
-                        <button class="danger-button" type="button" :disabled="saving" @click="deleteSidebarConversation(group)">
-                          {{ t('settings.deleteConfirm') }}
-                        </button>
-                      </span>
-                    </span>
                   </span>
                 </span>
               </div>
@@ -303,6 +269,28 @@
           </div>
         </footer>
       </aside>
+
+      <Teleport to="body">
+        <span
+          v-if="sidebarDeleteGroup"
+          class="settings-delete-popover sidebar-delete-popover"
+          role="dialog"
+          aria-modal="false"
+          :style="sidebarDeletePopoverStyle"
+          :aria-labelledby="`sidebar-delete-title-${sidebarDeleteGroup.id}`"
+        >
+          <strong :id="`sidebar-delete-title-${sidebarDeleteGroup.id}`">{{ t('settings.deletePrompt') }}</strong>
+          <p>{{ t('settings.deleteHint') }}</p>
+          <span class="settings-delete-actions">
+            <button class="secondary-button compact" type="button" :disabled="saving" @click="dismissSidebarDeleteConfirmation">
+              {{ t('common.cancel') }}
+            </button>
+            <button class="danger-button" type="button" :disabled="saving" @click="deleteSidebarConversation(sidebarDeleteGroup)">
+              {{ t('settings.deleteConfirm') }}
+            </button>
+          </span>
+        </span>
+      </Teleport>
 
       <section
         class="workspace-pane"
@@ -447,95 +435,89 @@
               class="settings-panel knowledge-base-manager knowledge-base-panel"
               :aria-busy="String(knowledgeBaseLoading)"
             >
-              <header class="knowledge-base-header">
-                <div>
-                  <h2>{{ t('knowledgeBase.title') }}</h2>
-                  <p>{{ t('knowledgeBase.subtitle') }}</p>
-                </div>
-                <div class="knowledge-base-header-actions">
-                  <span class="knowledge-base-ready-summary" role="status" aria-live="polite">
-                    {{ knowledgeBaseLoading
-                      ? t('knowledgeBase.status.checking')
-                      : t('knowledgeBase.readyCount', { ready: readyKnowledgeBaseCount, total: localKnowledgeBaseEntries.length }) }}
-                  </span>
-                  <button class="secondary-button compact" type="button" :disabled="knowledgeBaseLoading" @click="loadKnowledgeBaseStatuses">
-                    <RefreshOutline :class="{ spinning: knowledgeBaseLoading }" />
-                    {{ t('knowledgeBase.refresh') }}
-                  </button>
-                </div>
-              </header>
-              <div class="knowledge-base-groups">
-                <section
-                  v-for="group in knowledgeBaseGroups"
-                  :key="group.id"
-                  class="knowledge-base-group"
-                  :class="{ planned: group.planned }"
-                  :aria-labelledby="`knowledge-base-group-${group.id}`"
-                >
+              <div class="manager-toolbar knowledge-base-toolbar">
+                <span class="knowledge-base-ready-summary" role="status" aria-live="polite">
+                  {{ knowledgeBaseLoading
+                    ? t('knowledgeBase.status.checking')
+                    : t('knowledgeBase.readyCount', { ready: readyKnowledgeBaseCount, total: localKnowledgeBaseEntries.length }) }}
+                </span>
+                <button class="secondary-button" type="button" :disabled="knowledgeBaseLoading" @click="loadKnowledgeBaseStatuses()">
+                  <RefreshOutline :class="{ spinning: knowledgeBaseLoading }" />
+                  {{ t('knowledgeBase.refresh') }}
+                </button>
+              </div>
+              <div class="knowledge-base-sections">
+                <section class="knowledge-base-group" :aria-labelledby="'knowledge-base-group-local'">
                   <header class="knowledge-base-group-header">
-                    <h3 :id="`knowledge-base-group-${group.id}`">{{ t(group.titleKey) }}</h3>
-                    <p v-if="group.planned">{{ t('knowledgeBase.group.plannedHint') }}</p>
+                    <h3 id="knowledge-base-group-local">{{ t('knowledgeBase.group.local') }}</h3>
                   </header>
-                  <div v-if="group.planned" class="knowledge-base-planned-list">
+                  <div class="knowledge-base-list">
                     <article
-                      v-for="source in group.sources"
+                      v-for="source in localKnowledgeBaseEntries"
                       :key="source.kind"
-                      class="knowledge-base-planned-item"
+                      class="knowledge-base-item"
+                      :class="{ pending: knowledgeBasePending(source) }"
                     >
-                      <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
-                      <div class="knowledge-base-planned-copy">
-                        <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
-                        <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
+                      <div class="knowledge-base-item-main">
+                        <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
+                        <div class="knowledge-base-item-copy">
+                          <div class="knowledge-base-item-title-row">
+                            <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                            <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
+                              <component :is="knowledgeBaseIcon(source)" :class="{ spinning: knowledgeBasePending(source) }" />
+                              {{ knowledgeBaseStatusLabel(source) }}
+                            </span>
+                          </div>
+                          <div class="knowledge-base-tag-row">
+                            <span
+                              v-for="tag in knowledgeBaseTagItems(source)"
+                              :key="tag.key"
+                              class="knowledge-base-tag"
+                              :class="tag.tone"
+                            >
+                              {{ tag.label }}
+                            </span>
+                          </div>
+                          <p v-if="knowledgeBaseLocationLabel(source)" class="knowledge-base-path">
+                            <code>{{ knowledgeBaseLocationLabel(source) }}</code>
+                          </p>
+                        </div>
                       </div>
-                      <span class="knowledge-base-planned-status">
-                        <CloudOutline />
-                        {{ knowledgeBaseStatusLabel(source) }}
-                      </span>
-                      <button class="knowledge-base-doc-link" type="button" @click="runKnowledgeBasePrimaryAction(source)">
+                      <button
+                        class="knowledge-base-action"
+                        type="button"
+                        :disabled="knowledgeBasePending(source)"
+                        @click="runKnowledgeBasePrimaryAction(source)"
+                      >
+                        <RefreshOutline v-if="knowledgeBasePending(source)" class="spinning" />
                         {{ knowledgeBasePrimaryActionLabel(source) }}
-                        <ChevronForwardOutline />
+                        <ChevronForwardOutline v-if="!knowledgeBasePending(source)" />
                       </button>
                     </article>
                   </div>
-                  <div v-else class="knowledge-base-grid">
+                </section>
+                <section class="knowledge-base-group" :aria-labelledby="'knowledge-base-group-planned'">
+                  <header class="knowledge-base-group-header">
+                    <h3 id="knowledge-base-group-planned">{{ t('knowledgeBase.group.planned') }}</h3>
+                  </header>
+                  <div class="knowledge-base-future-list">
                     <article
-                      v-for="source in group.sources"
+                      v-for="source in plannedKnowledgeBaseEntries"
                       :key="source.kind"
-                      class="knowledge-base-card"
-                      :class="{ pending: knowledgeBasePending(source) }"
+                      class="knowledge-base-future-item"
                     >
-                      <header class="knowledge-base-card-header">
-                        <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
-                        <div class="knowledge-base-card-copy">
-                          <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
-                          <p>{{ t(`knowledgeBase.description.${source.kind}`) }}</p>
-                        </div>
-                        <span class="knowledge-base-status" :class="knowledgeBaseTone(source)">
-                          <component :is="knowledgeBaseIcon(source)" :class="{ spinning: knowledgeBasePending(source) }" />
-                          {{ knowledgeBaseStatusLabel(source) }}
-                        </span>
-                      </header>
-                      <dl class="knowledge-base-facts">
-                        <div v-for="fact in knowledgeBaseFacts(source)" :key="fact.key">
-                          <dt>{{ fact.label }}</dt>
-                          <dd :class="fact.tone">{{ fact.value }}</dd>
-                        </div>
-                      </dl>
-                      <p class="knowledge-base-hint">{{ knowledgeBaseHint(source) }}</p>
-                      <p v-if="knowledgeBaseLocationLabel(source)" class="knowledge-base-path">
-                        <code>{{ knowledgeBaseLocationLabel(source) }}</code>
-                      </p>
-                      <footer class="knowledge-base-actions">
-                        <button
-                          type="button"
-                          :disabled="knowledgeBasePending(source)"
-                          @click="runKnowledgeBasePrimaryAction(source)"
-                        >
-                          <RefreshOutline v-if="knowledgeBasePending(source)" class="spinning" />
-                          {{ knowledgeBasePrimaryActionLabel(source) }}
-                          <ChevronForwardOutline v-if="!knowledgeBasePending(source)" />
-                        </button>
-                      </footer>
+                      <img class="knowledge-base-logo" :src="source.logo" :alt="t(`knowledgeBase.source.${source.kind}`)" />
+                      <div class="knowledge-base-future-copy">
+                        <strong>{{ t(`knowledgeBase.source.${source.kind}`) }}</strong>
+                      </div>
+                      <span class="knowledge-base-status">
+                        <CloudOutline />
+                        {{ knowledgeBaseStatusLabel(source) }}
+                      </span>
+                      <button class="knowledge-base-action ghost" type="button" @click="runKnowledgeBasePrimaryAction(source)">
+                        {{ knowledgeBasePrimaryActionLabel(source) }}
+                        <ChevronForwardOutline />
+                      </button>
                     </article>
                   </div>
                 </section>
@@ -566,21 +548,34 @@
                     <strong>{{ agent.label }}</strong>
                     <small :class="providerStatusTone(agent.kind)">{{ providerStatusLabel(agent.kind) }}</small>
                   </span>
-                  <CheckmarkCircleOutline v-if="providerReady(agent.kind)" class="ready" />
-                  <RefreshOutline v-else-if="!hasProviderStatus(agent.kind)" class="spinning" />
-                  <ChevronForwardOutline v-else />
+                  <component
+                    :is="providerStatusIcon(agent.kind)"
+                    :class="{
+                      ready: providerReady(agent.kind),
+                      spinning: providerStatusIsChecking(agent.kind),
+                    }"
+                  />
                 </button>
               </nav>
 
-              <form class="provider-editor form-stack" :aria-busy="String(!hasProviderStatus(selectedProviderKind))" @submit.prevent="saveProvider">
+              <form
+                class="provider-editor form-stack"
+                :aria-busy="String(providerStatusIsChecking(selectedProviderKind))"
+                @submit.prevent="saveProvider"
+              >
                 <header v-if="selectedProviderAgent" class="provider-editor-header">
                   <img :src="selectedProviderAgent.logo" alt="" />
                   <div class="provider-editor-title">
                     <h2>{{ t('provider.agentTitle', { agent: selectedProviderAgent.label }) }}</h2>
-                    <div class="provider-editor-tags">
-                      <span :class="providerStatusTone(selectedProviderKind)">{{ providerStatusLabel(selectedProviderKind) }}</span>
-                      <span>{{ providerCapabilityLabel(selectedProviderAgent) }}</span>
-                      <span class="active">{{ t('provider.activeProfile', { provider: providerPresetLabel(providerActivePreset) }) }}</span>
+                    <div class="provider-agent-state" :class="selectedProviderAgentState.tone" role="status">
+                      <component
+                        :is="selectedProviderAgentState.icon"
+                        :class="{ spinning: selectedProviderAgentState.id === 'checking' }"
+                      />
+                      <span>
+                        <strong>{{ selectedProviderAgentState.label }}</strong>
+                        <small>{{ selectedProviderAgentState.detail }}</small>
+                      </span>
                     </div>
                   </div>
                 </header>
@@ -588,7 +583,6 @@
                 <section class="provider-source-section" :aria-label="t('provider.source')">
                   <div class="provider-source-heading">
                     <span>{{ t('provider.source') }}</span>
-                    <small v-if="selectedProviderPreset">{{ providerPresetHint(selectedProviderPreset.id) }}</small>
                   </div>
                   <div class="provider-source-options">
                     <button
@@ -598,6 +592,7 @@
                       :aria-pressed="providerForm.preset === preset.id ? 'true' : 'false'"
                       :class="{ active: providerForm.preset === preset.id }"
                       :disabled="saving"
+                      :title="providerPresetHint(preset.id)"
                       @click="applyProviderPreset(preset.id)"
                     >
                       <strong>{{ providerPresetLabel(preset.id) }}</strong>
@@ -608,45 +603,130 @@
                   </div>
                 </section>
 
-                <div v-if="providerStatus.error" class="provider-inline-warning" role="status">
-                  <span>{{ t('provider.unavailable') }}</span>
-                  <button type="button" :disabled="saving" @click="retryProviderStatus(selectedProviderKind)">
-                    <RefreshOutline />
-                    {{ t('common.retry') }}
-                  </button>
-                </div>
-                <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
-                  {{ t('provider.encryptionUnavailable') }}
-                </p>
+                <section v-if="selectedProviderPreset" class="provider-source-detail">
+                  <header class="provider-source-overview">
+                    <TerminalOutline v-if="providerNativeOfficialMode" />
+                    <KeyOutline v-else />
+                    <div>
+                      <strong>{{ t('provider.sourceTitle', { provider: providerPresetLabel(selectedProviderPreset.id) }) }}</strong>
+                      <p>{{ providerPresetHint(selectedProviderPreset.id) }}</p>
+                      <small>{{ t('provider.agentSpecificHint') }}</small>
+                    </div>
+                  </header>
 
-                <div v-if="selectedProviderPresetConfigured" class="provider-profile-summary">
-                  <span :class="{ active: selectedProviderPresetActive }">
-                    {{ selectedProviderPresetActive ? t('provider.active') : t('provider.configured') }}
-                  </span>
-                  <span v-if="providerNativeOfficialMode">{{ t('provider.nativeReady') }}</span>
-                  <span v-else-if="selectedProviderProfileStatus?.provider">{{ selectedProviderProfileStatus.provider }}</span>
-                  <span v-if="selectedProviderProfileStatus?.model">{{ selectedProviderProfileStatus.model }}</span>
-                  <code v-if="providerNativeOfficialMode && selectedProviderProfile.configFile">{{ selectedProviderProfile.configFile }}</code>
-                </div>
+                  <div v-if="providerStatus.error" class="provider-inline-warning" role="status">
+                    <span>{{ t('provider.unavailable') }}</span>
+                    <button type="button" :disabled="saving" @click="retryProviderStatus(selectedProviderKind)">
+                      <RefreshOutline />
+                      {{ t('common.retry') }}
+                    </button>
+                  </div>
+                  <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
+                    {{ t('provider.encryptionUnavailable') }}
+                  </p>
 
-                <div v-if="!providerNativeOfficialMode" class="provider-external-fields">
-                  <label class="provider-field-name">
-                    <span>{{ t('provider.name') }}</span>
-                    <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" maxlength="80" :disabled="saving" required />
-                  </label>
-                  <label class="provider-field-url">
-                    <span>{{ t('provider.baseUrl') }}</span>
-                    <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" maxlength="300" :disabled="saving" required />
-                  </label>
-                  <label class="provider-field-model">
-                    <span>{{ t('provider.model') }}</span>
-                    <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" maxlength="160" :disabled="saving" required />
-                  </label>
-                  <label class="provider-field-key">
-                    <span>{{ t('provider.apiKey') }}</span>
-                    <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" maxlength="8192" :disabled="saving" required />
-                  </label>
-                </div>
+                  <template v-if="providerNativeOfficialMode">
+                    <div class="provider-native-card" :class="selectedProviderAgentState.tone">
+                      <TerminalOutline />
+                      <div class="provider-native-card-content">
+                        <strong>{{ t('provider.nativeTitle') }}</strong>
+                        <p>{{ providerNativeGuideBody }}</p>
+                        <div v-if="providerNativeActionVisible" class="provider-native-actions">
+                          <button
+                            class="secondary-button"
+                            type="button"
+                            :disabled="saving"
+                            @click="openAgentManager(selectedProviderKind)"
+                          >
+                            <SettingsOutline />
+                            {{ t('provider.manageAgent') }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="provider-doc-card">
+                      <div>
+                        <strong>{{ t('provider.configGuide') }}</strong>
+                        <p>{{ t(selectedProviderProfile.docsKey) }}</p>
+                      </div>
+                      <dl>
+                        <div v-if="selectedProviderProfile.configFile">
+                          <dt>{{ t('provider.configFile') }}</dt>
+                          <dd><code>{{ selectedProviderProfile.configFile }}</code></dd>
+                        </div>
+                        <div v-if="selectedProviderProfile.runtimeKeys.length">
+                          <dt>{{ t('provider.runtimeKeys') }}</dt>
+                          <dd>
+                            <code v-for="key in selectedProviderProfile.runtimeKeys" :key="key">{{ key }}</code>
+                          </dd>
+                        </div>
+                      </dl>
+                    </div>
+                  </template>
+
+                  <template v-else>
+                    <div v-if="selectedProviderProfileSaved" class="provider-profile-summary">
+                      <span :class="{ active: selectedProviderPresetActive }">
+                        {{ selectedProviderPresetActive ? t('provider.active') : t('provider.saved') }}
+                      </span>
+                      <span v-if="selectedProviderProfileStatus?.provider">{{ selectedProviderProfileStatus.provider }}</span>
+                      <span v-if="selectedProviderProfileStatus?.model">{{ selectedProviderProfileStatus.model }}</span>
+                    </div>
+
+                    <p v-if="providerIdentityLocked" class="provider-field-note">
+                      {{ t('provider.identityLocked') }}
+                    </p>
+                    <div class="provider-external-fields">
+                      <label class="provider-field-name">
+                        <span>{{ t('provider.name') }}</span>
+                        <input
+                          v-model.trim="providerForm.provider"
+                          :placeholder="t('provider.namePlaceholder')"
+                          autocomplete="off"
+                          maxlength="80"
+                          :readonly="providerIdentityLocked"
+                          :aria-readonly="providerIdentityLocked ? 'true' : undefined"
+                          :disabled="providerFormControlsDisabled"
+                        />
+                      </label>
+                      <label class="provider-field-url">
+                        <span>{{ t('provider.baseUrl') }}</span>
+                        <input
+                          v-model.trim="providerForm.baseUrl"
+                          :placeholder="t('provider.baseUrlPlaceholder')"
+                          inputmode="url"
+                          autocomplete="off"
+                          maxlength="300"
+                          :readonly="providerIdentityLocked"
+                          :aria-readonly="providerIdentityLocked ? 'true' : undefined"
+                          :disabled="providerFormControlsDisabled"
+                        />
+                      </label>
+                      <label class="provider-field-model">
+                        <span>{{ t('provider.model') }}</span>
+                        <input
+                          v-model.trim="providerForm.model"
+                          :placeholder="t('provider.modelPlaceholder')"
+                          autocomplete="off"
+                          maxlength="160"
+                          :disabled="providerFormControlsDisabled"
+                        />
+                      </label>
+                      <label class="provider-field-key">
+                        <span>{{ t('provider.apiKey') }}</span>
+                        <input
+                          v-model="providerForm.apiKey"
+                          type="password"
+                          :placeholder="t('provider.apiKeyPlaceholder')"
+                          autocomplete="new-password"
+                          maxlength="8192"
+                          :disabled="providerFormControlsDisabled"
+                        />
+                      </label>
+                    </div>
+                  </template>
+                </section>
 
                 <p v-if="formError" class="form-error">{{ formError }}</p>
                 <footer class="provider-editor-footer">
@@ -663,10 +743,15 @@
                     @click="activateProviderPreset(providerForm.preset)"
                   >
                     <CheckmarkCircleOutline />
-                    {{ t('provider.useProfile', { provider: providerPresetLabel(providerForm.preset) }) }}
+                    {{ t('provider.useProfile') }}
                   </button>
-                  <button v-if="!providerNativeOfficialMode" class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
-                    {{ saving ? t('common.saving') : t('provider.save') }}
+                  <button
+                    v-if="!providerNativeOfficialMode"
+                    class="primary-button"
+                    type="submit"
+                    :disabled="providerFormControlsDisabled || providerStatus.encryptionAvailable === false"
+                  >
+                    {{ providerSaveActionLabel }}
                   </button>
                 </footer>
               </form>
@@ -674,25 +759,41 @@
           </div>
         </section>
 
-        <section v-else-if="activeView === 'home' || !activeGroup" class="agent-home home-dashboard">
+        <section
+          v-else-if="activeView === 'home'"
+          class="agent-home home-dashboard"
+          :data-home-mode="homeMode"
+        >
           <header class="home-dashboard-header">
             <div>
               <h1>{{ t('home.dashboardTitle') }}</h1>
               <p>{{ t('home.dashboardSubtitle') }}</p>
             </div>
-            <div class="home-workspace-state" :class="{ attention: showSetupGuide }" role="status">
-              <WarningOutline v-if="showSetupGuide" />
+            <div class="home-workspace-state" :class="{ attention: homeNeedsAttention }" role="status">
+              <WarningOutline v-if="homeNeedsAttention" />
               <CheckmarkCircleOutline v-else />
               <span>{{ homeWorkspaceSummary }}</span>
             </div>
           </header>
 
-          <div class="home-dashboard-grid">
+          <section v-if="showRecoveryGuide" class="home-recovery-notice" aria-live="polite">
+            <WarningOutline />
+            <div>
+              <h2>{{ t('home.recoveryTitle') }}</h2>
+              <p>{{ t('home.recoveryBody') }}</p>
+            </div>
+            <button class="secondary-button compact" type="button" @click="openAgentManager()">
+              <SettingsOutline />
+              {{ t('home.openSettings') }}
+            </button>
+          </section>
+
+          <div v-if="!showSetupGuide" class="home-dashboard-grid">
             <section class="home-panel home-recent-panel">
               <header class="home-panel-header">
                 <div>
-                  <h2>{{ t('home.recentTitle') }}</h2>
-                  <p>{{ t('home.recentSubtitle') }}</p>
+                  <h2>{{ t(homeMode === 'first-task' ? 'home.firstTaskTitle' : 'home.recentTitle') }}</h2>
+                  <p>{{ t(homeMode === 'first-task' ? 'home.firstTaskSubtitle' : 'home.recentSubtitle') }}</p>
                 </div>
               </header>
               <div v-if="recentGroups.length" class="home-recent-list">
@@ -712,6 +813,16 @@
               <div v-else class="home-panel-empty">
                 <ChatbubblesOutline />
                 <p>{{ t('home.recentEmpty') }}</p>
+                <button
+                  v-if="homeMode === 'first-task'"
+                  class="primary-button compact"
+                  type="button"
+                  :disabled="readyCount < 2"
+                  @click="openNewGroup"
+                >
+                  <AddOutline />
+                  {{ t('nav.newGroup') }}
+                </button>
               </div>
             </section>
 
@@ -721,13 +832,23 @@
                   <h2>{{ t('home.agentStatusTitle') }}</h2>
                   <p>{{ t('home.agentStatusSubtitle') }}</p>
                 </div>
+                <button
+                  v-if="homeMode !== 'first-task'"
+                  class="secondary-button compact home-new-group-button"
+                  type="button"
+                  :disabled="readyCount < 2"
+                  @click="openNewGroup"
+                >
+                  <AddOutline />
+                  {{ t('nav.newGroup') }}
+                </button>
               </header>
               <div v-if="homeAgentPreview.length" class="home-agent-list">
                 <button v-for="agent in homeAgentPreview" :key="agent.kind" type="button" class="home-agent-item" @click="openDirect(agent)">
                   <img :src="agent.logo" :alt="agent.label" />
                   <span>
                     <strong>{{ agent.label }}</strong>
-                    <small>{{ providerSummaryLabel(agent) }}</small>
+                    <small>{{ agentDescription(agent.kind) }}</small>
                   </span>
                   <ChevronForwardOutline />
                 </button>
@@ -781,9 +902,9 @@
                 <KeyOutline />
                 {{ t('systemSettings.providers') }}
               </button>
-              <button class="primary-button" type="button" :disabled="readyCount < 2" @click="openNewGroup">
-                <ChatbubblesOutline />
-                {{ t('nav.newGroup') }}
+              <button class="primary-button" type="button" @click="openAgentManager()">
+                <SettingsOutline />
+                {{ t('home.openSettings') }}
               </button>
             </footer>
           </section>
@@ -1877,9 +1998,9 @@ const EMPTY_PROVIDER_STATUS = Object.freeze({
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
 const providerStatuses = ref({})
+const providerStatusLoadingKinds = ref(new Set())
 const selectedProviderKind = ref(AGENTS[0]?.kind || 'codex')
 const activeView = ref('home')
-const systemSettingsOpen = ref(false)
 const systemSettingsSection = ref('agents')
 const selectedGroupId = ref('')
 const sidebarCollapsed = ref(false)
@@ -1915,6 +2036,7 @@ const roundSettingsOpen = ref(false)
 const formError = ref('')
 const deleteArmed = ref(false)
 const sidebarDeleteGroupId = ref('')
+const sidebarDeletePopoverPoint = ref({ left: 0, top: 0 })
 const providerRemoveArmed = ref(false)
 const installConfirmKind = ref('')
 const focusedAgentKind = ref('')
@@ -1922,6 +2044,7 @@ const toastMessage = ref('')
 const settingsIntent = ref('settings')
 const knowledgeBaseSources = ref([])
 const knowledgeBaseLoading = ref(false)
+const knowledgeBaseRefreshingKinds = reactive(new Set())
 let knowledgeBaseStatusPromise = null
 const knowledgeBaseSourceMap = computed(() => new Map(knowledgeBaseSources.value.map(source => [source.kind, source])))
 const knowledgeBaseEntries = computed(() => KNOWLEDGE_BASE_CATALOG.map((definition) => {
@@ -1934,20 +2057,6 @@ const knowledgeBaseEntries = computed(() => KNOWLEDGE_BASE_CATALOG.map((definiti
 }))
 const localKnowledgeBaseEntries = computed(() => knowledgeBaseEntries.value.filter(source => !knowledgeBaseComingSoon(source)))
 const plannedKnowledgeBaseEntries = computed(() => knowledgeBaseEntries.value.filter(knowledgeBaseComingSoon))
-const knowledgeBaseGroups = computed(() => ([
-  {
-    id: 'local',
-    titleKey: 'knowledgeBase.group.local',
-    planned: false,
-    sources: localKnowledgeBaseEntries.value,
-  },
-  {
-    id: 'planned',
-    titleKey: 'knowledgeBase.group.planned',
-    planned: true,
-    sources: plannedKnowledgeBaseEntries.value,
-  },
-]))
 const readyKnowledgeBaseCount = computed(() => localKnowledgeBaseEntries.value.filter(knowledgeBaseReady).length)
 const collapsedSidebarAgentKinds = ref(new Set())
 const expandedSidebarAgentSessionKinds = ref(new Set())
@@ -1976,6 +2085,8 @@ let skillLoadToken = 0
 let agentSkillStatsToken = 0
 let agentDetailSkillToken = 0
 let attachmentImportSequence = 0
+let providerStatusRequestSequence = 0
+const providerStatusRequestTokens = new Map()
 let unsubscribeWorkspace = null
 let unsubscribeInstaller = null
 let unsubscribeRunFinished = null
@@ -2063,6 +2174,11 @@ const visibleGroupGroups = computed(() => (
 const hasMoreGroupGroups = computed(() => groupGroups.value.length > GROUP_SESSION_PREVIEW_LIMIT)
 const remainingGroupGroupsCount = computed(() => Math.max(0, groupGroups.value.length - GROUP_SESSION_PREVIEW_LIMIT))
 const activeGroup = computed(() => snapshot.value.groups.find(group => group.id === selectedGroupId.value) || null)
+const sidebarDeleteGroup = computed(() => snapshot.value.groups.find(group => group.id === sidebarDeleteGroupId.value) || null)
+const sidebarDeletePopoverStyle = computed(() => ({
+  left: `${sidebarDeletePopoverPoint.value.left}px`,
+  top: `${sidebarDeletePopoverPoint.value.top}px`,
+}))
 const activeGroupMemberSignature = computed(() => {
   const group = activeGroup.value
   return group ? [group.id, ...group.agentKinds].join('\u0000') : ''
@@ -2311,6 +2427,11 @@ const configurableProviderAgents = computed(() => mergedCatalog.value.filter(age
 const providerConfiguredCount = computed(() => configurableProviderAgents.value.filter(agent => providerReady(agent.kind)).length)
 const recentGroups = computed(() => snapshot.value.groups.slice().sort(sortByUpdated).slice(0, 6))
 const homeAgentPreview = computed(() => readyAgents.value.slice(0, 5))
+const homeMode = computed(() => {
+  if (snapshot.value.groups.length) return 'workspace'
+  return readyCount.value > 0 ? 'first-task' : 'setup'
+})
+const homeNeedsAttention = computed(() => readyCount.value === 0)
 const selectedAgentDetailKind = ref('')
 const agentDetailSkillItems = ref([])
 const agentDetailSkillsLoading = ref(false)
@@ -2322,11 +2443,15 @@ const agentDetailSkillSummary = computed(() => {
 })
 const showSetupGuide = computed(() => (
   onboardingCompleted.value
-  && !snapshot.value.groups.length
-  && readyCount.value === 0
+  && homeMode.value === 'setup'
+))
+const showRecoveryGuide = computed(() => (
+  onboardingCompleted.value
+  && homeMode.value === 'workspace'
+  && homeNeedsAttention.value
 ))
 const homeWorkspaceSummary = computed(() => (
-  showSetupGuide.value
+  homeNeedsAttention.value
     ? t('home.setupNeeded')
     : t('home.workspaceSummary', {
         agents: readyCount.value,
@@ -2334,10 +2459,9 @@ const homeWorkspaceSummary = computed(() => (
       })
 ))
 const setupGuideMessage = computed(() => {
-  if (!readyCount.value) return t('setupGuide.detectBody')
+  if (!installedCount.value) return t('setupGuide.detectBody')
   if (configurableProviderAgents.value.length && !providerConfiguredCount.value) return t('setupGuide.providerBody')
-  if (!snapshot.value.groups.length) return t('setupGuide.chatBody')
-  return t('setupGuide.readyBody')
+  return t('setupGuide.detectBody')
 })
 const selectedProviderAgent = computed(() => configurableProviderAgents.value.find(
   agent => agent.kind === selectedProviderKind.value,
@@ -2350,22 +2474,50 @@ const selectedProviderPreset = computed(() => (
   || selectedProviderPresets.value[0]
   || null
 ))
-const providerActivePreset = computed(() => (
-  providerStatus.value.activePreset || inferProviderPreset(selectedProviderKind.value, providerStatus.value)
-))
+const selectedProviderAgentState = computed(() => providerAgentState(selectedProviderKind.value))
+const providerActiveSource = computed(() => providerActiveSourceFor(selectedProviderKind.value))
 const selectedProviderProfileStatus = computed(() => (
   providerProfilesFor(selectedProviderKind.value)[providerForm.preset] || null
 ))
 const selectedProviderProfileSaved = computed(() => Boolean(selectedProviderProfileStatus.value?.configured))
-const selectedProviderPresetActive = computed(() => providerActivePreset.value === providerForm.preset)
-const selectedProviderPresetConfigured = computed(() => (
-  selectedProviderProfileSaved.value
-  || (providerForm.preset === 'official' && nativeProviderReady(selectedProviderAgent.value))
-))
+const selectedProviderPresetActive = computed(() => providerActiveSource.value === providerForm.preset)
+const selectedProviderPresetConfigured = computed(() => providerPresetConfigured(providerForm.preset))
 const providerNativeOfficialMode = computed(() => (
   providerForm.preset === 'official'
   && !selectedProviderProfileSaved.value
-  && nativeProviderReady(selectedProviderAgent.value)
+  && (
+    nativeProviderReady(selectedProviderAgent.value)
+    || !String(selectedProviderPreset.value?.baseUrl || '').trim()
+  )
+))
+const providerIdentityLocked = computed(() => providerForm.preset !== 'custom')
+const providerFormControlsDisabled = computed(() => (
+  saving.value
+  || providerStatus.value.error
+  || (providerStatusIsChecking(selectedProviderKind.value) && !hasProviderStatus(selectedProviderKind.value))
+))
+const providerSaveActionLabel = computed(() => {
+  if (saving.value) return t('common.saving')
+  if (!selectedProviderProfileSaved.value) return t('provider.saveAndUse')
+  return selectedProviderPresetActive.value
+    ? t('provider.updateCredentials')
+    : t('provider.updateAndUse')
+})
+const providerNativeGuideBody = computed(() => {
+  const state = selectedProviderAgentState.value
+  const agent = selectedProviderAgent.value
+  if (state.id === 'checking') return t('provider.nativeStatusCheckingBody')
+  if (state.id === 'unavailable') return t('provider.nativeStatusErrorBody')
+  if (nativeProviderReady(agent)) {
+    return selectedProviderPresetActive.value
+      ? t('provider.nativeBody')
+      : t('provider.nativeAvailableBody')
+  }
+  return state.detail
+})
+const providerNativeActionVisible = computed(() => (
+  providerNativeOfficialMode.value
+  && ['not-installed', 'login-required', 'unverified'].includes(selectedProviderAgentState.value.id)
 ))
 const roundProgressPercent = computed(() => {
   const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
@@ -2505,11 +2657,6 @@ function providerModeShortLabel(mode) {
   return t(`agent.providerShort.${mode}`)
 }
 
-function providerCapabilityLabel(agent) {
-  if (!agent) return ''
-  return t(`provider.capability.${agent.providerMode || 'native'}`)
-}
-
 function agentDescription(kind) {
   return t(`agent.description.${kind}`)
 }
@@ -2539,38 +2686,132 @@ function hasProviderStatus(kind) {
   return Object.prototype.hasOwnProperty.call(providerStatuses.value, String(kind || ''))
 }
 
+function setProviderStatusPending(kind, pending) {
+  const targetKind = String(kind || '')
+  const next = new Set(providerStatusLoadingKinds.value)
+  if (pending) next.add(targetKind)
+  else next.delete(targetKind)
+  providerStatusLoadingKinds.value = next
+}
+
+function providerStatusIsChecking(kind) {
+  const targetKind = String(kind || '')
+  return providerStatusLoadingKinds.value.has(targetKind) || !hasProviderStatus(targetKind)
+}
+
 function nativeProviderReady(agent) {
   return Boolean(agent?.ready && NATIVE_PROVIDER_READY_SOURCES.has(String(agent.availabilitySource || '')))
 }
 
-function providerReady(kind) {
+function activeSavedProviderPreset(kind) {
   const status = providerStatusFor(kind)
-  if (!hasProviderStatus(kind) || status.error) return false
+  if (!hasProviderStatus(kind) || status.error || !status.configured) return ''
+  const preset = status.activePreset || inferProviderPreset(kind, status)
+  return providerProfilesFor(kind)[preset]?.configured ? preset : ''
+}
+
+function providerActiveSourceFor(kind) {
   const agent = configurableProviderAgents.value.find(item => item.kind === kind)
-  return Boolean(status.configured || nativeProviderReady(agent))
+  if (!agent?.installed || !hasProviderStatus(kind) || providerStatusFor(kind).error) return ''
+  const savedPreset = activeSavedProviderPreset(kind)
+  if (savedPreset) return savedPreset
+  return nativeProviderReady(agent) ? 'official' : ''
+}
+
+function providerAgentState(kind) {
+  const agent = configurableProviderAgents.value.find(item => item.kind === kind)
+  const agentName = agent?.label || String(kind || '')
+  if (!agent?.installed) {
+    return {
+      id: 'not-installed',
+      label: t('provider.state.notInstalled'),
+      detail: t('provider.state.notInstalledBody', { agent: agentName }),
+      tone: 'warning',
+      icon: DownloadOutline,
+    }
+  }
+  if (providerStatusIsChecking(kind) && !hasProviderStatus(kind)) {
+    return {
+      id: 'checking',
+      label: t('provider.checking'),
+      detail: t('provider.state.checkingBody', { agent: agentName }),
+      tone: 'checking',
+      icon: RefreshOutline,
+    }
+  }
+  if (providerStatusFor(kind).error) {
+    return {
+      id: 'unavailable',
+      label: t('provider.unavailable'),
+      detail: t('provider.state.unavailableBody', { agent: agentName }),
+      tone: 'warning',
+      icon: WarningOutline,
+    }
+  }
+  const savedPreset = activeSavedProviderPreset(kind)
+  if (savedPreset) {
+    const source = providerPresetLabel(savedPreset)
+    return {
+      id: 'active-override',
+      label: t('provider.state.overrideActive', { provider: source }),
+      detail: t('provider.state.overrideActiveBody', { agent: agentName, provider: source }),
+      tone: 'connected',
+      icon: CheckmarkCircleOutline,
+    }
+  }
+  if (nativeProviderReady(agent)) {
+    return {
+      id: 'native-ready',
+      label: t('provider.nativeReady'),
+      detail: t('provider.state.nativeReadyBody', { agent: agentName }),
+      tone: 'connected',
+      icon: CheckmarkCircleOutline,
+    }
+  }
+  if (agent.credentialState === 'missing') {
+    return {
+      id: 'login-required',
+      label: t('provider.state.loginRequired'),
+      detail: t('provider.state.loginRequiredBody', { agent: agentName }),
+      tone: 'warning',
+      icon: WarningOutline,
+    }
+  }
+  return {
+    id: 'unverified',
+    label: t('provider.state.unverified'),
+    detail: t('provider.state.unverifiedBody', { agent: agentName }),
+    tone: 'neutral',
+    icon: WarningOutline,
+  }
+}
+
+function providerReady(kind) {
+  return ['active-override', 'native-ready'].includes(providerAgentState(kind).id)
 }
 
 function providerStatusLabel(kind) {
-  const status = providerStatusFor(kind)
-  const agent = configurableProviderAgents.value.find(item => item.kind === kind)
-  if (!hasProviderStatus(kind)) return t('provider.checking')
-  if (status.error) return t('provider.unavailable')
-  if (nativeProviderReady(agent) && !status.configured) return t('provider.nativeReady')
-  return status.configured ? t('provider.configured') : t('provider.notConfigured')
+  return providerAgentState(kind).label
 }
 
 function providerStatusTone(kind) {
-  const status = providerStatusFor(kind)
-  const agent = configurableProviderAgents.value.find(item => item.kind === kind)
-  if (!hasProviderStatus(kind)) return 'checking'
-  if (status.error) return 'warning'
-  if (nativeProviderReady(agent) && !status.configured) return 'connected'
-  return status.configured ? 'connected' : 'warning'
+  return providerAgentState(kind).tone
+}
+
+function providerStatusIcon(kind) {
+  return providerAgentState(kind).icon
 }
 
 function providerSummaryLabel(agent) {
   if (!agent) return ''
-  if (supportsExternalProvider(agent)) return providerStatusLabel(agent.kind)
+  if (supportsExternalProvider(agent)) {
+    const status = providerStatusFor(agent.kind)
+    if (!hasProviderStatus(agent.kind)) return t('provider.checking')
+    if (status.error) return t('provider.unavailable')
+    if (status.configured) return t('provider.configured')
+    if (nativeProviderReady(agent)) return t('provider.nativeReady')
+    return t('provider.notConfigured')
+  }
   if (agent.ready) return t('provider.nativeConnected')
   return providerModeLabel(agent.providerMode)
 }
@@ -2583,18 +2824,36 @@ function providerPresetHint(id) {
   return t(`provider.presetHint.${id}`)
 }
 
+function providerPresetSaved(presetId) {
+  return Boolean(providerProfilesFor(selectedProviderKind.value)[presetId]?.configured)
+}
+
 function providerPresetConfigured(presetId) {
-  if (providerProfilesFor(selectedProviderKind.value)[presetId]?.configured) return true
-  return presetId === 'official' && nativeProviderReady(selectedProviderAgent.value)
+  if (providerPresetSaved(presetId)) return true
+  return presetId === 'official'
+    && hasProviderStatus(selectedProviderKind.value)
+    && !providerStatus.value.error
+    && nativeProviderReady(selectedProviderAgent.value)
 }
 
 function providerPresetActive(presetId) {
-  return providerActivePreset.value === presetId
+  return providerActiveSource.value === presetId
 }
 
 function providerPresetStateLabel(presetId) {
+  if (providerStatusIsChecking(selectedProviderKind.value) && !hasProviderStatus(selectedProviderKind.value)) {
+    return t('provider.checking')
+  }
+  if (providerStatus.value.error) return t('provider.unavailable')
   if (providerPresetActive(presetId)) return t('provider.active')
-  return providerPresetConfigured(presetId) ? t('provider.configured') : t('provider.notConfigured')
+  if (providerPresetSaved(presetId)) return t('provider.saved')
+  if (presetId === 'official') {
+    if (!selectedProviderAgent.value?.installed) return t('provider.state.notInstalled')
+    if (selectedProviderAgent.value?.credentialState === 'missing') return t('provider.state.loginRequired')
+    if (nativeProviderReady(selectedProviderAgent.value)) return t('provider.nativeAvailable')
+    return t('provider.state.unverified')
+  }
+  return t('provider.notConfigured')
 }
 
 function providerPresetFor(kind, presetId) {
@@ -2606,9 +2865,10 @@ function fillProviderFormFromPreset(kind, presetId) {
   const preset = providerPresetFor(kind, presetId)
   if (!preset) return
   const saved = providerProfilesFor(kind)[preset.id]
+  const lockedIdentity = preset.id !== 'custom'
   providerForm.preset = preset.id
-  providerForm.provider = saved?.provider || preset.provider || ''
-  providerForm.baseUrl = saved?.baseUrl || preset.baseUrl || ''
+  providerForm.provider = lockedIdentity ? (preset.provider || '') : (saved?.provider || preset.provider || '')
+  providerForm.baseUrl = lockedIdentity ? (preset.baseUrl || '') : (saved?.baseUrl || preset.baseUrl || '')
   providerForm.model = saved?.model || preset.model || ''
 }
 
@@ -3179,18 +3439,20 @@ function applyTheme(value) {
 
 function goHome() {
   activeView.value = 'home'
-  systemSettingsOpen.value = false
   sidebarDeleteGroupId.value = ''
-  selectedGroupId.value = ''
   pendingRequestedGroupId = ''
 }
 
 function selectGroup(id) {
+  const group = snapshot.value.groups.find(item => item.id === id)
+  if (!group) {
+    selectedGroupId.value = ''
+    activeView.value = 'home'
+    return
+  }
   activeView.value = 'conversation'
-  systemSettingsOpen.value = false
   sidebarDeleteGroupId.value = ''
   selectedGroupId.value = id
-  const group = snapshot.value.groups.find(item => item.id === id)
   if (group?.conversationType === 'direct' && group.directAgentKind) {
     setSidebarAgentExpanded(group.directAgentKind, true)
   }
@@ -3428,9 +3690,25 @@ function openConversationRename(group) {
   void nextTick(() => settingsNameInput.value?.focus())
 }
 
-function openSidebarConversationDelete(group) {
+function positionSidebarDeletePopover(target) {
+  const rect = target?.getBoundingClientRect?.()
+  if (!rect) return
+  const tooltipWidth = 278
+  const gutter = 12
+  sidebarDeletePopoverPoint.value = {
+    left: Math.max(gutter, Math.min(rect.right + 10, window.innerWidth - tooltipWidth - gutter)),
+    top: Math.max(86, rect.top + 12),
+  }
+}
+
+function openSidebarConversationDelete(group, event) {
   if (!group || isGroupRunning(group.id) || saving.value) return
-  sidebarDeleteGroupId.value = sidebarDeleteGroupId.value === group.id ? '' : group.id
+  if (sidebarDeleteGroupId.value === group.id) {
+    sidebarDeleteGroupId.value = ''
+    return
+  }
+  positionSidebarDeletePopover(event?.currentTarget)
+  sidebarDeleteGroupId.value = group.id
 }
 
 function dismissSidebarDeleteConfirmation() {
@@ -3497,7 +3775,7 @@ async function deleteSidebarConversation(group) {
     snapshot.value = normalizeSnapshot(await workspace.value.deleteGroup(group.id))
     if (selectedGroupId.value === group.id) {
       selectedGroupId.value = ''
-      activeView.value = 'home'
+      if (activeView.value === 'conversation') activeView.value = 'home'
     }
     sidebarDeleteGroupId.value = ''
   } catch (error) {
@@ -3890,7 +4168,6 @@ function openSystemSettings(section = 'agents', kind = '') {
   if (saving.value) return
   if (modal.value) closeModal()
   activeView.value = 'settings'
-  systemSettingsOpen.value = true
   systemSettingsSection.value = section === 'providers'
     ? 'providers'
     : section === 'knowledge-bases'
@@ -3902,8 +4179,7 @@ function openSystemSettings(section = 'agents', kind = '') {
   providerRemoveArmed.value = false
   if (systemSettingsSection.value === 'providers') {
     const targetKind = EXTERNAL_PROVIDER_KINDS.has(kind) ? kind : selectedProviderKind.value
-    void loadProviderStatuses()
-    void selectProviderAgent(targetKind)
+    void loadProviderWorkspace(targetKind, { probeSelected: true })
   } else if (systemSettingsSection.value === 'knowledge-bases') {
     void loadKnowledgeBaseStatuses()
   }
@@ -3920,8 +4196,7 @@ function selectSystemSettingsSection(section) {
   providerRemoveArmed.value = false
   if (systemSettingsSection.value === 'providers') {
     const targetKind = selectedProviderKind.value
-    void loadProviderStatuses()
-    void selectProviderAgent(targetKind)
+    void loadProviderWorkspace(targetKind, { probeSelected: true })
   } else if (systemSettingsSection.value === 'knowledge-bases') {
     void loadKnowledgeBaseStatuses()
   }
@@ -3930,7 +4205,6 @@ function selectSystemSettingsSection(section) {
 function openAgentDetail(agent) {
   if (!agent || saving.value) return
   activeView.value = 'settings'
-  systemSettingsOpen.value = true
   systemSettingsSection.value = 'agents'
   focusedAgentKind.value = agent.kind
   installConfirmKind.value = ''
@@ -3969,32 +4243,64 @@ function confirmUnlimitedRounds() {
   closeModal()
 }
 
-async function loadProviderStatus(kind, probeEncryption = false) {
-  if (!provider.value || !EXTERNAL_PROVIDER_KINDS.has(kind)) return EMPTY_PROVIDER_STATUS
+async function loadProviderStatus(kind, { probeEncryption = false, trackPending = true } = {}) {
+  if (!provider.value || !EXTERNAL_PROVIDER_KINDS.has(kind)) {
+    return { status: EMPTY_PROVIDER_STATUS, applied: false }
+  }
+  const requestToken = ++providerStatusRequestSequence
+  providerStatusRequestTokens.set(kind, requestToken)
+  if (trackPending) setProviderStatusPending(kind, true)
   try {
     const status = await (probeEncryption ? provider.value.probe(kind) : provider.value.status(kind))
-    providerStatuses.value = { ...providerStatuses.value, [kind]: status }
-    return status
+    const applied = providerStatusRequestTokens.get(kind) === requestToken
+    if (applied) providerStatuses.value = { ...providerStatuses.value, [kind]: status }
+    return { status: applied ? status : providerStatusFor(kind), applied }
   } catch {
     const unavailable = { ...EMPTY_PROVIDER_STATUS, error: true }
-    providerStatuses.value = { ...providerStatuses.value, [kind]: unavailable }
-    return unavailable
+    const applied = providerStatusRequestTokens.get(kind) === requestToken
+    if (applied) providerStatuses.value = { ...providerStatuses.value, [kind]: unavailable }
+    return { status: applied ? unavailable : providerStatusFor(kind), applied }
+  } finally {
+    if (trackPending && providerStatusRequestTokens.get(kind) === requestToken) {
+      setProviderStatusPending(kind, false)
+    }
   }
 }
 
 async function retryProviderStatus(kind) {
   const targetKind = String(kind || '')
-  if (!EXTERNAL_PROVIDER_KINDS.has(targetKind) || saving.value) return EMPTY_PROVIDER_STATUS
+  if (!EXTERNAL_PROVIDER_KINDS.has(targetKind) || saving.value) {
+    return { status: EMPTY_PROVIDER_STATUS, applied: false }
+  }
   const nextStatuses = { ...providerStatuses.value }
   delete nextStatuses[targetKind]
   providerStatuses.value = nextStatuses
-  const status = await loadProviderStatus(targetKind, true)
-  if (selectedProviderKind.value === targetKind && !status.error) syncProviderForm(targetKind)
-  return status
+  const result = await loadProviderStatus(targetKind, { probeEncryption: true })
+  if (result.applied && selectedProviderKind.value === targetKind && !result.status.error) syncProviderForm(targetKind)
+  return result
 }
 
-async function loadProviderStatuses() {
-  await Promise.all(configurableProviderAgents.value.map(agent => loadProviderStatus(agent.kind)))
+async function loadProviderWorkspace(targetKind = '', { probeSelected = false } = {}) {
+  const selectedKind = EXTERNAL_PROVIDER_KINDS.has(targetKind) ? targetKind : ''
+  if (selectedKind) {
+    selectedProviderKind.value = selectedKind
+    formError.value = ''
+    providerRemoveArmed.value = false
+    syncProviderForm(selectedKind)
+  }
+  const agents = configurableProviderAgents.value
+  const results = await Promise.all(agents.map(agent => loadProviderStatus(agent.kind, {
+    probeEncryption: probeSelected && agent.kind === selectedKind,
+    trackPending: Boolean(selectedKind && agent.kind === selectedKind),
+  })))
+  const selectedResult = results[agents.findIndex(agent => agent.kind === selectedKind)]
+  if (selectedKind
+      && selectedProviderKind.value === selectedKind
+      && selectedResult?.applied
+      && !selectedResult.status.error) {
+    syncProviderForm(selectedKind)
+  }
+  return results
 }
 
 function normalizeKnowledgeBaseStatuses(sources) {
@@ -4020,46 +4326,88 @@ function normalizeKnowledgeBaseStatuses(sources) {
   })
 }
 
-async function loadKnowledgeBaseStatuses() {
+function fallbackKnowledgeBaseStatuses(errorCode = 'KNOWLEDGE_BASE_STATUS_MISSING', probeState = 'unknown') {
+  return KNOWLEDGE_BASE_CATALOG.map(source => ({
+    ...source.defaultState,
+    kind: source.kind,
+    accessMode: source.accessMode,
+    probeState,
+    errorCode,
+  }))
+}
+
+function mergeKnowledgeBaseStatuses(nextSources) {
+  const sourceMap = new Map(knowledgeBaseSources.value.map(source => [source.kind, source]))
+  for (const source of (Array.isArray(nextSources) ? nextSources : [])) {
+    if (!source?.kind) continue
+    const definition = KNOWLEDGE_BASE_CATALOG.find(item => item.kind === source.kind)
+    if (!definition) continue
+    sourceMap.set(definition.kind, {
+      ...source,
+      kind: definition.kind,
+      accessMode: source.accessMode || definition.accessMode,
+    })
+  }
+  return KNOWLEDGE_BASE_CATALOG.map((definition) => {
+    const source = sourceMap.get(definition.kind)
+    if (source) return source
+    return {
+      ...definition.defaultState,
+      kind: definition.kind,
+      accessMode: definition.accessMode,
+      probeState: 'unknown',
+      errorCode: 'KNOWLEDGE_BASE_STATUS_MISSING',
+    }
+  })
+}
+
+async function loadKnowledgeBaseStatuses(targetKind = '') {
+  const selectedKind = String(targetKind || '').trim()
   if (!knowledgeBase.value?.status) {
-    const fallback = KNOWLEDGE_BASE_CATALOG.map(source => ({
-      ...source.defaultState,
-      kind: source.kind,
-      accessMode: source.accessMode,
-      probeState: 'error',
-      errorCode: 'LOCAL_KNOWLEDGE_BASE_UNAVAILABLE',
-    }))
+    const fallback = fallbackKnowledgeBaseStatuses('LOCAL_KNOWLEDGE_BASE_UNAVAILABLE', 'error')
     knowledgeBaseSources.value = fallback
     return fallback
   }
-  if (knowledgeBaseStatusPromise) return knowledgeBaseStatusPromise
-  knowledgeBaseLoading.value = true
+  if (!selectedKind && knowledgeBaseStatusPromise) return knowledgeBaseStatusPromise
+  if (selectedKind) {
+    knowledgeBaseRefreshingKinds.add(selectedKind)
+  } else {
+    knowledgeBaseLoading.value = true
+  }
   const request = (async () => {
     try {
-      const sources = await knowledgeBase.value.status()
-      knowledgeBaseSources.value = normalizeKnowledgeBaseStatuses(sources)
+      const sources = await knowledgeBase.value.status(selectedKind || undefined)
+      knowledgeBaseSources.value = selectedKind
+        ? mergeKnowledgeBaseStatuses(sources)
+        : normalizeKnowledgeBaseStatuses(sources)
       return knowledgeBaseSources.value
     } catch (error) {
       showError(error)
-      const fallback = KNOWLEDGE_BASE_CATALOG.map(source => ({
-        ...source.defaultState,
-        kind: source.kind,
-        accessMode: source.accessMode,
-        probeState: 'error',
-        errorCode: errorCode(error) || 'KNOWLEDGE_BASE_PROBE_FAILED',
-      }))
+      const fallback = selectedKind
+        ? mergeKnowledgeBaseStatuses([{
+            kind: selectedKind,
+            ...(KNOWLEDGE_BASE_CATALOG.find(source => source.kind === selectedKind)?.defaultState || {}),
+            accessMode: KNOWLEDGE_BASE_CATALOG.find(source => source.kind === selectedKind)?.accessMode || 'cli',
+            probeState: 'error',
+            errorCode: errorCode(error) || 'KNOWLEDGE_BASE_PROBE_FAILED',
+          }])
+        : fallbackKnowledgeBaseStatuses(errorCode(error) || 'KNOWLEDGE_BASE_PROBE_FAILED', 'error')
       knowledgeBaseSources.value = fallback
       return fallback
     } finally {
-      knowledgeBaseLoading.value = false
+      if (selectedKind) knowledgeBaseRefreshingKinds.delete(selectedKind)
+      else knowledgeBaseLoading.value = false
     }
   })()
-  knowledgeBaseStatusPromise = request
-  try {
-    return await request
-  } finally {
-    if (knowledgeBaseStatusPromise === request) knowledgeBaseStatusPromise = null
+  if (!selectedKind) {
+    knowledgeBaseStatusPromise = request
+    try {
+      return await request
+    } finally {
+      if (knowledgeBaseStatusPromise === request) knowledgeBaseStatusPromise = null
+    }
   }
+  return request
 }
 
 function syncProviderForm(kind) {
@@ -4080,8 +4428,8 @@ async function selectProviderAgent(kind) {
   formError.value = ''
   providerRemoveArmed.value = false
   syncProviderForm(kind)
-  await loadProviderStatus(kind, true)
-  if (selectedProviderKind.value === kind) syncProviderForm(kind)
+  const result = await loadProviderStatus(kind, { probeEncryption: true })
+  if (result.applied && selectedProviderKind.value === kind && !result.status.error) syncProviderForm(kind)
 }
 
 function openProvider(kind = '') {
@@ -4100,8 +4448,11 @@ async function activateProviderPreset(presetId) {
   try {
     const kind = selectedProviderKind.value
     await provider.value.activate(kind, presetId)
-    await Promise.all([loadProviderStatus(kind), refreshAgents()])
-    syncProviderForm(kind)
+    const [result] = await Promise.all([
+      loadProviderStatus(kind, { probeEncryption: true }),
+      refreshAgents(),
+    ])
+    if (result.applied) syncProviderForm(kind)
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -4131,8 +4482,11 @@ async function saveProvider() {
       apiKey: providerForm.apiKey,
     })
     providerForm.apiKey = ''
-    await Promise.all([loadProviderStatus(kind), refreshAgents()])
-    syncProviderForm(kind)
+    const [result] = await Promise.all([
+      loadProviderStatus(kind, { probeEncryption: true }),
+      refreshAgents(),
+    ])
+    if (result.applied) syncProviderForm(kind)
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -4146,7 +4500,9 @@ function knowledgeBaseComingSoon(source) {
 
 function knowledgeBasePending(source) {
   if (!source || knowledgeBaseComingSoon(source)) return false
-  return knowledgeBaseLoading.value || ['idle', 'loading'].includes(source.probeState)
+  return knowledgeBaseLoading.value
+    || knowledgeBaseRefreshingKinds.has(source.kind)
+    || ['idle', 'loading'].includes(source.probeState)
 }
 
 function knowledgeBaseConfigured(source) {
@@ -4270,73 +4626,28 @@ function knowledgeBaseStatusLabel(source) {
   return t('knowledgeBase.status.checking')
 }
 
-function knowledgeBaseFacts(source) {
+function knowledgeBaseTagItems(source) {
   if (!source) return []
   const pending = knowledgeBasePending(source)
-  const unresolved = source.probeState === 'unknown' || source.probeState === 'error'
   const canRead = knowledgeBaseCanRead(source)
   const canWrite = knowledgeBaseCanWrite(source)
   return [
     {
-      key: 'connection',
-      label: t('knowledgeBase.fact.connection'),
-      value: knowledgeBaseModeLabel(source),
-      tone: 'neutral',
+      key: 'mode',
+      label: knowledgeBaseModeLabel(source),
+      tone: 'mode',
     },
     {
       key: 'read',
-      label: t('knowledgeBase.fact.read'),
-      value: pending ? t('knowledgeBase.status.checking') : canRead ? t('knowledgeBase.tag.readEnabled') : t('knowledgeBase.tag.readMissing'),
-      tone: pending || unresolved ? 'checking' : canRead ? 'connected' : 'warning',
+      label: pending ? t('knowledgeBase.status.checking') : canRead ? t('knowledgeBase.tag.readEnabled') : t('knowledgeBase.tag.readMissing'),
+      tone: pending ? 'checking' : canRead ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
     },
     {
       key: 'write',
-      label: t('knowledgeBase.fact.write'),
-      value: pending ? t('knowledgeBase.status.checking') : canWrite ? t('knowledgeBase.tag.writeEnabled') : t('knowledgeBase.tag.writeMissing'),
-      tone: pending || unresolved ? 'checking' : canWrite ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
+      label: pending ? t('knowledgeBase.status.checking') : canWrite ? t('knowledgeBase.tag.writeEnabled') : t('knowledgeBase.tag.writeMissing'),
+      tone: pending ? 'checking' : canWrite ? 'connected' : source.accessMode === 'cli' ? 'checking' : 'warning',
     },
   ]
-}
-
-function knowledgeBaseHint(source) {
-  if (!source) return ''
-  if (knowledgeBaseComingSoon(source)) return t('knowledgeBase.hint.comingSoon')
-  if (knowledgeBasePending(source)) return t('knowledgeBase.hint.checking')
-  if (source.probeState === 'error') return t('knowledgeBase.hint.probeError')
-  if (source.probeState === 'unknown') return t('knowledgeBase.hint.unknown')
-  if (source.accessMode === 'vault') {
-    if (!source.installed) return t('knowledgeBase.hint.obsidianMissing')
-    if (!source.vaultPath) return t('knowledgeBase.hint.obsidianNeedVault')
-    if (!source.vaultDetails?.directory || !source.vaultDetails?.readable || !source.vaultDetails?.writable) {
-      return t('knowledgeBase.hint.obsidianNeedPermission')
-    }
-    return t('knowledgeBase.hint.obsidianReady')
-  }
-  if (source.accessMode === 'cli') {
-    if (!source.installed) {
-      return t('knowledgeBase.hint.cliMissing', { command: source.installCommand })
-    }
-    if (source.loginState === 'missing') {
-      return t('knowledgeBase.hint.cliNeedLogin', { command: source.loginCommand })
-    }
-    if (source.permissionState === 'needs-grant') {
-      return t('knowledgeBase.hint.cliNeedPermission', { command: source.permissionCommand || source.loginCommand })
-    }
-    if (source.loginState === 'unknown' || source.permissionState === 'unknown') {
-      return t('knowledgeBase.hint.cliUnknown', { command: source.commandName || source.statusCommand })
-    }
-    return t('knowledgeBase.hint.cliReady', { command: source.commandName || source.statusCommand })
-  }
-  if (!knowledgeBaseConfigured(source)) {
-    return t('knowledgeBase.hint.remoteMissing')
-  }
-  if (source.authState === 'missing') {
-    return t('knowledgeBase.hint.remoteNeedLogin')
-  }
-  if (source.permissionState === 'needs-grant') {
-    return t('knowledgeBase.hint.remoteNeedPermission')
-  }
-  return t('knowledgeBase.hint.remoteReady')
 }
 
 function knowledgeBasePrimaryActionLabel(source) {
@@ -4375,7 +4686,7 @@ async function runKnowledgeBasePrimaryAction(source) {
     return
   }
   if (source.probeState === 'error' || source.probeState === 'unknown') {
-    await loadKnowledgeBaseStatuses()
+    await loadKnowledgeBaseStatuses(source.kind)
     return
   }
   if (source.accessMode === 'vault') {
@@ -4405,7 +4716,7 @@ async function runKnowledgeBasePrimaryAction(source) {
       await knowledgeBase.value.openGuide?.(source.kind, 'permission')
       return
     }
-    await loadKnowledgeBaseStatuses()
+    await loadKnowledgeBaseStatuses(source.kind)
     return
   }
   if (!knowledgeBaseConfigured(source)) {
@@ -4420,7 +4731,7 @@ async function runKnowledgeBasePrimaryAction(source) {
     await knowledgeBase.value.openGuide?.(source.kind, 'permission')
     return
   }
-  await loadKnowledgeBaseStatuses()
+  await loadKnowledgeBaseStatuses(source.kind)
 }
 
 async function removeProvider() {
@@ -4434,9 +4745,12 @@ async function removeProvider() {
     const kind = selectedProviderKind.value
     const preset = providerForm.preset
     await provider.value.delete(kind, preset)
-    await Promise.all([loadProviderStatus(kind), refreshAgents()])
+    const [result] = await Promise.all([
+      loadProviderStatus(kind, { probeEncryption: true }),
+      refreshAgents(),
+    ])
     providerRemoveArmed.value = false
-    fillProviderFormFromPreset(kind, preset)
+    if (result.applied) fillProviderFormFromPreset(kind, preset)
     providerForm.apiKey = ''
   } catch (error) {
     formError.value = translateError(error)
@@ -4589,7 +4903,7 @@ async function boot() {
   } else {
     void refreshAgents()
   }
-  void loadProviderStatuses()
+  void loadProviderWorkspace()
   void loadKnowledgeBaseStatuses()
 }
 
@@ -4655,7 +4969,10 @@ function handleWindowKeydown(event) {
 
 function handleWindowPointerDown(event) {
   const target = event.target
-  if (sidebarDeleteGroupId.value && !(target instanceof Element && target.closest('.sidebar-delete-control'))) {
+  if (
+    sidebarDeleteGroupId.value
+    && !(target instanceof Element && target.closest('.sidebar-delete-control, .sidebar-delete-popover'))
+  ) {
     sidebarDeleteGroupId.value = ''
   }
   if (roundSettingsOpen.value && !roundSettingsControl.value?.contains(target)) {
@@ -4712,6 +5029,12 @@ watch(blockingOverlayOpen, (value, previous) => {
 })
 watch(() => snapshot.value.groups.map(group => group.id).join('\u0000'), () => {
   openPendingRequestedGroup()
+  if (selectedGroupId.value && !snapshot.value.groups.some(group => group.id === selectedGroupId.value)) {
+    selectedGroupId.value = ''
+    if (activeView.value === 'conversation') activeView.value = 'home'
+  } else if (activeView.value === 'conversation' && !selectedGroupId.value) {
+    activeView.value = 'home'
+  }
   flushPendingRunFinishedEvents()
 })
 watch(() => snapshot.value.messages.map(message => message.id).join('\u0000'), flushPendingRunFinishedEvents)

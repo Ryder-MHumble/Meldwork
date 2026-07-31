@@ -434,10 +434,10 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.findAll('.settings-tabs button')[1].trigger('click')
     await flushPromises()
-    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length * 2)
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes((AGENTS.length * 2) - 1)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledTimes(1)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledWith('codex')
-    expect(wrapper.get('.provider-summary-count').text()).toContain(`0 ready of ${AGENTS.length}`)
+    expect(wrapper.get('.provider-summary-count').text()).toContain(`0 usable of ${AGENTS.length}`)
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
 
     await wrapper.findAll('.settings-tabs button')[0].trigger('click')
@@ -453,19 +453,19 @@ describe('RoundRelay workbench', () => {
 
   it('offers three Provider sources for every Agent and clears the API key when switching sources', async () => {
     const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
-    expect(styles).toMatch(/\.provider-source-options\s*\{[^}]*display:\s*flex;[^}]*gap:\s*6px;/s)
+    expect(styles).toMatch(/\.provider-source-options\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*repeat\(3, minmax\(0, 1fr\)\);[^}]*gap:\s*6px;/s)
     expect(styles).toMatch(/\.provider-source-options button\s*\{[^}]*border:\s*0;[^}]*background:\s*color-mix/s)
-    expect(styles).toMatch(/\.provider-editor-tags span,[\s\S]*\.provider-profile-summary code\s*\{[^}]*border:\s*0;/s)
+    expect(styles).toMatch(/\.provider-profile-summary span,[\s\S]*\.provider-profile-summary code\s*\{[^}]*border:\s*0;/s)
     expect(styles).toMatch(/\.provider-settings-panel\s*\{[^}]*--provider-success:\s*#4f7564;/s)
     expect(styles).toMatch(/\.provider-external-fields\s*\{[^}]*"name model"[^}]*"url url"[^}]*"key key";/s)
+    expect(styles).toMatch(/\.system-settings-body\s*\{[^}]*container-name:\s*settings-content;[^}]*container-type:\s*inline-size;/s)
     const narrowProviderRules = styles.slice(
-      styles.indexOf('@media (max-width: 920px)'),
-      styles.indexOf('@media (max-width: 760px)'),
+      styles.indexOf('@container settings-content (max-width: 820px)'),
+      styles.indexOf('@container settings-content (max-width: 600px)'),
     )
     expect(narrowProviderRules).toMatch(/\.provider-settings-panel\s*\{[^}]*grid-template-columns:\s*1fr;/s)
     expect(narrowProviderRules).toMatch(/\.provider-agent-list\s*\{[^}]*grid-template-columns:\s*repeat\(2, minmax\(0, 1fr\)\);/s)
     expect(narrowProviderRules).toMatch(/\.provider-editor\s*\{[^}]*width:\s*100%;[^}]*overflow:\s*visible;/s)
-    expect(narrowProviderRules).toMatch(/\.provider-source-heading small\s*\{[^}]*white-space:\s*normal;/s)
 
     const { wrapper } = await mountApp()
     await wrapper.get('.sidebar-settings-entry').trigger('click')
@@ -486,14 +486,104 @@ describe('RoundRelay workbench', () => {
       const sources = wrapper.findAll('.provider-source-options button')
       expect(sources).toHaveLength(3)
       expect(sources.map(button => button.get('strong').text())).toEqual(['Official', 'OpenRouter', 'Custom'])
-      expect(wrapper.get('.provider-source-heading small').text()).toContain('official')
+      expect(wrapper.get('.provider-source-overview p').text()).toContain('official')
     }
 
+    const officialInputs = wrapper.findAll('.provider-editor input')
+    expect(officialInputs[0].attributes()).toHaveProperty('readonly')
+    expect(officialInputs[1].attributes()).toHaveProperty('readonly')
+    expect(officialInputs.every(input => !Object.hasOwn(input.attributes(), 'required'))).toBe(true)
     const apiKey = wrapper.get('.provider-editor input[type="password"]')
     await apiKey.setValue('secret-that-must-not-carry-over')
     await wrapper.findAll('.provider-source-options button')[1].trigger('click')
     expect(wrapper.get('.provider-editor input[type="password"]').element.value).toBe('')
-    expect(wrapper.get('.provider-source-heading small').text()).toContain('OpenRouter')
+    expect(wrapper.get('.provider-source-overview p').text()).toContain('OpenRouter')
+    expect(wrapper.findAll('.provider-editor input')[0].attributes()).toHaveProperty('readonly')
+    expect(wrapper.findAll('.provider-editor input')[1].attributes()).toHaveProperty('readonly')
+    await wrapper.findAll('.provider-source-options button')[2].trigger('click')
+    expect(wrapper.findAll('.provider-editor input')[0].attributes()).not.toHaveProperty('readonly')
+    expect(wrapper.findAll('.provider-editor input')[1].attributes()).not.toHaveProperty('readonly')
+    wrapper.unmount()
+  })
+
+  it('shows real Agent readiness without marking an unconfigured Official source active', async () => {
+    const emptyStatus = kind => ({
+      kind,
+      provider: '',
+      baseUrl: '',
+      model: '',
+      activePreset: 'official',
+      profiles: {},
+      configured: false,
+      encryptionAvailable: true,
+    })
+    const qwenStatus = {
+      kind: 'qwen',
+      provider: 'OpenRouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'qwen/qwen3-coder',
+      activePreset: 'openrouter',
+      profiles: {
+        openrouter: {
+          provider: 'OpenRouter',
+          baseUrl: 'https://openrouter.ai/api/v1',
+          model: 'qwen/qwen3-coder',
+          configured: true,
+        },
+      },
+      configured: true,
+      encryptionAvailable: true,
+    }
+    const { wrapper } = await mountApp(({ state, bridge }) => {
+      state.agents = [
+        {
+          kind: 'codex', installed: true, available: false, credentialState: 'unknown',
+          availabilitySource: 'unverified', version: '1.0.0',
+        },
+        {
+          kind: 'hermes', installed: true, available: false, credentialState: 'missing',
+          availabilitySource: 'native-auth-status', version: '1.0.0',
+        },
+        {
+          kind: 'kimi', installed: true, available: true, credentialState: 'ready',
+          availabilitySource: 'native-credential', version: '1.0.0',
+        },
+        {
+          kind: 'qwen', installed: true, available: true, credentialState: 'ready',
+          availabilitySource: 'shared-provider', version: '1.0.0',
+        },
+      ]
+      bridge.agentInstaller.catalog.mockResolvedValue({
+        platform: 'darwin',
+        agents: AGENTS.map(agent => ({
+          kind: agent.kind,
+          installed: agent.kind !== 'gemini',
+          installSupported: true,
+        })),
+      })
+      bridge.localAgentProvider.status.mockImplementation(async kind => (
+        kind === 'qwen' ? qwenStatus : emptyStatus(kind)
+      ))
+      bridge.localAgentProvider.probe.mockImplementation(bridge.localAgentProvider.status)
+    })
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await flushPromises()
+    const providerButton = label => wrapper.findAll('.provider-agent-list button')
+      .find(button => button.text().includes(label))
+
+    expect(providerButton('Gemini CLI').text()).toContain('Not installed')
+    expect(providerButton('Hermes').text()).toContain('Sign-in required')
+    expect(providerButton('Codex').text()).toContain('Sign-in not verified')
+    expect(providerButton('Kimi Code').text()).toContain('Native configuration active')
+    expect(providerButton('Qwen Code').text()).toContain('OpenRouter override active')
+
+    await providerButton('Gemini CLI').trigger('click')
+    await flushPromises()
+    const officialSource = wrapper.findAll('.provider-source-options button')[0]
+    expect(officialSource.text()).toContain('Not installed')
+    expect(officialSource.text()).not.toContain('Active')
     wrapper.unmount()
   })
 
@@ -508,10 +598,11 @@ describe('RoundRelay workbench', () => {
 
     const codexProvider = wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Codex'))
-    expect(codexProvider.text()).toContain('Native config ready')
+    expect(codexProvider.text()).toContain('Native configuration active')
     expect(codexProvider.find('svg.ready').exists()).toBe(true)
-    expect(wrapper.get('.provider-editor-tags').text()).toContain('Native config ready')
-    expect(wrapper.get('.provider-profile-summary').text()).toContain('Native config ready')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Native configuration active')
+    expect(wrapper.get('.provider-native-card').text()).toContain('Agent CLI configuration')
+    expect(wrapper.get('.provider-doc-card').text()).toContain('~/.codex/config.toml')
     expect(wrapper.find('.provider-inline-warning').exists()).toBe(false)
     expect(wrapper.find('.provider-editor .danger-button').exists()).toBe(false)
     wrapper.unmount()
@@ -558,7 +649,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.get('.provider-editor').attributes('aria-busy')).toBe('true')
-    expect(wrapper.get('.provider-editor-tags').text()).toContain('Checking')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Checking')
     expect(wrapper.find('.provider-inline-warning').exists()).toBe(false)
 
     kimiStatus.reject(Object.assign(new Error('Provider status unavailable'), {
@@ -567,7 +658,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(kimiProvider.text()).toContain('Status unavailable')
-    expect(kimiProvider.text()).not.toContain('Native config ready')
+    expect(kimiProvider.text()).not.toContain('Native configuration active')
     expect(kimiProvider.find('svg.ready').exists()).toBe(false)
     expect(wrapper.get('.provider-editor').attributes('aria-busy')).toBe('false')
     expect(wrapper.get('.provider-inline-warning').text()).toContain('Status unavailable')
@@ -577,7 +668,8 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.provider-inline-warning button').trigger('click')
     await flushPromises()
     expect(bridge.localAgentProvider.probe).toHaveBeenLastCalledWith('kimi')
-    expect(wrapper.get('.provider-profile-summary').text()).toContain('Native config ready')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Native configuration active')
+    expect(wrapper.get('.provider-native-card').text()).toContain('No Provider key is stored')
     expect(wrapper.find('.provider-inline-warning').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -593,7 +685,7 @@ describe('RoundRelay workbench', () => {
 
     const codexProvider = wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Codex'))
-    expect(codexProvider.text()).toContain('Native config ready')
+    expect(codexProvider.text()).toContain('Native configuration active')
     expect(codexProvider.find('svg.ready').exists()).toBe(true)
     wrapper.unmount()
   })
@@ -733,37 +825,57 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.findAll('.provider-source-options button')[2].trigger('click')
     expect(wrapper.get('.provider-profile-summary').text()).toContain('Private gateway')
-    expect(wrapper.get('.provider-activate-button').text()).toContain('Use Custom')
+    expect(wrapper.get('.provider-activate-button').text()).toContain('Use this configuration')
 
     await wrapper.get('.provider-activate-button').trigger('click')
     await flushPromises()
     expect(bridge.localAgentProvider.activate).toHaveBeenCalledWith('hermes', 'custom')
-    expect(wrapper.get('.provider-editor-tags').text()).toContain('Custom active')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Custom override active')
     wrapper.unmount()
   })
 
-  it('keeps a newly selected Provider Agent while the initial status refresh is pending', async () => {
-    const slowRefresh = deferred()
-    const slowCodexProbe = deferred()
-    let statusCalls = 0
-    const statusFor = kind => ({
+  it('ignores an older Provider status result after a newer probe completes', async () => {
+    const staleHermesStatus = deferred()
+    let hermesStatusCalls = 0
+    const emptyStatus = kind => ({
       kind,
       provider: '',
       baseUrl: '',
       model: '',
+      activePreset: 'official',
+      profiles: {},
       configured: false,
       encryptionAvailable: true,
     })
+    const configuredHermesStatus = {
+      kind: 'hermes',
+      provider: 'Private gateway',
+      baseUrl: 'https://gateway.example/v1',
+      model: 'private-model',
+      activePreset: 'custom',
+      profiles: {
+        custom: {
+          provider: 'Private gateway',
+          baseUrl: 'https://gateway.example/v1',
+          model: 'private-model',
+          configured: true,
+        },
+      },
+      configured: true,
+      encryptionAvailable: true,
+    }
     const { wrapper } = await mountApp(({ bridge }) => {
       bridge.localAgentProvider.status.mockImplementation((kind) => {
-        statusCalls += 1
-        const status = statusFor(kind)
-        return statusCalls <= AGENTS.length
-          ? Promise.resolve(status)
-          : slowRefresh.promise.then(() => status)
+        if (kind === 'hermes') {
+          hermesStatusCalls += 1
+          if (hermesStatusCalls === 2) return staleHermesStatus.promise
+        }
+        return Promise.resolve(emptyStatus(kind))
       })
       bridge.localAgentProvider.probe.mockImplementation(kind => (
-        kind === 'codex' ? slowCodexProbe.promise : Promise.resolve(statusFor(kind))
+        kind === 'hermes'
+          ? Promise.resolve(configuredHermesStatus)
+          : Promise.resolve(emptyStatus(kind))
       ))
     })
 
@@ -774,14 +886,14 @@ describe('RoundRelay workbench', () => {
     await hermesProvider.trigger('click')
     await flushPromises()
     expect(wrapper.get('.provider-agent-list button.active').text()).toContain('Hermes')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Custom override active')
+    expect(wrapper.get('.provider-profile-summary').text()).toContain('Private gateway')
 
-    slowRefresh.resolve()
+    staleHermesStatus.resolve(emptyStatus('hermes'))
     await flushPromises()
     expect(wrapper.get('.provider-agent-list button.active').text()).toContain('Hermes')
-
-    slowCodexProbe.resolve(statusFor('codex'))
-    await flushPromises()
-    expect(wrapper.get('.provider-agent-list button.active').text()).toContain('Hermes')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Custom override active')
+    expect(wrapper.get('.provider-profile-summary').text()).toContain('Private gateway')
     wrapper.unmount()
   })
 
@@ -810,21 +922,18 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.find('.provider-agent-list svg.ready').exists()).toBe(true)
     expect(wrapper.get('.provider-editor-header h2').text()).toContain('Hermes')
-    expect(wrapper.get('.provider-editor-tags').text()).toContain('Configured')
+    expect(wrapper.get('.provider-agent-state').text()).toContain('Custom override active')
     expect(wrapper.get('.provider-profile-summary').text()).toContain('Local gateway')
     wrapper.unmount()
   })
 
   it('shows local knowledge sources and can pick an Obsidian vault', async () => {
     const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
-    expect(styles).toMatch(/\.knowledge-base-panel\s*\{[^}]*align-content:\s*start;/s)
-    expect(styles).toMatch(/\.knowledge-base-grid\s*\{[^}]*align-content:\s*start;/s)
-    expect(styles).toMatch(/\.knowledge-base-card-header\s*\{[^}]*grid-template-columns:\s*38px minmax\(0, 1fr\);/s)
-    expect(styles).toMatch(/\.knowledge-base-status\s*\{[^}]*grid-column:\s*2;[^}]*white-space:\s*normal;/s)
-    expect(styles).toMatch(/\.knowledge-base-facts\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1\.05fr\) minmax\(0, 0\.95fr\) minmax\(0, 1\.2fr\);/s)
-    expect(styles).toMatch(/\.knowledge-base-facts dd\s*\{[^}]*text-overflow:\s*clip;[^}]*white-space:\s*normal;/s)
-    expect(styles).toMatch(/\.knowledge-base-planned-list\s*\{/)
-    expect(styles).not.toMatch(/\.knowledge-base-tag\s*\{/)
+    expect(styles).toMatch(/\.knowledge-base-toolbar\s*\{/s)
+    expect(styles).toMatch(/\.knowledge-base-item\s*,\s*\.knowledge-base-future-item\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s)
+    expect(styles).toMatch(/\.knowledge-base-item-main\s*\{[^}]*grid-template-columns:\s*38px minmax\(0, 1fr\);/s)
+    expect(styles).toMatch(/\.knowledge-base-tag-row\s*\{[^}]*flex-wrap:\s*wrap;/s)
+    expect(styles).toMatch(/\.knowledge-base-tag\s*\{[^}]*border-radius:\s*999px;/s)
     for (const [filename, source] of [
       ['feishu.svg', 'https://open.feishu.cn/'],
       ['dingtalk.svg', 'https://www.dingtalk.com/'],
@@ -842,7 +951,6 @@ describe('RoundRelay workbench', () => {
 
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalled()
     const panelText = wrapper.get('.knowledge-base-panel').text()
-    expect(panelText).toContain('Knowledge bases')
     expect(panelText).toContain('Feishu Docs')
     expect(panelText).toContain('DingTalk Docs')
     expect(panelText).toContain('Obsidian')
@@ -850,44 +958,43 @@ describe('RoundRelay workbench', () => {
     expect(panelText).toContain('Confluence')
     expect(panelText).toContain('Google Drive')
     expect(panelText).toContain('SharePoint')
+    expect(panelText).not.toContain('Knowledge bases')
+    expect(panelText).not.toContain('Connect local document sources')
 
     const sourceGroups = wrapper.findAll('.knowledge-base-group')
     expect(sourceGroups).toHaveLength(2)
     expect(sourceGroups[0].get('h3').text()).toBe('Local connections')
-    expect(sourceGroups[0].findAll('.knowledge-base-card')).toHaveLength(3)
+    expect(sourceGroups[0].findAll('.knowledge-base-item')).toHaveLength(3)
     expect(sourceGroups[1].get('h3').text()).toBe('Coming soon')
-    expect(sourceGroups[1].text()).toContain('Reference links only')
-    expect(sourceGroups[1].findAll('.knowledge-base-planned-item')).toHaveLength(4)
-    expect(sourceGroups[1].findAll('.knowledge-base-card')).toHaveLength(0)
+    expect(sourceGroups[1].findAll('.knowledge-base-future-item')).toHaveLength(4)
     expect(wrapper.get('.knowledge-base-ready-summary').text()).toContain('1 ready, 3 total')
     expect(wrapper.get('.knowledge-base-panel').attributes('aria-busy')).toBe('false')
     expect(wrapper.get('.knowledge-base-ready-summary').attributes('role')).toBe('status')
 
     for (const label of ['Notion', 'Confluence', 'Google Drive', 'SharePoint']) {
-      const plannedItem = wrapper.findAll('.knowledge-base-planned-item')
+      const plannedItem = wrapper.findAll('.knowledge-base-future-item')
         .find(item => item.text().includes(label))
-      expect(plannedItem.get('.knowledge-base-planned-status').text()).toContain('Coming soon')
-      expect(plannedItem.get('.knowledge-base-doc-link').text()).toContain('View official docs')
+      expect(plannedItem.get('.knowledge-base-status').text()).toContain('Coming soon')
+      expect(plannedItem.get('.knowledge-base-action').text()).toContain('View official docs')
       expect(plannedItem.text()).not.toContain('Not configured')
     }
 
-    const notionItem = wrapper.findAll('.knowledge-base-planned-item')
+    const notionItem = wrapper.findAll('.knowledge-base-future-item')
       .find(item => item.text().includes('Notion'))
-    expect(notionItem.text()).toContain('Pages and databases')
-    await notionItem.get('.knowledge-base-doc-link').trigger('click')
+    await notionItem.get('.knowledge-base-action').trigger('click')
     await flushPromises()
     expect(bridge.localKnowledgeBase.openGuide).toHaveBeenCalledWith('notion', 'install')
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(2)
 
-    const obsidianCard = wrapper.findAll('.knowledge-base-card')
-      .find(card => card.text().includes('Obsidian'))
-    expect(obsidianCard.exists()).toBe(true)
-    expect(obsidianCard.text()).toContain('Vault not selected')
-    await obsidianCard.get('.knowledge-base-actions button').trigger('click')
+    const obsidianItem = wrapper.findAll('.knowledge-base-item')
+      .find(item => item.text().includes('Obsidian'))
+    expect(obsidianItem.exists()).toBe(true)
+    expect(obsidianItem.text()).toContain('Vault not selected')
+    await obsidianItem.get('.knowledge-base-action').trigger('click')
     await flushPromises()
 
     expect(bridge.localKnowledgeBase.pickObsidianVault).toHaveBeenCalledTimes(1)
-    expect(wrapper.findAll('.knowledge-base-card').at(2).text()).toContain('/Users/rydersun/Documents/Knowledge')
+    expect(wrapper.findAll('.knowledge-base-item').at(2).text()).toContain('/Users/rydersun/Documents/Knowledge')
     wrapper.unmount()
   })
 
@@ -934,15 +1041,15 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.knowledge-base-ready-summary').text()).toContain('2 ready, 3 total')
     for (const label of ['Feishu Docs', 'DingTalk Docs']) {
-      const card = wrapper.findAll('.knowledge-base-card')
+      const card = wrapper.findAll('.knowledge-base-item')
         .find(item => item.text().includes(label))
       expect(card.get('.knowledge-base-status').text()).toContain('Ready')
-      const facts = card.findAll('.knowledge-base-facts > div')
-      expect(facts).toHaveLength(3)
-      expect(facts[0].text()).toContain('ConnectionOfficial CLI')
-      expect(facts[1].text()).toContain('ReadRead enabled')
-      expect(facts[2].text()).toContain('WriteWrite not verified')
-      expect(facts[2].text()).not.toContain('Write enabled')
+      const tags = card.findAll('.knowledge-base-tag')
+      expect(tags).toHaveLength(3)
+      expect(tags[0].text()).toContain('Official CLI')
+      expect(tags[1].text()).toContain('Read enabled')
+      expect(tags[2].text()).toContain('Write not verified')
+      expect(tags[2].text()).not.toContain('Write enabled')
     }
     wrapper.unmount()
   })
@@ -957,29 +1064,27 @@ describe('RoundRelay workbench', () => {
     await wrapper.findAll('.settings-tabs button')[2].trigger('click')
     await wrapper.vm.$nextTick()
 
-    const sourceGroups = wrapper.findAll('.knowledge-base-group')
-    const localCards = sourceGroups[0].findAll('.knowledge-base-card')
-    expect(localCards).toHaveLength(3)
-    for (const card of localCards) {
-      expect(card.get('.knowledge-base-status').text()).toContain('Checking')
-      const facts = card.findAll('.knowledge-base-facts dd')
-      expect(facts).toHaveLength(3)
-      expect(facts[1].text()).toBe('Checking')
-      expect(facts[2].text()).toBe('Checking')
-      expect(card.get('.knowledge-base-hint').text()).toContain('Checking local installation')
-      expect(card.get('.knowledge-base-actions button').text()).toContain('Checking')
-      expect(card.get('.knowledge-base-actions button').attributes()).toHaveProperty('disabled')
-      expect(card.text()).not.toMatch(/CLI not installed|CLI missing|Obsidian not installed|App missing|Vault not selected/)
+    const localItems = wrapper.findAll('.knowledge-base-item')
+    expect(localItems).toHaveLength(3)
+    for (const item of localItems) {
+      expect(item.get('.knowledge-base-status').text()).toContain('Checking')
+      const tags = item.findAll('.knowledge-base-tag')
+      expect(tags).toHaveLength(3)
+      expect(tags[1].text()).toBe('Checking')
+      expect(tags[2].text()).toBe('Checking')
+      expect(item.get('.knowledge-base-action').text()).toContain('Checking')
+      expect(item.get('.knowledge-base-action').attributes()).toHaveProperty('disabled')
+      expect(item.text()).not.toMatch(/CLI not installed|CLI missing|Obsidian not installed|App missing|Vault not selected/)
     }
     expect(wrapper.get('.knowledge-base-panel').attributes('aria-busy')).toBe('true')
     expect(wrapper.get('.knowledge-base-ready-summary').text()).toBe('Checking')
 
-    const plannedItems = sourceGroups[1].findAll('.knowledge-base-planned-item')
+    const plannedItems = wrapper.findAll('.knowledge-base-future-item')
     expect(plannedItems).toHaveLength(4)
     for (const item of plannedItems) {
-      expect(item.get('.knowledge-base-planned-status').text()).toContain('Coming soon')
-      expect(item.get('.knowledge-base-doc-link').text()).toContain('View official docs')
-      expect(item.get('.knowledge-base-doc-link').attributes()).not.toHaveProperty('disabled')
+      expect(item.get('.knowledge-base-status').text()).toContain('Coming soon')
+      expect(item.get('.knowledge-base-action').text()).toContain('View official docs')
+      expect(item.get('.knowledge-base-action').attributes()).not.toHaveProperty('disabled')
     }
 
     statusResult.resolve([])
@@ -987,21 +1092,21 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.knowledge-base-panel').attributes('aria-busy')).toBe('false')
     expect(wrapper.get('.knowledge-base-ready-summary').text()).toContain('0 ready, 3 total')
-    const unknownCards = wrapper.findAll('.knowledge-base-group')[0].findAll('.knowledge-base-card')
-    for (const card of unknownCards) {
-      expect(card.get('.knowledge-base-status').text()).toContain('Could not verify')
-      expect(card.get('.knowledge-base-facts').text()).toContain('Read not verified')
-      expect(card.get('.knowledge-base-facts').text()).toContain('Write not verified')
-      expect(card.get('.knowledge-base-hint').text()).toContain('No local status was returned')
-      expect(card.get('.knowledge-base-actions button').text()).toContain('Recheck')
-      expect(card.get('.knowledge-base-actions button').attributes()).not.toHaveProperty('disabled')
-      expect(card.text()).not.toMatch(/CLI not installed|CLI missing|Obsidian not installed|App missing|Vault not selected/)
+    const unknownItems = wrapper.findAll('.knowledge-base-item')
+    for (const item of unknownItems) {
+      expect(item.get('.knowledge-base-status').text()).toContain('Could not verify')
+      expect(item.findAll('.knowledge-base-tag')[1].text()).toContain('Read not verified')
+      expect(item.findAll('.knowledge-base-tag')[2].text()).toContain('Write not verified')
+      expect(item.get('.knowledge-base-action').text()).toContain('Recheck')
+      expect(item.get('.knowledge-base-action').attributes()).not.toHaveProperty('disabled')
+      expect(item.text()).not.toMatch(/CLI not installed|CLI missing|Obsidian not installed|App missing|Vault not selected/)
     }
 
-    await unknownCards[0].get('.knowledge-base-actions button').trigger('click')
+    await unknownItems[0].get('.knowledge-base-action').trigger('click')
     await flushPromises()
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(2)
-    expect(wrapper.findAll('.knowledge-base-group')[0].findAll('.knowledge-base-card')[0].get('.knowledge-base-status').text()).toContain('Could not verify')
+    expect(bridge.localKnowledgeBase.status).toHaveBeenLastCalledWith('feishu')
+    expect(wrapper.findAll('.knowledge-base-item')[0].get('.knowledge-base-status').text()).toContain('Could not verify')
     wrapper.unmount()
   })
 
@@ -1017,11 +1122,10 @@ describe('RoundRelay workbench', () => {
     await wrapper.findAll('.settings-tabs button')[2].trigger('click')
     await flushPromises()
 
-    const feishuCard = wrapper.findAll('.knowledge-base-card')
+    const feishuCard = wrapper.findAll('.knowledge-base-item')
       .find(card => card.text().includes('Feishu Docs'))
     expect(feishuCard.exists()).toBe(true)
     expect(feishuCard.get('.knowledge-base-status').text()).toContain('Detection failed')
-    expect(feishuCard.text()).toContain('The local probe failed')
     expect(feishuCard.text()).not.toContain('CLI not installed')
     expect(feishuCard.text()).not.toContain('CLI missing')
     wrapper.unmount()
@@ -1030,10 +1134,12 @@ describe('RoundRelay workbench', () => {
   it('shows the workspace home, keeps full Agent management in Settings, and switches language and theme', async () => {
     const { wrapper } = await mountApp()
 
+    expect(wrapper.get('.home-dashboard').attributes('data-home-mode')).toBe('first-task')
     expect(wrapper.get('.home-dashboard-header h1').text()).toBe('Meldwork workspace')
     expect(wrapper.get('.home-workspace-state').text()).toContain('2 Agents ready')
-    expect(wrapper.get('.home-panel-header h2').text()).toBe('Continue working')
-    expect(wrapper.findAll('.home-panel-header h2')[1].text()).toBe('Start with an Agent')
+    expect(wrapper.get('.home-panel-header h2').text()).toBe('Start your first task')
+    expect(wrapper.findAll('.home-panel-header h2')[1].text()).toBe('Start a new task')
+    expect(wrapper.get('.home-recent-panel .primary-button').text()).toContain('New group')
     expect(wrapper.find('.home-overview-grid').exists()).toBe(false)
     expect(wrapper.find('.setup-guide').exists()).toBe(false)
     expect(wrapper.findAll('.agent-card')).toHaveLength(0)
@@ -1068,13 +1174,47 @@ describe('RoundRelay workbench', () => {
       }))
     })
 
+    expect(wrapper.get('.home-dashboard').attributes('data-home-mode')).toBe('setup')
     expect(wrapper.get('.home-workspace-state').classes()).toContain('attention')
     expect(wrapper.get('.home-workspace-state').text()).toContain('needs attention')
     expect(wrapper.get('.setup-guide').exists()).toBe(true)
+    expect(wrapper.find('.home-dashboard-grid').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('returns to the workspace home from both conversations and Settings', async () => {
+  it('keeps conversation history visible when local Agents need recovery', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.agents = state.agents.map(agent => ({
+        ...agent,
+        available: false,
+        credentialState: 'missing',
+      }))
+      state.groups.push({
+        id: 'group-recovery',
+        conversationType: 'group',
+        name: 'Recovery history',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    expect(wrapper.get('.home-dashboard').attributes('data-home-mode')).toBe('workspace')
+    expect(wrapper.get('.home-workspace-state').classes()).toContain('attention')
+    expect(wrapper.get('.home-recovery-notice').text()).toContain('conversation history is still available')
+    expect(wrapper.get('.home-recent-item').text()).toContain('Recovery history')
+    expect(wrapper.find('.setup-guide').exists()).toBe(false)
+
+    await wrapper.get('.home-recovery-notice button').trigger('click')
+    expect(wrapper.get('.system-settings-page').exists()).toBe(true)
+    expect(wrapper.get('.sidebar-settings-entry').attributes('aria-current')).toBe('page')
+    wrapper.unmount()
+  })
+
+  it('keeps exactly one current navigation target across conversations, home, and Settings', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'group-home-navigation',
@@ -1091,17 +1231,95 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.find('.conversation-pane').exists()).toBe(true)
+    expect(wrapper.get('.conversation-link').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('.group-conversation-row').classes()).toContain('active')
+    expect(wrapper.get('.brand-button').attributes()).not.toHaveProperty('aria-current')
+    expect(wrapper.get('.sidebar-settings-entry').attributes()).not.toHaveProperty('aria-current')
+
     await wrapper.get('.brand-button').trigger('click')
     expect(wrapper.find('.home-dashboard').exists()).toBe(true)
     expect(wrapper.find('.conversation-pane').exists()).toBe(false)
     expect(wrapper.get('.brand-button').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('.conversation-link').attributes()).not.toHaveProperty('aria-current')
+    expect(wrapper.get('.group-conversation-row').classes()).not.toContain('active')
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.find('.system-settings-page').exists()).toBe(true)
     expect(wrapper.get('.sidebar-settings-entry').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('.brand-button').attributes()).not.toHaveProperty('aria-current')
+    expect(wrapper.get('.conversation-link').attributes()).not.toHaveProperty('aria-current')
+    expect(wrapper.get('.group-conversation-row').classes()).not.toContain('active')
+
     await wrapper.get('.brand-button').trigger('click')
     expect(wrapper.find('.home-dashboard').exists()).toBe(true)
     expect(wrapper.find('.system-settings-page').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('returns explicitly to home when the current conversation disappears', async () => {
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-removed-externally',
+        conversationType: 'group',
+        name: 'External removal',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.conversation-pane').exists()).toBe(true)
+
+    state.groups = []
+    emitWorkspaceChanged(state)
+    await flushPromises()
+
+    expect(wrapper.get('.home-dashboard').exists()).toBe(true)
+    expect(wrapper.get('.home-dashboard').attributes('data-home-mode')).toBe('first-task')
+    expect(wrapper.get('.brand-button').attributes('aria-current')).toBe('page')
+    wrapper.unmount()
+  })
+
+  it('preserves unsent attachments while opening home and Settings', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'group-preserved-draft',
+        conversationType: 'group',
+        name: 'Preserved draft',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.pickImages.mockResolvedValueOnce({
+        attachments: [imageAttachment('preserved-draft')],
+      })
+    })
+
+    const conversationLink = wrapper.get('.conversation-link')
+    await conversationLink.trigger('click')
+    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.composer-attachment').exists()).toBe(true)
+
+    await wrapper.get('.brand-button').trigger('click')
+    expect(wrapper.get('.home-dashboard').exists()).toBe(true)
+    expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
+
+    await conversationLink.trigger('click')
+    expect(wrapper.get('.composer-attachment').exists()).toBe(true)
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    expect(wrapper.get('.system-settings-page').exists()).toBe(true)
+    expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
+
+    await conversationLink.trigger('click')
+    expect(wrapper.get('.composer-attachment').exists()).toBe(true)
     wrapper.unmount()
   })
 
@@ -1236,6 +1454,8 @@ describe('RoundRelay workbench', () => {
       .find(button => button.text().includes('Hermes'))
       .trigger('click')
     await flushPromises()
+    expect(wrapper.get('.provider-editor .primary-button').text()).toContain('Save and use')
+    await wrapper.findAll('.provider-source-options button')[2].trigger('click')
     const inputs = wrapper.findAll('.provider-editor input')
     await inputs[0].setValue('Local gateway')
     await inputs[1].setValue('https://gateway.example/v1')
@@ -1245,7 +1465,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(bridge.localAgentProvider.save).toHaveBeenCalledWith('hermes', {
-      preset: 'official',
+      preset: 'custom',
       provider: 'Local gateway',
       baseUrl: 'https://gateway.example/v1',
       model: 'roundrelay-model',
@@ -2820,14 +3040,16 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
     expect(wrapper.find('.modal.medium').exists()).toBe(false)
-    expect(wrapper.get('.sidebar-delete-popover').text()).toContain('Delete this conversation?')
-    expect(wrapper.get('.sidebar-delete-popover').text()).toContain('Native CLI sessions are not deleted')
-    expect(wrapper.get('.sidebar-delete-popover .danger-button').text()).toContain('Confirm delete')
+    let sidebarDeletePopover = document.body.querySelector('.sidebar-delete-popover')
+    expect(sidebarDeletePopover.textContent).toContain('Delete this conversation?')
+    expect(sidebarDeletePopover.textContent).toContain('Native CLI sessions are not deleted')
+    expect(sidebarDeletePopover.querySelector('.danger-button').textContent).toContain('Confirm delete')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
-    expect(wrapper.find('.sidebar-delete-popover').exists()).toBe(false)
+    expect(document.body.querySelector('.sidebar-delete-popover')).toBeNull()
     await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
-    await wrapper.get('.sidebar-delete-popover .danger-button').trigger('click')
+    sidebarDeletePopover = document.body.querySelector('.sidebar-delete-popover')
+    sidebarDeletePopover.querySelector('.danger-button').click()
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('direct-codex-1')
     wrapper.unmount()
@@ -2837,8 +3059,11 @@ describe('RoundRelay workbench', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     expect(source).toMatch(/\.direct-session-list::before/)
     expect(source).toMatch(/\.direct-session-list > \.sidebar-more-button::before/)
-    expect(source).toMatch(/\.direct-session-list > :last-child::before\s*\{[^}]*border-bottom-left-radius:\s*5px;/s)
-    expect(source).toMatch(/\.direct-session-list::before\s*\{[^}]*bottom:\s*19px;/s)
+    expect(source).toMatch(/--session-tree-line:\s*color-mix\(in srgb,\s*var\(--border\)\s*78%,\s*transparent\);/)
+    expect(source).toMatch(/\.direct-session-list > :last-child::before\s*\{[^}]*border-bottom-left-radius:\s*7px;/s)
+    expect(source).toMatch(/\.direct-session-row\.active\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*var\(--surface-active\);/s)
+    expect(source).toMatch(/\.direct-session-row\.active::after\s*\{[^}]*background:\s*var\(--accent\);/s)
+    expect(source).toMatch(/\.sidebar-delete-popover\s*\{[^}]*position:\s*fixed;[^}]*transform:\s*translateY\(calc\(-100% \+ 18px\)\);/s)
     expect(source).not.toMatch(/\.group-conversation-list::before/)
     expect(source).not.toMatch(/\.group-conversation-row::before/)
 
@@ -2938,8 +3163,9 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.group-conversation-row .direct-session-action.danger').trigger('click')
     expect(wrapper.find('.modal.medium').exists()).toBe(false)
-    expect(wrapper.get('.sidebar-delete-popover .danger-button').text()).toContain('Confirm delete')
-    await wrapper.get('.sidebar-delete-popover .danger-button').trigger('click')
+    const sidebarDeletePopover = document.body.querySelector('.sidebar-delete-popover')
+    expect(sidebarDeletePopover.querySelector('.danger-button').textContent).toContain('Confirm delete')
+    sidebarDeletePopover.querySelector('.danger-button').click()
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('group-sidebar-actions')
     wrapper.unmount()

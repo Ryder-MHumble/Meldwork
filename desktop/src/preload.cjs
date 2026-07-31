@@ -99,7 +99,7 @@ if (isLocalDocument) Object.assign(desktopApi, {
     delete: (kind, preset) => ipcRenderer.invoke('local-agent-provider:delete', kind, preset),
   }),
   localKnowledgeBase: Object.freeze({
-    status: () => ipcRenderer.invoke('local-knowledge-base:status'),
+    status: kind => (kind ? ipcRenderer.invoke('local-knowledge-base:status', kind) : ipcRenderer.invoke('local-knowledge-base:status')),
     openGuide: (kind, action) => ipcRenderer.invoke('local-knowledge-base:open-guide', kind, action),
     pickObsidianVault: () => ipcRenderer.invoke('local-knowledge-base:pick-obsidian-vault'),
   }),

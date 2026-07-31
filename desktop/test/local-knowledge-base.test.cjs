@@ -423,6 +423,72 @@ test('knowledge source DTOs never expose executable or command paths', async () 
     assert.equal(Object.hasOwn(source, 'appPath'), false)
     assert.equal(Object.hasOwn(source, 'commandCandidates'), false)
     assert.equal(Object.hasOwn(source, 'appCandidates'), false)
+    assert.equal(Object.hasOwn(source, 'installUrl'), false)
+    assert.equal(Object.hasOwn(source, 'loginUrl'), false)
+    assert.equal(Object.hasOwn(source, 'permissionUrl'), false)
   }
   assert.equal(JSON.stringify(sources).includes(MOCK_BIN), false)
+  const feishu = sourceByKind(sources, 'feishu')
+  assert.equal(feishu.commandName, 'lark-cli')
+  assert.equal(feishu.installCommand, 'npm install -g @larksuite/cli@latest')
+  assert.equal(feishu.loginCommand, 'lark-cli auth login')
+  assert.equal(feishu.statusCommand, 'lark-cli auth status')
+  assert.equal(feishu.permissionCommand, 'lark-cli docs +search --query . --page-size 1 --as user')
+
+  const dingtalk = sourceByKind(sources, 'dingtalk')
+  assert.equal(dingtalk.commandName, 'dws')
+  assert.equal(dingtalk.installCommand, 'npm install -g dingtalk-workspace-cli --registry=https://registry.npmmirror.com')
+  assert.equal(dingtalk.loginCommand, 'dws auth login')
+  assert.equal(dingtalk.statusCommand, 'dws auth status')
+  assert.equal(dingtalk.permissionCommand, 'dws doc list --page-size 1')
+})
+
+test('knowledge probes receive only the minimal system environment', async () => {
+  const childEnvironments = []
+  const options = probeOptions({
+    commands: ['lark-cli'],
+    execFileFn: async (command, args, execOptions) => {
+      childEnvironments.push(execOptions.env)
+      if (args[0] === 'auth') return { stdout: JSON.stringify({ authenticated: true }) }
+      return { stdout: JSON.stringify({ success: true }) }
+    },
+  })
+  options.env = {
+    PATH: MOCK_BIN,
+    HOME: MOCK_HOME,
+    LANG: 'en_US.UTF-8',
+    OPENAI_API_KEY: 'must-not-reach-probe',
+    ROUNDRELAY_PRIVATE_VALUE: 'must-not-reach-probe',
+  }
+
+  const sources = await resolveKnowledgeBaseSources(options)
+
+  assert.equal(sourceByKind(sources, 'feishu').ready, true)
+  assert.equal(childEnvironments.length, 2)
+  for (const childEnv of childEnvironments) {
+    assert.equal(childEnv.HOME, MOCK_HOME)
+    assert.equal(childEnv.LANG, 'en_US.UTF-8')
+    assert.match(childEnv.PATH, new RegExp(`(?:^|:)${MOCK_BIN}(?::|$)`))
+    assert.equal(Object.hasOwn(childEnv, 'OPENAI_API_KEY'), false)
+    assert.equal(Object.hasOwn(childEnv, 'ROUNDRELAY_PRIVATE_VALUE'), false)
+  }
+})
+
+test('source resolution failures expose stable codes without raw error messages', async () => {
+  let storeReads = 0
+  const options = probeOptions()
+  options.store = {
+    state: () => {
+      storeReads += 1
+      if (storeReads === 2) throw new Error('private configuration path must stay local')
+      return { obsidianVaultPath: '' }
+    },
+  }
+
+  const sources = await resolveKnowledgeBaseSources(options)
+  const notion = sourceByKind(sources, 'notion')
+
+  assert.equal(notion.probeState, 'error')
+  assert.equal(notion.errorCode, 'PROBE_FAILED')
+  assert.equal(JSON.stringify(sources).includes('private configuration path'), false)
 })

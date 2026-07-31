@@ -69,7 +69,7 @@ describe('RoundRelay i18n', () => {
 
     setLocale('en')
     expect(translateError(new Error('PROVIDER_CREDENTIAL_REQUIRED')))
-      .toBe('Configure a shared Provider before running this Agent.')
+      .toBe("Configure this Agent's Provider before running it.")
     expect(translateError(new Error('LOCAL_AGENT_AUTH_REQUIRED')))
       .toBe('Sign in to this Agent or configure its credentials, then try again.')
     expect(translateError(new Error('LOCAL_AGENT_PROCESS_FAILED')))
@@ -83,7 +83,7 @@ describe('RoundRelay i18n', () => {
 
     setLocale('zh')
     expect(translateError(new Error('PROVIDER_CREDENTIAL_REQUIRED')))
-      .toBe('请先配置共享 Provider，再运行该 Agent。')
+      .toBe('请先配置该 Agent 的独立 Provider，再运行。')
     expect(translateError(new Error('LOCAL_AGENT_AUTH_REQUIRED')))
       .toBe('请先登录该 Agent 或完成凭据配置后再试。')
     expect(translateError(new Error('LOCAL_AGENT_PROCESS_FAILED')))

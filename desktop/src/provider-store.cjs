@@ -8,6 +8,22 @@ const LEGACY_STORE_VERSION = 1
 const PROVIDER_KIND = /^[a-z0-9][a-z0-9-]{0,31}$/
 const PROVIDER_PRESETS = new Set(['official', 'openrouter', 'custom'])
 const EMPTY_METADATA = Object.freeze({ provider: '', baseUrl: '', model: '' })
+const OPENROUTER_PROVIDER = Object.freeze({
+  provider: 'OpenRouter',
+  baseUrl: 'https://openrouter.ai/api/v1',
+})
+const OFFICIAL_PROVIDERS = Object.freeze({
+  codex: { provider: 'OpenAI', baseUrl: 'https://api.openai.com/v1' },
+  hermes: { provider: 'OpenAI API', baseUrl: 'https://api.openai.com/v1' },
+  openclaw: { provider: 'OpenAI API', baseUrl: 'https://api.openai.com/v1' },
+  workbuddy: { provider: 'WorkBuddy Official', baseUrl: '' },
+  kimi: { provider: 'Moonshot AI', baseUrl: 'https://api.moonshot.cn/v1' },
+  mimo: { provider: 'MiMo Native', baseUrl: '' },
+  claude: { provider: 'Anthropic', baseUrl: 'https://api.anthropic.com' },
+  gemini: { provider: 'Google AI Studio', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
+  opencode: { provider: 'OpenCode Provider', baseUrl: '' },
+  qwen: { provider: 'DashScope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+})
 
 function normalizeMetadata(input) {
   const provider = String(input?.provider || '').trim()
@@ -45,6 +61,17 @@ function inferStoredPreset(entry) {
 
 function hostname(value) {
   try { return new URL(value).hostname } catch { return '' }
+}
+
+function validatePresetMetadata(kind, preset, metadata) {
+  if (preset === 'custom') return metadata
+  const expected = preset === 'openrouter' ? OPENROUTER_PROVIDER : OFFICIAL_PROVIDERS[kind]
+  if (!expected?.baseUrl
+      || metadata.provider !== expected.provider
+      || metadata.baseUrl !== expected.baseUrl) {
+    throw new Error('PROVIDER_INVALID_METADATA')
+  }
+  return metadata
 }
 
 class ProviderStore {
@@ -135,7 +162,7 @@ class ProviderStore {
 
     const apiKey = input.apiKey.trim()
     const preset = this.normalizePreset(input.preset)
-    const metadata = normalizeMetadata(input)
+    const metadata = validatePresetMetadata(targetKind, preset, normalizeMetadata(input))
     let encrypted
     try {
       encrypted = this.safeStorage.encryptString(apiKey)

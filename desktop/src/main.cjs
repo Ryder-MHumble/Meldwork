@@ -50,6 +50,7 @@ let installer = null
 let localAgentRefreshQueue = Promise.resolve()
 let providerStore = null
 let knowledgeBaseStore = null
+let knowledgeBaseStatusPromise = null
 let attachmentStore = null
 let skillCatalog = null
 let shutdownStarted = false
@@ -811,11 +812,19 @@ function registerIpc() {
     await refreshLocalAgentState()
     return result
   })
-  registerTrustedHandle('local-knowledge-base:status', async () => {
-    return resolveKnowledgeBaseSources({
+  registerTrustedHandle('local-knowledge-base:status', async (kind = '') => {
+    if (knowledgeBaseStatusPromise) return knowledgeBaseStatusPromise
+    const request = resolveKnowledgeBaseSources({
       store: knowledgeBaseStore,
       home: app.getPath('home'),
+      kind: String(kind || '').trim(),
     })
+    knowledgeBaseStatusPromise = request
+    try {
+      return await request
+    } finally {
+      if (knowledgeBaseStatusPromise === request) knowledgeBaseStatusPromise = null
+    }
   })
   registerTrustedHandle('local-knowledge-base:open-guide', async (kind, action) => {
     const url = knowledgeBaseGuideUrl(String(kind || ''), String(action || ''))

@@ -15,6 +15,16 @@ const OPENROUTER_PROVIDER = Object.freeze({
   baseUrl: 'https://openrouter.ai/api/v1',
   model: 'openrouter/example-model',
 })
+const HERMES_OFFICIAL_PROVIDER = Object.freeze({
+  provider: 'OpenAI API',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-5',
+})
+const QWEN_OFFICIAL_PROVIDER = Object.freeze({
+  provider: 'DashScope',
+  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  model: 'qwen3-coder-plus',
+})
 
 function credential(apiKey = 'test-provider-key', metadata = PROVIDER, preset = 'custom') {
   return { ...metadata, apiKey, preset }
@@ -45,13 +55,13 @@ function encryptedSafeStorage(available = true) {
   }
 }
 
-function fixture(safeStorage = encryptedSafeStorage()) {
+function fixture(safeStorage = encryptedSafeStorage(), allowedKinds = ['hermes', 'qwen']) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-provider-'))
   const storagePath = path.join(directory, 'roundrelay-provider.json')
   return {
     directory,
     storagePath,
-    store: new ProviderStore({ storagePath, safeStorage, allowedKinds: ['hermes', 'qwen'] }),
+    store: new ProviderStore({ storagePath, safeStorage, allowedKinds }),
   }
 }
 
@@ -118,6 +128,78 @@ test('save accepts only the complete five-field Provider payload', (t) => {
     () => store.save('hermes', credential('key', PROVIDER, 'unknown')),
     { message: 'PROVIDER_PRESET_UNSUPPORTED' },
   )
+})
+
+test('preset metadata must match canonical OpenRouter and Agent official Providers', (t) => {
+  const { directory, store } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  assert.deepEqual(
+    store.save('hermes', credential('openrouter-key', {
+      ...OPENROUTER_PROVIDER,
+      baseUrl: `${OPENROUTER_PROVIDER.baseUrl}/`,
+    }, 'openrouter')),
+    configuredStatus(OPENROUTER_PROVIDER, 'openrouter'),
+  )
+  assert.throws(
+    () => store.save('hermes', credential('key', {
+      ...OPENROUTER_PROVIDER,
+      provider: 'OpenRouter proxy',
+    }, 'openrouter')),
+    { message: 'PROVIDER_INVALID_METADATA' },
+  )
+  assert.throws(
+    () => store.save('hermes', credential('key', {
+      ...OPENROUTER_PROVIDER,
+      baseUrl: 'https://gateway.example/v1',
+    }, 'openrouter')),
+    { message: 'PROVIDER_INVALID_METADATA' },
+  )
+  store.delete('hermes', 'openrouter')
+
+  assert.deepEqual(
+    store.save('hermes', credential('official-key', HERMES_OFFICIAL_PROVIDER, 'official')),
+    configuredStatus(HERMES_OFFICIAL_PROVIDER, 'official'),
+  )
+  assert.deepEqual(
+    store.save('qwen', credential('official-key', QWEN_OFFICIAL_PROVIDER, 'official')),
+    configuredStatus(QWEN_OFFICIAL_PROVIDER, 'official'),
+  )
+  assert.throws(
+    () => store.save('hermes', credential('key', {
+      ...HERMES_OFFICIAL_PROVIDER,
+      provider: 'OpenAI',
+    }, 'official')),
+    { message: 'PROVIDER_INVALID_METADATA' },
+  )
+  assert.throws(
+    () => store.save('qwen', credential('key', {
+      ...QWEN_OFFICIAL_PROVIDER,
+      baseUrl: 'https://api.openai.com/v1',
+    }, 'official')),
+    { message: 'PROVIDER_INVALID_METADATA' },
+  )
+  const workbuddy = fixture(encryptedSafeStorage(), ['workbuddy'])
+  t.after(() => fs.rmSync(workbuddy.directory, { recursive: true, force: true }))
+  assert.throws(
+    () => workbuddy.store.save('workbuddy', credential('key', {
+      provider: 'WorkBuddy Official',
+      baseUrl: 'https://api.example.com/v1',
+      model: 'workbuddy-model',
+    }, 'official')),
+    { message: 'PROVIDER_INVALID_METADATA' },
+  )
+})
+
+test('custom preset keeps accepting secure arbitrary and loopback endpoints', (t) => {
+  const { directory, store } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  assert.doesNotThrow(() => store.save('hermes', credential('key', {
+    provider: 'Private OpenRouter proxy',
+    baseUrl: 'http://127.0.0.1:11434/v1',
+    model: 'local-model',
+  }, 'custom')))
 })
 
 test('envForAgent decrypts the configured Provider', (t) => {

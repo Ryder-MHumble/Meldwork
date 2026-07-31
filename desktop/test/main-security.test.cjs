@@ -516,6 +516,9 @@ function loadMain(userData, options = {}) {
       ),
       resolveKnowledgeBaseSources: async (input) => {
         knowledgeBaseResolveCalls.push(input)
+        if (options.resolveKnowledgeBaseSources) {
+          return options.resolveKnowledgeBaseSources(input)
+        }
         return options.knowledgeBaseSources || [{
           kind: 'obsidian',
           installed: true,
@@ -1055,6 +1058,29 @@ test('Knowledge base IPC exposes status, safe guides, and a local Obsidian direc
   })
   assert.deepEqual(harness.knowledgeBaseStoreInstances[0].savedVaultPaths, [vaultPath])
   assert.deepEqual(picked, [{ kind: 'obsidian', installed: true, vaultPath }])
+})
+
+test('Knowledge base status IPC shares concurrent source probes', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-single-flight-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const result = deferred()
+  const expected = [{ kind: 'feishu', installed: true, ready: true }]
+  const { harness } = loadMain(directory, {
+    resolveKnowledgeBaseSources: () => result.promise,
+  })
+  await harness.ready()
+  const status = harness.ipcHandlers.get('local-knowledge-base:status')
+
+  const first = status(harness.event())
+  const second = status(harness.event())
+  await waitFor(() => harness.knowledgeBaseResolveCalls.length === 1)
+  assert.equal(harness.knowledgeBaseResolveCalls.length, 1)
+
+  result.resolve(expected)
+  assert.deepEqual(await Promise.all([first, second]), [expected, expected])
+
+  assert.deepEqual(await status(harness.event()), expected)
+  assert.equal(harness.knowledgeBaseResolveCalls.length, 2)
 })
 
 test('directory picker uses the operating system localized title', async (t) => {
