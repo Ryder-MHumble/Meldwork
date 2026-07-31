@@ -525,7 +525,8 @@ button svg {
 .secondary-button:active,
 .send-button:active,
 .stop-button:active,
-.danger-button:active {
+.danger-button:active,
+.sidebar-more-button:active {
   transform: translateY(1px);
 }
 
@@ -657,11 +658,32 @@ button svg {
 }
 
 .direct-session-list {
+  position: relative;
   margin: 0 3px 0 17px;
-  padding-left: 0;
+  padding: 2px 0 2px 10px;
+}
+
+.group-conversation-list {
+  position: relative;
+  margin: 2px 3px 0 8px;
+  padding: 2px 0 2px 10px;
+}
+
+.direct-session-list::before,
+.group-conversation-list::before {
+  content: "";
+  position: absolute;
+  top: 17px;
+  bottom: 15px;
+  left: 4px;
+  width: 1px;
+  border-radius: 1px;
+  background: var(--border);
+  opacity: 0.82;
 }
 
 .direct-session-row {
+  position: relative;
   min-width: 0;
   height: 34px;
   display: grid;
@@ -671,6 +693,21 @@ button svg {
   padding: 0 3px 0 6px;
   border: 1px solid transparent;
   border-radius: var(--radius-sm);
+}
+
+.direct-session-row::before,
+.group-conversation-row::before,
+.sidebar-more-button::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -6px;
+  width: 6px;
+  height: 1px;
+  border-radius: 1px;
+  background: var(--border);
+  opacity: 0.82;
+  pointer-events: none;
 }
 
 .direct-session-row:hover {
@@ -800,6 +837,39 @@ button svg {
 .conversation-link:hover {
   background: var(--surface-hover);
   color: var(--text);
+}
+
+.sidebar-more-button {
+  position: relative;
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  margin: 1px 0 0;
+  padding: 0 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.14s ease, color 0.14s ease, transform 0.14s ease;
+}
+
+.sidebar-more-button:hover,
+.sidebar-more-button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.sidebar-more-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conversation-link > img,

@@ -89,7 +89,7 @@
                 class="direct-session-list"
               >
                 <div
-                  v-for="group in directGroupsFor(agent.kind)"
+                  v-for="group in visibleDirectGroupsFor(agent.kind)"
                   :key="group.id"
                   class="direct-session-row"
                   :class="{ active: selectedGroupId === group.id }"
@@ -131,6 +131,23 @@
                     <TrashOutline />
                   </button>
                 </div>
+                <button
+                  v-if="hasMoreDirectGroups(agent.kind)"
+                  class="sidebar-more-button"
+                  type="button"
+                  :title="t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessDirectSessions' : 'nav.moreDirectSessions', {
+                    agent: agent.label,
+                    count: remainingDirectGroupsCount(agent.kind),
+                  })"
+                  :aria-label="t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessDirectSessions' : 'nav.moreDirectSessions', {
+                    agent: agent.label,
+                    count: remainingDirectGroupsCount(agent.kind),
+                  })"
+                  :aria-expanded="String(isDirectSessionListExpanded(agent.kind))"
+                  @click="toggleDirectSessionListExpanded(agent.kind)"
+                >
+                  <span>{{ t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessItems' : 'nav.moreItems') }}</span>
+                </button>
               </div>
             </article>
             <p v-if="!sidebarAgents.length" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
@@ -141,46 +158,63 @@
               <span>{{ t('nav.groups') }}</span>
               <PeopleOutline />
             </div>
-            <div
-              v-for="group in groupGroups"
-              :key="group.id"
-              class="group-conversation-row"
-              :class="{ active: selectedGroupId === group.id }"
-            >
-              <button
-                class="conversation-link"
-                type="button"
-                :title="t('nav.openGroup', { name: groupName(group) })"
-                @click="selectGroup(group.id)"
+            <div v-if="groupGroups.length" class="group-conversation-list">
+              <div
+                v-for="group in visibleGroupGroups"
+                :key="group.id"
+                class="group-conversation-row"
+                :class="{ active: selectedGroupId === group.id }"
               >
-                <span class="group-avatar"><ChatbubblesOutline /></span>
-                <span>{{ groupName(group) }}</span>
-                <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
-                  <span class="run-pulse" />
+                <button
+                  class="conversation-link"
+                  type="button"
+                  :title="t('nav.openGroup', { name: groupName(group) })"
+                  @click="selectGroup(group.id)"
+                >
+                  <span class="group-avatar"><ChatbubblesOutline /></span>
+                  <span>{{ groupName(group) }}</span>
+                  <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+                    <span class="run-pulse" />
+                  </span>
+                </button>
+                <span class="group-conversation-actions">
+                  <button
+                    class="direct-session-action"
+                    type="button"
+                    :title="t('nav.renameGroup', { name: groupName(group) })"
+                    :aria-label="t('nav.renameGroup', { name: groupName(group) })"
+                    :disabled="isGroupRunning(group.id)"
+                    @click="openConversationRename(group)"
+                  >
+                    <PencilOutline />
+                  </button>
+                  <button
+                    class="direct-session-action danger"
+                    type="button"
+                    :title="t('nav.deleteGroup', { name: groupName(group) })"
+                    :aria-label="t('nav.deleteGroup', { name: groupName(group) })"
+                    :disabled="isGroupRunning(group.id)"
+                    @click="openConversationDelete(group)"
+                  >
+                    <TrashOutline />
+                  </button>
                 </span>
+              </div>
+              <button
+                v-if="hasMoreGroupGroups"
+                class="sidebar-more-button"
+                type="button"
+                :title="t(groupSessionListExpanded ? 'nav.lessGroups' : 'nav.moreGroups', {
+                  count: remainingGroupGroupsCount,
+                })"
+                :aria-label="t(groupSessionListExpanded ? 'nav.lessGroups' : 'nav.moreGroups', {
+                  count: remainingGroupGroupsCount,
+                })"
+                :aria-expanded="String(groupSessionListExpanded)"
+                @click="toggleGroupSessionListExpanded"
+              >
+                <span>{{ t(groupSessionListExpanded ? 'nav.lessItems' : 'nav.moreItems') }}</span>
               </button>
-              <span class="group-conversation-actions">
-                <button
-                  class="direct-session-action"
-                  type="button"
-                  :title="t('nav.renameGroup', { name: groupName(group) })"
-                  :aria-label="t('nav.renameGroup', { name: groupName(group) })"
-                  :disabled="isGroupRunning(group.id)"
-                  @click="openConversationRename(group)"
-                >
-                  <PencilOutline />
-                </button>
-                <button
-                  class="direct-session-action danger"
-                  type="button"
-                  :title="t('nav.deleteGroup', { name: groupName(group) })"
-                  :aria-label="t('nav.deleteGroup', { name: groupName(group) })"
-                  :disabled="isGroupRunning(group.id)"
-                  @click="openConversationDelete(group)"
-                >
-                  <TrashOutline />
-                </button>
-              </span>
             </div>
             <p v-if="!groupGroups.length" class="nav-empty">{{ t('nav.noGroups') }}</p>
           </section>
@@ -1262,7 +1296,7 @@
                       :aria-label="t('composer.stop')"
                       @click="stopRun"
                     >
-                      <Stop aria-hidden="true" />
+                      <StopCircleOutline aria-hidden="true" />
                       <span class="visually-hidden">{{ t('composer.stop') }}</span>
                     </button>
                     <button
@@ -1276,7 +1310,7 @@
                       @click="sendMessage"
                     >
                       <span v-if="sending" class="send-button-loader" aria-hidden="true"><i /><i /><i /></span>
-                      <ArrowUpOutline v-else aria-hidden="true" />
+                      <SendOutline v-else aria-hidden="true" />
                       <span class="visually-hidden">{{ sendButtonLabel }}</span>
                     </button>
                   </div>
@@ -1612,7 +1646,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AddOutline,
-  ArrowUpOutline,
   AttachOutline,
   AtOutline,
   ChatbubbleEllipsesOutline,
@@ -1634,7 +1667,8 @@ import {
   PersonOutline,
   RefreshOutline,
   SettingsOutline,
-  Stop,
+  SendOutline,
+  StopCircleOutline,
   SunnyOutline,
   TerminalOutline,
   TrashOutline,
@@ -1654,6 +1688,8 @@ const MAX_ATTACHMENTS = 4
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 const COMPOSER_INPUT_MIN_HEIGHT = 58
 const COMPOSER_INPUT_MAX_HEIGHT = 180
+const DIRECT_SESSION_PREVIEW_LIMIT = 5
+const GROUP_SESSION_PREVIEW_LIMIT = 8
 const ONBOARDING_SLIDE_MS = 1450
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
 const RUN_FINISHED_STATUSES = new Set([
@@ -1714,6 +1750,8 @@ const settingsIntent = ref('settings')
 const knowledgeBaseSources = ref([])
 const knowledgeBaseLoading = ref(false)
 const collapsedSidebarAgentKinds = ref(new Set())
+const expandedSidebarAgentSessionKinds = ref(new Set())
+const groupSessionListExpanded = ref(false)
 const agentSkillStats = ref({})
 const inlineTitleEditing = ref(false)
 const inlineTitleDraft = ref('')
@@ -1815,6 +1853,13 @@ const directGroups = computed(() => snapshot.value.groups
 const groupGroups = computed(() => snapshot.value.groups
   .filter(group => group.conversationType !== 'direct')
   .sort(sortByUpdated))
+const visibleGroupGroups = computed(() => (
+  groupSessionListExpanded.value || groupGroups.value.length <= GROUP_SESSION_PREVIEW_LIMIT
+    ? groupGroups.value
+    : groupGroups.value.slice(0, GROUP_SESSION_PREVIEW_LIMIT)
+))
+const hasMoreGroupGroups = computed(() => groupGroups.value.length > GROUP_SESSION_PREVIEW_LIMIT)
+const remainingGroupGroupsCount = computed(() => Math.max(0, groupGroups.value.length - GROUP_SESSION_PREVIEW_LIMIT))
 const activeGroup = computed(() => snapshot.value.groups.find(group => group.id === selectedGroupId.value) || null)
 const activeGroupMemberSignature = computed(() => {
   const group = activeGroup.value
@@ -2115,6 +2160,22 @@ function directGroupsFor(kind) {
   return directGroups.value.filter(group => group.directAgentKind === kind)
 }
 
+function visibleDirectGroupsFor(kind) {
+  const groups = directGroupsFor(kind)
+  if (groups.length <= DIRECT_SESSION_PREVIEW_LIMIT || isDirectSessionListExpanded(kind)) {
+    return groups
+  }
+  return groups.slice(0, DIRECT_SESSION_PREVIEW_LIMIT)
+}
+
+function hasMoreDirectGroups(kind) {
+  return directGroupsFor(kind).length > DIRECT_SESSION_PREVIEW_LIMIT
+}
+
+function remainingDirectGroupsCount(kind) {
+  return Math.max(0, directGroupsFor(kind).length - DIRECT_SESSION_PREVIEW_LIMIT)
+}
+
 function isDirectCreationPending(kind) {
   return directCreationKinds.value.has(kind)
 }
@@ -2145,6 +2206,27 @@ function setSidebarAgentExpanded(kind, expanded) {
 
 function toggleSidebarAgentExpanded(kind) {
   setSidebarAgentExpanded(kind, !isSidebarAgentExpanded(kind))
+}
+
+function isDirectSessionListExpanded(kind) {
+  return expandedSidebarAgentSessionKinds.value.has(String(kind || ''))
+}
+
+function setDirectSessionListExpanded(kind, expanded) {
+  const normalized = String(kind || '')
+  if (!normalized) return
+  const next = new Set(expandedSidebarAgentSessionKinds.value)
+  if (expanded) next.add(normalized)
+  else next.delete(normalized)
+  expandedSidebarAgentSessionKinds.value = next
+}
+
+function toggleDirectSessionListExpanded(kind) {
+  setDirectSessionListExpanded(kind, !isDirectSessionListExpanded(kind))
+}
+
+function toggleGroupSessionListExpanded() {
+  groupSessionListExpanded.value = !groupSessionListExpanded.value
 }
 
 function handleSidebarAgentMain(agent) {

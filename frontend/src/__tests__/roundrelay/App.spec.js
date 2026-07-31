@@ -524,11 +524,10 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border-radius:\s*var\(--radius\);/s)
     expect(source).not.toContain('.stop-button-motion')
-    expect(appSource).toContain('<ArrowUpOutline v-else aria-hidden="true" />')
-    expect(appSource).toContain('<Stop aria-hidden="true" />')
-    expect(appSource).not.toContain('<SendOutline')
+    expect(appSource).toContain('<SendOutline v-else aria-hidden="true" />')
+    expect(appSource).toContain('<StopCircleOutline aria-hidden="true" />')
     expect(appSource).not.toContain('<PlayOutline')
-    expect(appSource).not.toContain('<StopCircleOutline')
+    expect(appSource).not.toContain('<ArrowUpOutline')
   })
 
   it('saves the exact Provider payload exposed by preload', async () => {
@@ -2083,6 +2082,67 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.settings-delete-popover .danger-button').trigger('click')
     await flushPromises()
     expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('direct-codex-1')
+    wrapper.unmount()
+  })
+
+  it('keeps sidebar session trees visible and collapses long lists behind More', async () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(source).toMatch(/\.direct-session-list::before/)
+    expect(source).toMatch(/\.group-conversation-list::before/)
+    expect(source).toMatch(/\.sidebar-more-button::before/)
+
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        ...Array.from({ length: 6 }, (_, index) => ({
+          id: `direct-codex-${index + 1}`,
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: `Codex ${index + 1}`,
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: `2026-07-29T08:${String(index).padStart(2, '0')}:00Z`,
+          updatedAt: `2026-07-29T09:${String(59 - index).padStart(2, '0')}:00Z`,
+        })),
+      )
+      state.groups.push(
+        ...Array.from({ length: 9 }, (_, index) => ({
+          id: `group-sidebar-${index + 1}`,
+          conversationType: 'group',
+          name: `Group ${index + 1}`,
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: `2026-07-29T10:${String(index).padStart(2, '0')}:00Z`,
+          updatedAt: `2026-07-29T11:${String(59 - index).padStart(2, '0')}:00Z`,
+        })),
+      )
+    })
+
+    const codexAgent = wrapper.findAll('.sidebar-agent').find(node => node.text().includes('Codex'))
+    expect(codexAgent).toBeTruthy()
+    expect(codexAgent.findAll('.direct-session-row')).toHaveLength(5)
+
+    const directMore = codexAgent.get('.sidebar-more-button')
+    expect(directMore.text()).toBe('More')
+    expect(directMore.attributes('aria-expanded')).toBe('false')
+    await directMore.trigger('click')
+    expect(codexAgent.findAll('.direct-session-row')).toHaveLength(6)
+    expect(codexAgent.get('.sidebar-more-button').text()).toBe('Less')
+    expect(codexAgent.get('.sidebar-more-button').attributes('aria-expanded')).toBe('true')
+
+    const groupList = wrapper.get('.group-conversation-list')
+    expect(groupList.findAll('.group-conversation-row')).toHaveLength(8)
+    const groupMore = groupList.get('.sidebar-more-button')
+    expect(groupMore.text()).toBe('More')
+    expect(groupMore.attributes('aria-expanded')).toBe('false')
+    await groupMore.trigger('click')
+    expect(groupList.findAll('.group-conversation-row')).toHaveLength(9)
+    expect(groupList.get('.sidebar-more-button').text()).toBe('Less')
+    expect(groupList.get('.sidebar-more-button').attributes('aria-expanded')).toBe('true')
+
     wrapper.unmount()
   })
 
