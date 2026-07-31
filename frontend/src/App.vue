@@ -1093,37 +1093,51 @@
                 <section
                   v-if="activeRun"
                   class="run-status-panel"
-                  :class="activeGroup.conversationType === 'direct' ? 'direct' : 'group'"
+                  :class="{
+                    direct: activeGroup.conversationType === 'direct',
+                    group: activeGroup.conversationType !== 'direct',
+                    solo: !isCoordinatedRun,
+                    multi: isCoordinatedRun,
+                  }"
                   aria-live="polite"
                 >
                   <header class="run-status-header">
-                    <div v-if="activeGroup.conversationType === 'direct'" class="direct-run-indicator" aria-hidden="true">
-                      <img :src="agentLogo(activeRun.currentKind || activeGroup.directAgentKind, theme)" alt="" />
-                      <div class="typing-bars"><span /><span /><span /></div>
+                    <div v-if="!isCoordinatedRun" class="direct-run-indicator" aria-hidden="true">
+                      <span class="run-agent-logo" :data-status="activeRunAgentStatus">
+                        <img :src="agentLogo(activeRunAgentKind, theme)" alt="" />
+                      </span>
+                      <div v-if="activeRunAgentStatus === 'running'" class="typing-bars"><span /><span /><span /></div>
                     </div>
                     <div v-else class="relay-run-indicator" aria-hidden="true">
-                      <img
-                        v-for="kind in runTargetKinds.slice(0, 4)"
+                      <span
+                        v-for="(kind, index) in runTargetKinds.slice(0, 4)"
                         :key="kind"
-                        :src="agentLogo(kind, theme)"
-                        alt=""
-                        :class="{
-                          current: runAgentStatus(kind) === 'running',
-                          completed: runAgentStatus(kind) === 'completed',
-                          failed: runAgentStatus(kind) === 'failed',
-                        }"
-                      />
+                        class="run-agent-logo relay-run-agent"
+                        :data-status="runAgentStatus(kind)"
+                        :style="{ '--avatar-index': index }"
+                      >
+                        <img :src="agentLogo(kind, theme)" alt="" />
+                      </span>
                     </div>
                     <div>
                       <strong>{{ activeRunLabel }}</strong>
-                      <span v-if="activeRunTopicRootId">{{ t('conversation.activeTopic') }}</span>
+                      <span
+                        v-if="!isCoordinatedRun"
+                        class="solo-run-status"
+                        :data-status="activeRunAgentStatus"
+                      >
+                        {{ runStatusLabel(activeRunAgentStatus) }}
+                      </span>
+                      <span v-if="activeRunTopicRootId">
+                        {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
+                      </span>
                       <span v-if="runRoundProgress" class="run-round-progress">
                         {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
                       </span>
                     </div>
                   </header>
                   <div
-                    v-if="activeGroup.conversationType !== 'direct'"
+                    v-if="isCoordinatedRun"
                     class="run-agent-list"
                     :aria-label="t('run.agents')"
                   >
@@ -1134,7 +1148,9 @@
                       :data-status="runAgentStatus(kind)"
                       :style="{ '--reveal-index': index }"
                     >
-                      <img :src="agentLogo(kind, theme)" alt="" />
+                      <span class="run-agent-logo" :data-status="runAgentStatus(kind)" aria-hidden="true">
+                        <img :src="agentLogo(kind, theme)" alt="" />
+                      </span>
                       <strong>{{ agentLabel(kind) }}</strong>
                       <span class="run-agent-state">
                         <span
@@ -2103,6 +2119,16 @@ const runTargetKinds = computed(() => {
     : activeGroup.value?.agentKinds || []
   return [...new Set(targets)]
 })
+const isCoordinatedRun = computed(() => (
+  activeGroup.value?.conversationType !== 'direct' && runTargetKinds.value.length > 1
+))
+const activeRunAgentKind = computed(() => (
+  activeRun.value?.currentKind
+  || runTargetKinds.value[0]
+  || activeGroup.value?.directAgentKind
+  || ''
+))
+const activeRunAgentStatus = computed(() => runAgentStatus(activeRunAgentKind.value))
 const runCompletedKinds = computed(() => {
   const targets = new Set(runTargetKinds.value)
   return [...new Set(activeRun.value?.completedKinds || [])].filter(kind => targets.has(kind))
@@ -2113,10 +2139,11 @@ const runFailedKinds = computed(() => {
 })
 const activeRunLabel = computed(() => {
   if (!activeRun.value || !activeGroup.value) return ''
-  if (activeGroup.value.conversationType === 'direct') {
-    return t('conversation.directWorking', {
-      agent: agentLabel(activeRun.value.currentKind || activeGroup.value.directAgentKind),
-    })
+  if (!isCoordinatedRun.value) {
+    const agent = agentLabel(activeRunAgentKind.value)
+    return activeRunAgentStatus.value === 'running'
+      ? t('conversation.directWorking', { agent })
+      : agent
   }
   return t('conversation.groupWorking')
 })

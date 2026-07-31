@@ -3660,13 +3660,18 @@ button svg {
   border-left: 0;
 }
 
-.run-status-panel.direct {
+.run-status-panel.solo {
   min-height: 0;
   gap: 8px;
-  padding-block: 11px;
+  margin-top: 8px;
+  padding: 7px 2px 3px;
+  overflow: visible;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
-:root[data-theme="dark"] .run-status-panel {
+:root[data-theme="dark"] .run-status-panel.group.multi {
   box-shadow: 0 10px 28px rgb(0 0 0 / 0.22);
 }
 
@@ -3702,55 +3707,131 @@ button svg {
   font-weight: 650;
 }
 
+.run-status-header .solo-run-status {
+  color: var(--text-soft);
+  font-weight: 650;
+}
+
+.run-status-header .solo-run-status[data-status="running"] {
+  color: var(--accent-hover);
+}
+
+.run-status-header .solo-run-status[data-status="completed"] {
+  color: #347a66;
+}
+
+.run-status-header .solo-run-status[data-status="failed"] {
+  color: var(--danger);
+}
+
+:root[data-theme="dark"] .run-status-header .solo-run-status[data-status="completed"] {
+  color: #79c9af;
+}
+
 .direct-run-indicator {
-  width: 58px;
-  height: 32px;
+  width: 66px;
+  height: 36px;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.direct-run-indicator img {
-  width: 30px;
-  height: 30px;
+.run-agent-logo {
+  width: 32px;
+  height: 32px;
+  position: relative;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  isolation: isolate;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.run-agent-logo::before {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  z-index: 0;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  opacity: 0;
+  transform: scale(0.78);
+}
+
+.run-agent-logo img {
+  width: 26px;
+  height: 26px;
+  position: relative;
+  z-index: 1;
   background: transparent;
   object-fit: contain;
+  transform-origin: center;
+}
+
+.run-agent-logo[data-status="queued"] img {
+  opacity: 0.38;
+  filter: saturate(0.55);
+  transform: scale(0.92);
+}
+
+.run-agent-logo[data-status="running"]::before {
+  border-color: color-mix(in srgb, var(--accent) 72%, transparent);
+  opacity: 0.72;
+  transform: scale(1);
+  animation: run-agent-halo 1.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.run-agent-logo[data-status="running"] img {
+  animation: run-agent-breathe 1.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+.run-agent-logo[data-status="completed"]::before {
+  border-color: color-mix(in srgb, #347a66 72%, transparent);
+  opacity: 0.82;
+  transform: scale(1);
+  animation: run-agent-settle 0.38s cubic-bezier(0.2, 0.9, 0.24, 1.18) both;
+}
+
+.run-agent-logo[data-status="completed"] img {
+  opacity: 0.9;
+}
+
+.run-agent-logo[data-status="failed"]::before {
+  border-color: color-mix(in srgb, var(--danger) 74%, transparent);
+  opacity: 0.86;
+  transform: scale(1);
+}
+
+.run-agent-logo[data-status="failed"] img {
+  opacity: 0.72;
+  filter: saturate(0.56);
+}
+
+:root[data-theme="dark"] .run-agent-logo[data-status="completed"]::before {
+  border-color: color-mix(in srgb, #79c9af 76%, transparent);
 }
 
 .relay-run-indicator {
-  width: 104px;
-  height: 32px;
+  width: max-content;
+  min-width: 57px;
+  height: 36px;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 4px;
+  padding-right: 4px;
 }
 
-.relay-run-indicator img {
-  width: 27px;
-  height: 27px;
-  background: transparent;
-  object-fit: contain;
-  opacity: 0.46;
-  transition: opacity 0.16s ease, transform 0.16s ease;
+.relay-run-agent {
+  z-index: calc(4 - var(--avatar-index, 0));
 }
 
-.relay-run-indicator img.current {
-  opacity: 1;
-  animation: relay-current 1.1s ease-in-out infinite;
+.relay-run-agent + .relay-run-agent {
+  margin-left: -7px;
 }
 
-.relay-run-indicator img.completed {
-  opacity: 0.78;
-}
-
-.relay-run-indicator img.failed {
-  opacity: 0.82;
-}
-
-@keyframes relay-current {
-  50% { transform: translateY(-2px); }
+.relay-run-agent[data-status="running"] {
+  z-index: 8;
 }
 
 .run-agent-list {
@@ -3763,7 +3844,7 @@ button svg {
   min-height: 40px;
   position: relative;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   overflow: hidden;
@@ -3776,7 +3857,7 @@ button svg {
 }
 
 .run-agent-row[data-status="completed"] {
-  background: color-mix(in srgb, #3b8d73 8%, transparent);
+  background: transparent;
 }
 
 .run-agent-row[data-status="running"] {
@@ -3784,24 +3865,7 @@ button svg {
 }
 
 .run-agent-row[data-status="queued"] {
-  opacity: 0.66;
-}
-
-.run-agent-row[data-status="running"]::after {
-  content: "";
-  width: 34%;
-  position: absolute;
-  inset: 0 auto 0 -38%;
-  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 14%, transparent), transparent);
-  pointer-events: none;
-  animation: run-agent-scan 1.8s ease-in-out infinite;
-}
-
-.run-agent-row img {
-  width: 26px;
-  height: 26px;
   background: transparent;
-  object-fit: contain;
 }
 
 .run-agent-row strong {
@@ -3863,9 +3927,11 @@ button svg {
 
 .run-agent-bars i {
   width: 2px;
-  height: 5px;
+  height: 14px;
   border-radius: 2px;
   background: var(--accent);
+  transform: scaleY(0.36);
+  transform-origin: center bottom;
   animation: run-agent-bar 0.76s ease-in-out infinite;
 }
 
@@ -3888,11 +3954,11 @@ button svg {
 .run-agent-dots i:nth-child(3) { animation-delay: 0.36s; }
 
 .run-agent-row small.queued {
-  color: var(--muted);
+  color: var(--text-soft);
 }
 
 .run-agent-row small.running {
-  color: var(--accent);
+  color: var(--accent-hover);
 }
 
 .run-agent-row small.completed {
@@ -3915,25 +3981,35 @@ button svg {
   from { opacity: 0; transform: translateY(4px); }
 }
 
+@keyframes run-agent-halo {
+  0% { opacity: 0.18; transform: scale(0.82); }
+  32% { opacity: 0.88; }
+  100% { opacity: 0; transform: scale(1.16); }
+}
+
+@keyframes run-agent-breathe {
+  0%, 100% { transform: scale(0.96); }
+  48% { transform: scale(1.04); }
+}
+
+@keyframes run-agent-settle {
+  from { opacity: 0; transform: scale(0.72); }
+  to { opacity: 0.82; transform: scale(1); }
+}
+
 @keyframes run-agent-complete {
   from { opacity: 0; transform: scale(0.55) rotate(-18deg); }
   to { opacity: 1; transform: scale(1) rotate(0); }
 }
 
 @keyframes run-agent-bar {
-  0%, 100% { height: 5px; opacity: 0.48; }
-  50% { height: 14px; opacity: 1; }
+  0%, 100% { opacity: 0.48; transform: scaleY(0.36); }
+  50% { opacity: 1; transform: scaleY(1); }
 }
 
 @keyframes run-agent-wait {
   0%, 55%, 100% { opacity: 0.3; transform: translateY(0); }
   25% { opacity: 0.9; transform: translateY(-2px); }
-}
-
-@keyframes run-agent-scan {
-  0%, 18% { transform: translateX(0); opacity: 0; }
-  38% { opacity: 1; }
-  82%, 100% { transform: translateX(410%); opacity: 0; }
 }
 
 .run-progress-details {
@@ -3944,8 +4020,9 @@ button svg {
   padding-bottom: 0;
 }
 
-.run-status-panel.direct .run-progress-details {
+.run-status-panel.solo .run-progress-details {
   margin-top: 0;
+  border-top: 0;
 }
 
 .running-row {
@@ -5789,8 +5866,10 @@ fieldset:disabled .agent-choice {
   .message-list { width: 100%; }
   .turn-rail { top: 50%; }
   .message-row.topic-reply { margin-left: 8px; padding-left: 8px; }
-  .relay-run-indicator { width: 88px; }
+  .relay-run-indicator { width: max-content; min-width: 50px; }
+  .relay-run-indicator .run-agent-logo { width: 28px; height: 28px; }
   .relay-run-indicator img { width: 24px; height: 24px; }
+  .relay-run-agent + .relay-run-agent { margin-left: -6px; }
   .composer-zone { padding-inline: 10px; }
   .modal-backdrop { align-items: flex-end; padding: 0; }
   .modal { width: 100%; max-height: 92dvh; border-radius: var(--radius) var(--radius) 0 0; }

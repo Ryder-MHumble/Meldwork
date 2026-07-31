@@ -1212,6 +1212,10 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.message-row\.group-message\.agent \.message-body::before\s*\{[^}]*background:\s*var\(--agent-accent\);/s)
     expect(source).toMatch(/\.message-copy-surface\s*\{[^}]*cursor:\s*text;/s)
     expect(source).toMatch(/\.run-status-panel\.group\s*\{[^}]*border-left:\s*0;/s)
+    expect(source).toMatch(/\.run-status-panel\.solo\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s)
+    expect(source).toMatch(/\.run-status-panel\.solo \.run-progress-details\s*\{[^}]*border-top:\s*0;/s)
+    expect(source).toMatch(/\.run-agent-logo\[data-status="running"\]::before\s*\{[^}]*animation:\s*run-agent-halo/s)
+    expect(source).toMatch(/\.run-agent-logo\[data-status="queued"\] img\s*\{[^}]*opacity:\s*0\.38;/s)
     expect(source).toMatch(/\.composer-box\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.composer-context-row\s*\{[^}]*border-bottom:\s*0;/s)
     expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border:\s*0;/s)
@@ -3079,6 +3083,10 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.findAll('.active-topic-label').every(label => label.text() === 'Current task')).toBe(true)
     expect(wrapper.get('.conversation-title-button').attributes()).toHaveProperty('disabled')
     expect(wrapper.find('.run-round-progress').exists()).toBe(false)
+    expect(wrapper.get('.run-status-panel.direct.solo').text()).toContain('Codex is working in this chat')
+    expect(wrapper.get('.run-status-panel .run-agent-logo').attributes('data-status')).toBe('running')
+    expect(wrapper.find('.relay-run-indicator').exists()).toBe(false)
+    expect(wrapper.find('.run-agent-list').exists()).toBe(false)
 
     scrollIntoView.mockClear()
     await railButtons[0].trigger('click')
@@ -3086,6 +3094,86 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('#message-agent-1').text()).toContain('First answer')
     expect(scrollIntoView).toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('reuses the solo presentation and reflects each run state when a group message targets one Agent', async () => {
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Focused review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'root-1',
+        groupId: 'group-1',
+        role: 'user',
+        content: 'Codex only',
+        targetKinds: ['codex'],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['group-1']
+      state.runs = [{
+        groupId: 'group-1',
+        phase: 'preparing',
+        mode: 'manual',
+        targetKinds: ['codex'],
+        completedKinds: [],
+        failedKinds: [],
+        currentKind: '',
+        threadRootId: 'root-1',
+        progress: [],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    const panel = wrapper.get('.run-status-panel.group.solo')
+    expect(panel.classes()).not.toContain('multi')
+    expect(panel.text()).toContain('Codex')
+    expect(panel.get('.direct-run-indicator').exists()).toBe(true)
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('queued')
+    expect(panel.get('.solo-run-status').text()).toBe('Queued')
+    expect(panel.text()).not.toContain('Codex is working in this chat')
+    expect(panel.find('.typing-bars').exists()).toBe(false)
+    expect(wrapper.find('.relay-run-indicator').exists()).toBe(false)
+    expect(wrapper.find('.run-agent-list').exists()).toBe(false)
+    expect(wrapper.findAll('.run-agent-row')).toHaveLength(0)
+
+    state.runs[0].phase = 'running'
+    state.runs[0].currentKind = 'codex'
+    state.runs[0].progress = [{ title: 'process', status: 'running' }]
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('running')
+    expect(panel.get('.solo-run-status').text()).toBe('Running')
+    expect(panel.text()).toContain('Codex is working in this chat')
+    expect(panel.get('.typing-bars').exists()).toBe(true)
+    expect(panel.get('.run-progress-details').text()).toContain('Run process')
+
+    state.runs[0].currentKind = ''
+    state.runs[0].completedKinds = ['codex']
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('completed')
+    expect(panel.get('.solo-run-status').text()).toBe('Completed')
+    expect(panel.text()).not.toContain('Codex is working in this chat')
+    expect(panel.find('.typing-bars').exists()).toBe(false)
+
+    state.runs[0].failedKinds = ['codex']
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('failed')
+    expect(panel.get('.solo-run-status').text()).toBe('Failed')
+    expect(panel.text()).not.toContain('Codex is working in this chat')
+    expect(panel.find('.typing-bars').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -3232,8 +3320,10 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.message-row.agent').text()).toContain('Final answer remains visible.')
     expect(wrapper.get('#message-root-1').classes()).toContain('active-topic')
     expect(scrollIntoView).toHaveBeenCalled()
-    expect(wrapper.get('.run-status-panel.group').text()).toContain('Hermes')
+    expect(wrapper.get('.run-status-panel.group.multi').text()).toContain('Hermes')
     expect(wrapper.get('.run-round-progress').text()).toBe('Round 2/6')
+    expect(wrapper.findAll('.relay-run-indicator .run-agent-logo').map(logo => logo.attributes('data-status')))
+      .toEqual(['completed', 'running', 'queued'])
     expect(wrapper.findAll('.run-agent-row').map(row => row.attributes('data-status')))
       .toEqual(['completed', 'running', 'queued'])
     expect(wrapper.findAll('.run-agent-row').map(row => row.text()))
@@ -3257,6 +3347,13 @@ describe('RoundRelay workbench', () => {
     expect(detailsText).toContain('进行中')
     expect(detailsText).not.toContain('internal_debug')
     expect(detailsText).not.toContain('private_detail')
+
+    state.runs[0].failedKinds = ['codex']
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(wrapper.findAll('.run-agent-row')[0].attributes('data-status')).toBe('failed')
+    expect(wrapper.findAll('.run-agent-row .run-agent-logo')[0].attributes('data-status')).toBe('failed')
+    expect(wrapper.findAll('.run-agent-row')[0].find('.run-agent-motion[data-status="failed"] svg').exists()).toBe(true)
     wrapper.unmount()
   })
 
