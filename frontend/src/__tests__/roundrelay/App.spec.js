@@ -2088,8 +2088,9 @@ describe('RoundRelay workbench', () => {
   it('keeps sidebar session trees visible and collapses long lists behind More', async () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     expect(source).toMatch(/\.direct-session-list::before/)
-    expect(source).toMatch(/\.group-conversation-list::before/)
-    expect(source).toMatch(/\.sidebar-more-button::before/)
+    expect(source).toMatch(/\.direct-session-list > \.sidebar-more-button::before/)
+    expect(source).not.toMatch(/\.group-conversation-list::before/)
+    expect(source).not.toMatch(/\.group-conversation-row::before/)
 
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push(

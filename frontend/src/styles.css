@@ -664,13 +664,11 @@ button svg {
 }
 
 .group-conversation-list {
-  position: relative;
-  margin: 2px 3px 0 8px;
-  padding: 2px 0 2px 10px;
+  margin: 0;
+  padding: 0;
 }
 
-.direct-session-list::before,
-.group-conversation-list::before {
+.direct-session-list::before {
   content: "";
   position: absolute;
   top: 17px;
@@ -696,8 +694,7 @@ button svg {
 }
 
 .direct-session-row::before,
-.group-conversation-row::before,
-.sidebar-more-button::before {
+.direct-session-list > .sidebar-more-button::before {
   content: "";
   position: absolute;
   top: 50%;
