@@ -20,6 +20,10 @@ release/
 *.blockmap
 latest*.yml
 
+# Local documentation drafts
+/docs/
+/documentation/
+
 # Test and coverage output
 coverage/
 frontend/coverage/

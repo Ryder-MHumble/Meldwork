@@ -110,7 +110,7 @@
                     :title="t('nav.renameDirect', { name: groupName(group) })"
                     :aria-label="t('nav.renameDirect', { name: groupName(group) })"
                     :disabled="isGroupRunning(group.id)"
-                    @click="openDirectRename(group)"
+                    @click="openConversationRename(group)"
                   >
                     <PencilOutline />
                   </button>
@@ -120,7 +120,7 @@
                     :title="t('nav.deleteDirect', { name: groupName(group) })"
                     :aria-label="t('nav.deleteDirect', { name: groupName(group) })"
                     :disabled="isGroupRunning(group.id)"
-                    @click="openDirectDelete(group)"
+                    @click="openConversationDelete(group)"
                   >
                     <TrashOutline />
                   </button>
@@ -135,36 +135,83 @@
               <span>{{ t('nav.groups') }}</span>
               <PeopleOutline />
             </div>
-            <button
+            <div
               v-for="group in groupGroups"
               :key="group.id"
-              class="conversation-link"
+              class="group-conversation-row"
               :class="{ active: selectedGroupId === group.id }"
-              type="button"
-              @click="selectGroup(group.id)"
             >
-              <span class="group-avatar"><ChatbubblesOutline /></span>
-              <span>{{ groupName(group) }}</span>
-              <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
-                <span class="run-pulse" />
+              <button
+                class="conversation-link"
+                type="button"
+                :title="t('nav.openGroup', { name: groupName(group) })"
+                @click="selectGroup(group.id)"
+              >
+                <span class="group-avatar"><ChatbubblesOutline /></span>
+                <span>{{ groupName(group) }}</span>
+                <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+                  <span class="run-pulse" />
+                </span>
+              </button>
+              <span class="group-conversation-actions">
+                <button
+                  class="direct-session-action"
+                  type="button"
+                  :title="t('nav.renameGroup', { name: groupName(group) })"
+                  :aria-label="t('nav.renameGroup', { name: groupName(group) })"
+                  :disabled="isGroupRunning(group.id)"
+                  @click="openConversationRename(group)"
+                >
+                  <PencilOutline />
+                </button>
+                <button
+                  class="direct-session-action danger"
+                  type="button"
+                  :title="t('nav.deleteGroup', { name: groupName(group) })"
+                  :aria-label="t('nav.deleteGroup', { name: groupName(group) })"
+                  :disabled="isGroupRunning(group.id)"
+                  @click="openConversationDelete(group)"
+                >
+                  <TrashOutline />
+                </button>
               </span>
-            </button>
+            </div>
             <p v-if="!groupGroups.length" class="nav-empty">{{ t('nav.noGroups') }}</p>
           </section>
         </nav>
 
         <footer class="sidebar-footer">
-          <button type="button" :title="t('nav.agents')" @click="openAgentManager">
-            <TerminalOutline />
-            <span>{{ t('nav.agents') }}</span>
-            <span class="footer-count">{{ readyCount }}/{{ AGENTS.length }}</span>
+          <button
+            class="sidebar-settings-entry"
+            :class="{ active: systemSettingsOpen }"
+            type="button"
+            :title="t('nav.settings')"
+            @click="openSystemSettings('agents')"
+          >
+            <SettingsOutline />
+            <span>{{ t('nav.settings') }}</span>
           </button>
-          <button type="button" :title="t('nav.provider')" @click="openProvider">
-            <KeyOutline />
-            <span>{{ t('nav.provider') }}</span>
-            <CheckmarkCircleOutline v-if="providerStatus.configured" class="footer-status ready" />
-            <WarningOutline v-else class="footer-status" />
-          </button>
+          <div class="sidebar-footer-actions">
+            <button
+              class="icon-button"
+              type="button"
+              :title="t('common.languageTarget')"
+              :aria-label="t('common.language')"
+              @click="toggleLocale"
+            >
+              <LanguageOutline />
+            </button>
+            <button
+              class="icon-button"
+              type="button"
+              :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
+              :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
+              @click="toggleTheme"
+            >
+              <SunnyOutline v-if="theme === 'dark'" />
+              <MoonOutline v-else />
+            </button>
+          </div>
         </footer>
       </aside>
 
@@ -173,7 +220,183 @@
         :inert="blockingOverlayOpen ? '' : undefined"
         :aria-hidden="blockingOverlayOpen ? 'true' : undefined"
       >
-        <section v-if="!activeGroup" class="agent-home">
+        <section v-if="systemSettingsOpen" class="system-settings-page">
+          <header class="system-settings-header">
+            <div>
+              <h1>{{ t('systemSettings.title') }}</h1>
+              <p>{{ t('systemSettings.subtitle') }}</p>
+            </div>
+          </header>
+
+          <div class="system-settings-body">
+            <nav class="settings-tabs" role="tablist" :aria-label="t('systemSettings.title')">
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="systemSettingsSection === 'agents'"
+                :class="{ active: systemSettingsSection === 'agents' }"
+                @click="selectSystemSettingsSection('agents')"
+              >
+                <TerminalOutline />
+                {{ t('systemSettings.agents') }}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="systemSettingsSection === 'providers'"
+                :class="{ active: systemSettingsSection === 'providers' }"
+                @click="selectSystemSettingsSection('providers')"
+              >
+                <KeyOutline />
+                {{ t('systemSettings.providers') }}
+              </button>
+            </nav>
+
+            <section v-if="systemSettingsSection === 'agents'" class="settings-panel agent-manager">
+              <div class="manager-toolbar">
+                <span>{{ t('home.readyCount', { ready: readyCount, installed: installedCount }) }}</span>
+                <button class="secondary-button" type="button" :disabled="refreshing" @click="refreshAgents">
+                  <RefreshOutline :class="{ spinning: refreshing }" />
+                  {{ t('installer.refresh') }}
+                </button>
+              </div>
+              <div class="manager-list">
+                <article v-for="agent in mergedCatalog" :key="agent.kind" class="manager-row" :class="{ focused: focusedAgentKind === agent.kind }">
+                  <img :src="agent.logo" :alt="agent.label" />
+                  <div class="manager-copy">
+                    <div>
+                      <strong>{{ agent.label }}</strong>
+                      <span class="agent-state" :class="agentState(agent).tone">
+                        <component :is="agentState(agent).icon" />
+                        {{ agentState(agent).label }}
+                      </span>
+                    </div>
+                    <p>{{ agentDescription(agent.kind) }}</p>
+                    <small>{{ providerModeLabel(agent.providerMode) }}</small>
+                    <small v-if="agent.version">{{ t('agent.detectedVersion', { version: agent.version }) }}</small>
+                    <div v-if="installConfirmKind === agent.kind" class="install-confirm">
+                      <strong>{{ t('installer.confirm', { agent: agent.label }) }}</strong>
+                      <span>{{ t('installer.confirmHint') }}</span>
+                    </div>
+                    <div v-if="installerState.kind === agent.kind && installerState.phase !== 'idle'" class="install-progress">
+                      <span>{{ installerPhaseLabel }}</span>
+                    </div>
+                  </div>
+                  <div class="manager-actions">
+                    <button
+                      v-if="agent.ready"
+                      class="secondary-button compact"
+                      type="button"
+                      :disabled="isDirectCreationPending(agent.kind)"
+                      @click="openDirect(agent)"
+                    >
+                      <ChatbubbleEllipsesOutline />
+                      {{ t('home.openChat') }}
+                    </button>
+                    <button
+                      v-else-if="!agent.installed && agent.installSupported"
+                      class="primary-button compact"
+                      type="button"
+                      :disabled="installerBusy && installerState.kind !== agent.kind"
+                      @click="requestInstall(agent)"
+                    >
+                      <DownloadOutline />
+                      {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
+                    </button>
+                    <span v-else-if="!agent.installed" class="manager-note">
+                      {{ agent.installErrorCode === 'INSTALL_AGENT_NODE_REQUIRED' ? t('installer.nodeRequired') : t('installer.unsupported') }}
+                    </span>
+                    <button
+                      v-if="installerState.kind === agent.kind && installerState.canCancel"
+                      class="secondary-button compact"
+                      type="button"
+                      @click="cancelInstall"
+                    >
+                      {{ t('installer.cancel') }}
+                    </button>
+                    <button
+                      v-else-if="supportsExternalProvider(agent)"
+                      class="secondary-button compact"
+                      type="button"
+                      @click="openProvider(agent.kind)"
+                    >
+                      <KeyOutline />
+                      {{ t('systemSettings.providerForAgent') }}
+                    </button>
+                  </div>
+                </article>
+              </div>
+            </section>
+
+            <section v-else class="settings-panel provider-settings-panel">
+              <nav class="provider-agent-list" :aria-label="t('systemSettings.providers')">
+                <button
+                  v-for="agent in configurableProviderAgents"
+                  :key="agent.kind"
+                  type="button"
+                  :class="{ active: selectedProviderKind === agent.kind }"
+                  @click="selectProviderAgent(agent.kind)"
+                >
+                  <img :src="agent.logo" alt="" />
+                  <span>
+                    <strong>{{ agent.label }}</strong>
+                    <small>{{ providerStatusFor(agent.kind).configured ? t('provider.configured') : t('provider.notConfigured') }}</small>
+                  </span>
+                  <CheckmarkCircleOutline v-if="providerStatusFor(agent.kind).configured" class="ready" />
+                  <ChevronForwardOutline v-else />
+                </button>
+              </nav>
+
+              <form class="provider-editor form-stack" @submit.prevent="saveProvider">
+                <header v-if="selectedProviderAgent" class="provider-editor-header">
+                  <img :src="selectedProviderAgent.logo" alt="" />
+                  <div>
+                    <h2>{{ t('provider.agentTitle', { agent: selectedProviderAgent.label }) }}</h2>
+                    <p>{{ agentDescription(selectedProviderAgent.kind) }}</p>
+                  </div>
+                </header>
+                <div class="provider-status" :class="{ configured: providerStatus.configured }">
+                  <CheckmarkCircleOutline v-if="providerStatus.configured" />
+                  <WarningOutline v-else />
+                  <span>{{ providerStatus.configured ? t('provider.configured') : t('provider.notConfigured') }}</span>
+                </div>
+                <p class="provider-agent-hint">{{ t('provider.agentSpecificHint') }}</p>
+                <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
+                  {{ t('provider.encryptionUnavailable') }}
+                </p>
+                <label>
+                  <span>{{ t('provider.name') }}</span>
+                  <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" :disabled="saving" />
+                </label>
+                <label>
+                  <span>{{ t('provider.baseUrl') }}</span>
+                  <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" :disabled="saving" />
+                </label>
+                <label>
+                  <span>{{ t('provider.model') }}</span>
+                  <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" :disabled="saving" />
+                </label>
+                <label>
+                  <span>{{ t('provider.apiKey') }}</span>
+                  <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" :disabled="saving" />
+                </label>
+                <p v-if="formError" class="form-error">{{ formError }}</p>
+                <footer class="provider-editor-footer">
+                  <button v-if="providerStatus.configured" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
+                    <TrashOutline />
+                    {{ providerRemoveArmed ? t('provider.removeConfirm') : t('provider.remove') }}
+                  </button>
+                  <span class="footer-spacer" />
+                  <button class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
+                    {{ saving ? t('common.saving') : t('provider.save') }}
+                  </button>
+                </footer>
+              </form>
+            </section>
+          </div>
+        </section>
+
+        <section v-else-if="!activeGroup" class="agent-home">
           <header class="home-header">
             <div>
               <h1>{{ t('home.title') }}</h1>
@@ -188,27 +411,6 @@
                 <SettingsOutline />
                 <span>{{ t('home.manage') }}</span>
               </button>
-              <div class="workspace-preferences">
-                <button
-                  class="icon-button"
-                  type="button"
-                  :title="t('common.languageTarget')"
-                  :aria-label="t('common.language')"
-                  @click="toggleLocale"
-                >
-                  <LanguageOutline />
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-                  :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-                  @click="toggleTheme"
-                >
-                  <SunnyOutline v-if="theme === 'dark'" />
-                  <MoonOutline v-else />
-                </button>
-              </div>
             </div>
           </header>
 
@@ -359,27 +561,6 @@
               >
                 <SettingsOutline />
               </button>
-              <div class="workspace-preferences">
-                <button
-                  class="icon-button"
-                  type="button"
-                  :title="t('common.languageTarget')"
-                  :aria-label="t('common.language')"
-                  @click="toggleLocale"
-                >
-                  <LanguageOutline />
-                </button>
-                <button
-                  class="icon-button"
-                  type="button"
-                  :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-                  :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-                  @click="toggleTheme"
-                >
-                  <SunnyOutline v-if="theme === 'dark'" />
-                  <MoonOutline v-else />
-                </button>
-              </div>
             </div>
           </header>
 
@@ -403,7 +584,6 @@
                   type="button"
                   :class="{ active: activeTurnRailId === turn.id }"
                   :data-status="turn.status"
-                  :title="turnRailLabel(turn)"
                   :aria-label="turnRailLabel(turn)"
                   :aria-current="activeTurnRailId === turn.id ? 'true' : undefined"
                   @click="focusTurn(turn.id)"
@@ -425,8 +605,10 @@
                   :class="[
                     message.role,
                     {
-                      'topic-root': isTopicRoot(message),
-                      'topic-reply': Boolean(messageThreadRootId(message)),
+                      'direct-message': activeGroup.conversationType === 'direct',
+                      'group-message': activeGroup.conversationType !== 'direct',
+                      'topic-root': activeGroup.conversationType !== 'direct' && isTopicRoot(message),
+                      'topic-reply': activeGroup.conversationType !== 'direct' && Boolean(messageThreadRootId(message)),
                       'active-topic': isActiveRunTopic(message),
                       copied: isMessageCopied(message.id),
                     },
@@ -460,7 +642,7 @@
                       <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
                       <time>{{ formatTime(message.createdAt) }}</time>
                       <span v-if="isActiveRunTopic(message)" class="active-topic-label">
-                        {{ t('conversation.activeTopic') }}
+                        {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
                       </span>
                       <button
                         v-if="isTopicRoot(message)"
@@ -512,6 +694,16 @@
                     </template>
                     <template v-else>
                       <div
+                        v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
+                        class="message-target-list"
+                        :aria-label="t('composer.mentionedAgents')"
+                      >
+                        <span v-for="kind in messageTargetKinds(message)" :key="kind">
+                          <img :src="agentLogo(kind)" alt="" />
+                          {{ agentLabel(kind) }}
+                        </span>
+                      </div>
+                      <div
                         v-if="message.content"
                         class="message-content plain-message message-copy-surface"
                         :class="{ copied: isMessageCopied(message.id) }"
@@ -524,26 +716,42 @@
                           @{{ skill.name || skill.slug }}
                         </span>
                       </div>
-                      <div v-if="messageAttachments(message).length" class="message-attachment-grid">
-                        <figure
-                          v-for="attachment in messageAttachments(message)"
-                          :key="attachment.id"
-                          v-attachment-preview="attachment"
-                        >
-                          <img
-                            v-if="attachmentPreviewUrl(attachment)"
-                            :src="attachmentPreviewUrl(attachment)"
-                            :alt="attachment.name"
-                            loading="lazy"
-                            decoding="async"
-                          />
-                          <div v-else class="message-attachment-placeholder" aria-hidden="true">
-                            <AttachOutline />
-                          </div>
-                          <figcaption :title="attachment.name">{{ attachment.name }}</figcaption>
-                        </figure>
-                      </div>
                     </template>
+                    <div v-if="messageAttachments(message).length" class="message-attachment-grid">
+                      <figure
+                        v-for="attachment in messageAttachments(message)"
+                        :key="attachment.id"
+                        v-attachment-preview="isImageAttachment(attachment) ? attachment : null"
+                        :class="`media-${attachmentKind(attachment)}`"
+                      >
+                        <img
+                          v-if="isImageAttachment(attachment) && attachmentPreviewUrl(attachment)"
+                          :src="attachmentPreviewUrl(attachment)"
+                          :alt="attachment.name"
+                          loading="lazy"
+                          decoding="async"
+                        />
+                        <audio
+                          v-else-if="attachmentKind(attachment) === 'audio'"
+                          :src="attachmentMediaUrl(attachment)"
+                          :aria-label="attachment.name"
+                          controls
+                          preload="metadata"
+                        />
+                        <video
+                          v-else-if="attachmentKind(attachment) === 'video'"
+                          :src="attachmentMediaUrl(attachment)"
+                          :aria-label="attachment.name"
+                          controls
+                          preload="metadata"
+                          playsinline
+                        />
+                        <div v-else class="message-attachment-placeholder" aria-hidden="true">
+                          <AttachOutline />
+                        </div>
+                        <figcaption :title="attachment.name">{{ attachment.name }}</figcaption>
+                      </figure>
+                    </div>
                   </div>
                 </template>
               </article>
@@ -576,7 +784,7 @@
                       <strong>{{ activeRunLabel }}</strong>
                       <span v-if="activeRunTopicRootId">{{ t('conversation.activeTopic') }}</span>
                       <span v-if="runRoundProgress" class="run-round-progress">
-                        {{ t('run.roundProgress', runRoundProgress) }}
+                        {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
                       </span>
                     </div>
                   </header>
@@ -594,22 +802,36 @@
                     >
                       <img :src="agentLogo(kind)" alt="" />
                       <strong>{{ agentLabel(kind) }}</strong>
-                      <small :class="runAgentStatus(kind)">{{ runStatusLabel(runAgentStatus(kind)) }}</small>
+                      <span class="run-agent-state">
+                        <span
+                          class="run-agent-motion"
+                          :data-status="runAgentStatus(kind)"
+                          aria-hidden="true"
+                        >
+                          <CheckmarkCircleOutline v-if="runAgentStatus(kind) === 'completed'" />
+                          <CloseCircleOutline v-else-if="runAgentStatus(kind) === 'failed'" />
+                          <span v-else-if="runAgentStatus(kind) === 'running'" class="run-agent-bars">
+                            <i /><i /><i />
+                          </span>
+                          <span v-else class="run-agent-dots"><i /><i /><i /></span>
+                        </span>
+                        <small :class="runAgentStatus(kind)">{{ runStatusLabel(runAgentStatus(kind)) }}</small>
+                      </span>
                     </div>
                   </div>
-                  <details v-if="activeRunProgress.length" class="execution-details run-progress-details">
-                    <summary>
+                  <div v-if="activeRunProgress.length" class="execution-details run-progress-details">
+                    <div class="execution-progress-header">
                       <TerminalOutline />
                       <span>{{ t('run.progress') }}</span>
                       <small>{{ activeRunProgress.length }}</small>
-                    </summary>
+                    </div>
                     <ol>
                       <li v-for="(step, index) in activeRunProgress" :key="`${step.title}-${index}`">
                         <span>{{ localizedStepTitle(step, index) }}</span>
                         <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
                       </li>
                     </ol>
-                  </details>
+                  </div>
                 </section>
               </div>
             </div>
@@ -622,32 +844,41 @@
                 id="composer-skill-menu"
                 class="skill-menu"
                 role="listbox"
-                :aria-label="t('composer.skills')"
+                :aria-label="t('composer.mentions')"
               >
                 <p v-if="skillsLoading" class="skill-menu-state">{{ t('composer.skillsLoading') }}</p>
-                <template v-else-if="filteredSkillOptions.length">
+                <template v-else-if="composerMenuOptions.length">
                   <button
-                    v-for="(skill, index) in filteredSkillOptions"
-                    :key="skillKey(skill)"
-                    :id="`composer-skill-option-${index}`"
+                    v-for="(option, index) in composerMenuOptions"
+                    :key="option.type === 'skill' ? skillKey(option.value) : `agent:${option.value}`"
+                    :id="`composer-mention-option-${index}`"
                     class="skill-option"
-                    :class="{ active: skillActiveIndex === index }"
+                    :class="{ active: skillActiveIndex === index, 'agent-mention-option': option.type === 'agent' }"
                     type="button"
                     role="option"
                     :aria-selected="skillActiveIndex === index"
-                    :disabled="selectedSkills.length >= MAX_SKILLS"
+                    :disabled="option.type === 'skill' && selectedSkills.length >= MAX_SKILLS"
                     @mouseenter="skillActiveIndex = index"
-                    @click="selectSkill(skill)"
+                    @click="selectComposerMenuOption(option)"
                   >
+                    <img
+                      v-if="option.type === 'agent'"
+                      :src="agentLogo(option.value)"
+                      alt=""
+                    />
                     <span>
-                      <strong>{{ skill.name || skill.slug }}</strong>
-                      <small>{{ agentLabel(skill.targetKind) }} / {{ skill.namespace }}</small>
+                      <strong>{{ option.type === 'skill' ? (option.value.name || option.value.slug) : agentLabel(option.value) }}</strong>
+                      <small>
+                        {{ option.type === 'skill'
+                          ? `${agentLabel(option.value.targetKind)} / ${option.value.namespace}`
+                          : agentDescription(option.value) }}
+                      </small>
                     </span>
                     <AddOutline />
                   </button>
                 </template>
                 <p v-else class="skill-menu-state">
-                  {{ selectedSkills.length >= MAX_SKILLS ? t('composer.skillLimit') : t('composer.noSkills') }}
+                  {{ selectedSkills.length >= MAX_SKILLS ? t('composer.skillLimit') : t('composer.noMentions') }}
                 </p>
               </section>
 
@@ -669,7 +900,7 @@
                       data-mode="auto"
                       :class="{ active: discussionMode === 'auto' }"
                       :aria-pressed="discussionMode === 'auto'"
-                      :disabled="Boolean(activeRun) || sending"
+                      :disabled="Boolean(activeRun) || sending || selectedAgentKinds.length > 0"
                       @click="discussionMode = 'auto'"
                     >
                       {{ t('composer.auto') }}
@@ -700,29 +931,61 @@
                     </div>
                   </div>
 
-                  <div v-if="discussionMode === 'auto'" class="round-stepper">
-                    <span>{{ t('composer.maxRounds') }}</span>
+                  <div
+                    v-if="discussionMode === 'auto'"
+                    ref="roundSettingsControl"
+                    class="round-settings-control"
+                    @click.stop
+                  >
                     <button
                       type="button"
-                      class="round-stepper-decrease"
-                      :title="t('composer.decreaseRounds')"
-                      :aria-label="t('composer.decreaseRounds')"
-                      :disabled="Boolean(activeRun) || sending || maxRounds <= 1"
-                      @click="adjustMaxRounds(-1)"
+                      class="round-settings-trigger"
+                      :title="t('composer.maxRounds')"
+                      :aria-label="t('composer.maxRounds')"
+                      aria-haspopup="dialog"
+                      :aria-expanded="roundSettingsOpen ? 'true' : 'false'"
+                      :disabled="Boolean(activeRun) || sending"
+                      @click="roundSettingsOpen = !roundSettingsOpen"
                     >
-                      <RemoveOutline />
+                      <span>{{ unlimitedRounds ? t('composer.unlimitedRounds') : t('composer.autoRounds', { count: maxRounds }) }}</span>
+                      <ChevronDownOutline :class="{ open: roundSettingsOpen }" />
                     </button>
-                    <output aria-live="polite">{{ t('composer.autoRounds', { count: maxRounds }) }}</output>
-                    <button
-                      type="button"
-                      class="round-stepper-increase"
-                      :title="t('composer.increaseRounds')"
-                      :aria-label="t('composer.increaseRounds')"
-                      :disabled="Boolean(activeRun) || sending || maxRounds >= 10"
-                      @click="adjustMaxRounds(1)"
+                    <section
+                      v-if="roundSettingsOpen"
+                      class="round-settings-popover"
+                      role="dialog"
+                      :aria-label="t('composer.maxRounds')"
                     >
-                      <AddOutline />
-                    </button>
+                      <header>
+                        <span>{{ t('composer.maxRounds') }}</span>
+                        <output aria-live="polite">
+                          {{ unlimitedRounds ? t('composer.unlimitedRounds') : t('composer.autoRounds', { count: maxRounds }) }}
+                        </output>
+                      </header>
+                      <input
+                        v-model.number="maxRounds"
+                        class="round-range-input"
+                        type="range"
+                        min="1"
+                        max="10"
+                        step="1"
+                        :disabled="unlimitedRounds"
+                        :aria-label="t('composer.maxRounds')"
+                        :aria-valuetext="t('composer.autoRounds', { count: maxRounds })"
+                      />
+                      <div class="round-range-labels" aria-hidden="true">
+                        <span>1</span>
+                        <span>10</span>
+                      </div>
+                      <label class="round-unlimited-row">
+                        <span>{{ t('composer.unlimitedRounds') }}</span>
+                        <input
+                          v-model="unlimitedRounds"
+                          class="round-unlimited-toggle"
+                          type="checkbox"
+                        />
+                      </label>
+                    </section>
                   </div>
                 </div>
 
@@ -742,21 +1005,42 @@
                   </article>
                 </div>
 
-                <textarea
-                  ref="composerInput"
-                  v-model="draft"
-                  rows="1"
-                  :placeholder="t('composer.placeholder', { name: groupName(activeGroup) })"
-                  :disabled="Boolean(activeRun) || sending"
-                  role="combobox"
-                  aria-autocomplete="list"
-                  aria-controls="composer-skill-menu"
-                  :aria-expanded="skillMenuOpen ? 'true' : 'false'"
-                  :aria-activedescendant="activeSkillOptionId || undefined"
-                  @input="handleComposerInput"
-                  @keydown="handleComposerKeydown"
-                  @paste="handleComposerPaste"
-                />
+                <div class="composer-input-shell">
+                  <div
+                    v-if="activeGroup.conversationType !== 'direct' && selectedAgentKinds.length"
+                    class="selected-agent-list"
+                    :aria-label="t('composer.mentionedAgents')"
+                  >
+                    <span v-for="kind in selectedAgentKinds" :key="kind" class="selected-agent-tag">
+                      <img :src="agentLogo(kind)" alt="" />
+                      {{ agentLabel(kind) }}
+                      <button
+                        type="button"
+                        :title="t('composer.removeMention', { agent: agentLabel(kind) })"
+                        :aria-label="t('composer.removeMention', { agent: agentLabel(kind) })"
+                        :disabled="Boolean(activeRun) || sending"
+                        @click="removeAgentMention(kind)"
+                      >
+                        <CloseOutline />
+                      </button>
+                    </span>
+                  </div>
+                  <textarea
+                    ref="composerInput"
+                    v-model="draft"
+                    rows="1"
+                    :placeholder="t('composer.placeholder', { name: groupName(activeGroup) })"
+                    :disabled="Boolean(activeRun) || sending"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-controls="composer-skill-menu"
+                    :aria-expanded="skillMenuOpen ? 'true' : 'false'"
+                    :aria-activedescendant="activeSkillOptionId || undefined"
+                    @input="handleComposerInput"
+                    @keydown="handleComposerKeydown"
+                    @paste="handleComposerPaste"
+                  />
+                </div>
                 <div class="composer-actions">
                   <div class="composer-tools">
                     <button
@@ -797,14 +1081,31 @@
                   </div>
 
                   <div class="composer-run-actions">
-                    <button v-if="activeRun" class="stop-button" type="button" @click="stopRun">
-                      <StopCircleOutline />
-                      {{ t('composer.stop') }}
+                    <button
+                      v-if="activeRun"
+                      class="stop-button"
+                      type="button"
+                      :title="t('composer.stop')"
+                      :aria-label="t('composer.stop')"
+                      @click="stopRun"
+                    >
+                      <span class="stop-button-motion" aria-hidden="true"><StopCircleOutline /></span>
+                      <span class="visually-hidden">{{ t('composer.stop') }}</span>
                     </button>
-                    <button v-else class="send-button" type="button" :disabled="!canSendMessage || sending" @click="sendMessage">
-                      <PlayOutline v-if="composerMode === 'auto'" />
+                    <button
+                      v-else
+                      class="send-button"
+                      type="button"
+                      :class="{ sending }"
+                      :title="sendButtonLabel"
+                      :aria-label="sendButtonLabel"
+                      :disabled="!canSendMessage || sending"
+                      @click="sendMessage"
+                    >
+                      <span v-if="sending" class="send-button-loader" aria-hidden="true"><i /><i /><i /></span>
+                      <PlayOutline v-else-if="composerMode === 'auto'" />
                       <SendOutline v-else />
-                      <span>{{ sendButtonLabel }}</span>
+                      <span class="visually-hidden">{{ sendButtonLabel }}</span>
                     </button>
                   </div>
                 </div>
@@ -886,7 +1187,7 @@
         <section
           ref="modalDialog"
           class="modal"
-          :class="{ wide: modal === 'agents', medium: modal === 'new-group' || modal === 'settings' }"
+          :class="{ medium: modal === 'new-group' || modal === 'settings' }"
           role="dialog"
           aria-modal="true"
           aria-labelledby="modal-title"
@@ -1018,114 +1319,6 @@
             </footer>
           </form>
 
-          <section v-else-if="modal === 'agents'" class="modal-body agent-manager">
-            <div class="manager-toolbar">
-              <span>{{ t('home.readyCount', { ready: readyCount, installed: installedCount }) }}</span>
-              <button class="secondary-button" type="button" :disabled="refreshing" @click="refreshAgents">
-                <RefreshOutline :class="{ spinning: refreshing }" />
-                {{ t('installer.refresh') }}
-              </button>
-            </div>
-            <div class="manager-list">
-              <article v-for="agent in mergedCatalog" :key="agent.kind" class="manager-row" :class="{ focused: focusedAgentKind === agent.kind }">
-                <img :src="agent.logo" :alt="agent.label" />
-                <div class="manager-copy">
-                  <div>
-                    <strong>{{ agent.label }}</strong>
-                    <span class="agent-state" :class="agentState(agent).tone">
-                      <component :is="agentState(agent).icon" />
-                      {{ agentState(agent).label }}
-                    </span>
-                  </div>
-                  <p>{{ providerModeLabel(agent.providerMode) }}</p>
-                  <small v-if="agent.version">{{ t('agent.detectedVersion', { version: agent.version }) }}</small>
-                  <div v-if="installConfirmKind === agent.kind" class="install-confirm">
-                    <strong>{{ t('installer.confirm', { agent: agent.label }) }}</strong>
-                    <span>{{ t('installer.confirmHint') }}</span>
-                  </div>
-                  <div v-if="installerState.kind === agent.kind && installerState.phase !== 'idle'" class="install-progress">
-                    <span>{{ installerPhaseLabel }}</span>
-                  </div>
-                </div>
-                <div class="manager-actions">
-                  <button
-                    v-if="agent.ready"
-                    class="secondary-button compact"
-                    type="button"
-                    :disabled="isDirectCreationPending(agent.kind)"
-                    @click="openDirect(agent)"
-                  >
-                    <ChatbubbleEllipsesOutline />
-                    {{ t('home.openChat') }}
-                  </button>
-                  <button
-                    v-else-if="!agent.installed && agent.installSupported"
-                    class="primary-button compact"
-                    type="button"
-                    :disabled="installerBusy && installerState.kind !== agent.kind"
-                    @click="requestInstall(agent)"
-                  >
-                    <DownloadOutline />
-                    {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
-                  </button>
-                  <span v-else-if="!agent.installed" class="manager-note">
-                    {{ agent.installErrorCode === 'INSTALL_AGENT_NODE_REQUIRED' ? t('installer.nodeRequired') : t('installer.unsupported') }}
-                  </span>
-                  <button
-                    v-if="installerState.kind === agent.kind && installerState.canCancel"
-                    class="secondary-button compact"
-                    type="button"
-                    @click="cancelInstall"
-                  >
-                    {{ t('installer.cancel') }}
-                  </button>
-                  <button v-else-if="agent.installed && !agent.ready && supportsSharedProvider(agent)" class="secondary-button compact" type="button" @click="openProvider">
-                    <KeyOutline />
-                    {{ t('nav.provider') }}
-                  </button>
-                </div>
-              </article>
-            </div>
-          </section>
-
-          <form v-else-if="modal === 'provider'" class="modal-body form-stack" @submit.prevent="saveProvider">
-            <div class="provider-status" :class="{ configured: providerStatus.configured }">
-              <CheckmarkCircleOutline v-if="providerStatus.configured" />
-              <WarningOutline v-else />
-              <span>{{ providerStatus.configured ? t('provider.configured') : t('provider.notConfigured') }}</span>
-            </div>
-            <p v-if="providerStatus.encryptionAvailable === false" class="form-error">
-              {{ t('provider.encryptionUnavailable') }}
-            </p>
-            <label>
-              <span>{{ t('provider.name') }}</span>
-              <input v-model.trim="providerForm.provider" :placeholder="t('provider.namePlaceholder')" autocomplete="off" :disabled="saving" />
-            </label>
-            <label>
-              <span>{{ t('provider.baseUrl') }}</span>
-              <input v-model.trim="providerForm.baseUrl" :placeholder="t('provider.baseUrlPlaceholder')" inputmode="url" autocomplete="off" :disabled="saving" />
-            </label>
-            <label>
-              <span>{{ t('provider.model') }}</span>
-              <input v-model.trim="providerForm.model" :placeholder="t('provider.modelPlaceholder')" autocomplete="off" :disabled="saving" />
-            </label>
-            <label>
-              <span>{{ t('provider.apiKey') }}</span>
-              <input v-model="providerForm.apiKey" type="password" :placeholder="t('provider.apiKeyPlaceholder')" autocomplete="new-password" :disabled="saving" />
-            </label>
-            <p v-if="formError" class="form-error">{{ formError }}</p>
-            <footer class="modal-footer provider-footer">
-              <button v-if="providerStatus.configured" class="danger-button" type="button" :disabled="saving" @click="removeProvider">
-                <TrashOutline />
-                {{ providerRemoveArmed ? t('provider.removeConfirm') : t('provider.remove') }}
-              </button>
-              <span class="footer-spacer" />
-              <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
-              <button class="primary-button" type="submit" :disabled="saving || providerStatus.encryptionAvailable === false">
-                {{ saving ? t('common.saving') : t('provider.save') }}
-              </button>
-            </footer>
-          </form>
         </section>
       </div>
 
@@ -1173,7 +1366,6 @@ import {
   PersonOutline,
   PlayOutline,
   RefreshOutline,
-  RemoveOutline,
   SendOutline,
   SettingsOutline,
   StopCircleOutline,
@@ -1202,9 +1394,16 @@ const RUN_FINISHED_STATUSES = new Set([
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
   'codex', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini', 'opencode',
 ])
+const EXTERNAL_PROVIDER_KINDS = new Set(['hermes', 'openclaw', 'workbuddy', 'qwen'])
+const EMPTY_PROVIDER_STATUS = Object.freeze({
+  provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true,
+})
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
-const providerStatus = ref({ provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true })
+const providerStatuses = ref({})
+const selectedProviderKind = ref('hermes')
+const systemSettingsOpen = ref(false)
+const systemSettingsSection = ref('agents')
 const selectedGroupId = ref('')
 const sidebarCollapsed = ref(false)
 const defaultDirectory = ref('')
@@ -1217,6 +1416,8 @@ const directCreationKinds = ref(new Set())
 const modal = ref('')
 const draft = ref('')
 const targetKinds = ref([])
+const selectedAgentKinds = ref([])
+const activeMentionAgentKind = ref('')
 const selectedSkills = ref([])
 const skillOptions = ref([])
 const skillMenuOpen = ref(false)
@@ -1230,6 +1431,8 @@ const onboardingIndex = ref(0)
 const onboardingDetecting = ref(false)
 const discussionMode = ref('auto')
 const maxRounds = ref(6)
+const unlimitedRounds = ref(false)
+const roundSettingsOpen = ref(false)
 const formError = ref('')
 const deleteArmed = ref(false)
 const providerRemoveArmed = ref(false)
@@ -1253,6 +1456,7 @@ const inlineTitleButton = ref(null)
 const settingsNameInput = ref(null)
 const onboardingDialog = ref(null)
 const modalDialog = ref(null)
+const roundSettingsControl = ref(null)
 let toastTimer = null
 const copiedMessageTimers = new Map()
 let skillLoadToken = 0
@@ -1402,7 +1606,9 @@ const activeRunTopicRootId = computed(() => {
 const runRoundProgress = computed(() => {
   const current = Number(activeRun.value?.currentRound)
   const max = Number(activeRun.value?.maxRounds)
-  if (!Number.isInteger(current) || current < 1 || !Number.isInteger(max) || max < current) return null
+  if (!Number.isInteger(current) || current < 1) return null
+  if (activeRun.value?.unlimitedRounds === true) return { current, unlimited: true }
+  if (!Number.isInteger(max) || max < current) return null
   return { current, max }
 })
 const turnRailItems = computed(() => topLevelUserMessages.value.map((message) => {
@@ -1435,15 +1641,43 @@ const timelineMessages = computed(() => activeMessages.value.filter((message) =>
 const composerTargetKinds = computed(() => {
   const group = activeGroup.value
   if (!group) return []
+  if (group.conversationType !== 'direct' && selectedAgentKinds.value.length) {
+    return [...selectedAgentKinds.value]
+  }
   if (group.conversationType === 'direct' || discussionMode.value === 'auto') return [...group.agentKinds]
   return [...targetKinds.value]
 })
 const composerMode = computed(() => (
-  activeGroup.value?.conversationType === 'direct' ? 'manual' : discussionMode.value
+  activeGroup.value?.conversationType === 'direct' || selectedAgentKinds.value.length
+    ? 'manual'
+    : discussionMode.value
 ))
 const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
 const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
 const currentSkillTrigger = computed(() => parseSkillTrigger(draft.value))
+const skillMenuTargetKinds = computed(() => {
+  const group = activeGroup.value
+  if (!group) return []
+  if (group.conversationType === 'direct') return [...group.agentKinds]
+  if (activeMentionAgentKind.value && selectedAgentKinds.value.includes(activeMentionAgentKind.value)) {
+    return [activeMentionAgentKind.value]
+  }
+  return []
+})
+const filteredAgentMentionOptions = computed(() => {
+  const group = activeGroup.value
+  if (!group || group.conversationType === 'direct' || !currentSkillTrigger.value) return []
+  const query = currentSkillTrigger.value.query.toLocaleLowerCase()
+  const selected = new Set(selectedAgentKinds.value)
+  return group.agentKinds
+    .filter(kind => !selected.has(kind))
+    .filter((kind) => {
+      if (!query) return true
+      return [kind, agentLabel(kind)]
+        .some(value => String(value || '').toLocaleLowerCase().includes(query))
+    })
+    .slice(0, 8)
+})
 const filteredSkillOptions = computed(() => {
   const query = currentSkillTrigger.value?.query.toLocaleLowerCase() || ''
   const selected = new Set(selectedSkills.value.map(skillKey))
@@ -1456,9 +1690,13 @@ const filteredSkillOptions = computed(() => {
     })
     .slice(0, 8)
 })
+const composerMenuOptions = computed(() => [
+  ...filteredSkillOptions.value.map(skill => ({ type: 'skill', value: skill })),
+  ...filteredAgentMentionOptions.value.map(kind => ({ type: 'agent', value: kind })),
+])
 const activeSkillOptionId = computed(() => (
-  skillMenuOpen.value && filteredSkillOptions.value[skillActiveIndex.value]
-    ? `composer-skill-option-${skillActiveIndex.value}`
+  skillMenuOpen.value && composerMenuOptions.value[skillActiveIndex.value]
+    ? `composer-mention-option-${skillActiveIndex.value}`
     : ''
 ))
 const importingAttachment = computed(() => attachmentImportOperations.value
@@ -1518,6 +1756,13 @@ const canSendMessage = computed(() => (
 ))
 const readyCount = computed(() => readyAgents.value.length)
 const installedCount = computed(() => mergedCatalog.value.filter(agent => agent.installed).length)
+const configurableProviderAgents = computed(() => mergedCatalog.value.filter(agent => (
+  EXTERNAL_PROVIDER_KINDS.has(agent.kind)
+)))
+const selectedProviderAgent = computed(() => configurableProviderAgents.value.find(
+  agent => agent.kind === selectedProviderKind.value,
+) || configurableProviderAgents.value[0] || null)
+const providerStatus = computed(() => providerStatusFor(selectedProviderKind.value))
 
 const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
 const settingsForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
@@ -1525,16 +1770,11 @@ const providerForm = reactive({ provider: '', baseUrl: '', model: '', apiKey: ''
 
 const modalTitle = computed(() => ({
   'new-group': t('group.newTitle'),
-  settings: activeGroup.value?.conversationType === 'direct' && settingsIntent.value === 'rename'
-    ? t('settings.renameDirectTitle')
+  settings: settingsIntent.value === 'rename'
+    ? t(activeGroup.value?.conversationType === 'direct' ? 'settings.renameDirectTitle' : 'settings.renameGroupTitle')
     : t('settings.title'),
-  agents: t('installer.title'),
-  provider: t('provider.title'),
 })[modal.value] || '')
-const modalSubtitle = computed(() => ({
-  agents: t('installer.subtitle'),
-  provider: t('provider.subtitle'),
-})[modal.value] || '')
+const modalSubtitle = computed(() => '')
 
 const installerBusy = computed(() => !['', 'idle', 'completed', 'cancelled', 'failed'].includes(installerState.value.phase))
 const installerPhaseLabel = computed(() => t(`installer.phase.${installerState.value.phase}`))
@@ -1570,6 +1810,14 @@ function formatNavTime(value) {
 
 function providerModeShortLabel(mode) {
   return t(`agent.providerShort.${mode}`)
+}
+
+function agentDescription(kind) {
+  return t(`agent.description.${kind}`)
+}
+
+function providerStatusFor(kind) {
+  return providerStatuses.value[kind] || EMPTY_PROVIDER_STATUS
 }
 
 function conversationPermissionLabel(group) {
@@ -1634,7 +1882,10 @@ function messageThreadRootId(message) {
 }
 
 function isTopicRoot(message) {
-  return message?.role === 'user' && !message.threadRootId && topicReplyCount(message.id) > 0
+  return activeGroup.value?.conversationType !== 'direct'
+    && message?.role === 'user'
+    && !message.threadRootId
+    && topicReplyCount(message.id) > 0
 }
 
 function isTopicExpanded(rootId) {
@@ -1664,11 +1915,17 @@ function runFinishedTurnStatus(rootId) {
 }
 
 function turnRailLabel(turn) {
-  return t('conversation.turnRailLabel', {
+  const values = {
     query: turn.query,
     time: turn.time || t('conversation.timeUnknown'),
-    replies: topicReplyLabel(turn.replyCount),
     status: runStatusLabel(turn.status),
+  }
+  if (activeGroup.value?.conversationType === 'direct') {
+    return t('conversation.turnRailDirectLabel', values)
+  }
+  return t('conversation.turnRailLabel', {
+    ...values,
+    replies: topicReplyLabel(turn.replyCount),
   })
 }
 
@@ -1716,11 +1973,16 @@ function messageExecutionSteps(message) {
 function localizedStepTitle(step, index) {
   const key = String(step?.title || '').trim().toLowerCase().replace(/[\s-]+/g, '_')
   const known = {
+    reasoning: 'run.step.reasoning',
     process: 'run.step.process',
     write_file: 'run.step.writeFile',
     edit_file: 'run.step.writeFile',
     read_file: 'run.step.readFile',
     search: 'run.step.search',
+    image_generation: 'run.step.imageGeneration',
+    audio_generation: 'run.step.audioGeneration',
+    video_generation: 'run.step.videoGeneration',
+    tool: 'run.step.tool',
   }[key]
   if (known) return t(known)
   if (locale.value === 'en' && step?.title) return step.title
@@ -1804,19 +2066,46 @@ function messageCopyBlocked(event) {
   return Boolean(selection && String(selection).trim())
 }
 
+function fallbackCopyText(content) {
+  if (!document.body || typeof document.execCommand !== 'function') return false
+  const textarea = document.createElement('textarea')
+  textarea.value = content
+  textarea.setAttribute('readonly', '')
+  textarea.setAttribute('aria-hidden', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.top = '-1000px'
+  textarea.style.opacity = '0'
+  textarea.style.pointerEvents = 'none'
+  document.body.appendChild(textarea)
+  textarea.select()
+  let copied = false
+  try {
+    copied = document.execCommand('copy')
+  } catch {
+    copied = false
+  }
+  textarea.remove()
+  return copied
+}
+
 async function copyMessageContent(message, event, force = false) {
   const content = String(message?.content || '')
   if (!content || (!force && messageCopyBlocked(event))) return
-  if (typeof navigator.clipboard?.writeText !== 'function') {
+  let copied = false
+  try {
+    if (typeof navigator.clipboard?.writeText === 'function') {
+      await navigator.clipboard.writeText(content)
+      copied = true
+    }
+  } catch {
+    copied = false
+  }
+  if (!copied) copied = fallbackCopyText(content)
+  if (!copied) {
     notify(t('conversation.copyFailed'))
     return
   }
-  try {
-    await navigator.clipboard.writeText(content)
-    markMessageCopied(message.id)
-  } catch {
-    notify(t('conversation.copyFailed'))
-  }
+  markMessageCopied(message.id)
 }
 
 function isDismissibleSystemWarning(message) {
@@ -1914,6 +2203,10 @@ function messageSkills(message) {
   return Array.isArray(message?.skillHints) ? message.skillHints : []
 }
 
+function messageTargetKinds(message) {
+  return Array.isArray(message?.targetKinds) ? message.targetKinds : []
+}
+
 function normalizeAttachment(attachment) {
   const id = String(attachment?.id || '')
   const name = String(attachment?.name || '')
@@ -1935,6 +2228,25 @@ function safeAttachmentPayload(attachment) {
 
 function messageAttachments(message) {
   return Array.isArray(message?.attachments) ? message.attachments : []
+}
+
+function attachmentKind(attachment) {
+  const mimeType = String(attachment?.mimeType || '').toLowerCase()
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType.startsWith('audio/')) return 'audio'
+  if (mimeType.startsWith('video/')) return 'video'
+  return 'file'
+}
+
+function isImageAttachment(attachment) {
+  return attachmentKind(attachment) === 'image'
+}
+
+function attachmentMediaUrl(attachment) {
+  const id = String(attachment?.id || '')
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)
+      || !['audio', 'video'].includes(attachmentKind(attachment))) return ''
+  return `meldwork-media://attachment/${id}`
 }
 
 async function discardAttachments(values) {
@@ -2010,10 +2322,12 @@ function applyTheme(value) {
 }
 
 function goHome() {
+  systemSettingsOpen.value = false
   selectedGroupId.value = ''
 }
 
 function selectGroup(id) {
+  systemSettingsOpen.value = false
   selectedGroupId.value = id
   if (finishedDirectGroupIds.value.has(id)) {
     const next = new Set(finishedDirectGroupIds.value)
@@ -2043,8 +2357,8 @@ function providerModeLabel(mode) {
   return t(`agent.provider.${mode}`)
 }
 
-function supportsSharedProvider(agent) {
-  return ['compatible', 'experimental', 'responses', 'anthropic'].includes(agent.providerMode)
+function supportsExternalProvider(agent) {
+  return EXTERNAL_PROVIDER_KINDS.has(agent?.kind)
 }
 
 function agentState(agent) {
@@ -2240,14 +2554,14 @@ function openGroupSettings(intent = 'settings') {
   modal.value = 'settings'
 }
 
-function openDirectRename(group) {
+function openConversationRename(group) {
   if (!group || isGroupRunning(group.id)) return
   selectGroup(group.id)
   openGroupSettings('rename')
   void nextTick(() => settingsNameInput.value?.focus())
 }
 
-function openDirectDelete(group) {
+function openConversationDelete(group) {
   if (!group || isGroupRunning(group.id)) return
   selectGroup(group.id)
   openGroupSettings('delete')
@@ -2297,6 +2611,11 @@ async function deleteConversation() {
 
 function toggleTarget(kind) {
   if (sending.value || activeRun.value || composerMode.value === 'auto') return
+  if (selectedAgentKinds.value.length) {
+    if (selectedAgentKinds.value.includes(kind)) removeAgentMention(kind)
+    else addAgentMention(kind)
+    return
+  }
   if (targetKinds.value.includes(kind)) targetKinds.value = targetKinds.value.filter(item => item !== kind)
   else targetKinds.value = [...targetKinds.value, kind]
 }
@@ -2305,12 +2624,8 @@ function isComposerTargetSelected(kind) {
   return composerTargetKinds.value.includes(kind)
 }
 
-function adjustMaxRounds(delta) {
-  maxRounds.value = Math.max(1, Math.min(10, maxRounds.value + delta))
-}
-
 async function loadSkillsForTargets() {
-  const targets = [...composerTargetKinds.value]
+  const targets = [...skillMenuTargetKinds.value]
   const token = ++skillLoadToken
   skillOptions.value = []
   if (!targets.length || typeof installer.value?.skills !== 'function') {
@@ -2357,22 +2672,23 @@ function scheduleComposerResize() {
 
 function handleComposerInput() {
   resizeComposerInput()
-  if (!currentSkillTrigger.value || selectedSkills.value.length >= MAX_SKILLS) {
+  if (!currentSkillTrigger.value) {
     skillMenuOpen.value = false
     return
   }
   const shouldLoad = !skillMenuOpen.value
   skillActiveIndex.value = 0
   skillMenuOpen.value = true
-  if (shouldLoad) void loadSkillsForTargets()
+  if (shouldLoad && skillMenuTargetKinds.value.length) void loadSkillsForTargets()
+  else if (!skillMenuTargetKinds.value.length) skillsLoading.value = false
 }
 
 async function openSkillMenu() {
-  if (!composerTargetKinds.value.length) {
+  if (!composerTargetKinds.value.length && activeGroup.value?.conversationType === 'direct') {
     notify(t('composer.selectTarget'))
     return
   }
-  if (selectedSkills.value.length >= MAX_SKILLS) {
+  if (selectedSkills.value.length >= MAX_SKILLS && activeGroup.value?.conversationType === 'direct') {
     notify(t('composer.skillLimit'))
     return
   }
@@ -2382,9 +2698,45 @@ async function openSkillMenu() {
   }
   skillActiveIndex.value = 0
   skillMenuOpen.value = true
-  await loadSkillsForTargets()
+  if (skillMenuTargetKinds.value.length) await loadSkillsForTargets()
   await nextTick()
   composerInput.value?.focus()
+}
+
+async function addAgentMention(kind) {
+  const group = activeGroup.value
+  if (!group || group.conversationType === 'direct' || !group.agentKinds.includes(kind)) return
+  if (!selectedAgentKinds.value.includes(kind)) {
+    selectedAgentKinds.value = [...selectedAgentKinds.value, kind]
+  }
+  activeMentionAgentKind.value = kind
+  discussionMode.value = 'manual'
+  skillMenuOpen.value = false
+  skillsLoading.value = false
+  await nextTick()
+  composerInput.value?.focus()
+}
+
+async function selectAgentMention(kind) {
+  const trigger = currentSkillTrigger.value
+  if (trigger) draft.value = `${draft.value.slice(0, trigger.start)}${draft.value.slice(trigger.end)}`
+  await addAgentMention(kind)
+}
+
+function removeAgentMention(kind) {
+  selectedAgentKinds.value = selectedAgentKinds.value.filter(item => item !== kind)
+  selectedSkills.value = selectedSkills.value.filter(skill => skill.targetKind !== kind)
+  activeMentionAgentKind.value = selectedAgentKinds.value.at(-1) || ''
+  skillMenuOpen.value = false
+  skillsLoading.value = false
+  skillOptions.value = []
+  skillLoadToken += 1
+}
+
+function selectComposerMenuOption(option) {
+  if (option?.type === 'agent') return selectAgentMention(option.value)
+  if (option?.type === 'skill') return selectSkill(option.value)
+  return undefined
 }
 
 async function selectSkill(skill) {
@@ -2518,7 +2870,7 @@ function handleComposerKeydown(event) {
   if (skillMenuOpen.value) {
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       event.preventDefault()
-      const count = filteredSkillOptions.value.length
+      const count = composerMenuOptions.value.length
       if (count) {
         const direction = event.key === 'ArrowDown' ? 1 : -1
         skillActiveIndex.value = (skillActiveIndex.value + direction + count) % count
@@ -2532,11 +2884,16 @@ function handleComposerKeydown(event) {
     }
     if (event.key === 'Enter' && !event.isComposing) {
       event.preventDefault()
-      const skill = filteredSkillOptions.value[skillActiveIndex.value]
-      if (skill) void selectSkill(skill)
+      const option = composerMenuOptions.value[skillActiveIndex.value]
+      if (option) void selectComposerMenuOption(option)
       else skillMenuOpen.value = false
       return
     }
+  }
+  if (event.key === 'Backspace' && !draft.value && selectedAgentKinds.value.length) {
+    event.preventDefault()
+    removeAgentMention(selectedAgentKinds.value.at(-1))
+    return
   }
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
     event.preventDefault()
@@ -2550,7 +2907,7 @@ async function sendMessage() {
   const contextVersion = composerContextVersion.value
   const text = draft.value.trim()
   const attachments = composerAttachments.value.map(safeAttachmentPayload)
-  const mode = composerMode.value
+  const mode = selectedAgentKinds.value.length ? 'manual' : composerMode.value
   if (!text && !attachments.length) {
     notify(t('composer.messageRequired'))
     return
@@ -2581,27 +2938,36 @@ async function sendMessage() {
       name: String(skill.name),
     }))
   const previousDraft = draft.value
+  const previousAgentKinds = [...selectedAgentKinds.value]
+  const previousActiveMentionAgentKind = activeMentionAgentKind.value
   const previousSkills = selectedSkills.value.map(skill => ({ ...skill }))
   const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
   draft.value = ''
+  selectedAgentKinds.value = []
+  activeMentionAgentKind.value = ''
   selectedSkills.value = []
   composerAttachments.value = []
   skillMenuOpen.value = false
+  roundSettingsOpen.value = false
   sending.value = true
   try {
     await workspace.value.send({
       groupId,
       text,
       targetKinds: targets,
+      ...(previousAgentKinds.length ? { mentionedAgentKinds: previousAgentKinds } : {}),
       skillHints,
       attachments,
       mode,
       maxRounds: maxRounds.value,
+      ...(mode === 'auto' && unlimitedRounds.value ? { unlimitedRounds: true } : {}),
     })
     snapshot.value = normalizeSnapshot(await workspace.value.get())
   } catch (error) {
     if (contextVersion === composerContextVersion.value && groupId === activeGroup.value?.id) {
       draft.value = previousDraft
+      selectedAgentKinds.value = previousAgentKinds
+      activeMentionAgentKind.value = previousActiveMentionAgentKind
       selectedSkills.value = previousSkills
       composerAttachments.value = previousAttachments
     } else {
@@ -2619,10 +2985,32 @@ async function stopRun() {
 }
 
 function openAgentManager(kind = '') {
+  openSystemSettings('agents', kind)
+}
+
+function openSystemSettings(section = 'agents', kind = '') {
   if (saving.value) return
-  focusedAgentKind.value = kind
+  if (modal.value) closeModal()
+  systemSettingsOpen.value = true
+  systemSettingsSection.value = section === 'providers' ? 'providers' : 'agents'
+  focusedAgentKind.value = systemSettingsSection.value === 'agents' ? kind : ''
   installConfirmKind.value = ''
-  modal.value = 'agents'
+  formError.value = ''
+  providerRemoveArmed.value = false
+  if (systemSettingsSection.value === 'providers') {
+    const targetKind = EXTERNAL_PROVIDER_KINDS.has(kind) ? kind : selectedProviderKind.value
+    void loadProviderStatuses().then(() => selectProviderAgent(targetKind))
+  }
+}
+
+function selectSystemSettingsSection(section) {
+  if (section === systemSettingsSection.value) return
+  systemSettingsSection.value = section === 'providers' ? 'providers' : 'agents'
+  formError.value = ''
+  providerRemoveArmed.value = false
+  if (systemSettingsSection.value === 'providers') {
+    void loadProviderStatuses().then(() => selectProviderAgent(selectedProviderKind.value))
+  }
 }
 
 async function requestInstall(agent) {
@@ -2642,30 +3030,43 @@ async function cancelInstall() {
   try { await installer.value.cancel(installerState.value.taskId) } catch (error) { showError(error) }
 }
 
-async function loadProviderStatus(probeEncryption = false) {
-  if (!provider.value) return
+async function loadProviderStatus(kind, probeEncryption = false) {
+  if (!provider.value || !EXTERNAL_PROVIDER_KINDS.has(kind)) return EMPTY_PROVIDER_STATUS
   try {
-    providerStatus.value = await (probeEncryption ? provider.value.probe() : provider.value.status())
+    const status = await (probeEncryption ? provider.value.probe(kind) : provider.value.status(kind))
+    providerStatuses.value = { ...providerStatuses.value, [kind]: status }
+    return status
   } catch {
-    providerStatus.value = { provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true }
+    providerStatuses.value = { ...providerStatuses.value, [kind]: EMPTY_PROVIDER_STATUS }
+    return EMPTY_PROVIDER_STATUS
   }
 }
 
-function openProvider() {
-  if (saving.value) return
-  closeModal()
+async function loadProviderStatuses() {
+  await Promise.all(configurableProviderAgents.value.map(agent => loadProviderStatus(agent.kind)))
+}
+
+function syncProviderForm(kind) {
+  const status = providerStatusFor(kind)
+  providerForm.provider = status.provider || ''
+  providerForm.baseUrl = status.baseUrl || ''
+  providerForm.model = status.model || ''
+  providerForm.apiKey = ''
+}
+
+async function selectProviderAgent(kind) {
+  if (!EXTERNAL_PROVIDER_KINDS.has(kind) || saving.value) return
+  selectedProviderKind.value = kind
   formError.value = ''
   providerRemoveArmed.value = false
-  providerForm.provider = providerStatus.value.provider || ''
-  providerForm.baseUrl = providerStatus.value.baseUrl || ''
-  providerForm.model = providerStatus.value.model || ''
-  providerForm.apiKey = ''
-  modal.value = 'provider'
-  void loadProviderStatus(true).then(() => {
-    providerForm.provider = providerStatus.value.provider || providerForm.provider
-    providerForm.baseUrl = providerStatus.value.baseUrl || providerForm.baseUrl
-    providerForm.model = providerStatus.value.model || providerForm.model
-  })
+  syncProviderForm(kind)
+  await loadProviderStatus(kind, true)
+  if (selectedProviderKind.value === kind) syncProviderForm(kind)
+}
+
+function openProvider(kind = '') {
+  if (saving.value) return
+  openSystemSettings('providers', EXTERNAL_PROVIDER_KINDS.has(kind) ? kind : selectedProviderKind.value)
 }
 
 async function saveProvider() {
@@ -2680,15 +3081,16 @@ async function saveProvider() {
   }
   saving.value = true
   try {
-    await provider.value.save({
+    const kind = selectedProviderKind.value
+    await provider.value.save(kind, {
       provider: providerForm.provider,
       baseUrl: providerForm.baseUrl,
       model: providerForm.model,
       apiKey: providerForm.apiKey,
     })
     providerForm.apiKey = ''
-    await Promise.all([loadProviderStatus(), refreshAgents()])
-    closeModal({ force: true })
+    await Promise.all([loadProviderStatus(kind), refreshAgents()])
+    syncProviderForm(kind)
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -2704,9 +3106,11 @@ async function removeProvider() {
   }
   saving.value = true
   try {
-    await provider.value.delete()
-    await Promise.all([loadProviderStatus(), refreshAgents()])
-    closeModal({ force: true })
+    const kind = selectedProviderKind.value
+    await provider.value.delete(kind)
+    await Promise.all([loadProviderStatus(kind), refreshAgents()])
+    providerRemoveArmed.value = false
+    syncProviderForm(kind)
   } catch (error) {
     formError.value = translateError(error)
   } finally {
@@ -2836,15 +3240,13 @@ async function boot() {
     unsubscribeRunFinished = workspace.value.onRunFinished?.(handleRunFinished) || null
     unsubscribeOpenGroup = workspace.value.onOpenGroup?.(handleOpenGroup) || null
     unsubscribeInstaller = installer.value.onChanged?.((value) => { installerState.value = value }) || null
-    const [nextSnapshot, nextInstaller, nextProvider, nextDirectory] = await Promise.all([
+    const [nextSnapshot, nextInstaller, nextDirectory] = await Promise.all([
       settleWithin(workspace.value.get()),
       settleWithin(installer.value.state()),
-      settleWithin(provider.value.status()),
       settleWithin(workspace.value.defaultDirectory()),
     ])
     if (nextSnapshot) snapshot.value = normalizeSnapshot(nextSnapshot)
     installerState.value = nextInstaller || installerState.value
-    providerStatus.value = nextProvider || providerStatus.value
     defaultDirectory.value = nextDirectory || ''
   } catch (error) {
     showError(error)
@@ -2894,6 +3296,10 @@ function trapOverlayFocus(event) {
 
 function handleWindowKeydown(event) {
   if (trapOverlayFocus(event) || event.key !== 'Escape') return
+  if (roundSettingsOpen.value) {
+    roundSettingsOpen.value = false
+    return
+  }
   if (skillMenuOpen.value) {
     skillMenuOpen.value = false
     return
@@ -2903,6 +3309,12 @@ function handleWindowKeydown(event) {
     return
   }
   if (modal.value) closeModal()
+}
+
+function handleWindowPointerDown(event) {
+  if (!roundSettingsOpen.value) return
+  if (roundSettingsControl.value?.contains(event.target)) return
+  roundSettingsOpen.value = false
 }
 
 function handlePopState() {
@@ -2957,23 +3369,35 @@ watch(activeGroupMemberSignature, () => {
   cancelInlineTitleEdit({ restoreFocus: false })
   activeTurnId.value = ''
   discussionMode.value = group?.conversationType === 'direct' ? 'manual' : 'auto'
+  roundSettingsOpen.value = false
   targetKinds.value = group ? [...group.agentKinds] : []
+  selectedAgentKinds.value = []
+  activeMentionAgentKind.value = ''
   selectedSkills.value = []
   composerAttachments.value = []
   void discardAttachments(abandonedAttachments)
   skillMenuOpen.value = false
+  skillsLoading.value = false
   void scrollToLatest()
 })
-watch(activeRun, (value) => { if (value) cancelInlineTitleEdit({ restoreFocus: false }) })
+watch(activeRun, (value) => {
+  if (!value) return
+  roundSettingsOpen.value = false
+  cancelInlineTitleEdit({ restoreFocus: false })
+})
+watch(discussionMode, (value) => {
+  if (value !== 'auto') roundSettingsOpen.value = false
+})
 watch(skillTargetSignature, () => {
   const targets = new Set(composerTargetKinds.value)
   selectedSkills.value = selectedSkills.value.filter(skill => targets.has(skill.targetKind))
   skillOptions.value = []
   skillActiveIndex.value = 0
+  skillsLoading.value = false
   skillLoadToken += 1
   if (skillMenuOpen.value && currentSkillTrigger.value) void loadSkillsForTargets()
 })
-watch(() => filteredSkillOptions.value.length, (length) => {
+watch(() => composerMenuOptions.value.length, (length) => {
   skillActiveIndex.value = length ? Math.min(skillActiveIndex.value, length - 1) : 0
 })
 watch(
@@ -2990,6 +3414,7 @@ watch(() => installerState.value.phase, (phase, previous) => {
 
 onMounted(() => {
   window.addEventListener('keydown', handleWindowKeydown)
+  window.addEventListener('pointerdown', handleWindowPointerDown)
   window.addEventListener('popstate', handlePopState)
   void boot()
 })
@@ -3000,6 +3425,7 @@ onBeforeUnmount(() => {
   composerAttachments.value = []
   void discardAttachments(abandonedAttachments)
   window.removeEventListener('keydown', handleWindowKeydown)
+  window.removeEventListener('pointerdown', handleWindowPointerDown)
   window.removeEventListener('popstate', handlePopState)
   document.body.classList.remove('modal-open')
   skillLoadToken += 1

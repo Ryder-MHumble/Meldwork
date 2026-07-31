@@ -3,21 +3,33 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const STORE_VERSION = 1
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const MAX_ATTACHMENTS = 4
 const MAX_METADATA_BYTES = 64 * 1024
 const DIRECTORY_MODE = 0o700
 const FILE_MODE = 0o600
 
-const IMAGE_TYPES = Object.freeze([
-  Object.freeze({ mimeType: 'image/png', extension: 'png' }),
-  Object.freeze({ mimeType: 'image/jpeg', extension: 'jpg' }),
+const ATTACHMENT_TYPES = Object.freeze([
+  Object.freeze({ mimeType: 'image/png', extension: 'png', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
+  Object.freeze({ mimeType: 'image/jpeg', extension: 'jpg', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
+  Object.freeze({ mimeType: 'audio/mpeg', extension: 'mp3', maxBytes: 32 * 1024 * 1024, storageBase: 'media' }),
+  Object.freeze({ mimeType: 'audio/wav', extension: 'wav', maxBytes: 64 * 1024 * 1024, storageBase: 'media' }),
+  Object.freeze({ mimeType: 'audio/mp4', extension: 'm4a', maxBytes: 64 * 1024 * 1024, storageBase: 'media' }),
+  Object.freeze({ mimeType: 'video/mp4', extension: 'mp4', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
+  Object.freeze({ mimeType: 'video/quicktime', extension: 'mov', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
+  Object.freeze({ mimeType: 'video/webm', extension: 'webm', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
 ])
-const TYPE_BY_MIME = new Map(IMAGE_TYPES.map(type => [type.mimeType, type]))
+const TYPE_BY_MIME = new Map(ATTACHMENT_TYPES.map(type => [type.mimeType, type]))
 const TYPE_BY_EXTENSION = new Map([
   ['png', TYPE_BY_MIME.get('image/png')],
   ['jpg', TYPE_BY_MIME.get('image/jpeg')],
   ['jpeg', TYPE_BY_MIME.get('image/jpeg')],
+  ['mp3', TYPE_BY_MIME.get('audio/mpeg')],
+  ['wav', TYPE_BY_MIME.get('audio/wav')],
+  ['m4a', TYPE_BY_MIME.get('audio/mp4')],
+  ['mp4', TYPE_BY_MIME.get('video/mp4')],
+  ['mov', TYPE_BY_MIME.get('video/quicktime')],
+  ['webm', TYPE_BY_MIME.get('video/webm')],
 ])
 
 function attachmentError(code) {
@@ -77,13 +89,33 @@ function isInside(root, candidate) {
     && relative !== '..' && !path.isAbsolute(relative))
 }
 
-function detectImageType(bytes) {
+function detectAttachmentType(bytes) {
   if (bytes.length >= 8
       && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
     return TYPE_BY_MIME.get('image/png')
   }
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return TYPE_BY_MIME.get('image/jpeg')
+  }
+  if (bytes.length >= 3 && (bytes.subarray(0, 3).toString('ascii') === 'ID3'
+      || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0))) {
+    return TYPE_BY_MIME.get('audio/mpeg')
+  }
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+      && bytes.subarray(8, 12).toString('ascii') === 'WAVE') {
+    return TYPE_BY_MIME.get('audio/wav')
+  }
+  if (bytes.length >= 12 && bytes.subarray(4, 8).toString('ascii') === 'ftyp') {
+    const brand = bytes.subarray(8, 12).toString('ascii')
+    if (['M4A ', 'M4B ', 'F4A ', 'f4a '].includes(brand)) return TYPE_BY_MIME.get('audio/mp4')
+    if (brand === 'qt  ') return TYPE_BY_MIME.get('video/quicktime')
+    if (/^(?:iso[2-9m]|isom|avc1|mp4[12]|M4V |dash)$/.test(brand)) {
+      return TYPE_BY_MIME.get('video/mp4')
+    }
+  }
+  if (bytes.length >= 8 && bytes.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))
+      && bytes.subarray(0, Math.min(bytes.length, 128)).includes(Buffer.from('webm'))) {
+    return TYPE_BY_MIME.get('video/webm')
   }
   return null
 }
@@ -131,8 +163,8 @@ function toBuffer(value) {
   return Buffer.from(new Uint8Array(value))
 }
 
-function validateImage(bytes, name, mimeType, requireMimeType) {
-  const actual = detectImageType(bytes)
+function validateAttachment(bytes, name, mimeType, requireMimeType) {
+  const actual = detectAttachmentType(bytes)
   if (!actual) fail('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
   const declaredMime = declaredMimeType(mimeType)
   if (requireMimeType && !TYPE_BY_MIME.has(declaredMime)) {
@@ -145,6 +177,7 @@ function validateImage(bytes, name, mimeType, requireMimeType) {
   if (nameType && nameType.mimeType !== actual.mimeType) {
     fail('LOCAL_ATTACHMENT_TYPE_MISMATCH')
   }
+  if (bytes.length > actual.maxBytes) fail('LOCAL_ATTACHMENT_TOO_LARGE')
   return actual
 }
 
@@ -367,7 +400,7 @@ class AttachmentStore {
   importBytes(bytes, name, mimeType, requireMimeType) {
     this.assertRoot()
     if (bytes.length > MAX_ATTACHMENT_BYTES) fail('LOCAL_ATTACHMENT_TOO_LARGE')
-    const type = validateImage(bytes, name, mimeType, requireMimeType)
+    const type = validateAttachment(bytes, name, mimeType, requireMimeType)
     let id
     try { id = normalizeId(this.createId()) } catch (error) {
       if (isAttachmentError(error)) throw error
@@ -390,7 +423,7 @@ class AttachmentStore {
       if (fs.existsSync(finalDirectory)) fail('LOCAL_ATTACHMENT_ID_CONFLICT')
       temporaryDirectory = fs.mkdtempSync(path.join(this.rootPath, '.import-'))
       fs.chmodSync(temporaryDirectory, DIRECTORY_MODE)
-      writePrivateFile(path.join(temporaryDirectory, `image.${type.extension}`), bytes)
+      writePrivateFile(path.join(temporaryDirectory, `${type.storageBase}.${type.extension}`), bytes)
       writePrivateFile(
         path.join(temporaryDirectory, 'metadata.json'),
         Buffer.from(JSON.stringify(document), 'utf8'),
@@ -447,20 +480,20 @@ class AttachmentStore {
     if (!type || sanitizeName(document.name, type) !== document.name) {
       fail('LOCAL_ATTACHMENT_TAMPERED')
     }
-    const imagePath = path.join(directory, `image.${type.extension}`)
+    const contentPath = path.join(directory, `${type.storageBase}.${type.extension}`)
     const bytes = this.readStoredFile(
-      imagePath,
+      contentPath,
       'LOCAL_ATTACHMENT_FILE_MISSING',
       MAX_ATTACHMENT_BYTES,
     )
     if (bytes.length !== document.size
-        || detectImageType(bytes)?.mimeType !== document.mimeType
+        || detectAttachmentType(bytes)?.mimeType !== document.mimeType
         || crypto.createHash('sha256').update(bytes).digest('hex') !== document.checksum) {
       fail('LOCAL_ATTACHMENT_TAMPERED')
     }
     return {
       directory,
-      path: imagePath,
+      path: contentPath,
       bytes,
       metadata: {
         id: document.id,

@@ -75,18 +75,21 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.equal('envForAgent' in api.localAgentProvider, false)
   assert.equal('read' in api.localAgentProvider, false)
 
-  await api.localAgentProvider.status()
-  await api.localAgentProvider.probe()
-  await api.localAgentProvider.save({
+  await api.localAgentProvider.status('hermes')
+  await api.localAgentProvider.probe('hermes')
+  await api.localAgentProvider.save('hermes', {
     provider: 'Example', baseUrl: 'https://api.example.com/v1',
     model: 'example-model', apiKey: 'test-renderer-key',
   })
-  await api.localAgentProvider.delete()
+  await api.localAgentProvider.delete('hermes')
   assert.deepEqual(invocations.map(call => call.channel), [
     'local-agent-provider:status',
     'local-agent-provider:probe',
     'local-agent-provider:save',
     'local-agent-provider:delete',
+  ])
+  assert.deepEqual(invocations.map(call => call.args[0]), [
+    'hermes', 'hermes', 'hermes', 'hermes',
   ])
 })
 

@@ -177,6 +177,87 @@ test('Codex JSONL output returns the reply and session id', () => {
   })
 })
 
+test('runAgent streams bounded Codex progress before the final reply without exposing commands', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-codex-progress-'))
+  const cli = executable(directory, 'codex-progress.cjs', `
+const events = [
+  { type: 'thread.started', thread_id: 'thread-progress' },
+  { type: 'turn.started' },
+  {
+    type: 'item.started',
+    item: {
+      id: 'item-search', type: 'command_execution',
+      command: 'rg -n secret /Users/private/workspace', status: 'in_progress',
+    },
+  },
+  {
+    type: 'item.completed',
+    item: {
+      id: 'item-search', type: 'command_execution',
+      command: 'rg -n secret /Users/private/workspace', exit_code: 0, status: 'completed',
+    },
+  },
+  {
+    type: 'item.started',
+    item: { id: 'item-image', type: 'image_generation', status: 'in_progress' },
+  },
+  {
+    type: 'item.completed',
+    item: { id: 'item-image', type: 'image_generation', status: 'completed' },
+  },
+  {
+    type: 'item.completed',
+    item: { id: 'item-message', type: 'agent_message', text: 'final reply' },
+  },
+  { type: 'turn.completed' },
+]
+let index = 0
+function send() {
+  if (index >= events.length) return
+  const line = JSON.stringify(events[index++]) + '\\n'
+  const split = Math.max(1, Math.floor(line.length / 2))
+  process.stdout.write(line.slice(0, split))
+  setTimeout(() => {
+    process.stdout.write(line.slice(split))
+    if (index >= events.length) return setTimeout(() => process.exit(0), 25)
+    setTimeout(send, 25)
+  }, 10)
+}
+send()
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const progress = []
+  let firstProgressResolve
+  const firstProgress = new Promise(resolve => { firstProgressResolve = resolve })
+  const resultPromise = runAgent(
+    { kind: 'codex', executable: cli, name: 'Codex' },
+    'hello',
+    directory,
+    {
+      onProgress: step => {
+        progress.push(step)
+        firstProgressResolve()
+      },
+    },
+  )
+
+  await within(firstProgress)
+  assert.equal(progress.length > 0, true)
+  const result = await resultPromise
+
+  assert.equal(result.text, 'final reply')
+  assert.equal(result.sessionRef, 'thread-progress')
+  assert.deepEqual(result.progress, [
+    { id: 'turn', title: 'process', status: 'completed' },
+    { id: 'item-search', title: 'search', status: 'completed' },
+    { id: 'item-image', title: 'image_generation', status: 'completed' },
+  ])
+  assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'in_progress'), true)
+  assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'completed'), true)
+  assert.doesNotMatch(JSON.stringify(progress), /secret|Users|workspace|rg -n/)
+})
+
 test('Hermes uses quiet query mode and resumes the native session id without a shell', () => {
   const spec = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123')
   assert.equal(spec.promptArg, true)

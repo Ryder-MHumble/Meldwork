@@ -8,6 +8,7 @@ import { setLocale } from '../../i18n.js'
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
 const originalClipboard = navigator.clipboard
+const originalExecCommand = document.execCommand
 
 function baseSnapshot() {
   return {
@@ -105,22 +106,24 @@ function createBridge() {
     onChanged: vi.fn(() => vi.fn()),
   }
   const localAgentProvider = {
-    status: vi.fn(async () => ({
+    status: vi.fn(async kind => ({
+      kind,
       provider: '',
       baseUrl: '',
       model: '',
       configured: false,
       encryptionAvailable: true,
     })),
-    probe: vi.fn(async () => ({
+    probe: vi.fn(async kind => ({
+      kind,
       provider: '',
       baseUrl: '',
       model: '',
       configured: false,
       encryptionAvailable: true,
     })),
-    save: vi.fn(async input => ({ ...input, configured: true, encryptionAvailable: true })),
-    delete: vi.fn(async () => ({ configured: false, encryptionAvailable: true })),
+    save: vi.fn(async (kind, input) => ({ kind, ...input, configured: true, encryptionAvailable: true })),
+    delete: vi.fn(async kind => ({ kind, configured: false, encryptionAvailable: true })),
   }
   const localAttachments = {
     pickImages: vi.fn(async () => ({ attachments: [] })),
@@ -183,6 +186,8 @@ afterEach(() => {
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
   else delete HTMLElement.prototype.scrollIntoView
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: originalClipboard })
+  if (originalExecCommand) Object.defineProperty(document, 'execCommand', { configurable: true, value: originalExecCommand })
+  else delete document.execCommand
   vi.restoreAllMocks()
 })
 
@@ -268,29 +273,46 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('uses non-probing Provider status at boot and probes only when the panel opens', async () => {
+  it('defers Provider reads until the settings Provider page opens', async () => {
     const { wrapper, bridge } = await mountApp()
 
-    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(1)
+    expect(bridge.localAgentProvider.status).not.toHaveBeenCalled()
     expect(bridge.localAgentProvider.probe).not.toHaveBeenCalled()
-    await wrapper.findAll('.sidebar-footer button')[1].trigger('click')
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    expect(wrapper.get('.system-settings-page').exists()).toBe(true)
+    expect(bridge.localAgentProvider.status).not.toHaveBeenCalled()
+
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
     await flushPromises()
+    expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(4)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledTimes(1)
+    expect(bridge.localAgentProvider.probe).toHaveBeenCalledWith('hermes')
     wrapper.unmount()
   })
 
-  it('shows an existing Provider as configured after boot', async () => {
+  it('shows an existing Agent-specific Provider in settings', async () => {
     const { wrapper } = await mountApp(({ bridge }) => {
-      bridge.localAgentProvider.status.mockResolvedValueOnce({
-        provider: 'Local gateway',
-        baseUrl: 'https://gateway.example/v1',
-        model: 'roundrelay-model',
-        configured: true,
-        encryptionAvailable: true,
-      })
+      bridge.localAgentProvider.status.mockImplementation(async kind => (
+        kind === 'hermes'
+          ? {
+              provider: 'Local gateway',
+              baseUrl: 'https://gateway.example/v1',
+              model: 'roundrelay-model',
+              configured: true,
+              encryptionAvailable: true,
+            }
+          : { provider: '', baseUrl: '', model: '', configured: false, encryptionAvailable: true }
+      ))
+      bridge.localAgentProvider.probe.mockImplementation(bridge.localAgentProvider.status)
     })
 
-    expect(wrapper.find('.sidebar-footer .footer-status.ready').exists()).toBe(true)
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.provider-agent-list svg.ready').exists()).toBe(true)
+    expect(wrapper.get('.provider-editor-header h2').text()).toContain('Hermes')
+    expect(wrapper.get('.provider-status').text()).toContain('Configured')
     wrapper.unmount()
   })
 
@@ -300,7 +322,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.findAll('.agent-card')).toHaveLength(AGENTS.length)
     expect(wrapper.get('.home-header h1').text()).toBe('Local Agents')
 
-    const controls = wrapper.findAll('.workspace-preferences button')
+    const controls = wrapper.findAll('.sidebar-footer-actions button')
     await controls[0].trigger('click')
     expect(wrapper.get('.home-header h1').text()).toBe('本地 Agent')
 
@@ -313,7 +335,7 @@ describe('RoundRelay workbench', () => {
     const { wrapper } = await mountApp()
 
     expect(wrapper.find('.brand-actions').exists()).toBe(false)
-    expect(wrapper.findAll('.workspace-preferences button')).toHaveLength(2)
+    expect(wrapper.findAll('.sidebar-footer-actions button')).toHaveLength(2)
     expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(2)
 
     await wrapper.get('.sidebar-toggle').trigger('click')
@@ -334,6 +356,26 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.sidebar\.collapsed \.sidebar-toggle\s*\{[^}]*flex:\s*0 0 34px;/s)
   })
 
+  it('anchors collapsed sidebar controls while the workspace width animates', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+
+    expect(source).toMatch(/\.app-shell\s*\{[^}]*transition:\s*grid-template-columns 0\.22s cubic-bezier\(0\.16, 1, 0\.3, 1\);/s)
+    expect(source).toMatch(/\.sidebar\.collapsed \.brand-row\s*\{[^}]*width:\s*var\(--sidebar-collapsed-width\);[^}]*align-self:\s*flex-start;/s)
+    expect(source).toMatch(/\.sidebar\.collapsed \.conversation-nav\s*\{[^}]*width:\s*var\(--sidebar-collapsed-width\);[^}]*align-self:\s*flex-start;/s)
+    expect(source).toMatch(/\.sidebar\.collapsed \.sidebar-footer\s*\{[^}]*width:\s*var\(--sidebar-collapsed-width\);[^}]*align-self:\s*flex-start;/s)
+    expect(source).toMatch(/\.sidebar\.collapsed \.sidebar-footer button\s*\{[^}]*width:\s*34px;/s)
+    expect(source).toMatch(/\.sidebar\.collapsed \.new-group-button\s*\{[^}]*margin:\s*2px 15px 12px;/s)
+    expect(source).not.toMatch(/\.sidebar\.collapsed \.new-group-button\s*\{[^}]*margin-inline:\s*auto;/s)
+  })
+
+  it('uses one settings entry and a borderless Agent mention menu', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+
+    expect(source).toMatch(/\.sidebar-footer\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s)
+    expect(source).toMatch(/\.skill-menu\s*\{[^}]*border:\s*0;/s)
+    expect(source).toMatch(/\.skill-option\.agent-mention-option small\s*\{[^}]*-webkit-line-clamp:\s*2;/s)
+  })
+
   it('keeps the collapsed mobile sidebar to the expandable brand row', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     const mobileRules = source.slice(source.indexOf('@media (max-width: 760px)'))
@@ -342,20 +384,48 @@ describe('RoundRelay workbench', () => {
     expect(mobileRules).toMatch(/\.sidebar\.collapsed\s*>\s*:not\(\.brand-row\)\s*\{[^}]*display:\s*none;/)
   })
 
+  it('lets the conversation and composer grow with wide desktop windows', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+
+    expect(source).toMatch(/--conversation-content-width:\s*clamp\(820px,\s*70vw,\s*1360px\)/)
+    expect(source).toMatch(/\.message-list\s*\{[^}]*width:\s*min\(var\(--conversation-content-width\),\s*100%\);[^}]*justify-self:\s*center;/s)
+    expect(source).toMatch(/\.composer-shell\s*\{[^}]*width:\s*min\(var\(--conversation-content-width\),\s*100%\);/s)
+  })
+
+  it('pins the turn rail beside the sidebar with Dock proximity magnification', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+
+    expect(source).toMatch(/\.message-stage\s*\{[^}]*width:\s*100%;[^}]*grid-template-columns:\s*48px minmax\(0,\s*1fr\);[^}]*padding-right:\s*48px;/s)
+    expect(source).toMatch(/\.turn-rail\s*\{[^}]*top:\s*50%;[^}]*transform:\s*translateY\(-50%\);/s)
+    expect(source).toContain('.turn-rail button:has(+ button:hover)')
+    expect(source).toContain('.turn-rail button:has(+ button + button + button:hover)')
+    expect(source).toMatch(/\.turn-rail button:hover > span:first-child,[^{]+\{[^}]*--turn-offset:\s*10px;[^}]*--turn-scale:\s*2\.4;/s)
+    expect(source).toMatch(/\.turn-rail button > span:first-child\s*\{[^}]*transform-origin:\s*left center;/s)
+    expect(source).not.toContain('.turn-rail::before')
+    expect(source).toMatch(/\.message-row\.topic-reply\s*\{[^}]*border-left:\s*0;/s)
+    expect(source).toMatch(/\.message-row\.group-message\.agent \.message-body::before\s*\{[^}]*background:\s*var\(--agent-accent\);/s)
+    expect(source).toMatch(/\.message-copy-surface\s*\{[^}]*cursor:\s*text;/s)
+    expect(source).toMatch(/\.run-status-panel\.group\s*\{[^}]*border-left:\s*0;/s)
+    expect(source).toMatch(/\.composer-box\s*\{[^}]*border:\s*0;/s)
+    expect(source).toMatch(/\.composer-context-row\s*\{[^}]*border-bottom:\s*0;/s)
+    expect(source).toMatch(/\.send-button,\s*\.stop-button\s*\{[^}]*border:\s*0;/s)
+  })
+
   it('saves the exact Provider payload exposed by preload', async () => {
     const { wrapper, bridge } = await mountApp()
 
-    await wrapper.findAll('.sidebar-footer button')[1].trigger('click')
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
     await flushPromises()
-    const inputs = wrapper.findAll('.form-stack input')
+    const inputs = wrapper.findAll('.provider-editor input')
     await inputs[0].setValue('Local gateway')
     await inputs[1].setValue('https://gateway.example/v1')
     await inputs[2].setValue('roundrelay-model')
     await inputs[3].setValue('secret-key')
-    await wrapper.get('form.form-stack').trigger('submit')
+    await wrapper.get('form.provider-editor').trigger('submit')
     await flushPromises()
 
-    expect(bridge.localAgentProvider.save).toHaveBeenCalledWith({
+    expect(bridge.localAgentProvider.save).toHaveBeenCalledWith('hermes', {
       provider: 'Local gateway',
       baseUrl: 'https://gateway.example/v1',
       model: 'roundrelay-model',
@@ -394,7 +464,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.get('.system-message').text()).toContain('Hermes failed: Agent execution stopped.')
 
-    await wrapper.findAll('.workspace-preferences button')[0].trigger('click')
+    await wrapper.findAll('.sidebar-footer-actions button')[0].trigger('click')
     expect(wrapper.get('.conversation-link').text()).toContain('Agent 群聊')
     expect(wrapper.get('.system-message').text()).toContain('Hermes 调用失败：Agent 执行已停止。')
     wrapper.unmount()
@@ -471,17 +541,26 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.get('.mode-segmented [data-mode="auto"]').classes()).toContain('active')
-    expect(wrapper.get('.round-stepper output').text()).toBe('6 rounds')
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('6 rounds')
     expect(wrapper.findAll('.target-chip').every(chip => chip.classes().includes('selected'))).toBe(true)
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') !== undefined)).toBe(true)
     expect(wrapper.findAll('.target-chip')[0].attributes('aria-label')).toBe('Codex participates in automatic discussion')
 
-    for (let index = 0; index < 7; index += 1) await wrapper.get('.round-stepper-decrease').trigger('click')
-    expect(wrapper.get('.round-stepper output').text()).toBe('1 rounds')
-    for (let index = 0; index < 11; index += 1) await wrapper.get('.round-stepper-increase').trigger('click')
-    expect(wrapper.get('.round-stepper output').text()).toBe('10 rounds')
-    for (let index = 0; index < 4; index += 1) await wrapper.get('.round-stepper-decrease').trigger('click')
-    expect(wrapper.get('.round-stepper output').text()).toBe('6 rounds')
+    await wrapper.get('.round-settings-trigger').trigger('click')
+    const range = wrapper.get('.round-range-input')
+    await range.setValue(1)
+    expect(wrapper.get('.round-settings-popover output').text()).toBe('1 rounds')
+    await range.setValue(10)
+    expect(wrapper.get('.round-settings-popover output').text()).toBe('10 rounds')
+    await range.setValue(6)
+    await wrapper.get('.round-unlimited-toggle').setValue(true)
+    expect(range.attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('Unlimited')
+    await wrapper.get('.round-unlimited-toggle').setValue(false)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(wrapper.find('.round-settings-popover').exists()).toBe(false)
 
     await wrapper.get('.composer-box textarea').setValue('Continue the review')
     await wrapper.get('.send-button').trigger('click')
@@ -498,6 +577,57 @@ describe('RoundRelay workbench', () => {
       maxRounds: 6,
     })
     expect(bridge.localWorkspace.startAuto).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('sends unlimited automatic discussions without a round cap', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Open discussion',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localWorkspace.send.mockImplementation(async (input) => {
+        state.runningGroupIds = [input.groupId]
+        state.runs = [{
+          groupId: input.groupId,
+          mode: 'auto',
+          targetKinds: input.targetKinds,
+          completedKinds: [],
+          currentKind: 'codex',
+          currentRound: 1,
+          maxRounds: 0,
+          unlimitedRounds: true,
+          progress: [],
+        }]
+        return structuredClone(state)
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.round-settings-trigger').trigger('click')
+    await wrapper.get('.round-unlimited-toggle').setValue(true)
+    await wrapper.get('.composer-box textarea').setValue('Continue until consensus')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-1',
+      text: 'Continue until consensus',
+      targetKinds: ['codex', 'hermes'],
+      skillHints: [],
+      attachments: [],
+      mode: 'auto',
+      maxRounds: 6,
+      unlimitedRounds: true,
+    })
+    expect(wrapper.get('.run-round-progress').text()).toBe('Round 1 / Unlimited')
     wrapper.unmount()
   })
 
@@ -846,7 +976,7 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('loads and sends only skills belonging to the currently selected targets', async () => {
+  it('mentions one Agent, scopes its Skills, and sends only to that Agent', async () => {
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
         id: 'group-1',
@@ -870,10 +1000,19 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
-    await wrapper.findAll('.target-chip')[1].trigger('click')
-    bridge.agentInstaller.skills.mockClear()
     const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@co')
+    await flushPromises()
+
+    expect(wrapper.findAll('.agent-mention-option')).toHaveLength(1)
+    expect(wrapper.get('.agent-mention-option').text()).toContain('Codex')
+    expect(wrapper.get('.agent-mention-option').text()).toContain('Repository-scale coding')
+    await wrapper.get('.agent-mention-option').trigger('click')
+    expect(wrapper.get('.selected-agent-tag').text()).toContain('Codex')
+    expect(wrapper.get('.mode-segmented [data-mode="manual"]').classes()).toContain('active')
+    expect(wrapper.get('.mode-segmented [data-mode="auto"]').attributes()).toHaveProperty('disabled')
+
+    bridge.agentInstaller.skills.mockClear()
     await textarea.setValue('@rev')
     await flushPromises()
 
@@ -884,7 +1023,7 @@ describe('RoundRelay workbench', () => {
     expect(textarea.attributes('role')).toBe('combobox')
     expect(textarea.attributes('aria-expanded')).toBe('true')
     expect(textarea.attributes('aria-controls')).toBe('composer-skill-menu')
-    expect(textarea.attributes('aria-activedescendant')).toBe('composer-skill-option-0')
+    expect(textarea.attributes('aria-activedescendant')).toBe('composer-mention-option-0')
 
     await textarea.setValue('@review')
     await flushPromises()
@@ -900,11 +1039,186 @@ describe('RoundRelay workbench', () => {
       groupId: 'group-1',
       text: 'Review this implementation',
       targetKinds: ['codex'],
+      mentionedAgentKinds: ['codex'],
       skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
       attachments: [],
       mode: 'manual',
       maxRounds: 6,
     })
+    expect(wrapper.find('.selected-agent-tag').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('supports multiple Agent Tags and removes Skills with their Agent', async () => {
+    const { wrapper } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.agentInstaller.skills.mockImplementation(async kind => ({
+        skills: kind === 'hermes'
+          ? [{ targetKind: 'hermes', namespace: 'research', slug: 'sources', name: 'Find sources' }]
+          : [],
+      }))
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@cod')
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('@her')
+    await flushPromises()
+    await wrapper.get('.agent-mention-option').trigger('click')
+
+    expect(wrapper.findAll('.selected-agent-tag').map(tag => tag.text()))
+      .toEqual(['Codex', 'Hermes'])
+
+    await textarea.setValue('@find')
+    await flushPromises()
+    expect(wrapper.findAll('.skill-option')).toHaveLength(1)
+    expect(wrapper.get('.skill-option').text()).toContain('Find sources')
+    await textarea.trigger('keydown', { key: 'Enter' })
+    expect(wrapper.get('.selected-skill').text()).toContain('Find sources')
+
+    await wrapper.findAll('.selected-agent-tag button')[1].trigger('click')
+    expect(wrapper.findAll('.selected-agent-tag').map(tag => tag.text())).toEqual(['Codex'])
+    expect(wrapper.find('.selected-skill').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('sends multiple Agent Tags without queueing unmentioned group members', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'qwen',
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        version: '1.0.0',
+      })
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Review',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'qwen'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@cod')
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('@her')
+    await flushPromises()
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('Compare your findings')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-1',
+      text: 'Compare your findings',
+      targetKinds: ['codex', 'hermes'],
+      mentionedAgentKinds: ['codex', 'hermes'],
+      skillHints: [],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
+  it('restores Agent Tags and Skills when a targeted send fails', async () => {
+    const { wrapper } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Research',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.agentInstaller.skills.mockResolvedValue({
+        skills: [{ targetKind: 'hermes', namespace: 'research', slug: 'sources', name: 'Find sources' }],
+      })
+      desktopBridge.localWorkspace.send.mockRejectedValueOnce(new Error('LOCAL_AGENT_EXECUTION_FAILED'))
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@her')
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('@find')
+    await flushPromises()
+    await textarea.trigger('keydown', { key: 'Enter' })
+    await textarea.setValue('Research this market')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(textarea.element.value).toBe('Research this market')
+    expect(wrapper.get('.selected-agent-tag').text()).toContain('Hermes')
+    expect(wrapper.get('.selected-skill').text()).toContain('Find sources')
+    wrapper.unmount()
+  })
+
+  it('keeps direct chats on their Agent Skills without Agent Tags', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.agentInstaller.skills.mockImplementation(async kind => ({
+        skills: kind === 'codex'
+          ? [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }]
+          : [],
+      }))
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    bridge.agentInstaller.skills.mockClear()
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@review')
+    await flushPromises()
+
+    expect(bridge.agentInstaller.skills.mock.calls).toEqual([['codex']])
+    expect(wrapper.find('.agent-mention-option').exists()).toBe(false)
+    expect(wrapper.get('.skill-option').text()).toContain('Review code')
+    await textarea.trigger('keydown', { key: 'Enter' })
+    await textarea.setValue('Review this implementation')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'direct-codex',
+      text: 'Review this implementation',
+      targetKinds: ['codex'],
+      skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+    expect(wrapper.find('.selected-agent-tag').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -1270,6 +1584,49 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('renders Agent image, audio, and video outputs inside the conversation', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'agent-media',
+        groupId: 'direct-codex',
+        role: 'agent',
+        agentKind: 'codex',
+        content: 'Generated media is ready.',
+        attachments: [
+          { id: 'poster-image', name: 'poster.png', mimeType: 'image/png', size: 3 },
+          { id: 'briefing-audio', name: 'briefing.mp3', mimeType: 'audio/mpeg', size: 12 },
+          { id: 'demo-video', name: 'demo.mp4', mimeType: 'video/mp4', size: 24 },
+        ],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.preview).toHaveBeenCalledTimes(1)
+    expect(bridge.localAttachments.preview).toHaveBeenCalledWith('poster-image')
+    expect(wrapper.get('.message-attachment-grid img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.message-attachment-grid audio').attributes('src'))
+      .toBe('meldwork-media://attachment/briefing-audio')
+    expect(wrapper.get('.message-attachment-grid video').attributes('src'))
+      .toBe('meldwork-media://attachment/demo-video')
+    expect(wrapper.findAll('.message-attachment-grid figcaption').map(item => item.text()))
+      .toEqual(['poster.png', 'briefing.mp3', 'demo.mp4'])
+    wrapper.unmount()
+  })
+
   it('blocks button and Enter sends until a pasted image finishes importing', async () => {
     const pendingImport = deferred()
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
@@ -1586,6 +1943,49 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps group icons transparent and exposes safe sidebar rename and delete actions', async () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(source).toMatch(/\.group-avatar\s*\{[^}]*background:\s*transparent;/s)
+    expect(source).toMatch(/\.group-conversation-row:hover \.group-conversation-actions/)
+
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-sidebar-actions',
+        conversationType: 'group',
+        name: 'Market research',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    const row = wrapper.get('.group-conversation-row')
+    const actions = row.findAll('.direct-session-action')
+    expect(actions).toHaveLength(2)
+    expect(actions[0].attributes('aria-label')).toBe('Rename group Market research')
+    expect(actions[1].attributes('aria-label')).toBe('Delete group Market research')
+
+    await actions[0].trigger('click')
+    expect(wrapper.get('#modal-title').text()).toBe('Rename group chat')
+    await wrapper.get('form.form-stack input:not([type="checkbox"])').setValue('GEO research')
+    await wrapper.get('form.form-stack').trigger('submit')
+    await flushPromises()
+    expect(bridge.localWorkspace.updateGroup).toHaveBeenCalledWith(
+      'group-sidebar-actions',
+      expect.objectContaining({ name: 'GEO research' }),
+    )
+
+    await wrapper.get('.group-conversation-row .direct-session-action.danger').trigger('click')
+    expect(wrapper.get('.danger-button').text()).toContain('Confirm delete')
+    await wrapper.get('.danger-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.deleteGroup).toHaveBeenCalledWith('group-sidebar-actions')
+    wrapper.unmount()
+  })
+
   it('dismisses only the known plan warning for the component lifetime and closes the global toast', async () => {
     const { wrapper, bridge, emitWorkspaceChanged } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -1648,7 +2048,7 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('maps direct replies and active runs onto the turn rail, then expands and scrolls on selection', async () => {
+  it('maps direct tasks onto the turn rail without group reply styling', async () => {
     const scrollIntoView = vi.fn()
     HTMLElement.prototype.scrollIntoView = scrollIntoView
     const { wrapper } = await mountApp(({ state }) => {
@@ -1713,17 +2113,18 @@ describe('RoundRelay workbench', () => {
     const railButtons = wrapper.findAll('.turn-rail button')
     expect(railButtons).toHaveLength(2)
     expect(railButtons[0].attributes('aria-label')).toContain('First direct task')
-    expect(railButtons[0].attributes('aria-label')).toContain('1 reply')
+    expect(railButtons[0].attributes('aria-label')).not.toContain('reply')
     expect(railButtons[0].attributes('aria-label')).toContain('Completed')
     expect(railButtons[0].get('.turn-rail-tooltip').text()).toBe(railButtons[0].attributes('aria-label'))
     expect(railButtons[1].attributes('data-status')).toBe('running')
     expect(railButtons[1].attributes('aria-current')).toBe('true')
-    expect(wrapper.get('#message-agent-1').classes()).toContain('topic-reply')
+    expect(wrapper.get('#message-agent-1').classes()).toContain('direct-message')
+    expect(wrapper.get('#message-agent-1').classes()).not.toContain('topic-reply')
+    expect(wrapper.find('.topic-toggle').exists()).toBe(false)
+    expect(wrapper.findAll('.active-topic-label').every(label => label.text() === 'Current task')).toBe(true)
     expect(wrapper.get('.conversation-title-button').attributes()).toHaveProperty('disabled')
     expect(wrapper.find('.run-round-progress').exists()).toBe(false)
 
-    await wrapper.findAll('.topic-toggle')[0].trigger('click')
-    expect(wrapper.find('#message-agent-1').exists()).toBe(false)
     scrollIntoView.mockClear()
     await railButtons[0].trigger('click')
     await flushPromises()
@@ -1789,6 +2190,14 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.message-row.user .message-copy-button').trigger('keydown', { key: 'Enter' })
     await flushPromises()
     expect(writeText).toHaveBeenCalledWith('Review the selected text')
+
+    const execCommand = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+    writeText.mockRejectedValueOnce(new Error('Clipboard permission denied'))
+    await wrapper.get('.message-row.agent .message-copy-surface').trigger('click')
+    await flushPromises()
+    expect(execCommand).toHaveBeenCalledWith('copy')
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -1813,6 +2222,7 @@ describe('RoundRelay workbench', () => {
           groupId: 'group-1',
           role: 'user',
           content: 'Review this change',
+          targetKinds: ['codex'],
           createdAt: '2026-07-29T08:01:00Z',
         },
         {
@@ -1834,6 +2244,10 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.message-target-list').text()).toBe('Codex')
+    expect(wrapper.get('.message-row.agent').classes()).toContain('group-message')
+    expect(wrapper.get('.message-row.agent').classes()).toContain('topic-reply')
+    expect(wrapper.get('.topic-toggle').text()).toContain('1 reply')
     await wrapper.get('.topic-toggle').trigger('click')
     expect(wrapper.find('.message-row.agent').exists()).toBe(false)
 
@@ -1865,13 +2279,18 @@ describe('RoundRelay workbench', () => {
       .toEqual(['completed', 'running', 'queued'])
     expect(wrapper.findAll('.run-agent-row').map(row => row.text()))
       .toEqual(['CodexCompleted', 'HermesRunning', 'Qwen CodeQueued'])
+    const agentRows = wrapper.findAll('.run-agent-row')
+    expect(agentRows[0].find('.run-agent-motion[data-status="completed"] svg').exists()).toBe(true)
+    expect(agentRows[1].findAll('.run-agent-bars i')).toHaveLength(3)
+    expect(agentRows[2].findAll('.run-agent-dots i')).toHaveLength(3)
     expect(wrapper.findAll('.execution-details')).toHaveLength(2)
     expect(wrapper.findAll('.execution-details').every(details => details.attributes('open') === undefined)).toBe(true)
+    expect(wrapper.get('.run-progress-details').element.tagName).toBe('DIV')
     const runningStep = wrapper.findAll('.run-progress-details li')[1].get('small')
     expect(runningStep.text()).toBe('Running')
     expect(runningStep.classes()).toContain('running')
 
-    await wrapper.findAll('.workspace-preferences button')[0].trigger('click')
+    await wrapper.findAll('.sidebar-footer-actions button')[0].trigger('click')
     const detailsText = wrapper.findAll('.execution-details').map(details => details.text()).join(' ')
     expect(detailsText).toContain('运行进程')
     expect(detailsText).toContain('写入文件')

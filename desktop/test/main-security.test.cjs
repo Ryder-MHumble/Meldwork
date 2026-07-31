@@ -88,12 +88,14 @@ function loadMain(userData, options = {}) {
   const permissionHandlers = {}
   const nativeImageCalls = []
   const notificationInstances = []
+  const protocolHandlers = new Map()
+  const registeredSchemes = []
   let readyCallback
   let appReady = false
   let quitCount = 0
   let singleInstanceLockCalls = 0
   let attachmentConstructionCount = 0
-  let providerConfigured = options.providerConfigured === true
+  const providerConfiguredKinds = new Set(options.providerConfigured === true ? ['hermes'] : [])
 
   class TestWorkspace extends EventEmitter {
     constructor(input) {
@@ -224,9 +226,9 @@ function loadMain(userData, options = {}) {
     readWithMetadata(id) {
       this.readWithMetadataCalls.push(id)
       return {
-        metadata: this.metadataById.get(id)
+        metadata: options.mediaMetadata || this.metadataById.get(id)
           || { id, name: 'diagram.png', mimeType: 'image/png', size: 3 },
-        bytes: options.attachmentBytes || pngHeader(),
+        bytes: options.mediaBytes || options.attachmentBytes || pngHeader(),
       }
     }
     discard(refs) {
@@ -268,14 +270,14 @@ function loadMain(userData, options = {}) {
     constructor(input) {
       this.input = input
       this.saved = []
-      this.deleteCount = 0
+      this.deleted = []
       this.statusCalls = []
       providerInstances.push(this)
     }
 
-    status(input) {
-      this.statusCalls.push(input)
-      return providerConfigured
+    status(kind, input) {
+      this.statusCalls.push({ kind, input })
+      return providerConfiguredKinds.has(kind)
         ? { ...PROVIDER_METADATA, encryptionAvailable: true, configured: true }
         : {
             provider: '', baseUrl: '', model: '',
@@ -283,19 +285,20 @@ function loadMain(userData, options = {}) {
           }
     }
 
-    save(input) {
-      this.saved.push(input)
-      providerConfigured = true
-      return this.status()
+    save(kind, input) {
+      this.saved.push({ kind, input })
+      providerConfiguredKinds.add(kind)
+      return this.status(kind)
     }
 
-    delete() {
-      this.deleteCount += 1
-      providerConfigured = false
-      return this.status()
+    delete(kind) {
+      this.deleted.push(kind)
+      providerConfiguredKinds.delete(kind)
+      return this.status(kind)
     }
 
-    envForAgent() {
+    envForAgent(kind) {
+      assert.equal(providerConfiguredKinds.has(kind), true)
       return options.providerEnv || {
         OPENAI_API_KEY: 'provider-key',
         OPENAI_BASE_URL: PROVIDER_METADATA.baseUrl,
@@ -391,6 +394,10 @@ function loadMain(userData, options = {}) {
       handle: (name, listener) => ipcHandlers.set(name, listener),
       on: (name, listener) => ipcListeners.set(name, listener),
     },
+    protocol: {
+      registerSchemesAsPrivileged: schemes => registeredSchemes.push(...schemes),
+      handle: (scheme, listener) => protocolHandlers.set(scheme, listener),
+    },
     Menu: {
       buildFromTemplate: template => template,
       setApplicationMenu: () => {},
@@ -474,6 +481,8 @@ function loadMain(userData, options = {}) {
         dialogCalls,
         externalUrls,
         permissionHandlers,
+        protocolHandlers,
+        registeredSchemes,
         providerInstances,
         runAgentCalls,
         skillCatalogInstances,
@@ -532,6 +541,41 @@ test('a second desktop process exits before ready initialization', (t) => {
   assert.equal(harness.windows.length, 0)
 })
 
+test('controlled media protocol serves attachment bytes with range support and rejects invalid ids', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-protocol-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const mediaBytes = Buffer.from('ID3-audio-payload')
+  const { harness } = loadMain(directory, {
+    mediaMetadata: {
+      id: 'generated-audio', name: 'briefing.mp3', mimeType: 'audio/mpeg', size: mediaBytes.length,
+    },
+    mediaBytes,
+  })
+
+  assert.equal(harness.registeredSchemes.some(entry => (
+    entry.scheme === 'meldwork-media'
+      && entry.privileges?.secure === true
+      && entry.privileges?.standard === true
+  )), true)
+  await harness.ready()
+  const handler = harness.protocolHandlers.get('meldwork-media')
+  assert.equal(typeof handler, 'function')
+
+  const response = await handler(new Request(
+    'meldwork-media://attachment/generated-audio',
+    { headers: { Range: 'bytes=4-8' } },
+  ))
+  assert.equal(response.status, 206)
+  assert.equal(response.headers.get('content-type'), 'audio/mpeg')
+  assert.equal(response.headers.get('content-range'), `bytes 4-8/${mediaBytes.length}`)
+  assert.deepEqual(Buffer.from(await response.arrayBuffer()), mediaBytes.subarray(4, 9))
+
+  const readsBeforeInvalid = harness.attachmentInstances[0].readWithMetadataCalls.length
+  const invalid = await handler(new Request('meldwork-media://attachment/..%2Fsecret'))
+  assert.equal(invalid.status, 404)
+  assert.equal(harness.attachmentInstances[0].readWithMetadataCalls.length, readsBeforeInvalid)
+})
+
 test('every local IPC handler rejects an untrusted renderer before dispatch', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ipc-security-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -571,6 +615,10 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.equal(harness.workspaceInstances[0].refreshCount, 0)
   assert.equal(harness.providerInstances[0].input.storagePath,
     path.join(directory, 'roundrelay-provider.json'))
+  assert.deepEqual(
+    [...harness.providerInstances[0].input.allowedKinds].sort(),
+    ['hermes', 'openclaw', 'qwen', 'workbuddy'].sort(),
+  )
   assert.equal(harness.attachmentInstances[0].input.rootPath,
     path.join(directory, 'attachments'))
   assert.equal(harness.skillCatalogInstances[0].input.home,
@@ -858,25 +906,34 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   await harness.ready()
   const input = { ...PROVIDER_METADATA, apiKey: 'renderer-provider-key' }
 
-  const initial = await harness.ipcHandlers.get('local-agent-provider:status')(harness.event())
+  const initial = await harness.ipcHandlers.get('local-agent-provider:status')(
+    harness.event(), 'hermes',
+  )
   assert.equal(initial.configured, false)
-  assert.deepEqual(harness.providerInstances[0].statusCalls, [undefined])
+  assert.deepEqual(harness.providerInstances[0].statusCalls, [{ kind: 'hermes', input: undefined }])
 
-  await harness.ipcHandlers.get('local-agent-provider:probe')(harness.event())
+  await harness.ipcHandlers.get('local-agent-provider:probe')(harness.event(), 'hermes')
   assert.deepEqual(harness.providerInstances[0].statusCalls, [
-    undefined,
-    { probeEncryption: true },
+    { kind: 'hermes', input: undefined },
+    { kind: 'hermes', input: { probeEncryption: true } },
   ])
 
   const saved = await harness.ipcHandlers.get('local-agent-provider:save')(
-    harness.event(), input,
+    harness.event(), 'hermes', input,
   )
-  assert.deepEqual(harness.providerInstances[0].saved, [input])
+  assert.deepEqual(harness.providerInstances[0].saved, [{ kind: 'hermes', input }])
   assert.equal(saved.configured, true)
   assert.equal(harness.workspaceInstances[0].refreshCount, 1)
 
-  const deleted = await harness.ipcHandlers.get('local-agent-provider:delete')(harness.event())
-  assert.equal(harness.providerInstances[0].deleteCount, 1)
+  await assert.rejects(
+    async () => harness.ipcHandlers.get('local-agent-provider:status')(harness.event(), 'codex'),
+    { message: 'PROVIDER_AGENT_UNSUPPORTED' },
+  )
+
+  const deleted = await harness.ipcHandlers.get('local-agent-provider:delete')(
+    harness.event(), 'hermes',
+  )
+  assert.deepEqual(harness.providerInstances[0].deleted, ['hermes'])
   assert.equal(deleted.configured, false)
   assert.equal(harness.workspaceInstances[0].refreshCount, 2)
 })

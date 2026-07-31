@@ -22,17 +22,25 @@ const DEFAULT_AUTO_ROUNDS = 6
 const MAX_AUTO_ROUNDS = 10
 const MAX_MESSAGE_ATTACHMENTS = 4
 const MAX_SKILL_HINTS = 4
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const STABLE_USER_TURNS_PER_EDGE = 3
 const STABLE_USER_TURN_TEXT_LIMIT = 700
 const RECENT_TRANSCRIPT_MESSAGE_LIMIT = 20
 const RECENT_TRANSCRIPT_TEXT_LIMIT = 12000
-const ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
+const USER_ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
+const ATTACHMENT_MIME_TYPES = new Set([
+  ...USER_ATTACHMENT_MIME_TYPES,
+  'audio/mpeg', 'audio/wav', 'audio/mp4',
+  'video/mp4', 'video/quicktime', 'video/webm',
+])
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
 ])
-const PROGRESS_TITLES = new Set(['process', 'write_file'])
+const PROGRESS_TITLES = new Set([
+  'reasoning', 'process', 'read_file', 'write_file', 'search',
+  'image_generation', 'audio_generation', 'video_generation', 'tool',
+])
 
 function emptyState() {
   return {
@@ -88,9 +96,11 @@ function cleanRunMaxRounds(value) {
   return Math.max(1, Math.min(MAX_AUTO_ROUNDS, Math.floor(requested)))
 }
 
-function cleanCurrentRound(value, maxRounds) {
+function cleanCurrentRound(value, maxRounds, unlimitedRounds = false) {
   const requested = Number(value)
-  if (!Number.isFinite(requested) || requested <= 0 || !maxRounds) return 0
+  if (!Number.isFinite(requested) || requested <= 0) return 0
+  if (unlimitedRounds) return Math.floor(requested)
+  if (!maxRounds) return 0
   return Math.max(1, Math.min(maxRounds, Math.floor(requested)))
 }
 
@@ -140,6 +150,12 @@ function normalizeSkillHint(input) {
   const name = cleanInline(input.name, 100)
   if (!Object.hasOwn(AGENT_LABELS, targetKind) || !namespace || !slug || !name) return null
   return { targetKind, namespace, slug, name }
+}
+
+function normalizeTargetKinds(input) {
+  return [...new Set((Array.isArray(input) ? input : [])
+    .map(kind => cleanInline(kind, 40))
+    .filter(kind => Object.hasOwn(AGENT_LABELS, kind)))]
 }
 
 function skillHintsPrompt(hints) {
@@ -209,20 +225,27 @@ function normalizeLoadedMessage(input) {
   if (role === 'agent') {
     const elapsedMs = cleanElapsedMs(input.elapsedMs)
     const toolCalls = cleanProgressSteps(input.toolCalls)
+    const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
+      .slice(0, MAX_MESSAGE_ATTACHMENTS)
+      .map(normalizeAttachmentMetadata)
+      .filter(Boolean)
     if (elapsedMs != null) message.elapsedMs = elapsedMs
     if (toolCalls.length) message.toolCalls = toolCalls
+    if (attachments.length) message.attachments = attachments
   }
   if (role === 'user') {
     const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
       .slice(0, MAX_MESSAGE_ATTACHMENTS)
       .map(normalizeAttachmentMetadata)
-      .filter(Boolean)
+      .filter(attachment => attachment && USER_ATTACHMENT_MIME_TYPES.has(attachment.mimeType))
     const skillHints = (Array.isArray(input.skillHints) ? input.skillHints : [])
       .slice(0, MAX_SKILL_HINTS)
       .map(normalizeSkillHint)
       .filter(Boolean)
+    const targetKinds = normalizeTargetKinds(input.targetKinds)
     if (attachments.length) message.attachments = attachments
     if (skillHints.length) message.skillHints = skillHints
+    if (targetKinds.length) message.targetKinds = targetKinds
   }
   return message
 }
@@ -237,6 +260,8 @@ class LocalWorkspace extends EventEmitter {
       if (attachments?.length) throw new Error('LOCAL_ATTACHMENT_STORAGE_UNAVAILABLE')
       return []
     })
+    this.captureAgentOutputsFn = options.captureAgentOutputs || (async () => null)
+    this.importAgentOutputsFn = options.importAgentOutputs || (async () => [])
     this.validateSkillSelectionsFn = options.validateSkillSelections || ((_kind, selections) => selections)
     this.imageAttachmentLimitFn = options.imageAttachmentLimit || (() => 0)
     this.credentialStateFn = options.credentialState || (async () => ({ state: 'unknown', source: 'unverified' }))
@@ -306,7 +331,8 @@ class LocalWorkspace extends EventEmitter {
       runningGroupIds: runEntries.map(([groupId]) => groupId),
       runs: runEntries.map(([groupId, run, phase]) => {
         const mode = run.mode === 'auto' ? 'auto' : 'manual'
-        const maxRounds = mode === 'auto' ? cleanRunMaxRounds(run.maxRounds) : 0
+        const unlimitedRounds = mode === 'auto' && run.unlimitedRounds === true
+        const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
         return {
           groupId,
           phase,
@@ -315,8 +341,9 @@ class LocalWorkspace extends EventEmitter {
           completedKinds: run.completedKinds || [],
           failedKinds: run.failedKinds || [],
           currentKind: run.currentKind || '',
-          currentRound: cleanCurrentRound(run.currentRound, maxRounds),
+          currentRound: cleanCurrentRound(run.currentRound, maxRounds, unlimitedRounds),
           maxRounds,
+          unlimitedRounds,
           progress: cleanProgressSteps(run.progress),
           threadRootId: run.threadRootId || '',
           startedAt: run.startedAt || Date.now(),
@@ -329,7 +356,7 @@ class LocalWorkspace extends EventEmitter {
     this.emit('changed', this.snapshot())
   }
 
-  createRunController(mode, targetKinds, threadRootId, maxRounds = 0) {
+  createRunController(mode, targetKinds, threadRootId, maxRounds = 0, unlimitedRounds = false) {
     const controller = new AbortController()
     let done = false
     let resolveDone
@@ -347,7 +374,10 @@ class LocalWorkspace extends EventEmitter {
     controller.progress = []
     controller.threadRootId = threadRootId
     controller.currentRound = 0
-    controller.maxRounds = mode === 'auto' ? cleanRunMaxRounds(maxRounds) : 0
+    controller.unlimitedRounds = mode === 'auto' && unlimitedRounds === true
+    controller.maxRounds = mode === 'auto' && !controller.unlimitedRounds
+      ? cleanRunMaxRounds(maxRounds)
+      : 0
     controller.startedAt = Date.now()
     controller.stopReason = ''
     return controller
@@ -357,10 +387,14 @@ class LocalWorkspace extends EventEmitter {
     return this.preparingRuns.has(groupId) || this.activeRuns.has(groupId)
   }
 
-  reserveRun(groupId, mode, targetKinds, threadRootId = '', maxRounds = 0) {
+  reserveRun(
+    groupId, mode, targetKinds, threadRootId = '', maxRounds = 0, unlimitedRounds = false,
+  ) {
     if (this.shuttingDown) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-    const controller = this.createRunController(mode, targetKinds, threadRootId, maxRounds)
+    const controller = this.createRunController(
+      mode, targetKinds, threadRootId, maxRounds, unlimitedRounds,
+    )
     this.preparingRuns.set(groupId, controller)
     try {
       this.emitChanged()
@@ -384,7 +418,10 @@ class LocalWorkspace extends EventEmitter {
     return true
   }
 
-  beginRun(groupId, mode, targetKinds, threadRootId, reservation = null, maxRounds = 0) {
+  beginRun(
+    groupId, mode, targetKinds, threadRootId, reservation = null, maxRounds = 0,
+    unlimitedRounds = false,
+  ) {
     if (this.shuttingDown) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     let controller = reservation
     if (controller) {
@@ -395,7 +432,9 @@ class LocalWorkspace extends EventEmitter {
       this.preparingRuns.delete(groupId)
     } else {
       if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-      controller = this.createRunController(mode, targetKinds, threadRootId, maxRounds)
+      controller = this.createRunController(
+        mode, targetKinds, threadRootId, maxRounds, unlimitedRounds,
+      )
     }
     controller.mode = mode
     controller.targetKinds = [...targetKinds]
@@ -405,7 +444,9 @@ class LocalWorkspace extends EventEmitter {
     controller.progress = []
     controller.threadRootId = threadRootId
     controller.currentRound = 0
-    controller.maxRounds = mode === 'auto'
+    controller.unlimitedRounds = mode === 'auto'
+      && (unlimitedRounds === true || controller.unlimitedRounds === true)
+    controller.maxRounds = mode === 'auto' && !controller.unlimitedRounds
       ? cleanRunMaxRounds(maxRounds || controller.maxRounds)
       : 0
     controller.startedAt = Date.now()
@@ -659,8 +700,13 @@ class LocalWorkspace extends EventEmitter {
     if (role === 'agent') {
       const elapsedMs = cleanElapsedMs(metadata.elapsedMs)
       const toolCalls = cleanProgressSteps(metadata.toolCalls)
+      const attachments = (Array.isArray(metadata.attachments) ? metadata.attachments : [])
+        .slice(0, MAX_MESSAGE_ATTACHMENTS)
+        .map(normalizeAttachmentMetadata)
+        .filter(Boolean)
       if (elapsedMs != null) message.elapsedMs = elapsedMs
       if (toolCalls.length) message.toolCalls = toolCalls
+      if (attachments.length) message.attachments = attachments
     }
     if (role === 'user') {
       const attachments = (Array.isArray(metadata.attachments) ? metadata.attachments : [])
@@ -669,8 +715,10 @@ class LocalWorkspace extends EventEmitter {
       const skillHints = (Array.isArray(metadata.skillHints) ? metadata.skillHints : [])
         .map(normalizeSkillHint)
         .filter(Boolean)
+      const targetKinds = normalizeTargetKinds(metadata.targetKinds)
       if (attachments.length) message.attachments = attachments
       if (skillHints.length) message.skillHints = skillHints
+      if (targetKinds.length) message.targetKinds = targetKinds
     }
     this.state.messages.push(message)
     const group = this.getGroup(groupId)
@@ -763,7 +811,7 @@ class LocalWorkspace extends EventEmitter {
 
   promptMessageText(message, limit = 20000) {
     const attachmentNote = message.attachments?.length
-      ? `[Attached images: ${message.attachments.map(item => item.name).join(', ')}]`
+      ? `[Attached files: ${message.attachments.map(item => item.name).join(', ')}]`
       : ''
     return cleanText([message.content, attachmentNote].filter(Boolean).join(' '), limit)
   }
@@ -825,10 +873,21 @@ class LocalWorkspace extends EventEmitter {
           'Use agree only when you fully accept the current shared conclusion and add no new proposal, condition, or reservation. Otherwise use continue.',
         ].join('\n')
       : 'Respond directly to the user and account for the other participants\' views. Do not speak for other Agents.'
+    const mediaDelivery = group.allowWrite
+      ? [
+          'Media delivery contract: When the user asks for an image, audio, or video, do not claim it was generated unless a real file exists.',
+          'Save or copy each final media file into .meldwork-output/ in the conversation working directory. Supported extensions: .png, .jpg, .jpeg, .mp3, .wav, .m4a, .mp4, .mov, .webm.',
+          'Mention a delivered media file only after it has been written there.',
+        ].join('\n')
+      : [
+          'This conversation is read-only. Do not claim that a media file was generated or delivered because no writable output can be attached.',
+          'If the user requests generated media, explain that workspace write access must be enabled before a real file can be delivered.',
+        ].join('\n')
     return [
       `You are participating in the local "${group.name || 'Meldwork group'}" conversation as ${label}. Reply in the language used by the user unless they request another language.`,
       `Group topic: ${cleanText(group.topic, 200) || '(not specified)'}`,
       instruction,
+      mediaDelivery,
       'Stable user instructions and constraints:',
       this.stableUserInstructions(group.id, threadRootId) || '(none)',
       'Recent conversation across the group:',
@@ -850,8 +909,21 @@ class LocalWorkspace extends EventEmitter {
     const activeRun = this.activeRuns.get(group.id)
     const onProgress = (step) => {
       if (!activeRun || activeRun.currentKind !== kind) return
-      activeRun.progress = cleanProgressSteps([...(activeRun.progress || []), step])
+      const next = [...(activeRun.progress || [])]
+      const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
+        ? step.id
+        : ''
+      const existingIndex = progressId
+        ? next.findIndex(item => item?.id === progressId)
+        : -1
+      if (existingIndex >= 0) next[existingIndex] = { ...step, id: progressId }
+      else next.push(progressId ? { ...step, id: progressId } : step)
+      activeRun.progress = next.slice(-8)
       this.emitChanged()
+    }
+    let outputBaseline = null
+    if (group.allowWrite) {
+      try { outputBaseline = await this.captureAgentOutputsFn(group.workdir) } catch { /* best effort */ }
     }
     let result
     try {
@@ -889,6 +961,21 @@ class LocalWorkspace extends EventEmitter {
       status: step.status === 'in_progress' ? 'completed' : step.status,
     }))
     if (activeRun) activeRun.progress = toolCalls
+    let attachments = []
+    if (group.allowWrite) {
+      try {
+        const imported = await this.importAgentOutputsFn({
+          workdir: group.workdir,
+          baseline: outputBaseline,
+          startedAt,
+          agentKind: kind,
+        })
+        attachments = (Array.isArray(imported) ? imported : [])
+          .slice(0, MAX_MESSAGE_ATTACHMENTS)
+          .map(normalizeAttachmentMetadata)
+          .filter(Boolean)
+      } catch { /* the reply remains available when no valid media was produced */ }
+    }
     const message = this.addMessage(
       group.id,
       'agent',
@@ -896,7 +983,7 @@ class LocalWorkspace extends EventEmitter {
       kind,
       threadRootId,
       null,
-      { elapsedMs: Date.now() - startedAt, toolCalls },
+      { elapsedMs: Date.now() - startedAt, toolCalls, attachments },
     )
     return { message, consensus: reply.consensus && result.completed !== false }
   }
@@ -915,6 +1002,9 @@ class LocalWorkspace extends EventEmitter {
     return resolved.map((attachment) => {
       const metadata = normalizeAttachmentMetadata(attachment)
       if (!metadata || typeof attachment.path !== 'string' || !path.isAbsolute(attachment.path)) {
+        throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+      }
+      if (!USER_ATTACHMENT_MIME_TYPES.has(metadata.mimeType)) {
         throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
       }
       return { ...metadata, path: path.normalize(attachment.path) }
@@ -955,9 +1045,12 @@ class LocalWorkspace extends EventEmitter {
     }
   }
 
-  startAutoRunner(group, threadRootId, maxRounds, reservation = null, preparedContext = null) {
+  startAutoRunner(
+    group, threadRootId, maxRounds, reservation = null, preparedContext = null,
+    unlimitedRounds = false,
+  ) {
     const controller = this.beginRun(
-      group.id, 'auto', group.agentKinds, threadRootId, reservation, maxRounds,
+      group.id, 'auto', group.agentKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
     )
     const timeout = setTimeout(() => {
       if (controller.signal.aborted) return
@@ -998,7 +1091,11 @@ class LocalWorkspace extends EventEmitter {
         const attachmentRecipients = new Set()
         let consensusReached = false
         const reportedFailures = new Set()
-        for (let round = 0; round < maxRounds && !controller.signal.aborted; round += 1) {
+        for (
+          let round = 0;
+          (controller.unlimitedRounds || round < maxRounds) && !controller.signal.aborted;
+          round += 1
+        ) {
           let agreements = 0
           let successes = 0
           controller.currentRound = round + 1
@@ -1056,7 +1153,7 @@ class LocalWorkspace extends EventEmitter {
             threadRootId,
             { key: 'system.autoTimeout', params: {} },
           )
-        } else if (runStatus === 'round-limit' || runStatus === 'failed') {
+        } else if (!controller.unlimitedRounds && (runStatus === 'round-limit' || runStatus === 'failed')) {
           this.addMessage(
             group.id,
             'system',
@@ -1113,6 +1210,13 @@ class LocalWorkspace extends EventEmitter {
       : (input.targetKinds?.length ? input.targetKinds : group.agentKinds)
     const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
     if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    if (input.mentionedAgentKinds != null && !Array.isArray(input.mentionedAgentKinds)) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    }
+    const mentionedAgentKinds = normalizeTargetKinds(input.mentionedAgentKinds)
+    if (mentionedAgentKinds.some(kind => !targetKinds.includes(kind))) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    }
     if (mode === 'auto' && targetKinds.some(kind => (
       !this.detectedAgents.some(agent => agent.kind === kind && agent.available)
     ))) {
@@ -1126,11 +1230,14 @@ class LocalWorkspace extends EventEmitter {
     if (requestedSkillHints.some(skill => !targetKinds.includes(String(skill?.targetKind || '')))) {
       throw new Error('LOCAL_SKILL_SELECTION_INVALID')
     }
-    const maxRounds = mode === 'auto'
+    const unlimitedRounds = mode === 'auto' && input.unlimitedRounds === true
+    const maxRounds = mode === 'auto' && !unlimitedRounds
       ? normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
       : 0
     const requestedThreadRootId = mode === 'manual' ? cleanText(input.threadRootId, 100) : ''
-    const reservation = this.reserveRun(group.id, mode, targetKinds, '', maxRounds)
+    const reservation = this.reserveRun(
+      group.id, mode, targetKinds, '', maxRounds, unlimitedRounds,
+    )
     const promise = (async () => {
       let controller = null
       let autoStarted = false
@@ -1150,11 +1257,12 @@ class LocalWorkspace extends EventEmitter {
             {
               attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
               skillHints: prepared.skillHints,
+              targetKinds: mentionedAgentKinds,
             },
           )
           try {
             controller = this.startAutoRunner(
-              group, userMessage.id, maxRounds, reservation, prepared,
+              group, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
             )
           } catch (error) {
             const messageIndex = this.state.messages.findIndex(message => message === userMessage)
@@ -1167,7 +1275,12 @@ class LocalWorkspace extends EventEmitter {
             throw error
           }
           autoStarted = true
-          return { started: true, maxRounds, threadRootId: userMessage.id }
+          return {
+            started: true,
+            maxRounds,
+            threadRootId: userMessage.id,
+            ...(unlimitedRounds ? { unlimitedRounds: true } : {}),
+          }
         }
 
         controller = this.beginRun(group.id, 'manual', targetKinds, '', reservation)
@@ -1182,6 +1295,7 @@ class LocalWorkspace extends EventEmitter {
           {
             attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
             skillHints: prepared.skillHints,
+            targetKinds: mentionedAgentKinds,
           },
         )
         const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
@@ -1237,7 +1351,10 @@ class LocalWorkspace extends EventEmitter {
     const group = this.getGroup(input.groupId)
     if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
     if (group.agentKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
-    const maxRounds = normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
+    const unlimitedRounds = input.unlimitedRounds === true
+    const maxRounds = unlimitedRounds
+      ? 0
+      : normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
     const latestRoot = this.state.messages.findLast(message => (
       message.groupId === group.id && message.role === 'user' && !message.threadRootId
     ))
@@ -1254,8 +1371,8 @@ class LocalWorkspace extends EventEmitter {
       if (rootAttachmentCount && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
       if (rootAttachmentCount > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
     }
-    this.startAutoRunner(group, threadRootId, maxRounds)
-    return { started: true, maxRounds }
+    this.startAutoRunner(group, threadRootId, maxRounds, null, null, unlimitedRounds)
+    return { started: true, maxRounds, ...(unlimitedRounds ? { unlimitedRounds: true } : {}) }
   }
 
   stop(groupId) {

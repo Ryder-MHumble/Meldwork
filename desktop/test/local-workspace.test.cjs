@@ -30,6 +30,8 @@ function fixture() {
     })),
     validateSkillSelections: (_kind, selections) => selections,
     imageAttachmentLimit: kind => ({ codex: 4, hermes: 1, opencode: 4 })[kind] || 0,
+    captureAgentOutputs: async () => null,
+    importAgentOutputs: async () => [],
     runAgent: async (agent, prompt, workdir, runOptions) => {
       calls.push({ agent, prompt, workdir, runOptions })
       return {
@@ -246,11 +248,17 @@ test('groups and messages persist without exposing executable paths', async (t) 
     agentKinds: ['codex', 'hermes'],
     workdir: directory,
   })
-  await workspace.sendMessage({ groupId: group.id, text: '开始讨论', targetKinds: ['codex'] })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: '开始讨论',
+    targetKinds: ['codex'],
+    mentionedAgentKinds: ['codex'],
+  })
 
   const restored = new LocalWorkspace(options)
   assert.equal(restored.snapshot().groups[0].name, '本地测试群')
   assert.equal(restored.snapshot().messages.length, 2)
+  assert.deepEqual(restored.snapshot().messages[0].targetKinds, ['codex'])
   assert.equal('executable' in workspace.snapshot().agents[0], false)
 })
 
@@ -301,6 +309,15 @@ test('Skills are validated and injected only into their selected target Agent', 
       skillHints: [research],
     }),
     { message: 'LOCAL_SKILL_SELECTION_INVALID' },
+  )
+  await assert.rejects(
+    workspace.sendMessage({
+      groupId: group.id,
+      text: 'Invalid mention',
+      targetKinds: ['codex'],
+      mentionedAgentKinds: ['hermes'],
+    }),
+    { message: 'LOCAL_MESSAGE_TARGET_REQUIRED' },
   )
   assert.equal(workspace.snapshot().messages.filter(message => message.role === 'user').length, 1)
 })
@@ -625,6 +642,7 @@ test('workspace loading allowlists local group and message fields', async (t) =>
     name: 'Review',
     path: '/private/SKILL.md',
   }]
+  stored.messages[0].targetKinds = ['codex', 'unknown-agent', 'codex']
   stored.messages[1].elapsedMs = 12.4
   stored.messages[1].toolCalls = [
     ...Array.from({ length: 8 }, () => ({ title: 'write_file', status: 'completed' })),
@@ -647,6 +665,7 @@ test('workspace loading allowlists local group and message fields', async (t) =>
   assert.deepEqual(restoredSnapshot.messages[0].skillHints, [{
     targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
   }])
+  assert.deepEqual(restoredSnapshot.messages[0].targetKinds, ['codex'])
   assert.equal(restoredSnapshot.messages[1].elapsedMs, 12)
   assert.equal(restoredSnapshot.messages[1].toolCalls.length, 8)
   assert.deepEqual(restoredSnapshot.messages[1].toolCalls.at(-1), {
@@ -681,6 +700,71 @@ test('direct conversations force manual mode and reuse their group Agent session
   assert.equal(workspace.snapshot().messages.some(message => message.threadRootId), false)
   const restored = new LocalWorkspace(options)
   assert.deepEqual(restored.snapshot().groups[0], direct)
+})
+
+test('writable conversations persist validated Agent media outputs and enforce the delivery contract', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const captureCalls = []
+  const importCalls = []
+  const generated = [
+    { id: 'generated-image', name: 'poster.png', mimeType: 'image/png', size: 128 },
+    { id: 'generated-audio', name: 'briefing.mp3', mimeType: 'audio/mpeg', size: 256 },
+    { id: 'generated-video', name: 'demo.mp4', mimeType: 'video/mp4', size: 512 },
+  ]
+  options.captureAgentOutputs = async (workdir) => {
+    captureCalls.push(workdir)
+    return { marker: 'before-run' }
+  }
+  options.importAgentOutputs = async (input) => {
+    importCalls.push(input)
+    return generated
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const direct = workspace.createGroup({
+    name: 'Codex media', workdir: directory, allowWrite: true,
+    conversationType: 'direct', directAgentKind: 'codex', agentKinds: ['codex'],
+  })
+
+  await workspace.sendMessage({ groupId: direct.id, text: '生成一张图、一段音频和一个视频' })
+
+  assert.deepEqual(captureCalls, [directory])
+  assert.equal(importCalls.length, 1)
+  assert.equal(importCalls[0].workdir, directory)
+  assert.deepEqual(importCalls[0].baseline, { marker: 'before-run' })
+  assert.equal(Number.isFinite(importCalls[0].startedAt), true)
+  assert.match(calls[0].prompt, /\.meldwork-output\//)
+  assert.match(calls[0].prompt, /do not claim it was generated unless a real file exists/i)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.deepEqual(reply.attachments, generated)
+  assert.equal(JSON.stringify(reply).includes(directory), false)
+
+  const restored = new LocalWorkspace(options)
+  const restoredReply = restored.snapshot().messages.find(message => message.role === 'agent')
+  assert.deepEqual(restoredReply.attachments, generated)
+})
+
+test('read-only conversations forbid false media claims and do not scan for generated files', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let captureCount = 0
+  let importCount = 0
+  options.captureAgentOutputs = async () => { captureCount += 1; return {} }
+  options.importAgentOutputs = async () => { importCount += 1; return [] }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const direct = workspace.createGroup({
+    name: 'Read only Codex', workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex', agentKinds: ['codex'],
+  })
+
+  await workspace.sendMessage({ groupId: direct.id, text: '生成图片' })
+
+  assert.equal(captureCount, 0)
+  assert.equal(importCount, 0)
+  assert.match(calls[0].prompt, /read-only/i)
+  assert.match(calls[0].prompt, /do not claim that a media file was generated/i)
 })
 
 test('Gemini and OpenCode messages keep their Agent names', async (t) => {
@@ -1215,6 +1299,32 @@ test('Hermes progress stays bounded metadata while later Agents receive only its
   assert.equal(typeof persistedReply.elapsedMs, 'number')
 })
 
+test('running progress updates an existing Codex event instead of appending duplicates', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const release = deferred()
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    runOptions.onProgress({ id: 'item-1', title: 'search', status: 'in_progress' })
+    runOptions.onProgress({ id: 'item-1', title: 'search', status: 'completed' })
+    await release.promise
+    return { text: 'done', sessionRef: 'codex-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Codex progress', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: 'Search' })
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.deepEqual(workspace.snapshot().runs[0].progress, [
+    { title: 'search', status: 'completed' },
+  ])
+  release.resolve()
+  await send
+})
+
 test('all failed agents resolve after persisting one user message and recording failures', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -1299,6 +1409,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.deepEqual(started, { started: true, maxRounds: 2, threadRootId: root.id })
   assert.equal(active.messages.filter(message => message.role === 'user').length, 1)
   assert.equal(root.threadRootId, undefined)
+  assert.equal(root.targetKinds, undefined)
   assert.deepEqual(active.runs.map(run => ({
     mode: run.mode,
     currentRound: run.currentRound,
@@ -1328,6 +1439,62 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.equal(finished.length, 1)
   assert.equal(finished[0].mode, 'auto')
   assert.equal(finished[0].status, 'completed')
+})
+
+test('unlimited automatic discussion continues past a finite cap until consensus', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const firstCallEntered = deferred()
+  const firstCallGate = deferred()
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length === 1) {
+      firstCallEntered.resolve()
+      await firstCallGate.promise
+    }
+    const agreed = calls.length > 2
+    return {
+      text: `${agent.kind} response\n[[ROUNDRELAY_CONSENSUS:${agreed ? 'agree' : 'continue'}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '不限轮次讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: '讨论到达成共识',
+    mode: 'auto',
+    maxRounds: 1,
+    unlimitedRounds: true,
+  })
+  await firstCallEntered.promise
+
+  const active = workspace.snapshot().runs[0]
+  assert.deepEqual(started, {
+    started: true,
+    maxRounds: 0,
+    threadRootId: active.threadRootId,
+    unlimitedRounds: true,
+  })
+  assert.equal(active.currentRound, 1)
+  assert.equal(active.maxRounds, 0)
+  assert.equal(active.unlimitedRounds, true)
+
+  const pending = workspace.activeRuns.get(group.id).promise
+  firstCallGate.resolve()
+  await pending
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+  assert.equal(finished[0].status, 'completed')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.autoRoundLimit'
+  )), false)
 })
 
 test('auto send rejects failed preflight without persisting a root or starting an Agent', async (t) => {

@@ -92,10 +92,10 @@ if (isLocalDocument) Object.assign(desktopApi, {
     discard: ids => ipcRenderer.invoke('local-attachments:discard', ids),
   }),
   localAgentProvider: Object.freeze({
-    status: () => ipcRenderer.invoke('local-agent-provider:status'),
-    probe: () => ipcRenderer.invoke('local-agent-provider:probe'),
-    save: input => ipcRenderer.invoke('local-agent-provider:save', input),
-    delete: () => ipcRenderer.invoke('local-agent-provider:delete'),
+    status: kind => ipcRenderer.invoke('local-agent-provider:status', kind),
+    probe: kind => ipcRenderer.invoke('local-agent-provider:probe', kind),
+    save: (kind, input) => ipcRenderer.invoke('local-agent-provider:save', kind, input),
+    delete: kind => ipcRenderer.invoke('local-agent-provider:delete', kind),
   }),
 })
 

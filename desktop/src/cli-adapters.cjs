@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { Readable, Writable } = require('node:stream')
+const { StringDecoder } = require('node:string_decoder')
 const { promisify } = require('node:util')
 
 const execFileAsync = promisify(execFile)
@@ -580,6 +581,80 @@ function parseCodexOutput(stdout) {
     } catch { /* ignore non-JSON diagnostics */ }
   }
   return { text: texts.join('\n').trim(), sessionRef }
+}
+
+function codexProgressTitle(item) {
+  const type = String(item?.type || '').toLowerCase()
+  const descriptor = [type, item?.name, item?.tool, item?.command]
+    .map(value => String(value || '').toLowerCase())
+    .join(' ')
+  if (/image[_ -]?(?:generation|gen)|imagegen|generate[_ -]?image/.test(descriptor)) return 'image_generation'
+  if (/audio[_ -]?(?:generation|gen)|generate[_ -]?audio|text[_ -]?to[_ -]?speech/.test(descriptor)) {
+    return 'audio_generation'
+  }
+  if (/video[_ -]?(?:generation|gen)|generate[_ -]?video/.test(descriptor)) return 'video_generation'
+  if (type === 'reasoning' || /\breasoning\b/.test(descriptor)) return 'reasoning'
+  if (/apply_patch|write[_ -]?file|edit[_ -]?file|create[_ -]?file|\b(?:mkdir|tee|cp|mv)\b/.test(descriptor)) {
+    return 'write_file'
+  }
+  if (/\b(?:rg|grep|find|search|glob)\b/.test(descriptor)) return 'search'
+  if (/read[_ -]?file|\b(?:cat|sed|head|tail|ls|stat|file|ffprobe)\b|git (?:show|diff)/.test(descriptor)) {
+    return 'read_file'
+  }
+  if (/tool|mcp/.test(type)) return 'tool'
+  return 'process'
+}
+
+function codexProgressEvent(event) {
+  if (event?.type === 'turn.started') {
+    return { id: 'turn', title: 'process', status: 'in_progress' }
+  }
+  if (event?.type === 'turn.completed') {
+    return { id: 'turn', title: 'process', status: 'completed' }
+  }
+  if (!['item.started', 'item.completed'].includes(event?.type)
+      || !event.item || event.item.type === 'agent_message') {
+    return null
+  }
+  const rawId = String(event.item.id || '')
+  const id = /^[A-Za-z0-9._:-]{1,100}$/.test(rawId) ? rawId : ''
+  const failed = event.item.status === 'failed'
+    || (Number.isInteger(event.item.exit_code) && event.item.exit_code !== 0)
+  return {
+    ...(id ? { id } : {}),
+    title: codexProgressTitle(event.item),
+    status: failed
+      ? 'failed'
+      : event.type === 'item.started' ? 'in_progress' : 'completed',
+  }
+}
+
+function createJsonLineParser(onEvent) {
+  const decoder = new StringDecoder('utf8')
+  let pending = ''
+  const consume = (flush = false) => {
+    const lines = pending.split(/\r?\n/)
+    pending = flush ? '' : (lines.pop() || '')
+    if (flush && lines.length === 1 && !lines[0]) return
+    for (const line of lines) {
+      if (!line.trim()) continue
+      try { onEvent(JSON.parse(line)) } catch { /* ignore non-JSON diagnostics */ }
+    }
+    if (flush && pending.trim()) {
+      try { onEvent(JSON.parse(pending)) } catch { /* ignore incomplete diagnostics */ }
+      pending = ''
+    }
+  }
+  return {
+    write(chunk) {
+      pending += decoder.write(chunk)
+      consume(false)
+    },
+    end() {
+      pending += decoder.end()
+      consume(true)
+    },
+  }
 }
 
 function parseMimoOutput(stdout) {
@@ -1325,22 +1400,46 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     let forceKillTimeout
     let forceSettleTimeout
     const progress = []
+    const progressIndexes = new Map()
+    let anonymousProgressId = 0
+    const emitProgress = (input) => {
+      const event = {
+        ...(input?.id ? { id: String(input.id) } : {}),
+        title: String(input?.title || 'process'),
+        status: ['completed', 'failed', 'in_progress'].includes(input?.status)
+          ? input.status
+          : 'completed',
+      }
+      const progressId = event.id || `anonymous-${++anonymousProgressId}`
+      const existingIndex = progressIndexes.get(progressId)
+      if (existingIndex != null) {
+        progress[existingIndex] = event
+      } else {
+        if (progress.length >= MAX_PROGRESS_STEPS) return
+        progressIndexes.set(progressId, progress.length)
+        progress.push(event)
+      }
+      try { options.onProgress?.(event) } catch { /* progress is best-effort */ }
+    }
     const hermesProgressBuffers = { stdout: '', stderr: '' }
     const hermesProgressDecoders = { stdout: new TextDecoder(), stderr: new TextDecoder() }
     const emitHermesProgress = (source, chunk, flush = false) => {
-      if (agent.kind !== 'hermes' || progress.length >= MAX_PROGRESS_STEPS) return
+      if (agent.kind !== 'hermes') return
       const decoder = hermesProgressDecoders[source]
       hermesProgressBuffers[source] += decoder.decode(chunk || undefined, { stream: !flush })
       const lines = hermesProgressBuffers[source].split(/\r?\n/)
       hermesProgressBuffers[source] = flush ? '' : (lines.pop() || '')
       for (const line of lines) {
         if (!/^┊\s*review diff$/i.test(stripAnsi(line).trim())) continue
-        const event = { title: 'write_file', status: 'completed' }
-        progress.push(event)
-        try { options.onProgress?.(event) } catch { /* progress is best-effort */ }
-        if (progress.length >= MAX_PROGRESS_STEPS) break
+        emitProgress({ title: 'write_file', status: 'completed' })
       }
     }
+    const codexProgressParser = agent.kind === 'codex'
+      ? createJsonLineParser((event) => {
+          const progressEvent = codexProgressEvent(event)
+          if (progressEvent) emitProgress(progressEvent)
+        })
+      : null
     const finish = (callback) => {
       if (settled) return
       settled = true
@@ -1396,6 +1495,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     child.stdout.on('data', (chunk) => {
       stdoutBytes += chunk.length
       if (stdoutBytes <= 10 * 1024 * 1024) stdout.push(chunk)
+      codexProgressParser?.write(chunk)
       emitHermesProgress('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
@@ -1415,6 +1515,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       void (async () => {
         emitHermesProgress('stdout', null, true)
         emitHermesProgress('stderr', null, true)
+        codexProgressParser?.end()
         if (stopRequested || options.signal?.aborted) {
           reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
           return
@@ -1465,8 +1566,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           }
           const storedResponse = typeof finalResponse === 'string' ? finalResponse.trim() : ''
           if (storedResponse) result.text = storedResponse
-          if (progress.length) result.progress = progress
         }
+        if (progress.length) result.progress = progress
         const redactedText = redactChildSecrets(result.text, childEnv)
         if (!redactedText) {
           reject(agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE'))

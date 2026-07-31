@@ -1,9 +1,13 @@
 const electron = require('electron')
-const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, shell } = electron
+const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, protocol, shell } = electron
 const fs = require('node:fs')
 const path = require('node:path')
 const { fileURLToPath } = require('node:url')
 const { AttachmentStore } = require('./attachment-store.cjs')
+const {
+  captureAgentOutputState,
+  importAgentOutputs,
+} = require('./agent-output-importer.cjs')
 const {
   assertImagePixelLimit,
   inspectImageDimensions,
@@ -19,7 +23,8 @@ const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
 const { managedOpenClawOptions } = require('./openclaw-runtime.cjs')
 const { ProviderStore } = require('./provider-store.cjs')
 
-const SHARED_PROVIDER_KINDS = new Set(['hermes', 'openclaw', 'workbuddy', 'qwen'])
+const EXTERNAL_PROVIDER_KINDS = new Set(['hermes', 'openclaw', 'workbuddy', 'qwen'])
+const MEDIA_SCHEME = 'meldwork-media'
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const MAX_ATTACHMENT_PICK_REQUEST = 4
 const MAX_ATTACHMENT_DISCARD_REQUEST = 4
@@ -43,6 +48,16 @@ let shutdownStarted = false
 let quitAfterCleanup = false
 let quitCleanup = null
 let pendingOpenGroupId = ''
+
+protocol?.registerSchemesAsPrivileged?.([{
+  scheme: MEDIA_SCHEME,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+  },
+}])
 
 const lazySafeStorage = Object.freeze({
   isEncryptionAvailable: () => electron.safeStorage.isEncryptionAvailable(),
@@ -175,16 +190,22 @@ function providerOptionsFor(kind, generic, context = {}) {
 }
 
 function providerOptions(kind, context = {}) {
-  if (!SHARED_PROVIDER_KINDS.has(kind)) return {}
-  if (!providerStore?.status().configured) {
+  if (!EXTERNAL_PROVIDER_KINDS.has(kind)) return {}
+  if (!providerStore?.status(kind).configured) {
     if (kind === 'openclaw') throw new Error('PROVIDER_CREDENTIAL_REQUIRED')
     return {}
   }
   return providerOptionsFor(
     kind,
-    providerStore.envForAgent(),
+    providerStore.envForAgent(kind),
     context,
   )
+}
+
+function providerAgentKind(value) {
+  const kind = String(value || '').trim()
+  if (!EXTERNAL_PROVIDER_KINDS.has(kind)) throw new Error('PROVIDER_AGENT_UNSUPPORTED')
+  return kind
 }
 
 function workspaceStoragePath(userData = app.getPath('userData')) {
@@ -270,6 +291,73 @@ function attachmentPreview(id) {
     size: metadata.size,
     previewDataUrl,
   }
+}
+
+function mediaRequestId(value) {
+  try {
+    const target = new URL(value)
+    const id = decodeURIComponent(target.pathname.replace(/^\//, ''))
+    if (target.protocol !== `${MEDIA_SCHEME}:` || target.hostname !== 'attachment'
+        || target.username || target.password || target.port || target.search || target.hash
+        || !ATTACHMENT_ID.test(id)) {
+      return ''
+    }
+    return id
+  } catch {
+    return ''
+  }
+}
+
+function mediaByteRange(value, size) {
+  if (!value) return null
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(value).trim())
+  if (!match || (!match[1] && !match[2])) return false
+  let start
+  let end
+  if (!match[1]) {
+    const suffix = Number(match[2])
+    if (!Number.isSafeInteger(suffix) || suffix <= 0) return false
+    start = Math.max(0, size - suffix)
+    end = size - 1
+  } else {
+    start = Number(match[1])
+    end = match[2] ? Number(match[2]) : size - 1
+  }
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+      || start < 0 || start >= size || end < start) return false
+  return { start, end: Math.min(end, size - 1) }
+}
+
+function attachmentMediaResponse(request) {
+  const id = mediaRequestId(request?.url)
+  if (!id) return new Response(null, { status: 404 })
+  let entry
+  try { entry = availableAttachmentStore().readWithMetadata(id) } catch { return new Response(null, { status: 404 }) }
+  const { metadata, bytes } = entry
+  if (!/^(?:image|audio|video)\//.test(metadata.mimeType) || bytes.length !== metadata.size) {
+    return new Response(null, { status: 415 })
+  }
+  const range = mediaByteRange(request?.headers?.get?.('range'), bytes.length)
+  if (range === false) {
+    return new Response(null, {
+      status: 416,
+      headers: { 'Content-Range': `bytes */${bytes.length}` },
+    })
+  }
+  const body = range ? bytes.subarray(range.start, range.end + 1) : bytes
+  const headers = {
+    'Accept-Ranges': 'bytes',
+    'Cache-Control': 'private, max-age=31536000, immutable',
+    'Content-Length': String(body.length),
+    'Content-Type': metadata.mimeType,
+    'X-Content-Type-Options': 'nosniff',
+  }
+  if (range) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${bytes.length}`
+  return new Response(body, { status: range ? 206 : 200, headers })
+}
+
+function registerMediaProtocol() {
+  protocol?.handle?.(MEDIA_SCHEME, request => attachmentMediaResponse(request))
 }
 
 function importAttachmentBuffer(input) {
@@ -387,15 +475,17 @@ function createWorkspace() {
     storagePath: workspaceStoragePath(),
     detectAgents: () => installer.detectedAgents(),
     resolveAttachments: attachments => availableAttachmentStore().resolve(attachments),
+    captureAgentOutputs: workdir => captureAgentOutputState(workdir),
+    importAgentOutputs: input => importAgentOutputs(input, availableAttachmentStore()),
     validateSkillSelections: (kind, selections) => skillCatalog.validateSelections(kind, selections),
     imageAttachmentLimit,
     credentialState: (kind, agent) => {
-      if (kind === 'openclaw' && !providerStore?.status().configured) {
-        return { state: 'missing', source: 'shared-provider-required' }
+      if (kind === 'openclaw' && !providerStore?.status(kind).configured) {
+        return { state: 'missing', source: 'agent-provider-required' }
       }
       return resolveNativeCredentialState(kind, { executable: agent?.executable })
     },
-    sharedProviderReady: kind => SHARED_PROVIDER_KINDS.has(kind) && providerStore.status().configured,
+    sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
     runAgent: async (agent, prompt, workdir, options = {}) => {
       const injected = providerOptions(agent.kind, {
         ...options,
@@ -599,14 +689,14 @@ function registerIpc() {
   registerTrustedHandle('local-attachments:discard', (ids) => {
     return discardUnreferencedAttachments(ids)
   })
-  registerTrustedHandle('local-agent-provider:status', () => {
-    return providerStore.status()
+  registerTrustedHandle('local-agent-provider:status', (kind) => {
+    return providerStore.status(providerAgentKind(kind))
   })
-  registerTrustedHandle('local-agent-provider:probe', () => {
-    return providerStore.status({ probeEncryption: true })
+  registerTrustedHandle('local-agent-provider:probe', (kind) => {
+    return providerStore.status(providerAgentKind(kind), { probeEncryption: true })
   })
-  registerTrustedHandle('local-agent-provider:save', async (input) => {
-    const result = providerStore.save({
+  registerTrustedHandle('local-agent-provider:save', async (kind, input) => {
+    const result = providerStore.save(providerAgentKind(kind), {
       apiKey: input?.apiKey,
       provider: input?.provider,
       baseUrl: input?.baseUrl,
@@ -615,8 +705,8 @@ function registerIpc() {
     await refreshLocalAgentState()
     return result
   })
-  registerTrustedHandle('local-agent-provider:delete', async () => {
-    const result = providerStore.delete()
+  registerTrustedHandle('local-agent-provider:delete', async (kind) => {
+    const result = providerStore.delete(providerAgentKind(kind))
     await refreshLocalAgentState()
     return result
   })
@@ -634,6 +724,7 @@ if (!hasSingleInstanceLock) {
     providerStore = new ProviderStore({
       storagePath: path.join(app.getPath('userData'), 'roundrelay-provider.json'),
       safeStorage: lazySafeStorage,
+      allowedKinds: [...EXTERNAL_PROVIDER_KINDS],
     })
     try {
       attachmentStore = new AttachmentStore({
@@ -642,6 +733,7 @@ if (!hasSingleInstanceLock) {
     } catch {
       attachmentStore = null
     }
+    registerMediaProtocol()
     skillCatalog = new LocalSkillCatalog({ home: app.getPath('home') })
     installer = new AgentInstaller({
       detectAgents,

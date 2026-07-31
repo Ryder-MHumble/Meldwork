@@ -16,6 +16,14 @@ const WEBP = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00,
   0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
 ])
+const MP3 = Buffer.from('49443304000000000000', 'hex')
+const WAV = Buffer.concat([Buffer.from('RIFF'), Buffer.alloc(4), Buffer.from('WAVEfmt ')])
+const M4A = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypM4A '), Buffer.alloc(8)])
+const MP4 = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypisom'), Buffer.alloc(8)])
+const MOV = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypqt  '), Buffer.alloc(8)])
+const WEBM_VIDEO = Buffer.concat([
+  Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(8), Buffer.from('webm'),
+])
 
 function fixture(t, createId) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachments-'))
@@ -81,6 +89,45 @@ test('accepts PNG and JPEG using their real magic bytes', (t) => {
   assert.deepEqual(
     store.importBuffer({ bytes: JPEG, name: 'photo.jpeg', mimeType: 'image/jpeg' }),
     { id: 'attachment-2', name: 'photo.jpg', mimeType: 'image/jpeg', size: JPEG.length },
+  )
+})
+
+test('imports validated audio and video while preserving controlled storage paths', (t) => {
+  const { rootPath, store } = fixture(t)
+  const fixtures = [
+    [MP3, 'briefing.mp3', 'audio/mpeg', 'media.mp3'],
+    [WAV, 'voice.wav', 'audio/wav', 'media.wav'],
+    [M4A, 'meeting.m4a', 'audio/mp4', 'media.m4a'],
+    [MP4, 'demo.mp4', 'video/mp4', 'media.mp4'],
+    [MOV, 'walkthrough.mov', 'video/quicktime', 'media.mov'],
+    [WEBM_VIDEO, 'preview.webm', 'video/webm', 'media.webm'],
+  ]
+
+  for (const [bytes, name, mimeType, storedName] of fixtures) {
+    const metadata = store.importBuffer({ bytes, name, mimeType })
+    assert.equal(metadata.name, name)
+    assert.equal(metadata.mimeType, mimeType)
+    const [resolved] = store.resolve([metadata.id])
+    assert.equal(path.basename(resolved.path), storedName)
+    assert.deepEqual(store.read(metadata.id), bytes)
+    assert.equal(path.dirname(path.dirname(resolved.path)), rootPath)
+  }
+})
+
+test('rejects media extension, MIME, and magic-byte mismatches', (t) => {
+  const { store } = fixture(t)
+
+  assert.throws(
+    () => store.importBuffer({ bytes: MP3, name: 'voice.wav', mimeType: 'audio/mpeg' }),
+    { message: 'LOCAL_ATTACHMENT_TYPE_MISMATCH' },
+  )
+  assert.throws(
+    () => store.importBuffer({ bytes: MP4, name: 'demo.mp4', mimeType: 'video/quicktime' }),
+    { message: 'LOCAL_ATTACHMENT_TYPE_MISMATCH' },
+  )
+  assert.throws(
+    () => store.importBuffer({ bytes: WEBP, name: 'preview.webm', mimeType: 'video/webm' }),
+    { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
   )
 })
 
