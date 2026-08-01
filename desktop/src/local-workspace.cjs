@@ -1564,11 +1564,11 @@ class LocalWorkspace extends EventEmitter {
   }
 
   startAutoRunner(
-    group, threadRootId, maxRounds, reservation = null, preparedContext = null,
+    group, targetKinds, threadRootId, maxRounds, reservation = null, preparedContext = null,
     unlimitedRounds = false,
   ) {
     const controller = this.beginRun(
-      group.id, 'auto', group.agentKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
+      group.id, 'auto', targetKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
     )
     const timeout = setTimeout(() => {
       if (controller.signal.aborted) return
@@ -1736,14 +1736,15 @@ class LocalWorkspace extends EventEmitter {
     const mode = input.mode === 'auto' && group.conversationType !== 'direct'
       ? 'auto'
       : 'manual'
-    if (mode === 'auto' && group.agentKinds.length < 2) {
-      throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    if (input.targetKinds != null && !Array.isArray(input.targetKinds)) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
-    const requested = mode === 'auto'
-      ? group.agentKinds
-      : (input.targetKinds?.length ? input.targetKinds : group.agentKinds)
+    const requested = Array.isArray(input.targetKinds) && input.targetKinds.length
+      ? normalizeTargetKinds(input.targetKinds)
+      : group.agentKinds
     const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
     if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    if (mode === 'auto' && targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     if (input.mentionedAgentKinds != null && !Array.isArray(input.mentionedAgentKinds)) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
@@ -1809,12 +1810,12 @@ class LocalWorkspace extends EventEmitter {
               attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
               skillHints: prepared.skillHints,
               knowledgeBaseHints: prepared.knowledgeBaseHints,
-              targetKinds: mentionedAgentKinds,
+              targetKinds,
             },
           )
           try {
             controller = this.startAutoRunner(
-              group, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
+              group, targetKinds, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
             )
           } catch (error) {
             const messageIndex = this.state.messages.findIndex(message => message === userMessage)
@@ -1848,7 +1849,7 @@ class LocalWorkspace extends EventEmitter {
             attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
             skillHints: prepared.skillHints,
             knowledgeBaseHints: prepared.knowledgeBaseHints,
-            targetKinds: mentionedAgentKinds,
+            targetKinds: group.conversationType === 'direct' ? [] : targetKinds,
           },
         )
         const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
@@ -1905,7 +1906,14 @@ class LocalWorkspace extends EventEmitter {
   startAuto(input) {
     const group = this.getGroup(input.groupId)
     if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
-    if (group.agentKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    if (input.targetKinds != null && !Array.isArray(input.targetKinds)) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    }
+    const requested = Array.isArray(input.targetKinds) && input.targetKinds.length
+      ? normalizeTargetKinds(input.targetKinds)
+      : group.agentKinds
+    const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
+    if (targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     const unlimitedRounds = input.unlimitedRounds === true
     const maxRounds = unlimitedRounds
       ? 0
@@ -1921,12 +1929,12 @@ class LocalWorkspace extends EventEmitter {
     const rootAttachmentCount = Array.isArray(rootMessage?.attachments)
       ? rootMessage.attachments.length
       : 0
-    for (const kind of group.agentKinds) {
+    for (const kind of targetKinds) {
       const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
       if (rootAttachmentCount && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
       if (rootAttachmentCount > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
     }
-    this.startAutoRunner(group, threadRootId, maxRounds, null, null, unlimitedRounds)
+    this.startAutoRunner(group, targetKinds, threadRootId, maxRounds, null, null, unlimitedRounds)
     return { started: true, maxRounds, ...(unlimitedRounds ? { unlimitedRounds: true } : {}) }
   }
 

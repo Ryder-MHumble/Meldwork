@@ -1568,7 +1568,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.deepEqual(started, { started: true, maxRounds: 2, threadRootId: root.id })
   assert.equal(active.messages.filter(message => message.role === 'user').length, 1)
   assert.equal(root.threadRootId, undefined)
-  assert.equal(root.targetKinds, undefined)
+  assert.deepEqual(root.targetKinds, ['codex', 'hermes'])
   assert.deepEqual(root.knowledgeBaseHints, [{
     kind: 'dingtalk', name: 'DingTalk', accessMode: 'cli',
     commandName: 'dws', targetKinds: ['hermes'],
@@ -1773,6 +1773,69 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
   assert.equal(finished.length, 1)
   assert.equal(finished[0].status, 'completed')
   assert.equal(finished[0].mode, 'auto')
+})
+
+test('automatic dialogue queues only the explicitly targeted group members', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  const runFinished = deferred()
+  workspace.on('run-finished', (result) => {
+    finished.push(result)
+    runFinished.resolve()
+  })
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '定向自动讨论',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi', 'openclaw'],
+    workdir: directory,
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Only Codex',
+    mode: 'auto',
+    targetKinds: ['codex'],
+    maxRounds: 1,
+  }), { message: 'LOCAL_AUTO_AGENT_COUNT' })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Codex、Hermes 和 Kimi 讨论',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes', 'kimi'],
+    mentionedAgentKinds: ['codex', 'hermes', 'kimi'],
+    maxRounds: 1,
+  })
+  await runFinished.promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'kimi'])
+  assert.deepEqual(
+    workspace.snapshot().messages.find(message => message.role === 'user')?.targetKinds,
+    ['codex', 'hermes', 'kimi'],
+  )
+  assert.deepEqual(finished[0].targetKinds, ['codex', 'hermes', 'kimi'])
+
+  calls.length = 0
+  const nextRoot = workspace.addMessage(group.id, 'user', '另一组继续讨论')
+  workspace.startAuto({
+    groupId: group.id,
+    threadRootId: nextRoot.id,
+    targetKinds: ['workbuddy', 'openclaw'],
+    maxRounds: 1,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['workbuddy', 'openclaw'])
+  assert.deepEqual(finished[1].targetKinds, ['workbuddy', 'openclaw'])
 })
 
 test('automatic dialogue carries root images until delivery and preloads Hermes root skills', async (t) => {

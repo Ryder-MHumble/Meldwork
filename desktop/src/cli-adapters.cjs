@@ -465,6 +465,13 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
   }
   if (kind === 'hermes') {
     const skills = hermesSkillNames(options.skills)
+    if (!attachments.length && !skills.length) {
+      return {
+        command: executable,
+        args: ['acp'],
+        acpMode: options.sandbox === 'workspace-write' ? 'accept_edits' : 'default',
+      }
+    }
     return {
       command: executable,
       args: [
@@ -1420,10 +1427,10 @@ function acpTransportError(diagnostic) {
   return agentExecutionError('LOCAL_AGENT_PROCESS_FAILED', diagnostic)
 }
 
-function validateAcpInboundMessage(message, validators, replyState) {
+function validateAcpInboundMessage(message, validators, replyState, protocolLabel) {
   if (!message || typeof message !== 'object' || Array.isArray(message)
       || message.jsonrpc !== '2.0') {
-    throw acpTransportError('Kimi ACP returned an invalid protocol message.')
+    throw acpTransportError(`${protocolLabel} returned an invalid protocol message.`)
   }
 
   const hasId = Object.hasOwn(message, 'id')
@@ -1431,13 +1438,14 @@ function validateAcpInboundMessage(message, validators, replyState) {
     if (message.method === 'session/update' && !hasId) {
       const parsed = validators.zSessionNotification.safeParse(message.params)
       if (!parsed.success) {
-        throw acpTransportError('Kimi ACP returned invalid session update parameters.')
+        throw acpTransportError(`${protocolLabel} returned invalid session update parameters.`)
       }
       const update = parsed.data.update
-      if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+      if (replyState.collecting !== false
+          && update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         replyState.bytes += Buffer.byteLength(update.content.text, 'utf8')
         if (replyState.bytes > ACP_MAX_REPLY_BYTES) {
-          throw acpTransportError('Kimi ACP reply exceeded the safe output limit.')
+          throw acpTransportError(`${protocolLabel} reply exceeded the safe output limit.`)
         }
       }
       return message
@@ -1446,34 +1454,36 @@ function validateAcpInboundMessage(message, validators, replyState) {
       const validId = typeof message.id === 'string'
         || (Number.isInteger(message.id) && message.id >= 0)
       if (!validId || !validators.zRequestPermissionRequest.safeParse(message.params).success) {
-        throw acpTransportError('Kimi ACP returned an invalid permission request.')
+        throw acpTransportError(`${protocolLabel} returned an invalid permission request.`)
       }
       return message
     }
-    throw acpTransportError('Kimi ACP requested an unsupported client method.')
+    throw acpTransportError(`${protocolLabel} requested an unsupported client method.`)
   }
 
   if (!Number.isInteger(message.id) || message.id < 0) {
-    throw acpTransportError('Kimi ACP returned an invalid response identifier.')
+    throw acpTransportError(`${protocolLabel} returned an invalid response identifier.`)
   }
   const hasResult = Object.hasOwn(message, 'result')
   const hasError = Object.hasOwn(message, 'error')
   if (hasResult === hasError) {
-    throw acpTransportError('Kimi ACP returned an invalid response payload.')
+    throw acpTransportError(`${protocolLabel} returned an invalid response payload.`)
   }
   if (hasError) {
     const error = message.error
     if (!error || typeof error !== 'object' || Array.isArray(error)
         || !Number.isFinite(error.code) || typeof error.message !== 'string') {
-      throw acpTransportError('Kimi ACP returned an invalid error response.')
+      throw acpTransportError(`${protocolLabel} returned an invalid error response.`)
     }
   }
   return message
 }
 
-function boundedAcpStream(output, input, validators) {
+function boundedAcpStream(
+  output, input, validators, replyState = { bytes: 0, collecting: true },
+  protocolLabel = 'ACP Agent',
+) {
   const textEncoder = new TextEncoder()
-  const replyState = { bytes: 0 }
   const readable = new ReadableStream({
     async start(controller) {
       const reader = input.getReader()
@@ -1486,14 +1496,14 @@ function boundedAcpStream(output, input, validators) {
         try {
           message = JSON.parse(text)
         } catch {
-          throw acpTransportError('Kimi ACP returned malformed JSON.')
+          throw acpTransportError(`${protocolLabel} returned malformed JSON.`)
         }
-        controller.enqueue(validateAcpInboundMessage(message, validators, replyState))
+        controller.enqueue(validateAcpInboundMessage(message, validators, replyState, protocolLabel))
       }
       const append = (left, right) => {
         const size = left.length + right.length
         if (size > ACP_MAX_LINE_BYTES) {
-          throw acpTransportError('Kimi ACP message exceeded the safe line limit.')
+          throw acpTransportError(`${protocolLabel} message exceeded the safe line limit.`)
         }
         return left.length ? Buffer.concat([left, right], size) : Buffer.from(right)
       }
@@ -1505,7 +1515,7 @@ function boundedAcpStream(output, input, validators) {
           const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
           inputBytes += chunk.length
           if (inputBytes > ACP_MAX_INPUT_BYTES) {
-            throw acpTransportError('Kimi ACP input exceeded the safe total limit.')
+            throw acpTransportError(`${protocolLabel} input exceeded the safe total limit.`)
           }
           let offset = 0
           while (offset < chunk.length) {
@@ -1669,12 +1679,13 @@ function acpProtocolError(error, childEnv) {
     : agentExecutionError('LOCAL_AGENT_PROCESS_FAILED')
 }
 
-async function runKimiAcp(agent, prompt, workdir, options, spec) {
+async function runAcpAgent(agent, prompt, workdir, options, spec) {
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
   const prepared = prepareCommand(spec.command, spec.args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
   const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
+  const protocolLabel = `${agent.name || AGENT_PROFILES[agent.kind]?.label || 'Agent'} ACP`
   let sdk
   try {
     sdk = await loadAcpSdk()
@@ -1711,6 +1722,7 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
   let rejectAbort
   let timeout
   const reply = []
+  const replyState = { bytes: 0, collecting: false }
   const abortPromise = new Promise((_, reject) => { rejectAbort = reject })
   const stopChild = () => {
     stopPromise ||= closeAcpChild(child, platform, spawnFn)
@@ -1762,6 +1774,7 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
         : { outcome: { outcome: 'cancelled' } }
     },
     async sessionUpdate(params) {
+      if (!replyState.collecting) return
       const update = params.update
       if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         reply.push(update.content.text)
@@ -1774,6 +1787,8 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
       Writable.toWeb(child.stdin),
       Readable.toWeb(child.stdout),
       validators,
+      replyState,
+      protocolLabel,
     )
     connection = new ClientSideConnection(() => client, stream)
     await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
@@ -1789,10 +1804,17 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
       await options.onSessionRef(publicSessionRef)
     }
     await connection.setSessionMode({ sessionId: sessionRef, modeId: spec.acpMode })
-    const promptResult = await connection.prompt({
-      sessionId: sessionRef,
-      prompt: [{ type: 'text', text: prompt }],
-    })
+    replyState.bytes = 0
+    replyState.collecting = true
+    let promptResult
+    try {
+      promptResult = await connection.prompt({
+        sessionId: sessionRef,
+        prompt: [{ type: 'text', text: prompt }],
+      })
+    } finally {
+      replyState.collecting = false
+    }
     const text = redactChildSecrets(reply.join('').trim(), childEnv)
     if (!text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
     runtimeEvents.emitFinalAnswer(text)
@@ -1825,7 +1847,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     attachments: options.attachments,
     skills: options.skills,
   })
-  if (spec.acpMode) return runKimiAcp(agent, prompt, workdir, options, spec)
+  if (spec.acpMode) return runAcpAgent(agent, prompt, workdir, options, spec)
   const args = [...spec.args]
   if (spec.promptArg) args.push(prompt)
   if (spec.suffixArgs) args.push(...spec.suffixArgs)

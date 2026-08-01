@@ -2296,6 +2296,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('@co')
     await flushPromises()
@@ -2306,7 +2307,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.agent-mention-option').trigger('click')
     expect(wrapper.get('.selected-agent-tag').text()).toContain('Codex')
     expect(wrapper.get('.mode-segmented [data-mode="manual"]').classes()).toContain('active')
-    expect(wrapper.get('.mode-segmented [data-mode="auto"]').attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('.mode-segmented [data-mode="auto"]').attributes()).not.toHaveProperty('disabled')
 
     expect(bridge.agentInstaller.skills.mock.calls).toEqual(expect.arrayContaining([['codex'], ['hermes']]))
     bridge.agentInstaller.skills.mockClear()
@@ -2368,6 +2369,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('@cod')
     await wrapper.get('.agent-mention-option').trigger('click')
@@ -2414,6 +2416,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('@cod')
     await wrapper.get('.agent-mention-option').trigger('click')
@@ -2438,6 +2441,107 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('routes a single-round message from Agent names at the start of the draft', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'qwen',
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        version: '1.0.0',
+      })
+      state.groups.push({
+        id: 'group-natural-routing',
+        conversationType: 'group',
+        name: 'Natural routing',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'qwen'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('Codex、Hermes，帮我检查这个方案')
+    await flushPromises()
+
+    expect(wrapper.findAll('.target-chip').map(chip => chip.classes().includes('selected')))
+      .toEqual([true, true, false])
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-natural-routing',
+      text: 'Codex、Hermes，帮我检查这个方案',
+      targetKinds: ['codex', 'hermes'],
+      mentionedAgentKinds: ['codex', 'hermes'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
+  it('unions Agent Tags and named members in automatic mode without queueing the rest', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      for (const kind of ['qwen', 'kimi', 'workbuddy']) {
+        state.agents.push({
+          kind,
+          installed: true,
+          available: true,
+          credentialState: 'ready',
+          version: '1.0.0',
+        })
+      }
+      state.groups.push({
+        id: 'group-auto-routing',
+        conversationType: 'group',
+        name: 'Automatic routing',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'qwen', 'kimi', 'workbuddy'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@cod')
+    await flushPromises()
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('Hermes、Qwen Code，一起检查 Harness')
+    await flushPromises()
+
+    expect(wrapper.get('.mode-segmented [data-mode="auto"]').classes()).toContain('active')
+    expect(wrapper.get('.mode-segmented [data-mode="auto"]').attributes()).not.toHaveProperty('disabled')
+    expect(wrapper.findAll('.target-chip').map(chip => chip.classes().includes('selected')))
+      .toEqual([true, true, true, false, false])
+
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-auto-routing',
+      text: 'Hermes、Qwen Code，一起检查 Harness',
+      targetKinds: ['codex', 'hermes', 'qwen'],
+      mentionedAgentKinds: ['codex', 'hermes', 'qwen'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'auto',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
   it('mentions a ready knowledge base for multiple selected Agents and sends its scoped access', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
@@ -2454,6 +2558,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('@cod')
     await wrapper.get('.agent-mention-option').trigger('click')
@@ -2509,6 +2614,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('@her')
     await wrapper.get('.agent-mention-option').trigger('click')

@@ -285,21 +285,101 @@ send()
   assert.doesNotMatch(JSON.stringify(events), /secret|Users|workspace|rg -n|command_execution/)
 })
 
-test('Hermes uses quiet query mode and resumes the native session id without a shell', () => {
+test('Hermes uses ACP streaming by default and maps write authorization to its edit mode', () => {
   const spec = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123')
-  assert.equal(spec.promptArg, true)
-  assert.deepEqual(spec.args, [
-    'chat', '--quiet', '--resume', 'hermes-session-123', '--query',
-  ])
-  assert.equal(spec.args.includes('-z'), false)
-  assert.equal(spec.args.includes('--yolo'), false)
+  assert.deepEqual(spec.args, ['acp'])
+  assert.equal(spec.acpMode, 'default')
+  assert.equal(spec.promptArg, undefined)
 
   const writable = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
     sandbox: 'workspace-write',
   })
-  assert.deepEqual(writable.args, [
-    'chat', '--quiet', '--yolo', '--resume', 'hermes-session-123', '--query',
+  assert.deepEqual(writable.args, ['acp'])
+  assert.equal(writable.acpMode, 'accept_edits')
+})
+
+test('Hermes ACP streams only the current turn after resume history replay', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-acp-'))
+  const modeFile = path.join(directory, 'mode.txt')
+  const cli = executable(directory, 'hermes-acp.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+const update = (sessionId, value) => send({
+  jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: value },
+})
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'hermes-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/resume') {
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'previous answer' },
+    })
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/set_mode') {
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_MODE_FILE, message.params.modeId)
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    update(sessionId, {
+      sessionUpdate: 'plan',
+      entries: [{ content: 'Inspect workspace', priority: 'medium', status: 'in_progress' }],
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'PRIVATE_REASONING' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'search',
+      kind: 'search', status: 'in_progress',
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', title: 'search',
+      kind: 'search', status: 'completed',
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'current ' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' },
+    })
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late replay' },
+    })
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const events = []
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'current prompt',
+    directory,
+    {
+      sessionRef: 'hermes-session',
+      env: { ROUNDRELAY_TEST_MODE_FILE: modeFile },
+      onEvent: event => events.push(event),
+    },
+  )
+
+  assert.equal(result.text, 'current answer')
+  assert.equal(result.sessionRef, 'hermes-session')
+  assert.equal(result.completed, true)
+  assert.equal(fs.readFileSync(modeFile, 'utf8'), 'default')
+  assert.equal(events.filter(event => event.type === 'answer_delta')
+    .map(event => event.delta).join(''), 'current answer')
+  assert.deepEqual(events.slice(0, 4).map(event => [event.type, event.status]), [
+    ['plan', 'running'],
+    ['reasoning_summary', 'running'],
+    ['tool_start', 'running'],
+    ['tool_result_summary', 'completed'],
   ])
+  assert.match(events.find(event => event.type === 'plan')?.summary || '', /Inspect workspace/)
+  assert.doesNotMatch(JSON.stringify(events), /previous answer|late replay|PRIVATE_REASONING/)
 })
 
 test('Hermes normalizes official quiet stdout as the fallback reply', () => {
@@ -313,13 +393,12 @@ test('Hermes normalizes official quiet stdout as the fallback reply', () => {
   })
 })
 
-test('Hermes accepts an explicit OpenAI-compatible provider without exposing its key in arguments', () => {
+test('Hermes ACP keeps explicit Provider credentials out of process arguments', () => {
   const spec = invocation('hermes', '/tmp/hermes', '/tmp', '', {
     provider: { id: 'openai-api', model: 'glm' },
   })
-  assert.deepEqual(spec.args, [
-    'chat', '--quiet', '--provider', 'openai-api', '--model', 'glm', '--query',
-  ])
+  assert.deepEqual(spec.args, ['acp'])
+  assert.equal(spec.acpMode, 'default')
   assert.equal(spec.args.some(value => value.includes('test-secret')), false)
 })
 
@@ -403,6 +482,7 @@ process.stderr.write('session_id: hermes-env-session\\n')
     {
       home: directory,
       sandbox: 'workspace-write',
+      skills: ['legacy-test'],
       env: { HERMES_EXEC_ASK: '0', HERMES_YOLO_MODE: '1' },
       hermesMessageWatermarkFn: () => 0,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -431,6 +511,7 @@ process.stderr.write('diagnostic\\nsession_id: hermes-session-123\\n')
     directory,
     {
       home: directory,
+      skills: ['legacy-test'],
       hermesMessageWatermarkFn: () => 23,
       hermesFinalResponseFn: () => 'Hermes reply',
     },
@@ -458,6 +539,7 @@ process.stderr.write('┊ review diff\\na//tmp/report.py → b//tmp/report.py\\n
     directory,
     {
       env: { OPENAI_API_KEY: 'test-secret-value' },
+      skills: ['legacy-test'],
       onProgress: step => progress.push(step),
       hermesMessageWatermarkFn: () => 41,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -565,6 +647,7 @@ process.stderr.write(${JSON.stringify(`${processProgress}\nsession_id: hermes-se
     directory,
     {
       onProgress: step => progress.push(step),
+      skills: ['legacy-test'],
       onSessionRef: async (sessionRef) => {
         await new Promise(resolve => setImmediate(resolve))
         lifecycle.push(`session:${sessionRef}`)
@@ -607,6 +690,7 @@ process.stderr.write('session_id: hermes-session-lookup-failure\\n')
         await new Promise(resolve => setImmediate(resolve))
         lifecycle.push(`session:${sessionRef}`)
       },
+      skills: ['legacy-test'],
       hermesMessageWatermarkFn: () => 61,
       hermesFinalResponseFn: () => {
         lifecycle.push('final-lookup')
@@ -636,6 +720,7 @@ process.stderr.write('session_id: hermes-session-no-watermark\\n')
     'hello',
     directory,
     {
+      skills: ['legacy-test'],
       hermesMessageWatermarkFn: () => null,
       hermesFinalResponseFn: () => {
         finalLookupCount += 1
@@ -2371,7 +2456,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal, hermesMessageWatermarkFn: () => 0 },
+    { signal: controller.signal, skills: ['legacy-test'], hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pid = Number(await readWhenReady(readyFile))
 
@@ -2404,7 +2489,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal, hermesMessageWatermarkFn: () => 0 },
+    { signal: controller.signal, skills: ['legacy-test'], hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pids = await readJsonWhenReady(readyFile)
 

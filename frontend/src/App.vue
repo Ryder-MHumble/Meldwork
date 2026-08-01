@@ -1513,7 +1513,7 @@
                       data-mode="auto"
                       :class="{ active: discussionMode === 'auto' }"
                       :aria-pressed="discussionMode === 'auto'"
-                      :disabled="Boolean(activeRun) || sending || selectedAgentKinds.length > 0"
+                      :disabled="Boolean(activeRun) || sending"
                       @click="discussionMode = 'auto'"
                     >
                       {{ t('composer.auto') }}
@@ -2136,6 +2136,7 @@ import {
 } from '@vicons/ionicons5'
 import MarkdownMessage from './components/MarkdownMessage.vue'
 import RunTracePanel from './components/RunTracePanel.vue'
+import { parseAgentRoutingPrefix } from './agent-routing.js'
 import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
 import { useAttachmentPreviews } from './composables/useAttachmentPreviews.js'
 import { KNOWLEDGE_BASE_CATALOG } from './knowledgeBaseCatalog.js'
@@ -2635,19 +2636,24 @@ const conversationEmptyVisible = computed(() => (
   && !timelineMessages.value.length
   && !activeRun.value
 ))
+const addressedAgentKinds = computed(() => {
+  const group = activeGroup.value
+  if (!group || group.conversationType === 'direct') return []
+  const natural = parseAgentRoutingPrefix(draft.value, AGENTS, group.agentKinds).targetKinds
+  const addressed = new Set([...selectedAgentKinds.value, ...natural])
+  return group.agentKinds.filter(kind => addressed.has(kind))
+})
 const composerTargetKinds = computed(() => {
   const group = activeGroup.value
   if (!group) return []
-  if (group.conversationType !== 'direct' && selectedAgentKinds.value.length) {
-    return [...selectedAgentKinds.value]
+  if (group.conversationType !== 'direct' && addressedAgentKinds.value.length) {
+    return [...addressedAgentKinds.value]
   }
   if (group.conversationType === 'direct' || discussionMode.value === 'auto') return [...group.agentKinds]
   return [...targetKinds.value]
 })
 const composerMode = computed(() => (
-  activeGroup.value?.conversationType === 'direct' || selectedAgentKinds.value.length
-    ? 'manual'
-    : discussionMode.value
+  activeGroup.value?.conversationType === 'direct' ? 'manual' : discussionMode.value
 ))
 const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
 const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
@@ -4531,7 +4537,6 @@ async function addAgentMention(kind) {
     selectedAgentKinds.value = [...selectedAgentKinds.value, kind]
   }
   activeMentionAgentKind.value = kind
-  discussionMode.value = 'manual'
   skillMenuOpen.value = false
   skillsLoading.value = false
   void preloadAgentSkills([kind])
@@ -4757,7 +4762,7 @@ async function sendMessage() {
   const contextVersion = composerContextVersion.value
   const text = draft.value.trim()
   const attachments = composerAttachments.value.map(safeAttachmentPayload)
-  const mode = selectedAgentKinds.value.length ? 'manual' : composerMode.value
+  const mode = composerMode.value
   if (!text && !attachments.length) {
     notify(t('composer.messageRequired'))
     return
@@ -4794,6 +4799,7 @@ async function sendMessage() {
     }))
     .filter(source => source.kind && source.targetKinds.length)
   const previousDraft = draft.value
+  const mentionedAgentKinds = [...addressedAgentKinds.value]
   const previousAgentKinds = [...selectedAgentKinds.value]
   const previousActiveMentionAgentKind = activeMentionAgentKind.value
   const previousSkills = selectedSkills.value.map(skill => ({ ...skill }))
@@ -4816,7 +4822,7 @@ async function sendMessage() {
       groupId,
       text,
       targetKinds: targets,
-      ...(previousAgentKinds.length ? { mentionedAgentKinds: previousAgentKinds } : {}),
+      ...(mentionedAgentKinds.length ? { mentionedAgentKinds } : {}),
       skillHints,
       knowledgeBaseHints,
       attachments,

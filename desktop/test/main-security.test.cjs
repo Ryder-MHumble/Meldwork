@@ -1430,6 +1430,7 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.OPENAI_API_KEY, 'provider-key')
   assert.equal(options.env.OPENAI_BASE_URL, PROVIDER_METADATA.baseUrl)
   assert.equal(options.env.OPENAI_MODEL, PROVIDER_METADATA.model)
+  assert.equal(options.env.HERMES_INFERENCE_PROVIDER, 'openai-api')
   assert.equal(options.env.HERMES_INFERENCE_MODEL, PROVIDER_METADATA.model)
   assert.equal(options.env.ANTHROPIC_API_KEY, 'native-hermes-key')
   assert.equal(options.env.CURRENT_RUN, '1')

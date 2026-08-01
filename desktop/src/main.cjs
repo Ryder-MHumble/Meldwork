@@ -210,7 +210,11 @@ function providerOptionsFor(kind, generic, context = {}, status = {}) {
   if (kind === 'hermes') {
     return {
       provider: { id: 'openai-api', model: generic.OPENAI_MODEL },
-      env: { ...generic, HERMES_INFERENCE_MODEL: generic.OPENAI_MODEL },
+      env: {
+        ...generic,
+        HERMES_INFERENCE_PROVIDER: 'openai-api',
+        HERMES_INFERENCE_MODEL: generic.OPENAI_MODEL,
+      },
     }
   }
   if (kind === 'workbuddy') {
