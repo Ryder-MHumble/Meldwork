@@ -22,8 +22,15 @@
   --danger: #b74743;
   --danger-soft: #fbe8e6;
   --shadow: 0 12px 32px rgb(41 62 73 / 0.12);
+  --shell-gradient: linear-gradient(155deg, #f1f7f5 0%, #e5edef 40%, #d4e2e4 72%, #c4d6db 100%);
+  --onboarding-frame-gradient: linear-gradient(145deg, #dcefeb 0%, #9fc2ca 48%, #ddb5aa 100%);
+  --workspace-surface: #fbfcfd;
+  --workspace-shadow: 0 1px 2px rgb(41 62 73 / 0.08), 0 10px 28px rgb(41 62 73 / 0.08);
   --radius-sm: 5px;
   --radius: 8px;
+  --workspace-radius: 16px;
+  --shell-gutter: 10px;
+  --desktop-titlebar-height: 0px;
   --sidebar-width: 276px;
   --sidebar-collapsed-width: 68px;
 }
@@ -49,6 +56,10 @@
   --danger: #ee817c;
   --danger-soft: #402326;
   --shadow: 0 16px 42px rgb(0 0 0 / 0.42);
+  --shell-gradient: linear-gradient(155deg, #293334 0%, #22292b 38%, #192125 70%, #11191e 100%);
+  --onboarding-frame-gradient: linear-gradient(145deg, #4a696b 0%, #2e4751 52%, #775047 100%);
+  --workspace-surface: #181c1e;
+  --workspace-shadow: 0 1px 2px rgb(0 0 0 / 0.42), 0 14px 34px rgb(0 0 0 / 0.24);
 }
 
 * {
@@ -114,12 +125,31 @@ button svg {
 }
 
 .app-shell {
+  position: relative;
   display: grid;
   grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
-  min-height: 100dvh;
-  background: var(--bg);
+  gap: var(--shell-gutter);
+  width: 100%;
+  height: 100dvh;
+  min-height: 0;
+  padding: calc(var(--desktop-titlebar-height) + var(--shell-gutter)) var(--shell-gutter) var(--shell-gutter) 0;
+  overflow: hidden;
+  background: var(--shell-gradient);
   color: var(--text);
   transition: grid-template-columns 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.app-shell[data-platform="darwin"] {
+  --desktop-titlebar-height: 28px;
+}
+
+.app-shell[data-platform="darwin"]::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 2;
+  height: calc(var(--desktop-titlebar-height) + var(--shell-gutter));
+  -webkit-app-region: drag;
 }
 
 .app-shell.sidebar-collapsed {
@@ -143,12 +173,14 @@ button svg {
   grid-column: 3;
   grid-row: 1;
   min-width: 0;
-  height: 100dvh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  border-left: 1px solid var(--border);
-  background: var(--surface);
+  border: 0;
+  border-radius: var(--workspace-radius);
+  background: var(--workspace-surface);
+  box-shadow: var(--workspace-shadow);
   color: var(--text);
 }
 
@@ -226,9 +258,10 @@ button svg {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
-  border: 1px solid var(--border-strong);
+  border: 1px solid transparent;
   border-radius: var(--radius);
-  background: var(--surface);
+  background: linear-gradient(var(--surface), var(--surface)) padding-box,
+    var(--onboarding-frame-gradient) border-box;
   box-shadow: var(--shadow);
 }
 
@@ -299,6 +332,10 @@ button svg {
   position: relative;
   display: block;
   flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
 }
 
 .onboarding-dot::after {
@@ -317,6 +354,20 @@ button svg {
   left: 4px;
   width: 16px;
   background: var(--accent);
+}
+
+.onboarding-dot:hover::after {
+  background: var(--text-soft);
+}
+
+.onboarding-dot.active:hover::after {
+  background: var(--accent-hover);
+}
+
+.onboarding-dot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 6px;
 }
 
 .onboarding-primary {
@@ -363,11 +414,11 @@ button svg {
 
 .sidebar {
   min-width: 0;
-  height: 100dvh;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--sidebar);
+  background: transparent;
 }
 
 .brand-row {
@@ -1083,8 +1134,11 @@ button svg {
 
 .workspace-pane {
   min-width: 0;
-  height: 100dvh;
+  min-height: 0;
   overflow: hidden;
+  border-radius: var(--workspace-radius);
+  background: var(--workspace-surface);
+  box-shadow: var(--workspace-shadow);
 }
 
 .agent-home {
@@ -1381,7 +1435,7 @@ button svg {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
-  background: var(--bg);
+  background: transparent;
 }
 
 .system-settings-header {
@@ -2726,6 +2780,7 @@ button svg {
   height: 100%;
   display: grid;
   grid-template-rows: 68px minmax(0, 1fr) auto;
+  background: transparent;
 }
 
 .conversation-header {
@@ -2735,8 +2790,8 @@ button svg {
   justify-content: space-between;
   gap: 20px;
   padding: 0 20px 0 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
+  border-bottom: 0;
+  background: transparent;
 }
 
 .conversation-identity {
@@ -4697,7 +4752,7 @@ button svg {
 
 .composer-zone {
   padding: 10px clamp(18px, 4vw, 44px) 18px;
-  background: var(--bg);
+  background: transparent;
 }
 
 .composer-context-row {
@@ -5047,6 +5102,29 @@ button svg {
   box-shadow: var(--shadow);
 }
 
+.mention-menu-section {
+  display: grid;
+  gap: 2px;
+}
+
+.mention-menu-section + .mention-menu-section {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.mention-menu-section-label {
+  width: fit-content;
+  margin: 2px 8px 3px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface-hover);
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
 .skill-option {
   width: 100%;
   min-height: 58px;
@@ -5258,6 +5336,7 @@ button svg {
 }
 
 .selected-agent-tag,
+.selected-skill,
 .message-target-list span {
   height: 28px;
   display: inline-flex;
@@ -5273,11 +5352,18 @@ button svg {
 }
 
 .selected-agent-tag > img,
+.selected-knowledge-base img,
+.selected-context-icon,
 .message-target-list img {
   width: 18px;
   height: 18px;
   background: transparent;
   object-fit: contain;
+}
+
+.selected-context-icon {
+  padding: 1px;
+  color: var(--muted);
 }
 
 .selected-agent-tag button {
@@ -5319,8 +5405,7 @@ button svg {
 }
 
 .composer-tools,
-.composer-run-actions,
-.selected-skill-list {
+.composer-run-actions {
   min-width: 0;
   display: flex;
   align-items: center;
@@ -5378,41 +5463,8 @@ button svg {
   color: var(--accent);
 }
 
-.selected-skill-list {
-  gap: 4px;
-  overflow-x: auto;
-}
-
 .selected-skill {
-  height: 28px;
   flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 5px 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface);
-  color: var(--text-soft);
-  font-size: 10px;
-  white-space: nowrap;
-}
-
-.selected-knowledge-base img {
-  width: 15px;
-  height: 15px;
-  background: transparent;
-  object-fit: contain;
-}
-
-.selected-skill button {
-  width: 20px;
-  height: 20px;
-}
-
-.selected-skill button svg {
-  width: 13px;
-  height: 13px;
 }
 
 .message-target-list {

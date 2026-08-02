@@ -377,9 +377,16 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.sidebar').attributes()).toHaveProperty('inert')
     expect(wrapper.get('.workspace-pane').attributes()).toHaveProperty('inert')
 
-    await vi.advanceTimersByTimeAsync(7_500)
+    await wrapper.findAll('.onboarding-dot')[1].trigger('click')
+    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('provider-setup-v2.png')
+    expect(wrapper.findAll('.onboarding-dot')[1].attributes('aria-current')).toBe('step')
+
+    await vi.advanceTimersByTimeAsync(5_000)
     await flushPromises()
-    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('auto-discussion.svg')
+    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('agent-collaboration.png')
+
+    await wrapper.findAll('.onboarding-dot')[4].trigger('click')
+    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('auto-discussion-v2.png')
     expect(wrapper.get('.onboarding-primary').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('.onboarding-primary').text()).toContain('Detecting local Agents')
 
@@ -1428,6 +1435,25 @@ describe('RoundRelay workbench', () => {
     expect(source).not.toMatch(/\.sidebar\.collapsed \.new-group-button\s*\{[^}]*margin-inline:\s*auto;/s)
   })
 
+  it('uses a theme-aware rounded desktop shell instead of hard pane dividers', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
+
+    expect(appSource).toContain(':data-platform="desktopPlatform"')
+    expect(appSource).toContain("const desktopPlatform = computed(() => api.value?.platform || installCatalog.value.platform || '')")
+    expect(source).toMatch(/--shell-gradient:\s*linear-gradient\(155deg,\s*#f1f7f5 0%,\s*#e5edef 40%,\s*#d4e2e4 72%,\s*#c4d6db 100%\);/)
+    expect(source).toMatch(/:root\[data-theme="dark"\]\s*\{[^}]*--shell-gradient:\s*linear-gradient\(155deg,\s*#293334 0%,\s*#22292b 38%,\s*#192125 70%,\s*#11191e 100%\);/s)
+    expect(source).toMatch(/--onboarding-frame-gradient:\s*linear-gradient\(145deg,\s*#dcefeb 0%,\s*#9fc2ca 48%,\s*#ddb5aa 100%\);/)
+    expect(source).toMatch(/:root\[data-theme="dark"\]\s*\{[^}]*--onboarding-frame-gradient:\s*linear-gradient\(145deg,\s*#4a696b 0%,\s*#2e4751 52%,\s*#775047 100%\);/s)
+    expect(source).toMatch(/\.onboarding-dialog\s*\{[^}]*border:\s*1px solid transparent;[^}]*background:\s*linear-gradient\(var\(--surface\), var\(--surface\)\) padding-box,\s*var\(--onboarding-frame-gradient\) border-box;/s)
+    expect(source).toMatch(/\.app-shell\s*\{[^}]*gap:\s*var\(--shell-gutter\);[^}]*padding:\s*calc\(var\(--desktop-titlebar-height\) \+ var\(--shell-gutter\)\) var\(--shell-gutter\) var\(--shell-gutter\) 0;[^}]*background:\s*var\(--shell-gradient\);/s)
+    expect(source).toMatch(/\.app-shell\[data-platform="darwin"\]::before\s*\{[^}]*-webkit-app-region:\s*drag;/s)
+    expect(source).toMatch(/\.workspace-pane\s*\{[^}]*border-radius:\s*var\(--workspace-radius\);[^}]*background:\s*var\(--workspace-surface\);[^}]*box-shadow:\s*var\(--workspace-shadow\);/s)
+    expect(source).toMatch(/\.sidebar\s*\{[^}]*background:\s*transparent;/s)
+    expect(source).toMatch(/\.conversation-header\s*\{[^}]*border-bottom:\s*0;[^}]*background:\s*transparent;/s)
+    expect(source).toMatch(/\.composer-zone\s*\{[^}]*background:\s*transparent;/s)
+  })
+
   it('uses one settings entry and a borderless Agent mention menu', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
 
@@ -2383,7 +2409,10 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.findAll('.skill-option')).toHaveLength(1)
     expect(wrapper.get('.skill-option').text()).toContain('Find sources')
     await textarea.trigger('keydown', { key: 'Enter' })
-    expect(wrapper.get('.selected-skill').text()).toContain('Find sources')
+    const selectedSkill = wrapper.get('.selected-skill')
+    expect(selectedSkill.text()).toContain('Find sources')
+    expect(selectedSkill.classes()).toContain('selected-agent-tag')
+    expect(selectedSkill.element.closest('.composer-input-shell')).not.toBeNull()
 
     await wrapper.findAll('.selected-agent-tag button')[1].trigger('click')
     expect(wrapper.findAll('.selected-agent-tag').map(tag => tag.text())).toEqual(['Codex'])
@@ -2486,6 +2515,61 @@ describe('RoundRelay workbench', () => {
       maxRounds: 6,
     })
     expect(wrapper.find('.selected-knowledge-base').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('lists knowledge bases before skills in grouped and direct @ menus', async () => {
+    const { wrapper } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'group-menu-order',
+        conversationType: 'group',
+        name: 'Knowledge review',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.groups.push({
+        id: 'direct-menu-order',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex direct',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.agentInstaller.skills.mockResolvedValue({
+        skills: [{ targetKind: 'codex', namespace: 'research', slug: 'deep-research', name: 'Deep research' }],
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@cod')
+    await wrapper.get('.agent-mention-option').trigger('click')
+    await textarea.setValue('@')
+    await flushPromises()
+
+    const sections = wrapper.findAll('.mention-menu-section')
+    expect(sections.map(section => section.get('.mention-menu-section-label').text()))
+      .toEqual(['Knowledge bases', 'Skills'])
+    expect(sections[0].text()).toContain('DingTalk Docs')
+    expect(sections[1].text()).toContain('Deep research')
+    expect(wrapper.findAll('.skill-option').map(option => option.attributes('id')))
+      .toEqual(['composer-mention-option-0', 'composer-mention-option-1'])
+
+    wrapper.vm.selectGroup('direct-menu-order')
+    await flushPromises()
+    await textarea.setValue('@')
+    await flushPromises()
+    expect(wrapper.findAll('.mention-menu-section').map(section => (
+      section.get('.mention-menu-section-label').text()
+    ))).toEqual(['Knowledge bases', 'Skills'])
     wrapper.unmount()
   })
 

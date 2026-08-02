@@ -57,6 +57,7 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.equal(exposedName, 'roundrelayDesktop')
   assert.equal(Object.isFrozen(api), true)
   assert.equal(api.localOnly, true)
+  assert.equal(api.platform, process.platform)
   assert.equal(Object.isFrozen(api.localAgentProvider), true)
   assert.deepEqual(
     Object.keys(api.localWorkspace).sort(),

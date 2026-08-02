@@ -1,288 +1,350 @@
 # Meldwork 产品迭代规划说明书
 
-> 版本：OPC 开源优先版
+> 版本：General Agent + Knowledge + Outcome
 >
-> 日期：2026-07-31
+> 日期：2026-08-02
 >
-> 适用范围：产品、工程、开源、内容和验证工作
+> 适用范围：产品、工程、开源、内容和用户验证
 
-## 0. 迭代总原则
+## 0. 路线结论
 
-Meldwork 的下一阶段不是把“聊天窗口”做得更复杂，而是把用户正在做的工作变成可持续、可交接、可验证的对象。
+Meldwork 后续不应继续沿着“增加 Agent 数量”和“强化群聊效果”迭代，也不应重新收窄为 Coding Agent 控制台。
 
-产品主线：
+建议主线是：
 
 ```text
-Agent 连接
-    -> 持久工作空间
-    -> Task / Run
-    -> Artifact / Evidence
-    -> Human Acceptance
-    -> 可复用模板与 Connector 生态
+Agent / Knowledge Source
+        -> Context Pack
+        -> Task / Run
+        -> Artifact / Evidence
+        -> Decision / Adoption
+        -> Reusable Workflow / Connector
 ```
 
-OPC 约束下，每一个版本都必须同时回答三个问题：
+产品要解决的不是“让更多 Agent 同时说话”，而是让一项工作在 Agent、知识来源和人之间流转时，不丢失上下文、权限边界、产物和验证记录。
 
-1. 用户是否因此更快完成了一项真实工作？
-2. 这项能力是否可以被演示、复用和写进文档？
-3. 一个有日常工作的个人是否能在两周内维护它？
+阶段性取舍：
 
-如果答案只有“技术上更完整”，不进入近期路线图。
+1. 保持 General Agent 定位，但只验证一个通用工作协议。
+2. 默认使用一个 Agent，只有高风险、低确定性或需要独立观点时才增加 Reviewer Agent。
+3. 先完成本地 Task 和 Outcome 闭环，再决定 Cloud、Channel、Team 是否值得投入。
+4. 知识源先做显式授权和可追溯上下文，不提前建设重型 RAG、向量数据库或企业知识中台。
 
-## 1. 当前 MVP 的事实基线
+## 1. 当前事实基线
 
 ### 1.1 已具备
 
 - Electron 本地优先桌面应用。
 - 已支持本地 Agent CLI 的发现、就绪状态和受控调用。
-- 直接会话与群组会话持久化。
-- 兼容条件下的原生 Agent Session 续接。
-- 有界的多轮自动讨论，并有运行状态和失败状态。
-- Agent-specific Skill 引用和受限图片上下文。
-- Provider 配置与操作系统安全存储。
-- Renderer 通过窄 Preload API 访问主进程能力。
-- 工作目录、写入模式、Installer 和部分 Agent 权限边界。
+- 直接会话、群组会话和兼容条件下的原生 Agent Session 延续。
+- 有界自动讨论、运行状态、失败状态和停止能力。
+- Agent-specific Skill 与受限图片上下文。
+- Provider 配置、操作系统安全存储和窄 Preload API。
+- 飞书文档、钉钉文档和 Obsidian 的本地连接状态与只读任务上下文选择。
+- Notion、Confluence、Google Drive 和 SharePoint 的规划入口，但尚未提供可用 Connector。
 
-### 1.2 当前不应宣称
+### 1.2 知识源能力的真实边界
 
-- 任意 Agent 已经可以通过公开协议接入。
-- Cloud Agent 已经可以后台执行并回传。
-- Task、Artifact、Evidence、Acceptance 已经构成完整工作流。
-- 已具备团队同步、SSO、审计、预算、企业级沙箱或跨设备同步。
-- 已完成 macOS 公证、Windows 真机发行和所有 Agent 的生产级兼容认证。
+当前能力是把用户明确选择、经过主进程验证的知识源访问方式作为只读提示交给目标 Agent：
+
+- 飞书和钉钉通过本机已配置 CLI 连接。
+- Obsidian 通过用户选择的本地 Vault 目录连接。
+- Agent 被要求在相关时使用知识源、说明所用来源并避免修改源内容。
+
+当前尚未实现：
+
+- Meldwork 自己检索、索引或缓存知识库内容。
+- 统一的引用片段、内容快照、版本哈希或权限快照。
+- 确定性 RAG、跨知识库搜索排序或引用完整性校验。
+- Notion、Confluence、Google Drive 和 SharePoint 的真实连接与授权。
+
+因此近期对外应使用“Knowledge Sources / 知识来源”和“显式上下文访问”，不应宣传成完整知识库引擎。
 
 ### 1.3 最大结构缺口
 
-当前持久化中心仍然是 Conversation。下一阶段要把工作对象升级为：
+当前持久化中心仍然是 Conversation。它能回答 Agent 说了什么，但不能稳定回答：
 
-| 旧中心 | 新中心 |
-| --- | --- |
-| Conversation | Workspace / Task |
-| Message | Run Event / Decision |
-| Agent reply | Artifact / Finding |
-| 自动轮次 | Bounded Workflow |
-| “接受”按钮 | Acceptance + Apply/Commit/Export |
-| 适配器数量 | Connector Capability + Compatibility Evidence |
+- 用户真正要完成的 Task 是什么。
+- 哪些知识来源和上下文被允许用于这次任务。
+- 哪次 Run 产生了哪个 Artifact。
+- 哪些 Evidence 支持或反驳结果。
+- 用户最终采用、拒绝或修改了什么。
 
 ## 2. 目标产品模型
 
 ### 2.1 Workspace
 
-用户的本地工作边界，包含工作目录、参与 Agent、权限默认值、Provider 关系、语言/主题和本地数据策略。
+本地信任与工作边界，包含工作目录、Agent、知识来源、Provider、权限默认值和本地数据策略。
 
-### 2.2 Task
+### 2.2 Knowledge Source
 
-一个有目标、有上下文、有验收标准的工作单元。Task 必须能脱离聊天标题被复述，至少包含：目标、输入、限制、验收标准、风险级别和是否允许多 Agent。
+可被任务显式授权的输入来源，例如本地 Vault、文档 CLI、未来的 OAuth Connector 或用户选定文件。
 
-### 2.3 Run
+每个 Knowledge Source 必须声明：
 
-一次具体执行。记录 Agent、Connector 版本、Provider/模型标识、权限模式、耗时、成本区间、状态和取消原因；秘密、完整 Token 和原生 Session ID 仍只留在主进程或本地安全存储。
+- 访问方式与就绪状态。
+- 可读、可写和网络边界。
+- 数据所在位置或服务区域的可见说明。
+- 最后验证时间和已知限制。
 
-### 2.4 Artifact
+### 2.3 Context Pack
 
-用户真正可以采用的产物：代码变更、文档、研究结论、检查清单、结构化数据、链接或导出包。
+一次 Task 实际使用的上下文集合，而不是整个知识库的永久镜像。至少记录：
 
-### 2.5 Evidence
+- 用户输入、选定文件、图片和 Skill。
+- 被授权的 Knowledge Source。
+- 目标 Agent 和可见范围。
+- 创建时间、版本和可复验引用。
+- 敏感等级与允许出站范围。
 
-支持 Artifact 的证据：测试、来源、差异、日志摘要、审查发现、截图、用户输入和 Agent 声明。Evidence 需要能指出“由谁、在什么条件下、何时产生”。
+Knowledge Source 是潜在输入，Context Pack 是本次任务被批准使用的输入。两者都不等于 Evidence。
 
-### 2.6 Acceptance
+### 2.4 Task
 
-用户对 Artifact 的明确动作：接受、拒绝、要求修改、Apply、Commit、Export、Reopen。只有发生采用或明确拒绝，任务才有真实结果。
+一个有目标、有约束、有验收标准的工作单元。Task 至少包含：目标、背景、Context Pack、预期 Artifact、验收标准、风险级别、预算和是否允许多 Agent。
 
-## 3. 优先级排序
-
-### P0：公开 MVP 可用与价值闭环（现在至 6 周）
-
-| 优先级 | 目标结果 | 最小交付 | 验证方式 |
-| --- | --- | --- | --- |
-| P0.1 | 新用户能在 10 分钟内完成首个真实任务 | 安装说明、首次运行引导、Agent readiness、失败修复提示、真实截图 | 5 名非开发者按文档完成安装；记录阻塞点 |
-| P0.2 | 用户能明确知道当前支持什么 | Connector/Agent 能力表、版本和平台矩阵、已知限制 | README、应用内能力标记与代码一致 |
-| P0.3 | 用户能把一次协作当作工作而非聊天 | Task 元数据最小模型、任务标题、目标、验收标准、状态 | 10 个真实任务可导出和复盘 |
-| P0.4 | 多 Agent 的价值可被比较 | 实施 + 独立审查模板、并排结果、手工 Acceptance | 完成至少 10 个配对任务，记录时间、质量和采用 |
-| P0.5 | 开源项目能被别人使用和反馈 | Issue 模板、故障排查、贡献指南、兼容报告模板 | 第一个外部 Issue 能在一轮内归类和复现 |
-| P0.6 | 产品不依赖创始人现场解释 | 2 个 3 分钟视频：安装；一次跨 Agent 任务 | 观看者能独立复现核心路径 |
-
-**P0 明确不做**：Cloud Agent、团队账户、SSO、远程同步、复杂自动化市场、完整 Connector SDK、全面 Windows 发行。
-
-### P1：Harness 最小基座（6-12 周）
-
-| 优先级 | 目标结果 | 最小交付 | 验证方式 |
-| --- | --- | --- | --- |
-| P1.1 | 新 Agent 不需要修改核心业务逻辑即可加入 | 内部 Connector Contract、Manifest、能力枚举 | 用第二种实现验证 contract 边界 |
-| P1.2 | 结果可追溯且可复验 | Run 事件、Artifact 引用、Evidence 摘要、Acceptance 记录 | 20 个任务能回答“哪个 Agent 在什么条件下产出” |
-| P1.3 | 权限和出站更透明 | 每次 Run 的工作目录、写入模式、Provider、图片/Skill 出站提示 | 用户能在发送前做出明确选择 |
-| P1.4 | 失败不会变成静默丢失 | 取消、超时、恢复、重试、失败原因、可导出诊断包 | 注入失败并检查状态、数据和隐私 |
-| P1.5 | 社区可以贡献连接器和任务模板 | Connector 文档、示例适配器、兼容测试脚本、模板目录 | 至少 1 个外部适配或模板 PR |
-
-**P1 退出条件**：至少 15 名用户完成一次真实任务，至少 8 名在 30 天内重复；否则继续做发现和稳定性，不进入 Cloud/Team 线。
-
-### P2：有证据再做的扩展（3-6 个月）
-
-| 目标结果 | 候选能力 | 前置证据 |
-| --- | --- | --- |
-| 本地任务可以授权给后台 Agent 继续 | Cloud Connector、handoff、回传和本地验收 | 用户明确愿意把哪些输入交给云端，并有 3 个重复场景 |
-| 工作可以发生在用户已有渠道 | GitHub Issue/PR、Slack、飞书或钉钉 Channel | 至少 5 个用户在相同渠道提出相同需求 |
-| 团队能复用安全工作方式 | 共享策略、模板、审计和预算摘要 | 3 个团队愿意为标准化试点付费 |
-| 路由更有依据 | 任务类型到 Agent 组合的推荐 | 至少 50 个有验收结果的匿名任务样本 |
-
-### P3：暂不排期
-
-- 自建模型或托管 Token 额度。
-- 无限制 Agent Swarm、无限轮次和无人值守写入。
-- 完整企业 IAM、复杂组织层级和跨地域多租户。
-- 先做一个新的在线社交平台或 Agent 市场。
-- 为每个热门 Agent 维护深度定制，牺牲核心 Contract。
-
-## 4. Connector 设计
-
-### 4.1 最小 Contract
+建议状态：
 
 ```text
-discover()        -> readiness, version, platform
-describe()        -> capabilities, limits, egress, permission modes
-start(task)       -> run id, native session handle (main-only)
-resume(session)   -> run events and final result
-cancel(run)       -> terminal state
-collect(run)      -> artifacts, evidence, cost/time metadata
+Draft -> Ready -> Running -> Needs review -> Adopted / Rejected / Blocked
+                                             -> Reopened / Rolled back
 ```
 
-核心进程只接收结构化输入，不能让用户文字直接选择任意可执行文件或 Shell 命令。Connector 必须声明不支持的能力，不能用统一假设掩盖差异。
+### 2.5 Run
 
-### 4.2 兼容等级
+一次具体执行，记录 Agent、Connector 版本、Provider/模型标识、原生 Session 引用、权限模式、输入快照、状态、耗时和失败原因。
 
-| 等级 | 含义 |
-| --- | --- |
-| Experimental | 能启动或完成有限 Smoke，版本和平台未经稳定验证 |
-| Community | 有公开适配和基本 Contract Test，由社区维护 |
-| Tier-1 | 关键行为在目标平台有重复真实验证，失败可诊断 |
-| Certified | 有固定版本、签名发行、回归矩阵和明确支持周期 |
+### 2.6 Artifact
 
-当前不能把代码中存在的 adapter 自动写成 Tier-1 或 Certified。
+用户可以继续使用的产物：文档、研究结论、方案、代码变更、清单、结构化数据、图片、链接或导出包。
+
+### 2.7 Evidence
+
+支持或反驳 Artifact 的证据：来源引用、文件位置、测试、命令结果、差异、截图、Reviewer Finding 和人类判断。
+
+Evidence 必须区分：
+
+- Declared：Agent 自称已经验证。
+- Observed：Meldwork 捕获到结果或引用。
+- Reproduced：用户或另一个 Agent 成功复验。
+- Human accepted：人类确认该证据足以支持决策。
+
+### 2.8 Decision 与 Adoption
+
+Acceptance 不能只是点击“接受”。需要记录：
+
+- 接受、拒绝、要求修改或选择另一个方案。
+- Artifact 被 Apply、Commit、Export、发送或用于哪项后续决定。
+- 采用后的测试、复核或结果反馈。
+
+只有 Artifact 被实际使用，并完成与任务验收标准匹配的复验，才计入产品北极星。
+
+## 3. 首发工作协议
+
+首发不按 Coding、Research 或 PM 分裂三套产品，而是实现一个可复用协议：
+
+```text
+Create Task
+  -> Select Context Pack
+  -> Primary Agent produces Artifact
+  -> Reviewer Agent checks Artifact and Evidence
+  -> Human adopts, rejects or requests revision
+```
+
+可以用三类模板验证，但首轮只能选择一个作为主样本：
+
+1. 研究与决策核验：基于文档来源形成结论，再由另一个 Agent 检查证据和遗漏。
+2. 方案与交付物评审：主 Agent 生成 PRD、方案、报告或演示结构，Reviewer 检查约束、冲突和可执行性。
+3. 代码与技术审查：实施 Agent 产出变更，Reviewer 检查缺陷、测试和风险。
+
+这三类任务共享相同对象和指标。产品不为每个领域建立独立聊天模式。
+
+## 4. Outcome Roadmap
+
+### Phase 0：可信激活，0-4 周
+
+**目标结果：** 新用户能理解边界，并在 10 分钟内用一个 Agent 完成第一项真实工作。
+
+最小交付：
+
+- Agent 与 Knowledge Source readiness 的清晰状态和修复提示。
+- 当前支持矩阵、访问边界和最后验证日期。
+- 首次任务引导，不要求用户先创建群组。
+- 一个 Agent + 可选知识来源的真实任务演示。
+- 安装、失败诊断和数据出站说明。
+
+验证：
+
+- 5 名新用户不依赖现场解释完成安装和首个任务。
+- 首次任务失败能归因到安装、登录、权限、Connector 或任务输入。
+- README、应用状态和代码能力一致。
+
+### Phase 1：Context Pack + Task Outcome，4-10 周
+
+**目标结果：** 用户能把一次 Agent 工作变成可复盘、可采用的结果，而不是一段聊天记录。
+
+最小交付：
+
+- Task、Context Pack、Run、Artifact、Evidence、Decision 的本地最小模型。
+- 一个 Primary + Reviewer 工作协议。
+- Reviewer 默认只看到 Artifact、验收标准和声明过的 Evidence，不默认读取 Primary 的完整对话。
+- Artifact 导出、接受、拒绝、要求修改和 Reopen。
+- 来源和 Evidence 的人工校正入口。
+
+验证：
+
+- 至少 20 个任务能回答“用了什么上下文、谁产生了什么、为什么采用”。
+- 80% 的测试用户不需要手工整理聊天内容就能导出或采用 Artifact。
+- 任何 Verified 状态都能追溯到具体 Evidence。
+
+### Phase 2：Connector Contract + Evidence Graph，10-16 周
+
+**目标结果：** 新 Agent 和知识来源可以通过稳定能力协议加入，且结果关系能够被搜索和复验。
+
+最小交付：
+
+- Agent Connector Manifest：能力、Session、权限、事件、成本和出站声明。
+- Knowledge Connector Manifest：访问方式、范围、引用、快照能力和限制。
+- 统一 Run Event：Started、Progress、Permission、SourceUsed、Artifact、Evidence、Usage、Completed/Failed/Cancelled。
+- Artifact、Evidence、Source 和 Decision 的关系图。
+- 可导出的 Evidence Bundle 和诊断包。
+
+验证：
+
+- 用第二种实现验证 Contract 边界，而不是继续硬编码核心业务。
+- 至少一个外部 Connector 或 Task Template 贡献。
+- Connector 失败不会造成静默丢失或错误的“已完成”。
+
+### Phase 3：Local / Cloud Handoff 与一个 Channel，4-8 个月，条件阶段
+
+**进入条件：** 15 名固定用户中至少 8 名在 30 天内重复使用，并有 3 个以上重复的后台执行或外部渠道需求。
+
+候选能力：
+
+- 本地 Context Pack 的出站预览与用户批准。
+- 一个 Cloud Agent 的创建、取消、状态和 Artifact 回传。
+- 优先接一个任务型 Channel。开发者样本优先 GitHub Issue/PR；知识工作样本优先钉钉或飞书。
+- Channel 只承载 Task、待验收结果和有效上下文，不复制完整 IM。
+
+### Phase 4：Typed Workflow、预算和停止条件，8-12 个月，条件阶段
+
+**进入条件：** 同一工作协议被至少 5 名用户重复执行，且手工步骤稳定。
+
+候选能力：
+
+- 有类型的输入、输出和 Evidence 要求。
+- Reviewer、重试、停止条件和 Human Gate。
+- Task、Workspace 和 Channel 预算。
+- Observed / Estimated / Unavailable 三态成本。
+- Workflow 版本、运行历史和失败恢复。
+
+### Phase 5：Team 与企业治理，12 个月后，条件阶段
+
+**进入条件：** 至少 3 个团队对同一标准化能力实际付费，且不是定制 Connector 或咨询收入。
+
+候选能力：
+
+- 可选加密同步与纯本地模式并存。
+- 共享模板、策略、RBAC、审计和预算。
+- SSO/SCIM、签名 Connector Registry、离线更新和兼容 SLA。
 
 ## 5. UI / UX 方向
 
-### 5.1 从“聊天列表”转为“工作状态”
+### 5.1 导航从聊天转向工作状态
 
-左侧导航应优先显示：进行中、待验收、已完成、失败/待重试的 Task；Conversation 作为 Task 内的一个视图，而不是唯一的信息架构。
+左侧导航优先级：
+
+1. Inbox：需要授权、补充输入或验收的事项。
+2. Active Tasks：进行中、待复核、失败和待重试。
+3. Workspaces / Channels：持续主题和工作边界。
+4. Conversations：Task 内的交互记录。
+5. Agents / Knowledge Sources：连接与能力状态。
 
 ### 5.2 Task 工作台
 
-首屏回答四个问题：
+首屏必须回答：
 
-1. 目标是什么？
-2. 哪些 Agent 已经运行？
-3. 产出了什么 Artifact 和 Evidence？
-4. 下一步是接受、修改、导出还是重试？
+- 目标和验收标准是什么。
+- 哪些 Context 被允许使用。
+- 哪些 Run 已完成或失败。
+- 当前 Artifact 和 Evidence 是什么。
+- 用户下一步需要采用、修改、授权还是重试。
 
-### 5.3 多 Agent 的默认行为
+完整聊天流水作为辅助视图，不应占据默认主界面。
 
-默认单 Agent；当用户选择“独立审查”或任务风险达到阈值时，再建议第二个 Agent。自动讨论必须有轮次、时间、成本和停止条件，不能用“越多越聪明”作为产品逻辑。
+### 5.3 多 Agent 对照
 
-### 5.4 状态与错误
+- 使用相同 Context Pack 的独立 Attempt。
+- Artifact 差异、证据覆盖和冲突高亮。
+- 时间、成本和失败状态明确显示。
+- 不用 Agent 卡片墙代替可比较的信息结构。
 
-失败、取消、超时和部分完成必须是一级状态。错误信息要告诉用户：影响了哪个 Agent、哪些数据已经保存、是否可以重试、是否需要重新确认权限。
+### 5.4 通知
 
-## 6. 安全、可靠性与发布门槛
+只通知需要人类行动的事件：权限请求、缺少输入、结果待验收、预算风险、Run 失败和 Connector 退化。
 
-### P0 发布门槛
+## 6. 指标体系
 
-- Renderer 不能获取任意 Shell、可执行路径、密钥或原生 Session ID。
-- Provider key 仍通过操作系统安全存储，不添加明文回退。
-- Agent 写入默认受用户选择控制，明确声明不是 OS 级沙箱。
-- 图片、Skill、Installer 和 Provider 的出站边界在 UI 与文档中一致。
-- 所有新增状态都有单元测试和失败路径。
+### 6.1 北极星
 
-### P1 发布门槛
+**每周被用户实际采用并完成验证的任务产出数。**
 
-- 关键 Connector 行为有真实矩阵，而不是只靠 Mock。
-- Installer 包和脚本实现摘要或签名固定后再扩大分发。
-- macOS 签名、公证和 clean-machine 安装完成后再承诺公开安装体验。
-- Windows 只有在真机验证后才进入宣传口径。
+同时披露：创建 Task 数、Adopted Task 数、失败激活用户数和每个安装 cohort 的人均值。不得只统计多 Agent Task，以免诱导不必要的 Agent 数量增长。
 
-## 7. 开源与内容不是附属工作
+### 6.2 当前 OMTM
 
-对于 OPC，用户获取和技术迭代是同一条产品链：
+**固定首批用户的 30 天重复 Outcome 率。**
 
-| 内容动作 | 产品反馈 |
-| --- | --- |
-| 发布“两个 Agent 独立审查一个真实任务”视频 | 观察用户最关心的质量、成本或隐私问题 |
-| 发布兼容性报告 | 找到最值得维护的 Connector |
-| 发布失败复盘 | 优先修复影响激活的错误 |
-| 发布 Task 模板 | 发现可标准化的工作流 |
-| 发布用户案例 | 判断哪些场景值得进入 Harness 产品 |
+第 6 周前固定最先完成真实 Task 的 15 名用户，要求至少 8 名在各自首次任务后的 30 天内再次完成一个有 Artifact、Evidence 和 Decision 的 Task。
 
-每周只需要一个可复用主题：一次真实任务、一个失败、一个兼容更新或一个用户问题。不要同时经营十个平台和十种内容格式。
+### 6.3 价值指标
 
-## 8. 指标体系
+- 首次 Task 完成率和完成时间。
+- Context Pack 被实际使用和校正的比例。
+- Artifact 被采用、导出或继续使用的比例。
+- Reviewer 新增有效 Finding 的采用率和误报率。
+- 相对手工跨 Agent 的上下文搬运与协调时间。
+- 单 Agent 与多 Agent 的质量、等待和成本差异。
 
-### 8.1 北极星
+### 6.4 可靠性指标
 
-每周完成至少一个“跨 Agent 可复核工作闭环”的活跃 Workspace 数量。
+- Agent Session resume 成功率。
+- Knowledge Source readiness 和读取成功率。
+- Run 取消、失败恢复和 Artifact 捕获完整率。
+- Connector 版本退化率。
+- 权限越界、错误写入和数据丢失事件。
 
-### 8.2 阶段指标
+## 7. 明确不做
 
-| 阶段 | OMTM | 辅助指标 |
+近期不应优先：
+
+- 用更多 Agent Logo 作为版本卖点。
+- 通用消费者聊天或社交产品。
+- 自建模型、Token Marketplace 或默认 Token 加价。
+- 自动抓取并索引用户所有知识库。
+- 无限制 Swarm、无限轮次和无人值守写入。
+- 在 Outcome 闭环成熟前建设 Cron、Webhook 和复杂自动化市场。
+- 同时开发多个 Cloud Agent、多个 IM Channel 和完整 Team 平台。
+- 把 General Agent 理解为“没有边界、什么都能做”。
+
+## 8. 决策门
+
+| 时间 | 必须回答的问题 | 决策 |
 | --- | --- | --- |
-| 公开 MVP | 首次任务完成率 | 安装成功、首个 Agent 就绪、失败自助解决 |
-| 价值验证 | 30 天重复任务率 | Accepted Artifact、复验 Evidence、协调时间 |
-| 生态验证 | 外部有效贡献数 | Connector PR、模板 PR、Issue 复现率 |
-| 商业探索 | 标准化试点回款 | 支持工时、重复需求、试点续费意愿 |
+| 第 4 周 | 新用户是否能独立完成首个真实任务？ | 否则先修激活，不增加平台范围 |
+| 第 10 周 | Task、Context Pack 和 Outcome 是否减少手工整理并提高采用？ | 否则简化对象和首发协议 |
+| 第 12-16 周 | 15 名固定用户中是否至少 8 名重复，是否出现外部贡献？ | 成立才投入 Cloud/Channel |
+| 第 6-8 个月 | Cloud 或 Channel 是否被真实重复使用并愿意付费？ | 只扩展被证明的入口 |
+| 第 12 个月后 | 是否有 3 个团队为同一标准化能力回款？ | 成立才进入 Team/Enterprise |
 
-不把 Star、曝光、自动讨论轮数和 Agent 数量当作核心产品价值指标。
+## 9. 最终判断
 
-## 9. OPC 执行系统
+Meldwork 的迭代顺序应该是：
 
-### 9.1 每周时间分配建议
+1. 从 Agent 会话升级到可采用的 Task Outcome。
+2. 从临时提示升级到可授权、可复验的 Context Pack。
+3. 从硬编码适配升级到 Agent 与 Knowledge Connector Contract。
+4. 从本地工作台扩展到经用户授权的 Cloud 和 Channel。
+5. 最后才把重复工作方式产品化为 Workflow 与 Team Governance。
 
-以每周 10-12 小时可投入时间为基准：
-
-| 工作 | 比例 | 说明 |
-| --- | ---: | --- |
-| 用户价值与产品工程 | 45% | 只做当前阶段一个主场景 |
-| 兼容性与质量 | 20% | 先维护 Tier-1，不追求适配数量 |
-| 文档、视频和发布 | 20% | 每周一个可复用内容单元 |
-| 用户反馈与社区 | 10% | 访谈、Issue、PR、复盘 |
-| 预留 | 5% | 处理上游变化和不可预见问题 |
-
-如果现实只能投入 5 小时，本周只做 1 个用户价值事项 + 1 个公开文档/视频事项；不新增 Connector。
-
-### 9.2 单人节奏
-
-- 周一：从 Issue、反馈和真实任务中选一个结果目标。
-- 周中：完成最小实现或实验，并记录证据。
-- 周末：写一篇短更新或录一个短视频，邀请用户复现。
-- 每四周：删掉没有用户信号的待办，重新冻结下一周期。
-
-### 9.3 停止条件
-
-以下情况出现时，立即缩小范围：
-
-- 连续四周没有用户完成第二次任务。
-- 维护 Connector 的时间高于用户价值工作的两倍。
-- 内容有曝光但没有安装、Issue 或复现任务。
-- 用户只要求定制开发，不愿使用标准化流程。
-
-## 10. 里程碑与决策门
-
-### M1：可公开使用
-
-文档可独立完成安装，核心路径可以演示，能力边界真实，关键安全测试通过。
-
-### M2：有重复价值
-
-至少 15 名外部用户完成真实任务，其中同一批至少 8 名在 30 天内重复；至少 20 个任务有明确 Acceptance 结果。
-
-### M3：有生态迹象
-
-至少 1 个外部 Connector 或任务模板贡献，Issue 能被复现和合并，用户开始主动提出兼容性与工作流需求。
-
-### M4：决定是否商业化
-
-出现 3 个以上相似团队问题，并有实际回款或明确的标准化试点需求，才进入 Harness 商业化实验。
-
-## 11. 最终路线判断
-
-先把 Meldwork 做成“别人能安装、能完成任务、能复现、能贡献”的开源项目；再把稳定的重复问题抽象成 Harness 能力；最后才考虑 Cloud、Channel、Team 和 Enterprise。
-
-顺序不能反过来。否则一个 OPC 会在还没有用户证据时，提前承担平台、云、销售和支持的全部成本。
+第一和第二步没有完成时，Cloud、Channel、Workflow 和企业功能只会放大当前聊天产品的复杂度。

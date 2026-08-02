@@ -38,6 +38,7 @@ const isLocalDocument = location.protocol === 'file:'
 const desktopApi = {
   isDesktop: true,
   localOnly: true,
+  platform: process.platform,
 }
 
 if (isLocalDocument) Object.assign(desktopApi, {

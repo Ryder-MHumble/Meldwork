@@ -9,6 +9,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 | Manual Agent reply | Local user sends a message and selects targets | Invokes selected Agents sequentially once | Agent process, Provider/native network use, local message/session writes |
 | Automatic discussion | Local user sends a group message in automatic mode | Runs every group Agent in complete rounds, 6 rounds by default and up to 10 or 30 minutes, and stops early on unanimous explicit consensus | Same as manual replies, repeated within the bound |
 | Agent detection/readiness | App startup or explicit refresh | Scans fixed command names and credential evidence | Local process/file reads; Claude may run `auth status --json` |
+| Knowledge-source readiness | Explicit Knowledge Base settings refresh or source validation | Probes code-defined Feishu/DingTalk CLI status and Obsidian installation/Vault access | Local process/file reads; document-list permission probes may call the configured knowledge service through its CLI |
 | Agent installation | Local user confirms installation | One installer task at a time | Network download/npm access and global CLI installation |
 | Managed OpenClaw setup | OpenClaw invocation with configured Provider | Writes isolated runtime configuration if changed | Local config directories/files; Provider call by OpenClaw |
 | Run completion notification | A manual or automatic run reaches a terminal state while the app window is unfocused | Main emits one sanitized lifecycle event and one local operating-system notification | Local notification only; no network request or conversation message |
@@ -22,6 +23,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 - Group name/topic and selected working directory.
 - Main-resolved paths for selected root images when the target Agent's declared capability accepts the complete set. Automatic discussion keeps offering the root images to each Agent until that Agent first receives them successfully.
 - Up to four main-revalidated Skill hints scoped to the selected target Agent. Hermes also receives the validated Skill slugs through its native `--skills` arguments.
+- Up to four main-revalidated knowledge-source hints scoped to selected target Agents. Active sources are currently Feishu, DingTalk, and Obsidian; planned OAuth sources cannot be selected.
 - Only the selected Agent's native credentials and optional configured Provider values.
 
 **Executable/tool surface:**
@@ -35,6 +37,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 **Steering:**
 
 - `LocalWorkspace.promptFor` identifies the Agent, repeats bounded stable user constraints, adds only the group transcript delta needed by that Agent's conversation-scoped native session, and asks it not to impersonate other Agents.
+- Selected knowledge sources add an explicit read-only instruction, source identity, and either a main-resolved local Vault location or detected CLI command name. Meldwork asks the Agent to identify sources used, but does not independently guarantee retrieval completeness or citation correctness.
 - Automatic discussion preflights root-image limits for every Agent, so each participant can receive the same root image set or the run does not start. This equal-context guarantee applies to root-image availability, not identical prompts: Agents still run sequentially, so later participants can see earlier replies, while native sessions remain conversation-and-Agent-specific and Skill hints remain Agent-specific.
 
 **Output contract:**
@@ -49,6 +52,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 ## Workspace Side Effects
 
 - `allowWrite` defaults to false. Adapters with enforceable permission modes receive read-only/plan arguments until the user explicitly opts into writes.
+- Knowledge-source selections are task-scoped hints and do not change `allowWrite`. The Agent may read the selected source under local OS and upstream CLI permissions; Meldwork instructs it not to modify source content.
 - Hermes and OpenClaw do not expose an equivalent Meldwork-enforced read-only switch, so their capability label remains Agent-managed permissions regardless of `allowWrite`.
 - Main passes write permission per invocation; it does not grant a renderer filesystem API.
 - Agents run with the local OS user's process identity. Meldwork is not an OS-level sandbox.

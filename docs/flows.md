@@ -6,7 +6,7 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **Precondition:** The local user launches Meldwork.
 
-1. Electron main creates `ProviderStore`, `AttachmentStore`, and `LocalWorkspace` under `app.getPath('userData')`, plus a `LocalSkillCatalog` rooted at `app.getPath('home')`.
+1. Electron main creates `ProviderStore`, `KnowledgeBaseStore`, `AttachmentStore`, and `LocalWorkspace` under `app.getPath('userData')`, plus a `LocalSkillCatalog` rooted at `app.getPath('home')`.
 2. Main registers IPC handlers, creates a sandboxed `BrowserWindow`, and loads the bundled frontend with `loadFile`.
 3. Before accepting attachment work, main reconciles the private attachment directory against persisted message references. Malformed workspace state disables destructive cleanup.
 4. Preload exposes workspace, installer, Skill, attachment, and Provider methods only when `location.protocol === 'file:'`.
@@ -79,12 +79,27 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **State/side effects:** Imports private local image copies and reads local Skill manifests. No Skill path, attachment path, preview payload, or raw bytes are persisted in the workspace snapshot.
 
-## 6. Send A Message To Agents
+## 6. Connect And Select Knowledge Sources
+
+**Precondition:** The user opens Knowledge Base settings or opens the composer mention menu.
+
+1. Main resolves a code-defined source catalog. Feishu and DingTalk are probed through allowlisted local CLI commands; Obsidian is detected as an app or CLI and uses a user-selected Vault directory.
+2. Main returns sanitized readiness, login, permission, read/write, command-name, and selected-Vault status. Notion, Confluence, Google Drive, and SharePoint remain planned reference entries rather than active Connectors.
+3. Selecting an Obsidian Vault uses a main-owned directory dialog and persists only the normalized absolute path in `roundrelay-knowledge-base.json`.
+4. The composer may select up to four ready knowledge sources and scopes each selection to explicit target Agents.
+5. Before accepting the message, main re-probes missing cache entries and validates that the source is currently readable, its access mode is supported, and every target belongs to the current run.
+6. `LocalWorkspace` stores sanitized source hints with the user message. At invocation, only the selected Agent receives its validated hints: an allowlisted CLI command name or the selected local Vault location plus a read-only instruction.
+
+**Deny cases:** Unknown or planned source, missing login, missing permission, unreadable or invalid Vault, unsupported access mode, empty target set, target outside the run, or stale source state.
+
+**State/side effects:** Probes may invoke local Feishu/DingTalk commands and read local installation state. A later Agent run may read from the selected source and may send derived content to its configured Provider. Meldwork does not currently index, cache, snapshot, or independently verify the source content.
+
+## 7. Send A Message To Agents
 
 **Precondition:** The conversation is not already running and at least one selected target belongs to the group.
 
 1. `LocalWorkspace` persists the user message and creates a cancellable run.
-2. It builds a bounded prompt from stable group-level user constraints and the recent group transcript. When the same native session is resumed, only messages after that Agent's previous final reply are added, together with Skill hints assigned to that Agent.
+2. It builds a bounded prompt from stable group-level user constraints and the recent group transcript. When the same native session is resumed, only messages after that Agent's previous final reply are added, together with Skill and knowledge-source hints assigned to that Agent.
 3. Main resolves the Agent executable and attachment paths internally, selects Provider/native credential environment, and invokes the CLI in the group working directory. Codex, Hermes, and OpenCode receive images through their validated native arguments; Hermes also receives selected Skill slugs through `--skills`.
 4. CLI adapters apply per-Agent read-only or write-enabled arguments. Child processes receive an allowlisted system environment plus only current-Agent credentials.
 5. Main emits sanitized active progress. Hermes process details are bounded and kept separate from the final answer; a pre-run message-ID watermark prevents an earlier turn from being selected as the current result.
@@ -96,13 +111,13 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **External side effects:** Agent/provider network calls and possible workspace reads. Workspace writes are intended only when `allowWrite` is true, subject to upstream CLI enforcement.
 
-## 7. Equal-Context Automatic Discussion And Stop
+## 8. Equal-Context Automatic Discussion And Stop
 
 **Precondition:** A group has at least two Agents and a persisted user topic root.
 
 1. Before creating a run, `LocalWorkspace` checks the root message's entire image set against every group Agent. If any Agent cannot receive the same set, the discussion is rejected before any process starts.
 2. The user chooses a bounded round count; the default is six and the hard cap is ten.
-3. `LocalWorkspace` invokes every group Agent once per complete round, preserving one main-only native session reference for each conversation and Agent. The topic root remains a visual and run-lifecycle boundary, not a native-session boundary. Root images are delivered once to each Agent; a failed delivery is retried on that Agent's next attempt instead of silently dropping context. Root Skill selections are revalidated and remain scoped to their target Agent on every attempt.
+3. `LocalWorkspace` invokes every group Agent once per complete round, preserving one main-only native session reference for each conversation and Agent. The topic root remains a visual and run-lifecycle boundary, not a native-session boundary. Root images are delivered once to each Agent; a failed delivery is retried on that Agent's next attempt instead of silently dropping context. Root Skill and knowledge-source selections are revalidated and remain scoped to their target Agent on every attempt.
 4. Each Agent must end with one internal consensus marker. The marker is removed before persistence, and the run stops early only when every Agent completes and agrees in the same round.
 5. A failed Agent is recorded once per stable failure, while later Agents and later bounded rounds continue. Active progress and terminal state are emitted separately from message history.
 6. The user can stop the group, and a 30-minute total runtime limit also aborts the active process tree.
@@ -113,7 +128,7 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 “Equal context” here means every Agent can receive the same root image set before the run is allowed. Discussion remains sequential, so later Agents in a round can see earlier replies; native sessions remain conversation-and-Agent-specific, while selected Skills remain Agent-specific.
 
-## 8. Shutdown IPC Gate
+## 9. Shutdown IPC Gate
 
 **Precondition:** Electron receives `before-quit`.
 

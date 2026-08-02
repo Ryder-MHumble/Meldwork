@@ -729,7 +729,11 @@ function createWindow() {
     minWidth: 980,
     minHeight: 680,
     title: 'Meldwork',
-    backgroundColor: '#f3f6f8',
+    backgroundColor: process.platform === 'darwin' ? '#e7edef' : '#f3f6f8',
+    ...(process.platform === 'darwin' ? {
+      titleBarStyle: 'hiddenInset',
+      trafficLightPosition: { x: 18, y: 16 },
+    } : {}),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,

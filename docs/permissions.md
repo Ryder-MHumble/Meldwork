@@ -21,6 +21,7 @@ Authorization is process-bound:
 | Create operating-system notifications | Not directly allowed | Denied | N/A | Main creates notifications only from trusted terminal run events; renderer cannot supply notification content |
 | Select a working directory | Allowed through OS dialog | Denied | Receives selected path only at invocation | Main-owned `dialog.showOpenDialog` |
 | List/select local Skills | Sanitized coordinates and display names for installed target Agents | Denied | Receives only its validated selections in prompt/native arguments | Installed-Agent gate; main-owned `LocalSkillCatalog`; per-target revalidation; no renderer-supplied path |
+| Probe/select knowledge sources | Sanitized readiness plus the user-selected Obsidian Vault path | Denied | Receives only target-scoped, validated read-only access hints | Code-defined catalog; main-owned probes/dialog; per-run revalidation; planned OAuth sources cannot be selected |
 | Import/preview/discard images | Allowed through picker, exact paste payload, attachment ID, and discard list | Denied | Receives a main-resolved path only for an authorized invocation | Main-owned dialog and `AttachmentStore`; type/size/dimension/checksum validation; referenced files cannot be discarded |
 | Enable workspace writes | Explicit per-conversation opt-in | Denied | Enforced adapters receive write mode only when enabled; Hermes/OpenClaw remain Agent-managed | Stored `allowWrite`; per-CLI permission flags where supported |
 | Detect Agents | Allowed | Denied | N/A | Code-defined command catalog; executable paths stay in main |
@@ -38,6 +39,7 @@ Authorization is process-bound:
 - `agentInstaller`: catalog/Skill listing/state/start/cancel/sidebar visibility/change events. Skill listing accepts one Agent kind and returns sanitized records only.
 - `localAttachments`: `pickImages`, exact-payload `importImage`, ID-only `preview`, and ID-list `discard`. It exposes no filesystem read, path resolution, or arbitrary file picker method.
 - `localAgentProvider`: non-probing status, explicit encryption probe, save, and delete.
+- `localKnowledgeBase`: source status, code-defined external setup guides, and a main-owned Obsidian Vault directory picker.
 
 Node integration, webviews, insecure content, and renderer permission requests are disabled. The packaged Electron fuses disable `runAsNode`, Node option injection, CLI inspect arguments, and loading app code outside `app.asar`.
 
@@ -49,12 +51,15 @@ Node integration, webviews, insecure content, and renderer permission requests a
 - Conversation data is local JSON and is not application-encrypted.
 - Agent executable paths, native session IDs, native session storage paths, attachment paths, Skill paths, preview payloads, and credential material are stripped from renderer snapshots and lifecycle events. User-selected conversation workdirs are intentionally returned for display and editing.
 - Main scans known per-Agent Skill roots and reads only bounded Skill manifest prefixes for catalog metadata. The renderer cannot request an arbitrary directory or file.
+- `KnowledgeBaseStore` persists only the normalized user-selected Obsidian Vault path. Feishu and DingTalk authentication remain in their local CLI-owned stores; Meldwork does not receive or persist their tokens.
+- Knowledge-source selection accepts only code-defined source kinds. Main resolves an allowlisted CLI command name or the selected absolute Vault path and scopes the hint to explicit target Agents.
 - Agent filesystem access is scoped to the selected working directory by Meldwork arguments/configuration where the upstream CLI supports it.
 
 ## Process And Network Permissions
 
 - Only supported Agent kinds can be invoked.
 - Skill selections are limited to four, must still exist in the selected Agent's current catalog, and are routed only to that Agent. Hermes receives validated slugs through its native `--skills` flags; no renderer value becomes an arbitrary CLI argument.
+- Knowledge-source selections are limited to four, must be currently readable, and are routed only to their selected target Agents. Feishu/DingTalk command names come from main-side detection, not renderer input; Obsidian paths come from the main-owned directory picker.
 - Image references are limited to four and are resolved inside main. Codex and OpenCode accept up to four; Hermes accepts one; unsupported or unequal multi-Agent context is rejected before any child process starts.
 - Child environments begin with a system-variable allowlist, then add only the selected Agent's native credentials and optional configured Provider values.
 - Installer environments remove variables whose names look like keys, tokens, secrets, passwords, credentials, cookies, authorization, or prompts.
@@ -67,4 +72,5 @@ Node integration, webviews, insecure content, and renderer permission requests a
 - There is no per-user permission separation inside the app because there is no account model.
 - An Agent process runs with the operating-system permissions of the local user. Meldwork permission flags reduce capability but are not an OS sandbox.
 - Imported images are private local copies but are not application-encrypted; when sent, their contents may reach the selected Agent's configured model Provider.
+- Knowledge-source content is not copied into Meldwork by the selection flow, but an invoked Agent may read selected documents or Vault files and send relevant content to its configured Provider. Current read-only behavior is an explicit task instruction plus source capability constraints, not an OS sandbox or a universal upstream-tool guarantee.
 - Installer approval authorizes an external system modification. Package/script integrity is not currently pinned.

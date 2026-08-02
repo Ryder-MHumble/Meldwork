@@ -12,7 +12,7 @@ Meldwork 不是制造 Agent 的公司，也不是把十个 Agent 头像放进一
 
 它的角色是：
 
-> **让不同 Agent 接续同一份真实工作，并让用户始终看得见任务、边界、证据和结果。**
+> **让不同 Agent 基于用户明确授权的知识上下文接续同一份真实工作，并让用户始终看得见任务、边界、证据和结果。**
 
 ### 品牌关键词
 
@@ -20,6 +20,7 @@ Meldwork 不是制造 Agent 的公司，也不是把十个 Agent 头像放进一
 - Local-first：控制面和工作记录默认在本机。
 - Accountable：工作可追溯、可比较、可验收。
 - Cross-vendor：全球与中国 Agent 平等接入。
+- Context-aware：连接用户已有知识来源，但不取代其内容平台。
 - Quiet confidence：专业、克制、不用“AI 魔法”语言。
 
 ### 品牌应避免
@@ -107,21 +108,27 @@ Meldwork 不是制造 Agent 的公司，也不是把十个 Agent 头像放进一
 >
 > **面向跨厂商 Agent 的开放、本地优先工作系统。**
 
-作用：第一次看见产品的人能够立即理解是什么。
+对需要解释知识来源的页面，可使用扩展品类描述：
+
+> **An open, local-first work system for agents and knowledge across vendors.**
+>
+> **面向跨厂商 Agent 与知识来源的开放、本地优先工作系统。**
+
+作用：第一次看见产品的人能够立即理解是什么。短版用于 Logo 邻近位置，扩展版用于 README、BP 和产品介绍。
 
 ### 第三层：价值主张
 
-> **Bring local and cloud agents into one accountable workspace.**
+> **Bring agents and trusted knowledge into one accountable workspace.**
 >
-> **让本地与云端 Agent 在一个可追溯、可验收的工作空间内协作。**
+> **让 Agent 与可信知识上下文在一个可追溯、可验收的工作空间内协作。**
 
 作用：解释为什么值得使用。
 
 ### MVP 阶段的事实版文案
 
-当前还没有 Cloud Agent、Task、Artifact、Evidence 和团队治理，因此 README 应使用：
+当前还没有 Cloud Agent、Task、Artifact、Evidence 和团队治理；知识来源也只是显式访问提示，不是统一检索引擎。因此 README 应使用：
 
-> Bring the local Agent CLIs already on your machine into one persistent workspace.
+> Bring the local Agent CLIs and explicitly selected knowledge sources already available on your machine into one persistent workspace.
 
 愿景文案与当前能力文案必须分开。
 

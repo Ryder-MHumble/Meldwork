@@ -721,6 +721,17 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.deepEqual(harness.attachmentInstances[0].cleanupCalls, [[]])
   assert.equal(harness.windows.length, 1)
   assert.equal(
+    harness.windows[0].input.backgroundColor,
+    process.platform === 'darwin' ? '#e7edef' : '#f3f6f8',
+  )
+  if (process.platform === 'darwin') {
+    assert.equal(harness.windows[0].input.titleBarStyle, 'hiddenInset')
+    assert.deepEqual(harness.windows[0].input.trafficLightPosition, { x: 18, y: 16 })
+  } else {
+    assert.equal('titleBarStyle' in harness.windows[0].input, false)
+    assert.equal('trafficLightPosition' in harness.windows[0].input, false)
+  }
+  assert.equal(
     harness.windows[0].loads[0].filename,
     path.resolve(__dirname, '../../frontend/dist/index.html'),
   )

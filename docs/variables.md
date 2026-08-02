@@ -11,6 +11,8 @@ Meldwork requires no `.env` file, server URL, account token, JWT, database crede
 | Provider `baseUrl` | Compatible local Agents | User input in renderer, validated by main | Stored locally; replace through UI | HTTPS required, except loopback HTTP; embedded credentials/query/fragment rejected |
 | Provider `model` | Compatible local Agents | User input in renderer, validated by main | Stored locally; replace through UI | Non-secret model identifier |
 | Provider `apiKey` | Compatible local Agents | User enters it in renderer; passed once over local IPC | Encrypted with `safeStorage`; rotate by saving a replacement or delete through UI | Secret; status and snapshots never return it |
+| Obsidian Vault path | Knowledge-source selection | User chooses a directory through the main-owned OS picker | Stored in `roundrelay-knowledge-base.json`; replace or clear through UI | Non-secret local path, but may reveal directory naming; only selected Agents receive it as task context |
+| Feishu / DingTalk CLI auth | Knowledge-source selection | Owned by the installed `lark-cli`/`opdev` or `dws` CLI | Managed and rotated through the upstream CLI | Meldwork probes status and document access but does not receive or store the upstream token |
 | Theme / locale | Renderer | User preference | Browser `localStorage` | Non-secret |
 
 ## Native Agent Credential Inputs

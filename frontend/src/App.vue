@@ -3,6 +3,7 @@
     class="app-shell"
     :class="{ 'sidebar-collapsed': sidebarCollapsed, 'trace-panel-open': tracePanelOpen }"
     :data-theme="theme"
+    :data-platform="desktopPlatform"
   >
     <section v-if="booting" class="boot-state" aria-live="polite">
       <img class="boot-logo" :src="productAppIcon" alt="Meldwork" />
@@ -1456,38 +1457,47 @@
                 :aria-label="t('composer.mentions')"
               >
                 <template v-if="composerMenuOptions.length">
-                  <button
-                    v-for="(option, index) in composerMenuOptions"
-                    :key="composerMenuOptionKey(option)"
-                    :id="`composer-mention-option-${index}`"
-                    class="skill-option"
-                    :class="{
-                      active: skillActiveIndex === index,
-                      'agent-mention-option': option.type === 'agent',
-                      'knowledge-base-mention-option': option.type === 'knowledge-base',
-                    }"
-                    type="button"
-                    role="option"
-                    :aria-selected="skillActiveIndex === index"
-                    :disabled="composerMenuOptionDisabled(option)"
-                    @mouseenter="skillActiveIndex = index"
-                    @click="selectComposerMenuOption(option)"
+                  <div
+                    v-for="group in composerMenuGroups"
+                    :key="group.type"
+                    class="mention-menu-section"
+                    role="group"
+                    :aria-label="group.label"
                   >
-                    <img
-                      v-if="option.type !== 'skill'"
-                      :src="composerMenuOptionLogo(option)"
-                      alt=""
-                    />
-                    <LibraryOutline v-else class="mention-option-icon" />
-                    <span class="skill-option-copy">
-                      <strong>{{ composerMenuOptionTitle(option) }}</strong>
-                      <small>{{ composerMenuOptionDescription(option) }}</small>
-                    </span>
-                    <span class="mention-option-action" aria-hidden="true">
-                      <small>{{ composerMenuOptionKindLabel(option) }}</small>
-                      <AddOutline />
-                    </span>
-                  </button>
+                    <span class="mention-menu-section-label">{{ group.label }}</span>
+                    <button
+                      v-for="option in group.options"
+                      :key="composerMenuOptionKey(option)"
+                      :id="`composer-mention-option-${composerMenuOptionIndex(option)}`"
+                      class="skill-option"
+                      :class="{
+                        active: skillActiveIndex === composerMenuOptionIndex(option),
+                        'agent-mention-option': option.type === 'agent',
+                        'knowledge-base-mention-option': option.type === 'knowledge-base',
+                      }"
+                      type="button"
+                      role="option"
+                      :aria-selected="skillActiveIndex === composerMenuOptionIndex(option)"
+                      :disabled="composerMenuOptionDisabled(option)"
+                      @mouseenter="skillActiveIndex = composerMenuOptionIndex(option)"
+                      @click="selectComposerMenuOption(option)"
+                    >
+                      <img
+                        v-if="option.type !== 'skill'"
+                        :src="composerMenuOptionLogo(option)"
+                        alt=""
+                      />
+                      <LibraryOutline v-else class="mention-option-icon" />
+                      <span class="skill-option-copy">
+                        <strong>{{ composerMenuOptionTitle(option) }}</strong>
+                        <small>{{ composerMenuOptionDescription(option) }}</small>
+                      </span>
+                      <span class="mention-option-action" aria-hidden="true">
+                        <small>{{ composerMenuOptionKindLabel(option) }}</small>
+                        <AddOutline />
+                      </span>
+                    </button>
+                  </div>
                 </template>
                 <p v-if="skillsLoading" class="skill-menu-state compact">{{ t('composer.skillsLoading') }}</p>
                 <p v-else-if="!composerMenuOptions.length" class="skill-menu-state">
@@ -1652,6 +1662,42 @@
                       </button>
                     </span>
                   </div>
+                  <div
+                    v-if="selectedSkills.length || selectedKnowledgeBases.length"
+                    class="selected-agent-list selected-context-list"
+                    :aria-label="t('composer.mentions')"
+                  >
+                    <span v-for="skill in selectedSkills" :key="skillKey(skill)" class="selected-agent-tag selected-skill">
+                      <LibraryOutline class="selected-context-icon" aria-hidden="true" />
+                      @{{ skill.name || skill.slug }}
+                      <button
+                        type="button"
+                        :title="t('composer.removeSkill')"
+                        :aria-label="t('composer.removeSkill')"
+                        :disabled="Boolean(activeRun) || sending"
+                        @click="removeSkill(skill)"
+                      >
+                        <CloseOutline />
+                      </button>
+                    </span>
+                    <span
+                      v-for="source in selectedKnowledgeBases"
+                      :key="`knowledge:${source.kind}`"
+                      class="selected-agent-tag selected-skill selected-knowledge-base"
+                    >
+                      <img :src="knowledgeBaseLogo(source.kind)" alt="" />
+                      @{{ knowledgeBaseName(source.kind) }}
+                      <button
+                        type="button"
+                        :title="t('composer.removeKnowledgeBase')"
+                        :aria-label="t('composer.removeKnowledgeBase')"
+                        :disabled="Boolean(activeRun) || sending"
+                        @click="removeKnowledgeBase(source.kind)"
+                      >
+                        <CloseOutline />
+                      </button>
+                    </span>
+                  </div>
                   <textarea
                     ref="composerInput"
                     v-model="draft"
@@ -1691,37 +1737,6 @@
                     >
                       <AtOutline />
                     </button>
-                    <div v-if="selectedSkills.length || selectedKnowledgeBases.length" class="selected-skill-list">
-                      <span v-for="skill in selectedSkills" :key="skillKey(skill)" class="selected-skill">
-                        @{{ skill.name || skill.slug }}
-                        <button
-                          type="button"
-                          :title="t('composer.removeSkill')"
-                          :aria-label="t('composer.removeSkill')"
-                          :disabled="Boolean(activeRun) || sending"
-                          @click="removeSkill(skill)"
-                        >
-                          <CloseOutline />
-                        </button>
-                      </span>
-                      <span
-                        v-for="source in selectedKnowledgeBases"
-                        :key="`knowledge:${source.kind}`"
-                        class="selected-skill selected-knowledge-base"
-                      >
-                        <img :src="knowledgeBaseLogo(source.kind)" alt="" />
-                        @{{ knowledgeBaseName(source.kind) }}
-                        <button
-                          type="button"
-                          :title="t('composer.removeKnowledgeBase')"
-                          :aria-label="t('composer.removeKnowledgeBase')"
-                          :disabled="Boolean(activeRun) || sending"
-                          @click="removeKnowledgeBase(source.kind)"
-                        >
-                          <CloseOutline />
-                        </button>
-                      </span>
-                    </div>
                   </div>
 
                   <div class="composer-run-actions">
@@ -1791,13 +1806,15 @@
           </transition>
           <footer class="onboarding-footer">
             <div class="onboarding-dots" :aria-label="t('onboarding.progress')">
-              <span
+              <button
                 v-for="(_slide, index) in onboardingSlides"
                 :key="index"
+                type="button"
                 class="onboarding-dot"
                 :class="{ active: onboardingIndex === index }"
                 :aria-label="t('onboarding.goToSlide', { count: index + 1 })"
                 :aria-current="onboardingIndex === index ? 'step' : undefined"
+                @click="selectOnboardingSlide(index)"
               />
             </div>
             <button
@@ -2153,7 +2170,7 @@ const COMPOSER_INPUT_MIN_HEIGHT = 58
 const COMPOSER_INPUT_MAX_HEIGHT = 180
 const DIRECT_SESSION_PREVIEW_LIMIT = 5
 const GROUP_SESSION_PREVIEW_LIMIT = 8
-const ONBOARDING_SLIDE_MS = 1450
+const ONBOARDING_SLIDE_MS = 5000
 const EMPTY_SHOWCASE_COUNT = 3
 const EMPTY_SHOWCASE_SLIDE_MS = 2800
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
@@ -2293,6 +2310,7 @@ let pendingRequestedGroupId = ''
 const pendingRunFinishedEvents = new Map()
 
 const api = computed(() => desktopApi())
+const desktopPlatform = computed(() => api.value?.platform || installCatalog.value.platform || '')
 const workspace = computed(() => api.value?.localWorkspace || null)
 const installer = computed(() => api.value?.agentInstaller || null)
 const provider = computed(() => api.value?.localAgentProvider || null)
@@ -2331,7 +2349,7 @@ const onboardingSlides = computed(() => [
     body: t('onboarding.discoverBody'),
   },
   {
-    image: publicAsset('onboarding/provider-setup.svg'),
+    image: publicAsset('onboarding/provider-setup-v2.png'),
     title: t('onboarding.providerTitle'),
     body: t('onboarding.providerBody'),
   },
@@ -2346,7 +2364,7 @@ const onboardingSlides = computed(() => [
     body: t('onboarding.toolsBody'),
   },
   {
-    image: publicAsset('onboarding/auto-discussion.svg'),
+    image: publicAsset('onboarding/auto-discussion-v2.png'),
     title: t('onboarding.autoTitle'),
     body: t('onboarding.autoBody'),
   },
@@ -2712,11 +2730,24 @@ const filteredKnowledgeBaseOptions = computed(() => {
     })
     .slice(0, MAX_KNOWLEDGE_BASES)
 })
-const composerMenuOptions = computed(() => [
-  ...filteredSkillOptions.value.map(skill => ({ type: 'skill', value: skill })),
-  ...filteredKnowledgeBaseOptions.value.map(source => ({ type: 'knowledge-base', value: source })),
-  ...filteredAgentMentionOptions.value.map(kind => ({ type: 'agent', value: kind })),
-])
+const composerMenuGroups = computed(() => [
+  {
+    type: 'knowledge-base',
+    label: t('composer.mentionSection.knowledge-base'),
+    options: filteredKnowledgeBaseOptions.value.map(source => ({ type: 'knowledge-base', value: source })),
+  },
+  {
+    type: 'skill',
+    label: t('composer.mentionSection.skill'),
+    options: filteredSkillOptions.value.map(skill => ({ type: 'skill', value: skill })),
+  },
+  {
+    type: 'agent',
+    label: t('composer.mentionSection.agent'),
+    options: filteredAgentMentionOptions.value.map(kind => ({ type: 'agent', value: kind })),
+  },
+].filter(group => group.options.length))
+const composerMenuOptions = computed(() => composerMenuGroups.value.flatMap(group => group.options))
 const activeSkillOptionId = computed(() => (
   skillMenuOpen.value && composerMenuOptions.value[skillActiveIndex.value]
     ? `composer-mention-option-${skillActiveIndex.value}`
@@ -3726,6 +3757,17 @@ function startOnboardingPlayback() {
   onboardingPlaybackTimer = setTimeout(step, ONBOARDING_SLIDE_MS)
 }
 
+function selectOnboardingSlide(index) {
+  const nextIndex = Math.max(0, Math.min(Number(index) || 0, onboardingLastIndex.value))
+  onboardingIndex.value = nextIndex
+  clearOnboardingPlayback()
+  if (onboardingOnLastSlide.value) {
+    onboardingPlaybackComplete.value = true
+    return
+  }
+  startOnboardingPlayback()
+}
+
 function beginOnboardingDetection() {
   onboardingDetecting.value = true
   void refreshAgents().finally(() => { onboardingDetecting.value = false })
@@ -4445,6 +4487,10 @@ function composerMenuOptionKey(option) {
   if (option?.type === 'skill') return skillKey(option.value)
   if (option?.type === 'knowledge-base') return `knowledge:${option.value?.kind}`
   return `agent:${option?.value}`
+}
+
+function composerMenuOptionIndex(option) {
+  return composerMenuOptions.value.indexOf(option)
 }
 
 function composerMenuOptionLogo(option) {
