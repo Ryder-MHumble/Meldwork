@@ -1036,6 +1036,15 @@
           >
             {{ directConclusionLiveStatus }}
           </p>
+          <p
+            v-if="activeGroup.conversationType === 'direct'"
+            class="visually-hidden direct-trace-event-live-status"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {{ directTraceEventLiveStatus }}
+          </p>
 
           <div ref="messageScroller" class="message-scroll" @scroll="handleMessageScroll">
             <section v-if="conversationEmptyVisible" class="conversation-empty">
@@ -1090,7 +1099,13 @@
                   <div class="system-message-stack">
                     <div class="system-message">
                       <WarningOutline />
-                      <span>{{ translateSystemMessage(message) }}</span>
+                      <span>
+                        <span>{{ translateSystemMessage(message) }}</span>
+                        <MarkdownMessage
+                          v-if="terminalSystemConclusion(message)"
+                          :content="terminalSystemConclusion(message)"
+                        />
+                      </span>
                       <button
                         v-if="activeGroup.conversationType !== 'direct' && message.agentKind && messageHasTrace(message)"
                         class="message-trace-button"
@@ -1200,7 +1215,10 @@
                           {{ t('trace.waitingOutput') }}
                         </span>
                       </div>
-                      <details v-if="messageExecutionSteps(message).length" class="execution-details">
+                      <details
+                        v-if="messageExecutionSteps(message).length && !messageHasTrace(message)"
+                        class="execution-details"
+                      >
                         <summary>
                           <TerminalOutline />
                           <span>{{ t('conversation.executionProcess') }}</span>
@@ -1346,30 +1364,29 @@
               </article>
 
                 <section
-                  v-if="displayedRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
+                  v-if="activeRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
                   class="run-status-panel"
                   :class="{
                     direct: activeGroup.conversationType === 'direct',
                     group: activeGroup.conversationType !== 'direct',
                     solo: !isDisplayedCoordinatedRun,
                     multi: isDisplayedCoordinatedRun,
-                    history: !activeRun,
                   }"
                   aria-live="polite"
                 >
                   <header class="run-status-header">
                     <div v-if="!isDisplayedCoordinatedRun" class="direct-run-indicator" aria-hidden="true">
-                      <span class="run-agent-logo" :data-status="displayedRunAgentStatus">
+                      <span class="run-agent-logo" :data-status="displayedRunAgentTone">
                         <img :src="agentLogo(displayedRunAgentKind, theme)" alt="" />
                       </span>
-                      <div v-if="displayedRunAgentStatus === 'running'" class="typing-bars"><span /><span /><span /></div>
+                      <div v-if="displayedRunAgentTone === 'running'" class="typing-bars"><span /><span /><span /></div>
                     </div>
                     <div v-else class="relay-run-indicator" aria-hidden="true">
                       <span
                         v-for="(kind, index) in displayedRunTargetKinds.slice(0, 4)"
                         :key="kind"
                         class="run-agent-logo relay-run-agent"
-                        :data-status="displayedRunAgentStatusForKind(kind)"
+                        :data-status="displayedRunAgentToneForKind(kind)"
                         :style="{ '--avatar-index': index }"
                       >
                         <img :src="agentLogo(kind, theme)" alt="" />
@@ -1380,24 +1397,16 @@
                       <span
                         v-if="!isDisplayedCoordinatedRun"
                         class="solo-run-status"
-                        :data-status="displayedRunAgentStatus"
+                        :data-status="displayedRunAgentTone"
                       >
                         {{ runStatusLabel(displayedRunAgentStatus) }}
                       </span>
                       <div class="run-status-meta">
                         <span v-if="displayedRunTopicRootId">
-                          {{ t(activeRun
-                            ? (activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic')
-                            : 'conversation.retainedTopic') }}
+                          {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
                         </span>
                         <span v-if="runRoundProgress" class="run-round-progress">
                           {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
-                        </span>
-                        <span v-if="!activeRun" class="run-summary-status" :data-status="runStatusTone(displayedRun.status)">
-                          {{ runStatusLabel(displayedRun.status) }}
-                        </span>
-                        <span v-if="!activeRun">
-                          {{ t('run.retainedEvents', { count: displayedRun.eventCount }) }}
                         </span>
                       </div>
                     </div>
@@ -1421,7 +1430,7 @@
                       v-for="(kind, index) in displayedRunTargetKinds"
                       :key="kind"
                       class="run-agent-row"
-                      :data-status="displayedRunAgentStatusForKind(kind)"
+                      :data-status="displayedRunAgentToneForKind(kind)"
                       :data-trace-agent-run-id="displayedRunAgentForKind(kind)?.agentRunId || undefined"
                       :style="{ '--reveal-index': index }"
                       type="button"
@@ -1429,24 +1438,25 @@
                       :aria-label="displayedRunAgentTraceLabel(kind)"
                       @click="openDisplayedTraceForAgent(kind, $event.currentTarget)"
                     >
-                      <span class="run-agent-logo" :data-status="displayedRunAgentStatusForKind(kind)" aria-hidden="true">
+                      <span class="run-agent-logo" :data-status="displayedRunAgentToneForKind(kind)" aria-hidden="true">
                         <img :src="agentLogo(kind, theme)" alt="" />
                       </span>
                       <strong>{{ agentLabel(kind) }}</strong>
                       <span class="run-agent-state">
                         <span
                           class="run-agent-motion"
-                          :data-status="displayedRunAgentStatusForKind(kind)"
+                          :data-status="displayedRunAgentToneForKind(kind)"
                           aria-hidden="true"
                         >
-                          <CheckmarkCircleOutline v-if="displayedRunAgentStatusForKind(kind) === 'completed'" />
-                          <CloseCircleOutline v-else-if="displayedRunAgentStatusForKind(kind) === 'failed'" />
-                          <span v-else-if="displayedRunAgentStatusForKind(kind) === 'running'" class="run-agent-bars">
+                          <CheckmarkCircleOutline v-if="displayedRunAgentToneForKind(kind) === 'completed'" />
+                          <CloseCircleOutline v-else-if="displayedRunAgentToneForKind(kind) === 'failed'" />
+                          <span v-else-if="displayedRunAgentToneForKind(kind) === 'running'" class="run-agent-bars">
                             <i /><i /><i />
                           </span>
+                          <WarningOutline v-else-if="displayedRunAgentToneForKind(kind) === 'partial'" />
                           <span v-else class="run-agent-dots"><i /><i /><i /></span>
                         </span>
-                        <small :class="displayedRunAgentStatusForKind(kind)">{{ runStatusLabel(displayedRunAgentStatusForKind(kind)) }}</small>
+                        <small :class="displayedRunAgentToneForKind(kind)">{{ runStatusLabel(displayedRunAgentStatusForKind(kind)) }}</small>
                       </span>
                     </button>
                   </div>
@@ -2197,7 +2207,10 @@ const EMPTY_SHOWCASE_COUNT = 3
 const EMPTY_SHOWCASE_SLIDE_MS = 2800
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
 const RUN_FINISHED_STATUSES = new Set([
-  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted', 'round-limit',
+])
+const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
+  'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
 ])
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini',
@@ -2440,7 +2453,7 @@ const messageThreadRootIds = computed(() => {
       roots.set(message.id, message.threadRootId)
       continue
     }
-    if (direct && latestRootId && (message.role === 'agent' || isAgentFailureMessage(message))) {
+    if (direct && latestRootId && (message.role === 'agent' || isAgentTerminalMessage(message))) {
       roots.set(message.id, latestRootId)
     }
   }
@@ -2460,6 +2473,40 @@ const failedTopicIds = computed(() => new Set(activeMessages.value
   .filter(isAgentFailureMessage)
   .map(messageThreadRootId)
   .filter(Boolean)))
+const durableTopicStatuses = computed(() => {
+  const runsByRoot = new Map()
+  const latestRunIdByRoot = new Map()
+  activeMessages.value.forEach((message, index) => {
+    const rootId = messageThreadRootId(message)
+    const agentStatus = durableAgentTurnStatus(message)
+    const terminalStatus = durableGroupTerminalStatus(message)
+    if (!rootId || (!agentStatus && !terminalStatus)) return
+    const traceRunId = String(message?.trace?.runId || '')
+    const runId = traceRunId || latestRunIdByRoot.get(rootId) || `root:${rootId}`
+    if (traceRunId || !latestRunIdByRoot.has(rootId)) latestRunIdByRoot.set(rootId, runId)
+    const rootRuns = runsByRoot.get(rootId) || new Map()
+    const run = rootRuns.get(runId) || { agentAttempts: [], terminalStatus: '', lastIndex: index }
+    if (agentStatus) {
+      run.agentAttempts.push({
+        agentKind: String(message?.agentKind || message?.trace?.agentRunId || message?.id || ''),
+        round: traceRound(message?.trace),
+        status: agentStatus,
+        index,
+      })
+    }
+    if (terminalStatus) run.terminalStatus = terminalStatus
+    run.lastIndex = index
+    rootRuns.set(runId, run)
+    runsByRoot.set(rootId, rootRuns)
+  })
+  const statuses = new Map()
+  for (const [rootId, runs] of runsByRoot) {
+    const latestRun = [...runs.values()].sort((left, right) => left.lastIndex - right.lastIndex).at(-1)
+    const status = durableRunTurnStatus(latestRun)
+    if (status) statuses.set(rootId, status)
+  }
+  return statuses
+})
 const messageTimeFormatter = computed(() => new Intl.DateTimeFormat(locale.value === 'zh' ? 'zh-CN' : 'en', {
   hour: '2-digit', minute: '2-digit',
 }))
@@ -2484,6 +2531,19 @@ const directConclusionLiveStatus = computed(() => {
     ? agent.status
     : 'streaming'
   return [agentLabel(agent.kind), t('trace.conclusion'), runStatusLabel(status)].join(' / ')
+})
+const directTraceEventLiveStatus = computed(() => {
+  if (activeGroup.value?.conversationType !== 'direct') return ''
+  const agent = activeRunAgentRuns.value.at(-1)
+  const event = retainedTraceEvents(agent?.events).at(-1)
+  if (!agent || !event) return ''
+  return [...new Set([
+    agentLabel(agent.kind),
+    t('trace.process'),
+    traceEventTypeLabel(event.type),
+    traceEventTitle(event),
+    runStatusLabel(event.status),
+  ].filter(Boolean))].join(' / ')
 })
 
 function latestAgentRunForKind(kind) {
@@ -2538,6 +2598,7 @@ const activeRunLabel = computed(() => {
   return t('conversation.groupWorking')
 })
 const activeRunTopicRootId = computed(() => {
+  if (!activeRun.value) return ''
   if (activeRun.value?.threadRootId) return activeRun.value.threadRootId
   if (activeGroup.value?.conversationType !== 'direct') return ''
   return topLevelUserMessages.value.at(-1)?.id || ''
@@ -2631,7 +2692,7 @@ const allTracePanelItems = computed(() => {
       sourceMessageIds: agent.sourceMessageIds || [],
       sources: traceSourceItems(agent.sourceMessageIds),
       truncated: agent.truncated === true,
-      context: {},
+      context: agent.context || {},
       threadRootId: activeRun.value?.threadRootId || '',
       createdAt: agent.startedAt,
       startedAt: agent.startedAt,
@@ -2776,6 +2837,7 @@ const displayedRunAgentKind = computed(() => (
   || ''
 ))
 const displayedRunAgentStatus = computed(() => displayedRunAgentStatusForKind(displayedRunAgentKind.value))
+const displayedRunAgentTone = computed(() => runStatusTone(displayedRunAgentStatus.value))
 const displayedRunTopicRootId = computed(() => (
   activeRunTopicRootId.value || historicalGroupRun.value?.threadRootId || ''
 ))
@@ -2790,6 +2852,7 @@ const contentInteractionBlocked = computed(() => blockingOverlayOpen.value || tr
 const turnRailItems = computed(() => topLevelUserMessages.value.map((message) => {
   const replyCount = topicReplyCount(message.id)
   const finishedStatus = runFinishedTurnStatus(message.id)
+  const durableStatus = durableTopicStatuses.value.get(message.id) || ''
   return {
     id: message.id,
     query: String(message.content || '').trim().replace(/\s+/g, ' ').slice(0, 56) || t('conversation.attachmentTurn'),
@@ -2797,7 +2860,7 @@ const turnRailItems = computed(() => topLevelUserMessages.value.map((message) =>
     replyCount,
     status: activeRunTopicRootId.value === message.id
       ? 'running'
-      : finishedStatus || (replyCount > 0
+      : finishedStatus || durableStatus || (replyCount > 0
         ? 'completed'
         : failedTopicIds.value.has(message.id) ? 'failed' : 'pending'),
   }
@@ -3568,6 +3631,83 @@ function isAgentFailureMessage(message) {
   return message?.role === 'system' && message?.system?.key === 'system.agentCallFailed'
 }
 
+function isAgentTerminalMessage(message) {
+  return message?.role === 'system' && AGENT_TERMINAL_SYSTEM_KEYS.has(message?.system?.key)
+}
+
+function durableGroupTerminalStatus(message) {
+  if (message?.role !== 'system') return ''
+  return {
+    'system.autoRoundLimit': 'round-limit',
+    'system.autoTimeout': 'timeout',
+    'system.autoStopped': 'stopped',
+  }[message?.system?.key] || ''
+}
+
+function durableAgentTurnStatus(message) {
+  const traceStatus = String(message?.trace?.status || '').trim().toLowerCase()
+  if (message?.role === 'agent' && message?.trace) {
+    if (['completed', 'succeeded'].includes(traceStatus)) return 'completed'
+    return ['failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted'].includes(traceStatus)
+      ? traceStatus
+      : ''
+  }
+  if (!isAgentTerminalMessage(message)) return ''
+  if (['failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted'].includes(traceStatus)) {
+    return traceStatus
+  }
+  if (message.system.key === 'system.agentStopped') return 'stopped'
+  if (message.system.key === 'system.agentInterrupted') return 'interrupted'
+  return 'failed'
+}
+
+function durableRunTurnStatus(run) {
+  const latestAttempts = new Map()
+  for (const attempt of Array.isArray(run?.agentAttempts) ? run.agentAttempts : []) {
+    const previous = latestAttempts.get(attempt.agentKind)
+    if (!previous || attempt.round > previous.round
+        || (attempt.round === previous.round && attempt.index > previous.index)) {
+      latestAttempts.set(attempt.agentKind, attempt)
+    }
+  }
+  const statuses = [...latestAttempts.values()].map(attempt => attempt.status)
+  const terminalStatus = String(run?.terminalStatus || '')
+  if (terminalStatus === 'timeout') return 'timeout'
+  if (terminalStatus === 'stopped' || statuses.some(status => ['stopped', 'cancelled'].includes(status))) {
+    return 'stopped'
+  }
+  if (statuses.includes('interrupted')) return 'interrupted'
+  const completed = statuses.includes('completed')
+  if (terminalStatus === 'round-limit' && (completed || !statuses.length)) return 'round-limit'
+  if (completed && statuses.some(status => ['failed', 'partial', 'timeout'].includes(status))) return 'partial'
+  if (completed) return 'completed'
+  if (statuses.includes('partial')) return 'partial'
+  if (statuses.includes('timeout')) return 'timeout'
+  if (statuses.includes('failed')) return 'failed'
+  return terminalStatus
+}
+
+function terminalSystemFallback(message) {
+  if (message?.role !== 'system'
+      || !message.agentKind
+      || !AGENT_TERMINAL_SYSTEM_KEYS.has(message?.system?.key)) return ''
+  const key = message.system.key
+  const agent = String(message.system?.params?.agent || '').trim()
+  if (!agent) return ''
+  if (key === 'system.agentStopped') return `${agent} was stopped.`
+  if (key === 'system.agentInterrupted') return `${agent} was interrupted when Meldwork closed.`
+  const reason = String(message.system?.params?.reason || '').trim()
+  return reason ? `${agent} failed: ${reason}` : ''
+}
+
+function terminalSystemConclusion(message) {
+  const fallback = terminalSystemFallback(message)
+  if (!fallback) return ''
+  const content = String(message.content || '')
+  const prefix = `${fallback}\n`
+  return content.startsWith(prefix) ? content.slice(prefix.length).trim() : ''
+}
+
 function messageThreadRootId(message) {
   return message?.threadRootId || messageThreadRootIds.value.get(message?.id) || ''
 }
@@ -3665,6 +3805,15 @@ function messageTraceKey(message) {
   return message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId || message?.id || ''
 }
 
+function isLiveDirectTrace(message) {
+  return message?.provisional === true || Boolean(message?.liveAgentRun)
+}
+
+function directTraceDisclosureKey(message) {
+  const key = messageTraceKey(message)
+  return key ? `${isLiveDirectTrace(message) ? 'live' : 'durable'}:${key}` : ''
+}
+
 function messageAgentRunId(message) {
   return message?.liveAgentRun?.agentRunId || message?.trace?.agentRunId || ''
 }
@@ -3720,16 +3869,19 @@ function traceEventTitle(event) {
 }
 
 function isDirectTraceOpen(message) {
-  const key = messageTraceKey(message)
+  const key = directTraceDisclosureKey(message)
   if (directTraceDisclosure.value.has(key)) return directTraceDisclosure.value.get(key)
-  return false
+  return isLiveDirectTrace(message)
 }
 
 function syncDirectTraceDisclosure(message, event) {
-  const key = messageTraceKey(message)
+  const key = directTraceDisclosureKey(message)
   if (!key) return
+  const open = event?.target?.open === true
+  const defaultOpen = isLiveDirectTrace(message)
   const next = new Map(directTraceDisclosure.value)
-  next.set(key, event?.target?.open === true)
+  if (open === defaultOpen) next.delete(key)
+  else next.set(key, open)
   directTraceDisclosure.value = next
 }
 
@@ -3791,11 +3943,15 @@ function runAgentForKind(kind) {
 }
 
 function runAgentStatus(kind) {
-  if (runFailedKinds.value.includes(kind)) return 'failed'
-  if (activeRun.value?.currentKind === kind) return 'running'
-  if (runCompletedKinds.value.includes(kind)) return 'completed'
   const agent = runAgentForKind(kind)
-  if (agent) return runStatusTone(agent.status)
+  const latestStatus = String(agent?.status || '').trim().toLowerCase()
+  if (['failed', 'partial', 'stopped', 'timeout', 'cancelled', 'interrupted'].includes(latestStatus)) {
+    return latestStatus
+  }
+  if (activeRun.value?.currentKind === kind) return 'running'
+  if (latestStatus) return latestStatus
+  if (runFailedKinds.value.includes(kind)) return 'failed'
+  if (runCompletedKinds.value.includes(kind)) return 'completed'
   return 'queued'
 }
 
@@ -3807,7 +3963,11 @@ function displayedRunAgentForKind(kind) {
 function displayedRunAgentStatusForKind(kind) {
   if (activeRun.value) return runAgentStatus(kind)
   const agent = displayedRunAgentForKind(kind)
-  return agent ? runStatusTone(agent.status) : 'not-started'
+  return agent?.status || 'not-started'
+}
+
+function displayedRunAgentToneForKind(kind) {
+  return runStatusTone(displayedRunAgentStatusForKind(kind))
 }
 
 function displayedRunAgentTraceLabel(kind) {
@@ -4291,6 +4451,19 @@ function closeTracePanel(options = {}) {
   return true
 }
 
+function focusTraceSourceMessage(element) {
+  if (!(element instanceof HTMLElement)) return
+  const hadTabIndex = element.hasAttribute('tabindex')
+  const previousTabIndex = element.getAttribute('tabindex')
+  if (!hadTabIndex) element.setAttribute('tabindex', '-1')
+  element.focus({ preventScroll: true })
+  if (hadTabIndex) return
+  element.addEventListener('blur', () => {
+    if (previousTabIndex == null) element.removeAttribute('tabindex')
+    else element.setAttribute('tabindex', previousTabIndex)
+  }, { once: true })
+}
+
 async function jumpToTraceSource(sourceId) {
   const message = activeMessages.value.find(item => item.id === sourceId)
   if (!message) return
@@ -4302,7 +4475,14 @@ async function jumpToTraceSource(sourceId) {
   }
   if (tracePanelDrawer.value) closeTracePanel()
   await nextTick()
-  document.getElementById(messageElementId(sourceId))?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+  const element = document.getElementById(messageElementId(sourceId))
+  element?.scrollIntoView?.({
+    block: 'nearest',
+    behavior: typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? 'auto'
+      : 'smooth',
+  })
+  focusTraceSourceMessage(element)
 }
 
 function handleRunEvent(event) {
@@ -5117,8 +5297,10 @@ async function sendMessage() {
 }
 
 async function stopRun() {
-  if (!activeGroup.value) return
-  try { await workspace.value.stop(activeGroup.value.id) } catch (error) { showError(error) }
+  const groupId = activeGroup.value?.id
+  const runId = activeRun.value?.runId
+  if (!groupId || !runId) return
+  try { await workspace.value.stop(groupId, runId) } catch (error) { showError(error) }
 }
 
 function openAgentManager(kind = '') {
@@ -6047,7 +6229,15 @@ watch(activeGroupMemberSignature, () => {
   messageNearBottom.value = true
   void scrollToLatest({ force: true })
 })
-watch(activeRun, (value) => {
+watch(activeRun, (value, previous) => {
+  if (
+    previous
+    && previous.runId !== value?.runId
+    && tracePanelOpen.value
+    && tracePanelRunId.value === previous.runId
+  ) {
+    closeTracePanel()
+  }
   if (!value) return
   roundSettingsOpen.value = false
   cancelInlineTitleEdit({ restoreFocus: false })

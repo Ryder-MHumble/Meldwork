@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { getEventListeners } = require('node:events')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
+const { RunLedger } = require('../src/run-ledger.cjs')
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-workspace-'))
@@ -695,6 +696,53 @@ test('stopAll waits for an in-flight preflight and prevents it from launching an
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
 })
 
+test('stopAll records an in-flight Agent and its ledger checkpoint as interrupted', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const started = deferred()
+  const checkpoints = []
+  options.runAbortGraceMs = 20
+  options.runLedger = {
+    recoverInterrupted: () => [],
+    list: () => [],
+    checkpoint: record => checkpoints.push(structuredClone(record)),
+    finish: () => {},
+  }
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => await new Promise((
+    _resolve, reject,
+  ) => {
+    started.resolve()
+    if (runOptions.signal.aborted) {
+      reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+      return
+    }
+    runOptions.signal.addEventListener(
+      'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
+    )
+  })
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Shutdown trace', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({
+    groupId: group.id, text: 'Keep the shutdown evidence', targetKinds: ['codex'],
+  })
+  await started.promise
+  await Promise.all([send, workspace.stopAll()])
+
+  const interruption = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentInterrupted' && message.agentKind === 'codex'
+  ))
+  assert.equal(interruption.trace.status, 'interrupted')
+  assert.equal(finished[0].status, 'interrupted')
+  const terminalCheckpoint = checkpoints.findLast(record => record.status === 'interrupted')
+  assert.equal(terminalCheckpoint.agentRuns[0].status, 'interrupted')
+})
+
 test('a stale controller cannot clear a newer active run for the same group', (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -1107,6 +1155,7 @@ test('prompts retain bounded topic and stable user turns plus group-wide final m
   assert.match(prompt, /GEO 任务：分析检索可见性/)
   assert.match(prompt, /补充约束：不引入云端存储/)
   assert.match(prompt, /当前新指令：给出最终建议/)
+  assert.equal(prompt.match(/当前新指令：给出最终建议/g)?.length, 1)
   assert.match(prompt, /Hermes: 已持久化的最终正文 19/)
   assert.doesNotMatch(prompt, /PROCESS_METADATA_SHOULD_NOT_REACH_AGENT|write_file|elapsedMs/)
 })
@@ -1146,11 +1195,13 @@ test('resumed group sessions receive only transcript messages after their own fi
   assert.match(calls[1].prompt, /User: 第一条稳定约束/)
   assert.match(calls[1].prompt, /Codex: codex final 1/)
   assert.match(secondCodexRecent, /Hermes: hermes final 2/)
-  assert.match(secondCodexRecent, /User: 第二条当前任务/)
-  assert.doesNotMatch(secondCodexRecent, /第一条稳定约束|codex final 1/)
+  assert.doesNotMatch(secondCodexRecent, /第一条稳定约束|第二条当前任务|codex final 1/)
   assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第一条稳定约束/)
-  assert.match(thirdCodexRecent, /User: 第三条继续任务/)
-  assert.doesNotMatch(thirdCodexRecent, /第二条当前任务|codex final 3|hermes final 2/)
+  assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第二条当前任务/)
+  assert.equal(calls[2].prompt.match(/第二条当前任务/g)?.length, 1)
+  assert.match(calls[3].prompt, /Stable user instructions and constraints:\n[\s\S]*第三条继续任务/)
+  assert.equal(calls[3].prompt.match(/第三条继续任务/g)?.length, 1)
+  assert.doesNotMatch(thirdCodexRecent, /第二条当前任务|第三条继续任务|codex final 3|hermes final 2/)
   assert.ok(thirdCodexRecent.length < secondCodexRecent.length)
 })
 
@@ -1710,7 +1761,8 @@ test('auto send rolls back its root when the reserved run is cancelled during ha
     if (stopped || !snapshot.messages.some(message => message.role === 'user')) return
     if (!snapshot.runs.some(run => run.groupId === group.id && run.phase === 'preparing')) return
     stopped = true
-    workspace.stop(group.id)
+    const run = snapshot.runs.find(item => item.groupId === group.id)
+    workspace.stop(group.id, run.runId)
   })
 
   await assert.rejects(workspace.sendMessage({
@@ -2022,14 +2074,17 @@ test('stopping automatic dialogue cancels the active round without a limit messa
 
   workspace.startAuto({ groupId: group.id, maxRounds: 4 })
   const pending = workspace.activeRuns.get(group.id).promise
+  const runId = workspace.activeRuns.get(group.id).runId
   await secondRound
 
-  assert.equal(workspace.stop(group.id), true)
+  assert.equal(workspace.stop(group.id, 'stale-run'), false)
+  assert.equal(activeSignal.aborted, false)
+  assert.equal(workspace.stop(group.id, runId), true)
   await pending
 
   assert.equal(activeSignal.aborted, true)
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex'])
-  assert.equal(workspace.stop(group.id), false)
+  assert.equal(workspace.stop(group.id, runId), false)
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
   assert.equal(workspace.snapshot().messages.some(message => (
     ['system.autoRoundLimit', 'system.autoTimeout'].includes(message.system?.key)
@@ -2041,6 +2096,8 @@ test('stopping automatic dialogue cancels the active round without a limit messa
 test('automatic dialogue isolates duplicate failures and retries every Agent next round', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
   let hermesAttempts = 0
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
@@ -2061,6 +2118,7 @@ test('automatic dialogue isolates duplicate failures and retries every Agent nex
   const root = workspace.addMessage(group.id, 'user', '继续讨论直至共识')
 
   workspace.startAuto({ groupId: group.id, maxRounds: 3 })
+  const runId = workspace.activeRuns.get(group.id).runId
   await workspace.activeRuns.get(group.id).promise
 
   assert.deepEqual(calls.map(call => call.agent.kind), [
@@ -2086,6 +2144,79 @@ test('automatic dialogue isolates duplicate failures and retries every Agent nex
       },
     }],
   )
+  assert.equal(options.runLedger.get(runId).agentRuns.filter(agentRun => (
+    agentRun.kind === 'hermes' && agentRun.status === 'failed'
+  )).length, 2)
+
+  const recovered = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  assert.equal(recovered.snapshot().messages.filter(message => (
+    message.agentKind === 'hermes'
+      && message.system?.key === 'system.agentCallFailed'
+  )).length, 1)
+
+  const repeated = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  assert.equal(repeated.snapshot().messages.filter(message => (
+    message.agentKind === 'hermes'
+      && message.system?.key === 'system.agentCallFailed'
+  )).length, 1)
+  assert.equal(new RunLedger({ storagePath: ledgerPath }).get(runId).agentRuns.filter(agentRun => (
+    agentRun.kind === 'hermes' && agentRun.status === 'failed'
+  )).length, 2)
+})
+
+test('automatic dialogue retains distinct streamed conclusions for the same failure', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  let hermesAttempts = 0
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    if (agent.kind === 'hermes') {
+      hermesAttempts += 1
+      runOptions.onEvent({
+        type: 'answer_delta',
+        status: 'running',
+        delta: `Hermes partial conclusion ${hermesAttempts}`,
+      })
+      throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    }
+    return {
+      text: `${agent.kind} continue\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Distinct failure evidence', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Preserve distinct partial conclusions')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  const liveFailures = workspace.snapshot().messages.filter(message => (
+    message.agentKind === 'hermes' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(liveFailures.length, 2)
+  assert.match(liveFailures[0].content, /Hermes partial conclusion 1/)
+  assert.match(liveFailures[1].content, /Hermes partial conclusion 2/)
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  const restoredFailures = restored.snapshot().messages.filter(message => (
+    message.agentKind === 'hermes' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(restoredFailures.length, 2)
+  assert.deepEqual(restoredFailures.map(message => message.content), liveFailures.map(message => message.content))
 })
 
 test('automatic dialogue keeps the round-limit diagnostic when every Agent fails', async (t) => {
@@ -2443,6 +2574,92 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
   assert.equal(events.every(event => Number.isInteger(event.seq) && event.runId), true)
 })
 
+test('terminal Agent traces hand compact partial evidence to the next Agent only', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let hermesPrompt = ''
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    if (agent.kind === 'codex') {
+      runOptions.onEvent({
+        id: 'reason-1',
+        type: 'reasoning_summary',
+        summary: 'Mapped the recovery boundary.',
+      })
+      runOptions.onEvent({
+        id: 'tool-1',
+        type: 'tool_result_summary',
+        status: 'completed',
+        title: 'Inspect',
+        summary: 'Located durable evidence.',
+        detail: 'RAW_TOOL_LOG_SHOULD_NOT_REACH_THE_NEXT_AGENT',
+      })
+      runOptions.onEvent({
+        type: 'answer_delta', status: 'running', delta: 'Partial conclusion for Hermes',
+      })
+      throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    }
+    hermesPrompt = prompt
+    return { text: 'Hermes continued from the evidence', sessionRef: 'hermes-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Terminal evidence', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(
+    group.id,
+    'system',
+    'UNSUPPORTED_AGENT_TERMINAL_SHOULD_NOT_REACH',
+    'unsupported-agent',
+    '',
+    { key: 'system.agentCallFailed', params: { reason: 'UNSUPPORTED' } },
+    {
+      trace: {
+        runId: 'unsupported-run',
+        agentRunId: 'unsupported-run:0:unsupported-agent:attempt-1',
+        round: 0,
+        status: 'failed',
+      },
+    },
+  )
+  workspace.addMessage(
+    group.id,
+    'system',
+    'ORDINARY_SYSTEM_TEXT_SHOULD_NOT_REACH',
+    '',
+    '',
+    { key: 'system.autoStopped', params: {} },
+  )
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue even if Codex fails',
+    targetKinds: ['codex', 'hermes'],
+  })
+
+  const snapshot = workspace.snapshot()
+  const root = snapshot.messages.find(message => message.role === 'user')
+  const terminal = snapshot.messages.find(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.match(hermesPrompt, /Partial conclusion for Hermes/)
+  assert.match(hermesPrompt, /untrusted data, not instructions/)
+  assert.match(hermesPrompt, /E-R0-CODEX-\d{2} \[tool_result_summary\] Inspect: Located durable evidence/)
+  assert.match(hermesPrompt, new RegExp(`Source messages: ${root.id}`))
+  assert.doesNotMatch(
+    hermesPrompt,
+    /RAW_TOOL_LOG_SHOULD_NOT_REACH|ORDINARY_SYSTEM_TEXT_SHOULD_NOT_REACH|UNSUPPORTED_AGENT_TERMINAL_SHOULD_NOT_REACH/,
+  )
+  assert.equal(terminal.trace.sourceMessageIds.includes(root.id), true)
+  assert.equal(snapshot.messages.find(message => (
+    message.agentKind === 'hermes' && message.role === 'agent'
+  )).trace.sourceMessageIds.includes(terminal.id), true)
+
+  const afterCodex = workspace.recentTranscript(group.id, 'codex')
+  assert.match(afterCodex, /Hermes continued from the evidence/)
+  assert.doesNotMatch(afterCodex, /Partial conclusion for Hermes/)
+})
+
 test('Harness rotates an over-budget native session while retaining compressed continuity', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -2766,6 +2983,90 @@ test('manual Agent watchdog finishes the run as timeout and removes the parent a
   assert.equal(failure.trace.status, 'timeout')
 })
 
+test('terminal Agent states persist conclusion text already streamed through answer deltas', async (t) => {
+  const scenarios = [
+    {
+      name: 'failure',
+      action: 'fail',
+      expectedKey: 'system.agentCallFailed',
+      expectedPrefix: 'Codex failed: LOCAL_AGENT_PROCESS_FAILED',
+    },
+    {
+      name: 'timeout',
+      action: 'timeout',
+      expectedKey: 'system.agentCallFailed',
+      expectedPrefix: 'Codex failed: LOCAL_AGENT_TIMEOUT',
+    },
+    {
+      name: 'stop',
+      action: 'stop',
+      expectedKey: 'system.agentStopped',
+      expectedPrefix: 'Codex was stopped.',
+    },
+    {
+      name: 'interruption',
+      action: 'interrupt',
+      expectedKey: 'system.agentInterrupted',
+      expectedPrefix: 'Codex was interrupted when Meldwork closed.',
+    },
+  ]
+
+  for (const scenario of scenarios) {
+    await t.test(scenario.name, async (t) => {
+      const { directory, options } = fixture()
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const started = deferred()
+      const conclusion = `${scenario.name} streamed conclusion`
+      options.runAbortGraceMs = 20
+      options.runSilenceWarningMs = 100
+      if (scenario.action === 'timeout') options.runAgentTimeoutMs = 8
+      options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+        runOptions.onEvent({
+          type: 'reasoning_summary', status: 'running', summary: 'Trace-only reasoning summary',
+        })
+        runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: conclusion })
+        started.resolve()
+        if (scenario.action === 'fail') throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+        return await new Promise((_resolve, reject) => {
+          runOptions.signal.addEventListener(
+            'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
+          )
+        })
+      }
+      const workspace = new LocalWorkspace(options)
+      await workspace.refreshAgents()
+      const group = workspace.createGroup({
+        name: `Streamed ${scenario.name}`, agentKinds: ['codex'], workdir: directory,
+      })
+
+      const send = workspace.sendMessage({
+        groupId: group.id, text: `Exercise ${scenario.name}`, targetKinds: ['codex'],
+      })
+      await started.promise
+      if (scenario.action === 'stop') {
+        const runId = workspace.activeRuns.get(group.id).runId
+        assert.equal(workspace.stop(group.id, runId), true)
+        await send
+      } else if (scenario.action === 'interrupt') {
+        await Promise.all([send, workspace.stopAll()])
+      } else {
+        await send
+      }
+
+      const terminal = workspace.snapshot().messages.find(message => (
+        message.agentKind === 'codex' && message.system?.key === scenario.expectedKey
+      ))
+      assert.equal(terminal.content, `${scenario.expectedPrefix}\n${conclusion}`)
+      assert.doesNotMatch(terminal.content, /Trace-only reasoning summary/)
+      const persisted = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+      assert.equal(
+        persisted.messages.find(message => message.id === terminal.id).content,
+        terminal.content,
+      )
+    })
+  }
+})
+
 test('completed Agents clear watchdog and silence timers', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -2903,6 +3204,561 @@ test('Automatic Harness conclusions stream without exposing the consensus contro
   )
 })
 
+test('Run Ledger checkpoints bounded trace state and is cleared with its conversation', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const checkpoints = []
+  const finishes = []
+  const deletedGroups = []
+  options.runLedger = {
+    recoverInterrupted: () => [],
+    checkpoint: record => checkpoints.push(structuredClone(record)),
+    finish: (runId, status, reason) => finishes.push({ runId, status, reason }),
+    deleteGroup: groupId => deletedGroups.push(groupId),
+  }
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    runOptions.onEvent({
+      id: 'plan-1', type: 'plan', status: 'running', summary: 'Inspect the current implementation.',
+    })
+    return { text: 'Ledger-backed result', sessionRef: 'codex-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Ledger lifecycle', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Trace this run', targetKinds: ['codex'],
+  })
+
+  assert.equal(checkpoints.some(record => record.status === 'preparing'), true)
+  assert.equal(checkpoints.some(record => record.status === 'running'), true)
+  const terminal = checkpoints.findLast(record => record.status === 'completed')
+  assert.equal(terminal.agentRuns[0].status, 'completed')
+  assert.equal(terminal.agentRuns[0].events.some(event => event.type === 'plan'), true)
+  assert.equal(terminal.agentRuns[0].context.includedCount, 1)
+  assert.deepEqual(finishes, [{ runId: terminal.runId, status: 'completed', reason: '' }])
+
+  workspace.deleteGroup(group.id)
+  assert.deepEqual(deletedGroups, [group.id])
+})
+
+test('Run Ledger finalization retries the full terminal snapshot before finish', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  options.runLedger = ledger
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Retry terminal checkpoint', agentKinds: ['codex'], workdir: directory,
+  })
+  const controller = workspace.createRunController('manual', ['codex'], 'root-1')
+  controller.groupId = group.id
+  controller.startedAt = 1000
+  let agentRuns = [{
+    agentRunId: `${controller.runId}:0:codex:agent-1`,
+    kind: 'codex',
+    status: 'running',
+    output: 'Stale output',
+  }]
+  controller.harness = { snapshot: () => structuredClone(agentRuns) }
+  assert.equal(workspace.checkpointRun(group.id, controller, 'running'), true)
+
+  const persist = ledger.persist.bind(ledger)
+  let failed = false
+  ledger.persist = (runs) => {
+    if (!failed) {
+      failed = true
+      throw new Error('RUN_LEDGER_WRITE_FAILED')
+    }
+    return persist(runs)
+  }
+  agentRuns = [{
+    ...agentRuns[0],
+    status: 'completed',
+    output: 'Fresh terminal output',
+  }]
+
+  workspace.finishRunCheckpoint(group.id, controller, 'completed')
+  assert.equal(ledger.get(controller.runId).status, 'running')
+  assert.equal(ledger.get(controller.runId).agentRuns[0].output, 'Stale output')
+
+  workspace.finishRunCheckpoint(group.id, controller, 'completed')
+  const finished = ledger.get(controller.runId)
+  assert.equal(finished.status, 'completed')
+  assert.equal(finished.agentRuns[0].status, 'completed')
+  assert.equal(finished.agentRuns[0].output, 'Fresh terminal output')
+})
+
+test('a Unicode group identifier preserves native sessions and every runtime path', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const groupId = '历史群聊 1'
+  let id = 0
+  const checkpoints = []
+  const ledgerFinishes = []
+  options.createId = () => id++ === 0 ? groupId : `message-${id}`
+  options.runLedger = {
+    recoverInterrupted: () => [],
+    list: () => [],
+    checkpoint: record => checkpoints.push(structuredClone(record)),
+    finish: (runId, status) => ledgerFinishes.push({ runId, status }),
+  }
+  const events = []
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-event', event => events.push(event))
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Unicode group', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Send through every lifecycle boundary', targetKinds: ['codex'],
+  })
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Reuse the native session', targetKinds: ['codex'],
+  })
+
+  const sessionKey = workspace.sessionKey(group.id, 'codex')
+  const persisted = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  assert.equal(workspace.sessionKey('group-1', 'codex'), 'group-1:codex')
+  assert.match(sessionKey, /^session:[a-f0-9]{64}$/)
+  assert.doesNotMatch(sessionKey, /历史群聊/)
+  assert.equal(persisted.sessions[sessionKey], 'codex-session')
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
+
+  const restarted = new LocalWorkspace(options)
+  await restarted.refreshAgents()
+  await restarted.sendMessage({
+    groupId: group.id, text: 'Reuse after restart', targetKinds: ['codex'],
+  })
+
+  assert.equal(group.id, groupId)
+  assert.equal(checkpoints.length > 0, true)
+  assert.equal(checkpoints.every(record => record.groupId === groupId), true)
+  assert.deepEqual(ledgerFinishes.map(item => item.status), [
+    'completed', 'completed', 'completed',
+  ])
+  assert.equal(events.length > 0, true)
+  assert.equal(events.every(event => event.groupId === groupId), true)
+  assert.equal(finished.every(result => result.groupId === groupId), true)
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
+    '', 'codex-session', 'codex-session',
+  ])
+  assert.equal(restarted.snapshot().messages.every(message => message.groupId === groupId), true)
+})
+
+test('conversation deletion remains retryable when a corrupt Run Ledger blocks cleanup', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let deleteAttempts = 0
+  options.runLedger = {
+    recoverInterrupted: () => [],
+    deleteGroup: () => {
+      deleteAttempts += 1
+      if (deleteAttempts === 1) throw new Error('RUN_LEDGER_LOAD_FAILED')
+    },
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Ledger cleanup failure', agentKinds: ['codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Keep this conversation until cleanup succeeds')
+  const beforeDisk = fs.readFileSync(options.storagePath, 'utf8')
+
+  assert.throws(() => workspace.deleteGroup(group.id), { message: 'RUN_LEDGER_LOAD_FAILED' })
+  assert.equal(workspace.snapshot().groups.some(item => item.id === group.id), true)
+  assert.equal(workspace.snapshot().messages.some(message => message.groupId === group.id), true)
+  assert.equal(fs.readFileSync(options.storagePath, 'utf8'), beforeDisk)
+
+  workspace.deleteGroup(group.id)
+  assert.equal(workspace.snapshot().groups.some(item => item.id === group.id), false)
+  assert.equal(deleteAttempts, 2)
+})
+
+test('conversation state rolls back when workspace deletion persistence fails', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const deletedGroups = []
+  options.runLedger = {
+    recoverInterrupted: () => [],
+    deleteGroup: groupId => deletedGroups.push(groupId),
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Workspace cleanup failure', agentKinds: ['codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Keep the local state retryable')
+  const save = workspace.save.bind(workspace)
+  workspace.save = () => { throw new Error('WORKSPACE_SAVE_FAILED') }
+
+  assert.throws(() => workspace.deleteGroup(group.id), { message: 'WORKSPACE_SAVE_FAILED' })
+  assert.equal(workspace.snapshot().groups.some(item => item.id === group.id), true)
+  assert.equal(workspace.snapshot().messages.some(message => message.groupId === group.id), true)
+  assert.deepEqual(deletedGroups, [group.id])
+
+  workspace.save = save
+  workspace.deleteGroup(group.id)
+  assert.equal(workspace.snapshot().groups.some(item => item.id === group.id), false)
+  assert.deepEqual(deletedGroups, [group.id, group.id])
+})
+
+test('restart recovery persists the last nonterminal Agent trace as interrupted', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  const group = initial.createGroup({
+    name: 'Interrupted recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const root = initial.addMessage(group.id, 'user', 'Keep the last useful evidence')
+  const recoveredOptions = {
+    ...options,
+    runLedger: {
+      recoverInterrupted: () => [{
+        runId: 'run-crashed',
+        groupId: group.id,
+        threadRootId: root.id,
+        targetKinds: ['codex'],
+        agentRuns: [{
+          agentRunId: 'run-crashed:1:codex:agent-1',
+          kind: 'codex',
+          round: 1,
+          status: 'interrupted',
+          sourceMessageIds: [root.id],
+          context: { includedCount: 1, omittedCount: 2, charCount: 640 },
+          events: [{
+            type: 'reasoning_summary', status: 'running',
+            summary: 'Located the failing lifecycle boundary.',
+          }],
+        }],
+      }],
+    },
+  }
+
+  const restored = new LocalWorkspace(recoveredOptions)
+  const interrupted = restored.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentInterrupted'
+  ))
+
+  assert.equal(interrupted.threadRootId, root.id)
+  assert.equal(interrupted.trace.status, 'interrupted')
+  assert.equal(interrupted.trace.summary, 'Located the failing lifecycle boundary.')
+  assert.deepEqual(interrupted.trace.sourceMessageIds, [root.id])
+  assert.equal(interrupted.trace.context.omittedCount, 2)
+})
+
+test('restart reconciles after recovery message persistence fails and then deduplicates', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  const group = initial.createGroup({
+    name: 'Retry interrupted recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const root = initial.addMessage(group.id, 'user', 'Recover this once')
+  const seeded = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  seeded.checkpoint({
+    runId: 'run-crashed',
+    groupId: group.id,
+    threadRootId: root.id,
+    targetKinds: ['codex'],
+    status: 'running',
+    agentRuns: [{
+      agentRunId: 'run-crashed:1:codex:agent-1',
+      kind: 'codex',
+      round: 1,
+      status: 'running',
+      output: 'Useful partial output',
+      sourceMessageIds: [root.id],
+    }],
+  })
+
+  class FailingRecoveryWorkspace extends LocalWorkspace {
+    save() { throw new Error('WORKSPACE_SAVE_FAILED') }
+  }
+  assert.throws(() => new FailingRecoveryWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  }), { message: 'WORKSPACE_SAVE_FAILED' })
+  assert.equal(
+    new RunLedger({ storagePath: ledgerPath }).get('run-crashed').agentRuns[0].status,
+    'interrupted',
+  )
+
+  const recoveredStartup = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 3000 }),
+  })
+  const restored = recoveredStartup.snapshot().messages.filter(message => (
+    message.trace?.agentRunId === 'run-crashed:1:codex:agent-1'
+  ))
+  assert.equal(restored.length, 1)
+  assert.equal(restored[0].system.key, 'system.agentInterrupted')
+  assert.equal(restored[0].trace.status, 'interrupted')
+
+  const repeatedStartup = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 4000 }),
+  })
+  assert.equal(repeatedStartup.snapshot().messages.filter(message => (
+    message.trace?.agentRunId === 'run-crashed:1:codex:agent-1'
+  )).length, 1)
+})
+
+test('restart reconciliation enriches an existing terminal message with Ledger output once', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  const group = initial.createGroup({
+    name: 'Existing terminal recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const root = initial.addMessage(group.id, 'user', 'Preserve the streamed conclusion')
+  initial.addMessage(
+    group.id,
+    'system',
+    'Codex failed: LOCAL_AGENT_PROCESS_FAILED',
+    'codex',
+    root.id,
+    {
+      key: 'system.agentCallFailed',
+      params: { agent: 'Codex', reason: 'LOCAL_AGENT_PROCESS_FAILED' },
+    },
+    {
+      trace: {
+        runId: 'run-existing-terminal',
+        agentRunId: 'run-existing-terminal:0:codex:agent-1',
+        round: 0,
+        status: 'failed',
+      },
+    },
+  )
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  ledger.checkpoint({
+    runId: 'run-existing-terminal',
+    groupId: group.id,
+    threadRootId: root.id,
+    targetKinds: ['codex'],
+    status: 'failed',
+    agentRuns: [{
+      agentRunId: 'run-existing-terminal:0:codex:agent-1',
+      kind: 'codex',
+      round: 0,
+      status: 'failed',
+      output: 'Conclusion recovered from answer deltas',
+      reason: 'LOCAL_AGENT_PROCESS_FAILED',
+    }],
+  })
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  })
+  const matching = restored.snapshot().messages.filter(message => (
+    message.trace?.agentRunId === 'run-existing-terminal:0:codex:agent-1'
+  ))
+  assert.equal(matching.length, 1)
+  assert.equal(
+    matching[0].content,
+    'Codex failed: LOCAL_AGENT_PROCESS_FAILED\nConclusion recovered from answer deltas',
+  )
+
+  const repeated = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 3000 }),
+  })
+  const repeatedMatching = repeated.snapshot().messages.filter(message => (
+    message.trace?.agentRunId === 'run-existing-terminal:0:codex:agent-1'
+  ))
+  assert.equal(repeatedMatching.length, 1)
+  assert.equal(
+    repeatedMatching[0].content.match(/Conclusion recovered from answer deltas/g)?.length,
+    1,
+  )
+})
+
+test('restart keeps a long failure prefix aligned with its streamed conclusion', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const longReason = `LOCAL_AGENT_PROCESS_FAILED:${'x'.repeat(1200)}`
+  const boundedReason = longReason.slice(0, 1000)
+  const conclusion = 'Conclusion streamed before the long failure.'
+  options.runLedger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: conclusion })
+    throw new Error(longReason)
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Long failure restart', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Fail after streaming', targetKinds: ['codex'],
+  })
+
+  const persisted = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  const persistedFailure = persisted.messages.find(message => (
+    message.system?.key === 'system.agentCallFailed'
+  ))
+  const persistedPrefix = `Codex failed: ${persistedFailure.system.params.reason}`
+  assert.equal(persistedFailure.system.params.reason, boundedReason)
+  assert.equal(persistedFailure.content, `${persistedPrefix}\n${conclusion}`)
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  })
+  const restoredFailure = restored.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentCallFailed'
+  ))
+  const restoredPrefix = `Codex failed: ${restoredFailure.system.params.reason}`
+  assert.equal(restoredFailure.system.params.reason, persistedFailure.system.params.reason)
+  assert.equal(restoredFailure.content.startsWith(`${restoredPrefix}\n`), true)
+  assert.equal(restoredFailure.content.includes(conclusion), true)
+  assert.equal(restoredFailure.content.indexOf(conclusion), restoredFailure.content.lastIndexOf(conclusion))
+})
+
+test('maximum Harness conclusion survives terminal persistence and authoritative restart repair', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const conclusion = 'x'.repeat(20000)
+  const prefix = 'Codex failed: LOCAL_AGENT_PROCESS_FAILED'
+  options.runLedger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    for (let offset = 0; offset < conclusion.length; offset += 4000) {
+      runOptions.onEvent({
+        type: 'answer_delta', status: 'running', delta: conclusion.slice(offset, offset + 4000),
+      })
+    }
+    throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Maximum terminal conclusion', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Stream the maximum output', targetKinds: ['codex'],
+  })
+
+  const liveFailure = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(liveFailure.content, `${prefix}\n${conclusion}`)
+  const persisted = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  const persistedFailure = persisted.messages.find(message => message.id === liveFailure.id)
+  assert.equal(persistedFailure.content, liveFailure.content)
+
+  persistedFailure.content = `${prefix}\n${conclusion.slice(0, 250)}`
+  fs.writeFileSync(options.storagePath, `${JSON.stringify(persisted, null, 2)}\n`)
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  })
+  const restoredFailure = restored.snapshot().messages.find(message => (
+    message.trace?.agentRunId === liveFailure.trace.agentRunId
+  ))
+  assert.equal(restoredFailure.content, `${prefix}\n${conclusion}`)
+  const repaired = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  assert.equal(
+    repaired.messages.find(message => message.id === liveFailure.id).content,
+    restoredFailure.content,
+  )
+
+  const repeated = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 3000 }),
+  })
+  assert.equal(
+    repeated.snapshot().messages.find(message => message.id === liveFailure.id).content,
+    `${prefix}\n${conclusion}`,
+  )
+})
+
+test('restart reconciles every terminal Agent checkpoint with its real status and output', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  const group = initial.createGroup({
+    name: 'Terminal checkpoint recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const root = initial.addMessage(group.id, 'user', 'Restore terminal attempts')
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  ledger.checkpoint({
+    runId: 'run-terminal',
+    groupId: group.id,
+    threadRootId: root.id,
+    targetKinds: ['codex'],
+    status: 'completed',
+    agentRuns: [
+      { agentRunId: 'agent-completed', kind: 'codex', status: 'completed', output: 'Completed output' },
+      { agentRunId: 'agent-partial', kind: 'codex', status: 'partial', output: 'Partial output' },
+      { agentRunId: 'agent-failed', kind: 'codex', status: 'failed', output: 'Failure output', reason: 'LOCAL_AGENT_UNKNOWN_FAILURE' },
+      { agentRunId: 'agent-failed-other-output', kind: 'codex', status: 'failed', output: 'Distinct failure output', reason: 'LOCAL_AGENT_UNKNOWN_FAILURE' },
+      { agentRunId: 'agent-failed-other-reason', kind: 'codex', status: 'failed', reason: 'LOCAL_AGENT_AUTH_FAILED' },
+      { agentRunId: 'agent-timeout', kind: 'codex', status: 'timeout', output: 'Timeout output', reason: 'LOCAL_AGENT_TIMEOUT' },
+      { agentRunId: 'agent-stopped', kind: 'codex', status: 'stopped', output: 'Stopped output' },
+      { agentRunId: 'agent-interrupted', kind: 'codex', status: 'interrupted', output: 'Interrupted output' },
+    ],
+  })
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  })
+  const byAgentRunId = new Map(restored.snapshot().messages
+    .filter(message => message.trace?.agentRunId)
+    .map(message => [message.trace.agentRunId, message]))
+
+  assert.equal(byAgentRunId.get('agent-completed').role, 'agent')
+  assert.equal(byAgentRunId.get('agent-completed').content, 'Completed output')
+  assert.equal(byAgentRunId.get('agent-completed').trace.status, 'completed')
+  assert.equal(byAgentRunId.get('agent-partial').role, 'agent')
+  assert.equal(byAgentRunId.get('agent-partial').content, 'Partial output')
+  assert.equal(byAgentRunId.get('agent-partial').trace.status, 'partial')
+  assert.equal(byAgentRunId.get('agent-failed').system.key, 'system.agentCallFailed')
+  assert.match(byAgentRunId.get('agent-failed').content, /Failure output/)
+  assert.equal(byAgentRunId.get('agent-failed').trace.status, 'failed')
+  assert.match(byAgentRunId.get('agent-failed-other-output').content, /Distinct failure output/)
+  assert.equal(
+    byAgentRunId.get('agent-failed-other-reason').system.params.reason,
+    'LOCAL_AGENT_AUTH_FAILED',
+  )
+  assert.equal(byAgentRunId.get('agent-timeout').system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+  assert.match(byAgentRunId.get('agent-timeout').content, /Timeout output/)
+  assert.equal(byAgentRunId.get('agent-timeout').trace.status, 'timeout')
+  assert.equal(byAgentRunId.get('agent-stopped').system.key, 'system.agentStopped')
+  assert.equal(byAgentRunId.get('agent-stopped').trace.status, 'stopped')
+  assert.equal(byAgentRunId.get('agent-interrupted').system.key, 'system.agentInterrupted')
+  assert.equal(byAgentRunId.get('agent-interrupted').trace.status, 'interrupted')
+
+  const repeated = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 3000 }),
+  })
+  assert.equal(repeated.snapshot().messages.filter(message => (
+    message.trace?.runId === 'run-terminal'
+  )).length, 8)
+})
+
 test('stopping during output capture prevents the Agent from launching', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -2925,13 +3781,19 @@ test('stopping during output capture prevents the Agent from launching', async (
 
   const send = workspace.sendMessage({ groupId: group.id, text: 'Generate a file' })
   await captureEntered.promise
-  assert.equal(workspace.stop(group.id), true)
+  const runId = workspace.activeRuns.get(group.id).runId
+  assert.equal(workspace.stop(group.id, runId), true)
   await send
 
   assert.equal(captureSignal.aborted, true)
   assert.equal(calls.length, 0)
   assert.equal(finished[0].status, 'stopped')
   assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
+  const stoppedTrace = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentStopped' && message.agentKind === 'codex'
+  ))
+  assert.equal(stoppedTrace.trace.status, 'stopped')
+  assert.equal(stoppedTrace.trace.agentRunId.includes(runId), true)
   captureGate.resolve({ marker: 'late capture' })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
@@ -2959,7 +3821,8 @@ test('stopping during output import never persists the late completed reply', as
 
   const send = workspace.sendMessage({ groupId: group.id, text: 'Generate a file' })
   await importEntered.promise
-  assert.equal(workspace.stop(group.id), true)
+  const runId = workspace.activeRuns.get(group.id).runId
+  assert.equal(workspace.stop(group.id, runId), true)
   await send
 
   assert.equal(importSignal.aborted, true)
@@ -3000,7 +3863,8 @@ test('a stopped run keeps the group lock until the Agent cleanup settles', async
 
   const firstSend = workspace.sendMessage({ groupId: group.id, text: 'First run' })
   await firstStarted.promise
-  assert.equal(workspace.stop(group.id), true)
+  const runId = workspace.activeRuns.get(group.id).runId
+  assert.equal(workspace.stop(group.id, runId), true)
   await assert.rejects(
     workspace.sendMessage({ groupId: group.id, text: 'Too early' }),
     { message: 'LOCAL_GROUP_RUNNING' },
@@ -3010,6 +3874,33 @@ test('a stopped run keeps the group lock until the Agent cleanup settles', async
   assert.equal(cleanupFinished, true)
   await workspace.sendMessage({ groupId: group.id, text: 'Second run' })
   assert.equal(workspace.snapshot().messages.at(-1).content, 'Second run')
+})
+
+test('a stop acknowledgement keeps deletion blocked until run cleanup settles', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const started = deferred()
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => await new Promise((resolve, reject) => {
+    started.resolve()
+    runOptions.signal.addEventListener('abort', () => {
+      setImmediate(() => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')))
+    }, { once: true })
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Stop then delete', agentKinds: ['codex'], workdir: directory,
+  })
+
+  const send = workspace.sendMessage({ groupId: group.id, text: 'Stop this run' })
+  await started.promise
+  const runId = workspace.activeRuns.get(group.id).runId
+  assert.equal(workspace.stop(group.id, runId), true)
+  assert.throws(() => workspace.deleteGroup(group.id), { message: 'LOCAL_GROUP_RUNNING' })
+
+  await send
+  assert.doesNotThrow(() => workspace.deleteGroup(group.id))
+  assert.equal(workspace.snapshot().groups.some(item => item.id === group.id), false)
 })
 
 test('a stopped run keeps the group lock until output import cleanup settles', async (t) => {
@@ -3040,7 +3931,8 @@ test('a stopped run keeps the group lock until output import cleanup settles', a
 
   const firstSend = workspace.sendMessage({ groupId: group.id, text: 'First import' })
   await importStarted.promise
-  assert.equal(workspace.stop(group.id), true)
+  const runId = workspace.activeRuns.get(group.id).runId
+  assert.equal(workspace.stop(group.id, runId), true)
   await assert.rejects(
     workspace.sendMessage({ groupId: group.id, text: 'Too early' }),
     { message: 'LOCAL_GROUP_RUNNING' },

@@ -8,6 +8,8 @@ const DEFAULT_SESSION_TURNS = 18
 const DEFAULT_SESSION_CHARS = 48000
 const MAX_CAPSULE_EVENTS = 12
 
+const { redactSecrets } = require('./secret-redaction.cjs')
+
 const EVENT_TYPES = new Set([
   'status',
   'answer_delta',
@@ -20,13 +22,19 @@ const EVENT_TYPES = new Set([
 ])
 const EVENT_STATUSES = new Set([
   'queued', 'running', 'waiting', 'completed', 'partial', 'failed', 'stopped', 'timeout',
+  'interrupted',
 ])
-const FINAL_STATUSES = new Set(['completed', 'partial', 'failed', 'stopped', 'timeout'])
+const FINAL_STATUSES = new Set([
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
+])
 const CAPSULE_EVENT_TYPES = new Set([
-  'reasoning_summary', 'plan', 'tool_result_summary', 'warning',
+  'reasoning_summary', 'plan', 'tool_start', 'tool_update', 'tool_result_summary', 'warning',
 ])
+const INCOMPLETE_TOOL_EVENT_TYPES = new Set(['tool_start', 'tool_update'])
+const FAILED_TOOL_STATUSES = new Set(['failed', 'stopped', 'timeout', 'interrupted'])
 const SESSION_TRANSPORTS = new Set(['legacy', 'acp'])
 const PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
+const PUBLIC_GROUP_ID = /^[^\u0000-\u001f\u007f]{1,100}$/u
 
 function boundedNumber(value, fallback = 0, max = Number.MAX_SAFE_INTEGER) {
   const number = Number(value)
@@ -36,16 +44,6 @@ function boundedNumber(value, fallback = 0, max = Number.MAX_SAFE_INTEGER) {
 
 function stripAnsi(value) {
   return String(value || '').replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
-}
-
-function redactSecrets(value) {
-  return String(value || '')
-    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, '[redacted private key]')
-    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-    .replace(/\b(sk|rk|pk|ghp|github_pat|xox[baprs]?)[_-][A-Za-z0-9_-]{12,}\b/gi, '[redacted]')
-    .replace(/(["']?)[A-Za-z0-9_.-]*(?:api[_ -]?key|access[_ -]?key(?:[_ -]?id)?|secret[_ -]?access[_ -]?key|access[_ -]?token|refresh[_ -]?token|auth[_ -]?token|database[_ -]?url|connection[_ -]?string|dsn|token|secret|password|credential|authorization|private[_ -]?key)[A-Za-z0-9_.-]*\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\[[^\]\r\n]*\]|[^\s,;}\]]+)/gi, 'credential=[redacted]')
-    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]')
-    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[redacted]@')
 }
 
 function redactPrivatePaths(value) {
@@ -67,6 +65,11 @@ function cleanText(value, limit, options = {}) {
 function cleanId(value, fallback = '') {
   const id = String(value || '')
   return PUBLIC_ID.test(id) ? id : fallback
+}
+
+function cleanGroupId(value) {
+  const id = String(value || '')
+  return PUBLIC_GROUP_ID.test(id) ? id : ''
 }
 
 function cleanStatus(value, fallback = 'running') {
@@ -105,7 +108,7 @@ function normalizeRunEvent(input) {
   const event = normalizeRawEvent(input)
   const runId = cleanId(input.runId)
   const agentRunId = cleanId(input.agentRunId)
-  const groupId = cleanId(input.groupId)
+  const groupId = cleanGroupId(input.groupId)
   const threadRootId = cleanId(input.threadRootId)
   const agentKind = cleanId(input.agentKind)
   const seq = boundedNumber(input.seq, 0, 1000000000)
@@ -176,6 +179,15 @@ function compactCapsuleDetail(value) {
     .join('\n')
 }
 
+function normalizeCapsuleEventStatus(type, value) {
+  const status = cleanStatus(value, INCOMPLETE_TOOL_EVENT_TYPES.has(type) ? 'partial' : 'completed')
+  if (INCOMPLETE_TOOL_EVENT_TYPES.has(type)) {
+    return FAILED_TOOL_STATUSES.has(status) ? status : 'partial'
+  }
+  if (type === 'tool_result_summary' && !FINAL_STATUSES.has(status)) return 'partial'
+  return status
+}
+
 function normalizeCapsuleEvent(input, index = 0) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const type = String(input.type || '').toLowerCase()
@@ -183,7 +195,7 @@ function normalizeCapsuleEvent(input, index = 0) {
   const event = {
     evidenceId: cleanId(input.evidenceId, `E-${index + 1}`),
     type,
-    status: cleanStatus(input.status, 'completed'),
+    status: normalizeCapsuleEventStatus(type, input.status),
   }
   const title = cleanText(input.title, 120, { inline: true })
   const summary = cleanText(input.summary, 600)
@@ -240,10 +252,50 @@ function normalizeTraceCapsule(input) {
   }
 }
 
+function traceCapsuleFromAgentRun(input, options = {}) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const runId = cleanId(options.runId || input.runId)
+  const agentRunId = cleanId(input.agentRunId)
+  const kind = cleanId(input.kind || input.agentKind)
+  if (!runId || !agentRunId || !kind) return null
+  const round = boundedNumber(input.round, 0, 100000)
+  const status = cleanStatus(options.status || input.status, 'interrupted')
+  const capsuleEvents = (Array.isArray(input.events) ? input.events : [])
+    .filter(item => CAPSULE_EVENT_TYPES.has(String(item?.type || '').toLowerCase()))
+    .filter(item => (
+      ['reasoning_summary', 'plan'].includes(item.type)
+        ? Boolean(item.summary)
+        : Boolean(item.title || item.summary)
+    ))
+    .slice(-MAX_CAPSULE_EVENTS)
+    .map((item, index) => ({
+      evidenceId: `E-R${round}-${kind.toUpperCase()}-${String(index + 1).padStart(2, '0')}`,
+      type: item.type,
+      status: normalizeCapsuleEventStatus(item.type, item.status),
+      title: cleanText(item.title, 120, { inline: true }),
+      summary: cleanText(item.summary, 600),
+      detail: compactCapsuleDetail(item.detail),
+    }))
+  const narrative = [...(Array.isArray(input.events) ? input.events : [])].reverse().find(item => (
+    ['reasoning_summary', 'plan'].includes(item?.type) && item.summary
+  ))
+  return normalizeTraceCapsule({
+    runId,
+    agentRunId,
+    round,
+    status,
+    summary: narrative?.summary || input.summary || '',
+    events: capsuleEvents,
+    sourceMessageIds: input.sourceMessageIds,
+    truncated: input.truncated === true,
+    context: options.context || input.context,
+  })
+}
+
 class RunHarness {
   constructor(options = {}) {
     this.runId = cleanId(options.runId)
-    this.groupId = cleanId(options.groupId)
+    this.groupId = cleanGroupId(options.groupId)
     this.threadRootId = cleanId(options.threadRootId)
     if (!this.runId || !this.groupId) throw new Error('RUN_HARNESS_ID_REQUIRED')
     this.targetKinds = Object.freeze([
@@ -330,6 +382,7 @@ class RunHarness {
       silent: false,
       truncated: false,
       seenSeqs: [],
+      context: {},
     }
     this.agentRuns.push(run)
     while (this.agentRuns.length > this.maxAgentRuns) {
@@ -443,35 +496,11 @@ class RunHarness {
       status: run.status,
       title: 'agent',
     })
-    const capsuleEvents = run.events
-      .filter(item => CAPSULE_EVENT_TYPES.has(item.type))
-      .filter(item => (
-        ['reasoning_summary', 'plan'].includes(item.type)
-          ? Boolean(item.summary)
-          : Boolean(item.title || item.summary)
-      ))
-      .slice(-MAX_CAPSULE_EVENTS)
-      .map((item, index) => ({
-        evidenceId: `E-R${run.round}-${run.kind.toUpperCase()}-${String(index + 1).padStart(2, '0')}`,
-        type: item.type,
-        status: cleanStatus(item.status, 'completed'),
-        title: cleanText(item.title, 120, { inline: true }),
-        summary: cleanText(item.summary, 600),
-        detail: compactCapsuleDetail(item.detail),
-      }))
-    const narrative = [...run.events].reverse().find(item => (
-      ['reasoning_summary', 'plan'].includes(item.type) && item.summary
-    ))
-    const capsule = normalizeTraceCapsule({
+    run.context = normalizeContextStats(context)
+    const capsule = traceCapsuleFromAgentRun(run, {
       runId: this.runId,
-      agentRunId: run.agentRunId,
-      round: run.round,
       status: run.status,
-      summary: narrative?.summary || '',
-      events: capsuleEvents,
-      sourceMessageIds: run.sourceMessageIds,
-      truncated: run.truncated,
-      context,
+      context: run.context,
     })
     return { event, capsule }
   }
@@ -490,6 +519,7 @@ class RunHarness {
       silent: run.silent,
       truncated: run.truncated,
       seenSeqs: [...run.seenSeqs],
+      context: { ...run.context },
     }))
   }
 }
@@ -625,4 +655,5 @@ module.exports = {
   normalizeTraceCapsule,
   packContextEntries,
   shouldRotateSession,
+  traceCapsuleFromAgentRun,
 }

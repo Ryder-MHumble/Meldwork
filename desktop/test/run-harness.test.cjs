@@ -10,6 +10,7 @@ const {
   normalizeTraceCapsule,
   packContextEntries,
   shouldRotateSession,
+  traceCapsuleFromAgentRun,
 } = require('../src/run-harness.cjs')
 
 function fixture(options = {}) {
@@ -62,6 +63,56 @@ test('normalizes public events through an allowlist and redacts private diagnost
   assert.match(credentials.detail, /redacted/)
 })
 
+test('redacts standalone Google keys and JWTs from events and evidence capsules', () => {
+  const googleKey = 'AIza12345678901234567890123456789012345'
+  const googleKeyEndingHyphen = `AIza${'A'.repeat(34)}-`
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'
+  const jwtEndingHyphen = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.AAAAAAA-'
+  const shortPayloadJwt = 'eyJhbGciOiJIUzI1NiJ9.e30.nW29kPKsrNnRPYw3T6WOpOZKc_iPdNuxmiadRPzEhns'
+  const basicCredential = 'dXNlcjpwYXNz'
+  const legitimateText = 'Basic authentication is enabled. customer.platform.internal deadbeef.cafebabe.feedface'
+  const event = normalizeRawEvent({
+    type: 'warning',
+    summary: `Observed ${googleKey}, ${googleKeyEndingHyphen}, ${jwt}, ${jwtEndingHyphen}, ${shortPayloadJwt}, and Basic ${basicCredential}`,
+  })
+  const trace = traceCapsuleFromAgentRun({
+    agentRunId: 'agent-secret-redaction',
+    kind: 'codex',
+    round: 1,
+    status: 'failed',
+    output: `Conclusion ${googleKey} ${googleKeyEndingHyphen} ${jwt} ${jwtEndingHyphen} ${shortPayloadJwt} Basic ${basicCredential}`,
+    events: [{
+      type: 'warning',
+      status: 'failed',
+      summary: `${googleKey} ${googleKeyEndingHyphen} ${jwt} ${jwtEndingHyphen} ${shortPayloadJwt} Basic ${basicCredential}`,
+    }],
+  }, { runId: 'run-secret-redaction', status: 'failed' })
+  const evidence = evidenceCapsuleText({
+    senderName: 'Codex',
+    content: `Conclusion ${googleKey} ${googleKeyEndingHyphen} ${jwt} ${jwtEndingHyphen} ${shortPayloadJwt} Basic ${basicCredential}`,
+    trace,
+  })
+
+  for (const value of [JSON.stringify(event), JSON.stringify(trace), evidence]) {
+    for (const secret of [
+      googleKey,
+      googleKeyEndingHyphen,
+      jwt,
+      jwtEndingHyphen,
+      shortPayloadJwt,
+      basicCredential,
+    ]) {
+      assert.doesNotMatch(value, new RegExp(secret.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    }
+    assert.match(value, /\[redacted\]/)
+  }
+
+  assert.equal(normalizeRawEvent({
+    type: 'warning',
+    summary: legitimateText,
+  }).summary, legitimateText)
+})
+
 test('revalidates enriched renderer events without executable or command fields', () => {
   assert.deepEqual(normalizeRunEvent({
     runId: 'run-1',
@@ -95,6 +146,31 @@ test('revalidates enriched renderer events without executable or command fields'
     summary: 'Read [path] with credential=[redacted]',
   })
   assert.equal(normalizeRunEvent({ type: 'status', status: 'running' }), null)
+})
+
+test('keeps Unicode group identifiers bounded without relaxing run identifiers', () => {
+  const groupId = '历史群聊 1'
+  const event = normalizeRunEvent({
+    runId: 'run-1',
+    agentRunId: 'run-1:1:codex:agent-1',
+    groupId,
+    agentKind: 'codex',
+    seq: 1,
+    type: 'status',
+    status: 'running',
+  })
+  assert.equal(event.groupId, groupId)
+
+  const harness = fixture({ groupId })
+  assert.equal(harness.beginAgent('codex', 1).groupId, groupId)
+  assert.throws(
+    () => fixture({ groupId: 'group\ninvalid' }),
+    { message: 'RUN_HARNESS_ID_REQUIRED' },
+  )
+  assert.throws(
+    () => fixture({ runId: '运行-1', groupId }),
+    { message: 'RUN_HARNESS_ID_REQUIRED' },
+  )
 })
 
 test('enriches events, appends bounded answer deltas, and upserts tool lifecycle events', () => {
@@ -318,6 +394,67 @@ test('finishes with the authoritative answer and persists only a compact capsule
   assert.deepEqual(capsule.sourceMessageIds, ['message-a', 'message-b'])
   assert.equal(capsule.context.sessionRotated, true)
   assert.equal(capsule.events.at(-1).detail, 'Exit code: 0\nOutput: 16 lines, 160 bytes')
+})
+
+test('retains bounded Hermes ACP tool activity without results as partial evidence', () => {
+  const harness = fixture()
+  harness.beginAgent('hermes', 1, ['message-root'])
+  for (let index = 0; index < 14; index += 1) {
+    harness.ingest('hermes', 1, {
+      id: `tool-${index}`,
+      type: index % 2 === 0 ? 'tool_start' : 'tool_update',
+      status: ['running', 'waiting', 'completed'][index % 3],
+      title: 'search',
+      summary: `Operation ${index} targetKinds in /Users/private/work with token=private-value`,
+      command: 'rg targetKinds /Users/private/work',
+      rawInput: { token: 'private-value' },
+    })
+  }
+
+  const { capsule } = harness.finishAgent('hermes', 1, 'completed', 'Recovered without tool results')
+  assert.equal(capsule.events.length, 12)
+  assert.equal(capsule.events[0].summary.startsWith('Operation 2 targetKinds'), true)
+  assert.equal(capsule.events.some(event => event.type === 'tool_start'), true)
+  assert.equal(capsule.events.some(event => event.type === 'tool_update'), true)
+  assert.equal(capsule.events.every(event => event.status === 'partial'), true)
+  assert.deepEqual(Object.keys(capsule.events.at(-1)).sort(), [
+    'evidenceId', 'status', 'summary', 'title', 'type',
+  ])
+  assert.doesNotMatch(JSON.stringify(capsule), /Users\/private|private-value|command|rawInput/)
+
+  const text = evidenceCapsuleText({
+    senderName: 'Hermes',
+    content: 'Recovered without tool results',
+    trace: capsule,
+  })
+  assert.match(text, /Operation 13 targetKinds/)
+  assert.doesNotMatch(text, /Users\/private|private-value/)
+})
+
+test('rebuilds an interrupted capsule from the last bounded Agent checkpoint', () => {
+  const capsule = traceCapsuleFromAgentRun({
+    agentRunId: 'run-9:2:codex:agent-1',
+    kind: 'codex',
+    round: 2,
+    status: 'running',
+    sourceMessageIds: ['message-1'],
+    context: { includedCount: 1, omittedCount: 4, charCount: 900 },
+    events: [
+      { type: 'reasoning_summary', status: 'running', summary: 'Checked the routing boundary.' },
+      {
+        type: 'tool_result_summary', status: 'completed', title: 'search',
+        summary: 'Found /Users/private/work with token=private-value',
+        detail: 'Exit code: 0\nOutput: 3 lines, 120 bytes',
+      },
+    ],
+  }, { runId: 'run-9', status: 'interrupted' })
+
+  assert.equal(capsule.status, 'interrupted')
+  assert.equal(capsule.summary, 'Checked the routing boundary.')
+  assert.deepEqual(capsule.sourceMessageIds, ['message-1'])
+  assert.equal(capsule.context.omittedCount, 4)
+  assert.match(capsule.events.at(-1).summary, /\[path\]|\[redacted\]/)
+  assert.doesNotMatch(JSON.stringify(capsule), /Users\/private|private-value/)
 })
 
 test('persists only result metadata in capsule details and rejects unrecognized fields', () => {

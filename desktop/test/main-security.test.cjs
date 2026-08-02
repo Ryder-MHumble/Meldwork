@@ -118,6 +118,7 @@ function loadMain(userData, options = {}) {
       this.maxConcurrentRefreshes = 0
       this.clearRuntimeCredentialFailuresCount = 0
       this.stopCount = 0
+      this.stopCalls = []
       workspaceInstances.push(this)
     }
 
@@ -146,7 +147,10 @@ function loadMain(userData, options = {}) {
     }
     sendMessage() { return Promise.resolve(this.snapshot()) }
     startAuto() { return this.snapshot() }
-    stop() { return false }
+    stop(groupId, runId) {
+      this.stopCalls.push({ groupId, runId })
+      return true
+    }
     setSidebarVisibility() { return this.snapshot() }
     async stopAll() {
       this.stopCount += 1
@@ -698,6 +702,10 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     harness.workspaceInstances[0].input.storagePath,
     path.join(directory, 'roundrelay-workspace.json'),
   )
+  assert.equal(
+    harness.workspaceInstances[0].input.runLedger.storagePath,
+    path.join(directory, 'roundrelay-run-ledger.json'),
+  )
   assert.equal(harness.workspaceInstances[0].refreshCount, 0)
   assert.equal(harness.providerInstances[0].input.storagePath,
     path.join(directory, 'roundrelay-provider.json'))
@@ -766,7 +774,7 @@ test('run completion uses sanitized renderer events and a localized background n
   const workspace = harness.workspaceInstances[0]
 
   workspace.emit('run-finished', {
-    groupId: 'group-1',
+    groupId: '历史群聊 1',
     runId: 'run:trace.1',
     mode: 'auto',
     status: 'partial',
@@ -785,7 +793,7 @@ test('run completion uses sanitized renderer events and a localized background n
     channel === 'local-workspace:run-finished'
   ))
   assert.deepEqual(finished, ['local-workspace:run-finished', {
-    groupId: 'group-1',
+    groupId: '历史群聊 1',
     runId: 'run:trace.1',
     mode: 'auto',
     status: 'partial',
@@ -805,14 +813,14 @@ test('run completion uses sanitized renderer events and a localized background n
   assert.equal(notification.showCount, 1)
   assert.doesNotMatch(
     JSON.stringify(notification.input),
-    /private|secret-session|secret message|group-1|thread-1/,
+    /private|secret-session|secret message|历史群聊|thread-1/,
   )
 
   notification.emit('click')
   assert.equal(window.showCount, 1)
   assert.equal(window.focusCount, 1)
   assert.deepEqual(window.webContents.sent.at(-1), [
-    'local-workspace:open-group', { groupId: 'group-1' },
+    'local-workspace:open-group', { groupId: '历史群聊 1' },
   ])
 
   workspace.emit('run-finished', {
@@ -832,7 +840,7 @@ test('runtime trace IPC forwards only sanitized allowlisted fields', async (t) =
   workspace.emit('run-event', {
     runId: 'run-1',
     agentRunId: 'run-1:1:codex:agent-1',
-    groupId: 'group-1',
+    groupId: '历史群聊 1',
     threadRootId: 'thread-1',
     agentKind: 'codex',
     round: 1,
@@ -854,7 +862,7 @@ test('runtime trace IPC forwards only sanitized allowlisted fields', async (t) =
     {
       runId: 'run-1',
       agentRunId: 'run-1:1:codex:agent-1',
-      groupId: 'group-1',
+      groupId: '历史群聊 1',
       threadRootId: 'thread-1',
       agentKind: 'codex',
       round: 1,
@@ -958,6 +966,27 @@ test('workspace run IPC requires an explicit non-empty Agent target contract', a
       channel,
     )
   }
+})
+
+test('workspace stop IPC forwards only a validated group and run pair', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-stop-contract-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const stop = harness.ipcHandlers.get('local-workspace:stop')
+  const workspace = harness.workspaceInstances[0]
+
+  assert.equal(await stop(harness.event(), 'group-1', 'run:trace.1'), true)
+  assert.equal(await stop(harness.event(), '历史群聊 1', 'run-legacy'), true)
+  assert.deepEqual(workspace.stopCalls, [
+    { groupId: 'group-1', runId: 'run:trace.1' },
+    { groupId: '历史群聊 1', runId: 'run-legacy' },
+  ])
+
+  assert.equal(await stop(harness.event(), 'group-1', ''), false)
+  assert.equal(await stop(harness.event(), 'group\ninvalid', 'run-2'), false)
+  assert.equal(await stop(harness.event(), 'group-1', '../run'), false)
+  assert.equal(workspace.stopCalls.length, 2)
 })
 
 test('startup attachment cleanup receives every persisted message reference once', async (t) => {

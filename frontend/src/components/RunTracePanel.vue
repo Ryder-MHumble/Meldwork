@@ -35,21 +35,34 @@
 
       <nav v-if="items.length" class="trace-panel-agent-switch" :aria-label="t('trace.agentRuns')">
         <button
-          v-for="item in items"
-          :key="item.agentRunId"
+          v-for="group in agentGroups"
+          :key="group.agentKind"
           class="trace-agent-tab"
-          :class="{ active: item.agentRunId === selectedItem?.agentRunId }"
+          :class="{ active: group.agentKind === selectedItem?.agentKind }"
           type="button"
-          :aria-pressed="item.agentRunId === selectedItem?.agentRunId ? 'true' : 'false'"
-          @click="emit('select', item.agentRunId)"
+          :aria-pressed="group.agentKind === selectedItem?.agentKind ? 'true' : 'false'"
+          @click="selectAgentGroup(group)"
         >
-          <img :src="agentLogo(item.agentKind, theme)" alt="" />
+          <img :src="agentLogo(group.agentKind, theme)" alt="" />
           <span>
-            <strong>{{ agentLabel(item.agentKind) }}</strong>
-            <small>{{ roundLabel(item) }} / {{ statusLabel(item.status) }}</small>
+            <strong>{{ agentLabel(group.agentKind) }}</strong>
+            <small>{{ roundLabel(agentTabItem(group)) }} / {{ statusLabel(agentTabItem(group).status) }}</small>
           </span>
         </button>
       </nav>
+
+      <label v-if="selectedAgentRuns.length > 1" class="trace-round-selector">
+        <span>{{ t('trace.roundSelector') }}</span>
+        <select
+          :value="selectedItem?.agentRunId"
+          :aria-label="t('trace.selectRound', { agent: agentLabel(selectedItem?.agentKind) })"
+          @change="selectRound"
+        >
+          <option v-for="item in selectedAgentRuns" :key="item.agentRunId" :value="item.agentRunId">
+            {{ roundLabel(item) }} / {{ statusLabel(item.status) }}
+          </option>
+        </select>
+      </label>
 
       <p
         class="visually-hidden trace-event-live-status"
@@ -170,6 +183,20 @@ const props = defineProps({
 const emit = defineEmits(['close', 'select', 'jump-source'])
 const panelElement = ref(null)
 const selectedItem = computed(() => props.items.find(item => item.agentRunId === props.selectedAgentRunId) || props.items.at(-1) || null)
+const agentGroups = computed(() => {
+  const groups = new Map()
+  for (const item of props.items) {
+    const agentKind = String(item?.agentKind || '')
+    if (!agentKind) continue
+    const group = groups.get(agentKind) || { agentKind, items: [] }
+    group.items.push(item)
+    groups.set(agentKind, group)
+  }
+  return [...groups.values()]
+})
+const selectedAgentRuns = computed(() => (
+  agentGroups.value.find(group => group.agentKind === selectedItem.value?.agentKind)?.items || []
+))
 const selectedSources = computed(() => {
   const item = selectedItem.value
   const sources = Array.isArray(item?.sources) ? item.sources : []
@@ -200,6 +227,22 @@ const eventLiveStatus = computed(() => {
 
 function focus() {
   void nextTick(() => panelElement.value?.focus())
+}
+
+function agentTabItem(group) {
+  return group.agentKind === selectedItem.value?.agentKind
+    ? selectedItem.value
+    : group.items.at(-1)
+}
+
+function selectAgentGroup(group) {
+  const item = agentTabItem(group)
+  if (item?.agentRunId) emit('select', item.agentRunId)
+}
+
+function selectRound(event) {
+  const agentRunId = String(event?.target?.value || '')
+  if (agentRunId) emit('select', agentRunId)
 }
 
 function trapFocus(event) {
@@ -273,7 +316,7 @@ function statusTone(status) {
   const value = String(status || '').toLowerCase()
   if (['completed', 'succeeded'].includes(value)) return 'completed'
   if (['failed', 'timeout'].includes(value)) return 'failed'
-  if (['partial'].includes(value)) return 'partial'
+  if (['partial', 'cancelled', 'stopped', 'interrupted'].includes(value)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(value)) return 'running'
   return 'queued'
 }

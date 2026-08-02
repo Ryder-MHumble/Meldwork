@@ -3,6 +3,7 @@ export function desktopApi() {
 }
 
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
+const GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
 const AGENT_KIND = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
 const RUN_EVENT_TYPES = new Set([
   'status',
@@ -17,6 +18,8 @@ const RUN_EVENT_TYPES = new Set([
 const CAPSULE_EVENT_TYPES = new Set([
   'reasoning_summary',
   'plan',
+  'tool_start',
+  'tool_update',
   'tool_result_summary',
   'warning',
 ])
@@ -43,6 +46,11 @@ function boundedString(value, limit, { trim = true } = {}) {
 function identifier(value) {
   const normalized = boundedString(value, 160)
   return IDENTIFIER.test(normalized) ? normalized : ''
+}
+
+function groupIdentifier(value) {
+  const normalized = typeof value === 'string' ? value : ''
+  return GROUP_IDENTIFIER.test(normalized) ? normalized : ''
 }
 
 function agentKind(value) {
@@ -127,7 +135,7 @@ export function normalizeRunEvent(value, fallback = {}) {
   if (!input) return null
   const runId = identifier(input.runId || defaults.runId)
   const agentRunId = identifier(input.agentRunId || defaults.agentRunId)
-  const groupId = identifier(input.groupId || defaults.groupId)
+  const groupId = groupIdentifier(input.groupId || defaults.groupId)
   const threadRootId = identifier(input.threadRootId || defaults.threadRootId)
   const kind = agentKind(input.agentKind || input.kind || defaults.agentKind || defaults.kind)
   const round = nonNegativeInteger(input.round ?? defaults.round, 10000)
@@ -172,7 +180,7 @@ export function normalizeRunAgent(value, run = {}) {
   const parent = record(run) || {}
   if (!input) return null
   const runId = identifier(parent.runId || input.runId)
-  const groupId = identifier(parent.groupId || input.groupId)
+  const groupId = groupIdentifier(parent.groupId || input.groupId)
   const threadRootId = identifier(parent.threadRootId || input.threadRootId)
   const agentRunId = identifier(input.agentRunId)
   const kind = agentKind(input.kind || input.agentKind)
@@ -198,6 +206,7 @@ export function normalizeRunAgent(value, run = {}) {
     output,
     events,
     sourceMessageIds: sourceMessageIds(input.sourceMessageIds),
+    context: normalizeTraceContext(input.context),
     ...(startedAt !== '' ? { startedAt } : {}),
     ...(lastActivityAt !== '' ? { lastActivityAt } : {}),
     silent: input.silent === true,
@@ -249,11 +258,12 @@ function normalizeRun(value) {
   if (!input) return null
   const run = { ...input, progress: normalizeProgress(input.progress) }
   const runId = identifier(input.runId)
-  const groupId = identifier(input.groupId)
+  const groupId = groupIdentifier(input.groupId)
   const threadRootId = identifier(input.threadRootId)
   if (runId) run.runId = runId
   else delete run.runId
   if (groupId) run.groupId = groupId
+  else delete run.groupId
   if (threadRootId) run.threadRootId = threadRootId
   else delete run.threadRootId
   const rawAgentRuns = Array.isArray(input.agentRuns) ? input.agentRuns : input.agents

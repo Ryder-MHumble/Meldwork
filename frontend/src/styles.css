@@ -3432,6 +3432,12 @@ button svg {
   opacity: 1;
 }
 
+.message-row[tabindex="-1"]:focus {
+  outline: 2px solid color-mix(in srgb, var(--accent) 54%, transparent);
+  outline-offset: 4px;
+  border-radius: var(--radius-sm);
+}
+
 .message-copy-button:hover,
 .message-copy-button:focus-visible {
   background: var(--surface-hover);
@@ -4280,6 +4286,41 @@ button svg {
 .trace-agent-tab strong { font-size: 11px; }
 .trace-agent-tab small { color: var(--muted); font-size: 10px; }
 
+.trace-round-selector {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 10px 10px;
+  background: var(--surface);
+}
+
+.trace-round-selector > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.trace-round-selector select {
+  min-width: 0;
+  max-width: 220px;
+  height: 30px;
+  padding: 0 28px 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 11px;
+}
+
+.trace-round-selector select:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 54%, transparent);
+  outline-offset: 1px;
+}
+
 .trace-panel-scroll {
   min-height: 0;
   flex: 1;
@@ -4645,6 +4686,14 @@ button svg {
 
 .run-agent-motion[data-status="failed"] {
   color: var(--danger);
+}
+
+.run-agent-motion[data-status="partial"] {
+  color: var(--muted);
+}
+
+.run-agent-motion[data-status="partial"] svg {
+  animation: none;
 }
 
 .run-agent-bars,
