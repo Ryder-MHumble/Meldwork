@@ -41,10 +41,25 @@ test('normalizes public events through an allowlist and redacts private diagnost
     type: 'tool_result_summary',
     status: 'completed',
     title: 'Search',
-    summary: 'Read [path] and api_key=[redacted]',
+    summary: 'Read [path] and credential=[redacted]',
     detail: 'Bearer [redacted]',
   })
   assert.equal(normalizeRawEvent({ type: 'raw_stdout', detail: 'private' }), null)
+
+  const credentials = normalizeRawEvent({
+    type: 'tool_result_summary',
+    detail: JSON.stringify({
+      env: {
+        AWS_ACCESS_KEY_ID: 'AKIA1234567890ABCDEF',
+        AWS_SECRET_ACCESS_KEY: 'aws-secret-value',
+        DATABASE_URL: 'postgres://dbuser:dbpass@localhost/db',
+        password: 'hunter2',
+        certificate: '-----BEGIN PRIVATE KEY-----\nprivate-material\n-----END PRIVATE KEY-----',
+      },
+    }),
+  })
+  assert.doesNotMatch(JSON.stringify(credentials), /AKIA|aws-secret-value|dbuser|dbpass|hunter2|private-material/)
+  assert.match(credentials.detail, /redacted/)
 })
 
 test('revalidates enriched renderer events without executable or command fields', () => {
@@ -77,7 +92,7 @@ test('revalidates enriched renderer events without executable or command fields'
     id: 'tool-1',
     type: 'tool_result_summary',
     title: 'search',
-    summary: 'Read [path] with token=[redacted]',
+    summary: 'Read [path] with credential=[redacted]',
   })
   assert.equal(normalizeRunEvent({ type: 'status', status: 'running' }), null)
 })
@@ -101,6 +116,43 @@ test('enriches events, appends bounded answer deltas, and upserts tool lifecycle
   assert.equal(run.events.filter(event => event.id === 'tool-1').length, 1)
   assert.equal(run.events.find(event => event.id === 'tool-1').type, 'tool_result_summary')
   assert.equal(run.sourceMessageIds[0], 'message-1')
+})
+
+test('rejects stale callbacks after a newer Agent run starts for the same kind and round', () => {
+  const harness = fixture()
+  const first = harness.beginAgent('codex', 1)
+  const second = harness.beginAgent('codex', 1)
+
+  assert.equal(harness.ingest('codex', 1, {
+    id: 'stale-tool', type: 'tool_start', status: 'running', title: 'search',
+  }, first.agentRunId), null)
+  assert.equal(harness.markSilent('codex', 1, first.agentRunId), null)
+  assert.throws(
+    () => harness.finishAgent('codex', 1, 'completed', 'stale', {}, first.agentRunId),
+    { message: 'RUN_HARNESS_AGENT_NOT_FOUND' },
+  )
+
+  const current = harness.ingest('codex', 1, {
+    id: 'current-tool', type: 'tool_start', status: 'running', title: 'search',
+  }, second.agentRunId)
+  assert.equal(current.agentRunId, second.agentRunId)
+  assert.equal(harness.snapshot().at(-1).events.some(event => event.id === 'stale-tool'), false)
+})
+
+test('rejects Agent activity outside the declared target kinds', () => {
+  const harness = fixture({ targetKinds: ['codex'] })
+
+  assert.throws(
+    () => harness.beginAgent('hermes', 1),
+    { message: 'RUN_HARNESS_AGENT_NOT_TARGETED' },
+  )
+
+  const codex = harness.beginAgent('codex', 1)
+  assert.equal(harness.ingest('hermes', 1, {
+    id: 'cross-target-tool', type: 'tool_start', status: 'running', title: 'search',
+  }, codex.agentRunId), null)
+  assert.deepEqual(harness.snapshot().map(run => run.kind), ['codex'])
+  assert.equal(harness.snapshot()[0].events.some(event => event.id === 'cross-target-tool'), false)
 })
 
 test('deduplicates identical live tool events without dropping lifecycle updates', () => {
@@ -161,6 +213,33 @@ test('keeps a bounded event ledger and marks the trace as truncated', () => {
   assert.equal(run.events.length, 8)
   assert.equal(run.truncated, true)
   assert.equal(run.events.at(-1).summary, 'result 19')
+})
+
+test('upserts repeated reasoning lifecycle events without evicting useful evidence', () => {
+  const harness = fixture()
+  harness.beginAgent('hermes', 1)
+  harness.ingest('hermes', 1, {
+    id: 'plan', type: 'plan', status: 'running', summary: 'Inspect both implementations.',
+  })
+  harness.ingest('hermes', 1, {
+    id: 'tool-1', type: 'tool_result_summary', status: 'completed',
+    title: 'search', summary: 'Found the routing boundary.',
+  })
+  for (let index = 0; index < 100; index += 1) {
+    harness.ingest('hermes', 1, {
+      id: 'reasoning', type: 'reasoning_summary', status: 'running', title: 'reasoning',
+    })
+  }
+
+  const live = harness.snapshot()[0]
+  assert.equal(live.events.filter(event => event.id === 'reasoning').length, 1)
+  assert.equal(live.events.some(event => event.summary === 'Found the routing boundary.'), true)
+  assert.equal(live.truncated, false)
+
+  const { capsule } = harness.finishAgent('hermes', 1, 'completed', 'Final answer')
+  assert.equal(capsule.events.some(event => event.type === 'reasoning_summary'), false)
+  assert.equal(capsule.events.some(event => event.summary === 'Found the routing boundary.'), true)
+  assert.equal(capsule.summary, 'Inspect both implementations.')
 })
 
 test('rebuilds tool indexes after a silence warning shifts a full ledger', () => {
@@ -224,21 +303,24 @@ test('finishes with the authoritative answer and persists only a compact capsule
       status: 'completed',
       title: 'read_file',
       summary: `Evidence ${index}`,
-      detail: `raw private detail ${index}`,
+      detail: `Exit code: 0\nOutput: ${index + 1} lines, ${(index + 1) * 10} bytes`,
     })
   }
   const { capsule } = harness.finishAgent('hermes', 1, 'completed', 'Authoritative final', {
     includedCount: 5, omittedCount: 2, charCount: 9000, sessionRotated: true,
   })
   assert.equal(harness.snapshot()[0].output, 'Authoritative final')
+  assert.equal(harness.snapshot()[0].events.find(event => event.summary === 'Evidence 15')?.detail,
+    'Exit code: 0\nOutput: 16 lines, 160 bytes')
   assert.equal(capsule.events.length, 12)
+  assert.equal(capsule.round, 1)
   assert.equal(capsule.summary, 'Compared the two implementations.')
   assert.deepEqual(capsule.sourceMessageIds, ['message-a', 'message-b'])
   assert.equal(capsule.context.sessionRotated, true)
-  assert.doesNotMatch(JSON.stringify(capsule), /raw private detail/)
+  assert.equal(capsule.events.at(-1).detail, 'Exit code: 0\nOutput: 16 lines, 160 bytes')
 })
 
-test('normalizes stored capsules and rejects private or unrecognized fields', () => {
+test('persists only result metadata in capsule details and rejects unrecognized fields', () => {
   const capsule = normalizeTraceCapsule({
     runId: 'run-2',
     agentRunId: 'agent-run-2',
@@ -246,7 +328,8 @@ test('normalizes stored capsules and rejects private or unrecognized fields', ()
     summary: 'Public summary',
     events: [{
       evidenceId: 'E-1', type: 'tool_result_summary', status: 'completed',
-      title: '/private/result', summary: 'token=secret-value', detail: 'raw',
+      title: '/private/result', summary: 'token=secret-value',
+      detail: 'Output: 2 lines, 30 bytes\n/private/result token=secret-value',
     }],
     sourceMessageIds: ['message-1'],
     executable: '/tmp/codex',
@@ -256,9 +339,54 @@ test('normalizes stored capsules and rejects private or unrecognized fields', ()
     type: 'tool_result_summary',
     status: 'completed',
     title: '[path]',
-    summary: 'token=[redacted]',
+    summary: 'credential=[redacted]',
+    detail: 'Output: 2 lines, 30 bytes',
   })
   assert.equal('executable' in capsule, false)
+})
+
+test('recovers a legacy capsule round from its generated Agent run id', () => {
+  const inferred = normalizeTraceCapsule({
+    runId: 'run-legacy',
+    agentRunId: 'run-legacy:4:claude:agent-1',
+    status: 'completed',
+  })
+  const explicit = normalizeTraceCapsule({
+    runId: 'run-legacy',
+    agentRunId: 'run-legacy:4:claude:agent-1',
+    round: 2,
+    status: 'completed',
+  })
+
+  assert.equal(inferred.round, 4)
+  assert.equal(explicit.round, 2)
+})
+
+test('does not infer a legacy round from invalid explicit values or malformed Agent run ids', () => {
+  for (const round of [true, '4', -1, 100001, null, undefined]) {
+    const capsule = normalizeTraceCapsule({
+      runId: 'run-legacy',
+      agentRunId: 'run-legacy:4:claude:agent-1',
+      round,
+      status: 'completed',
+    })
+    assert.equal('round' in capsule, false)
+  }
+
+  for (const agentRunId of [
+    'run-legacy:4',
+    'run-legacy:4:anything',
+    'run-legacy:4:claude:agent-1:extra',
+    'run-legacy:4:claude:',
+    'run-legacy:100001:claude:agent-1',
+  ]) {
+    const capsule = normalizeTraceCapsule({
+      runId: 'run-legacy',
+      agentRunId,
+      status: 'completed',
+    })
+    assert.equal('round' in capsule, false)
+  }
 })
 
 test('renders evidence as untrusted reference without raw tool detail', () => {
@@ -278,6 +406,26 @@ test('renders evidence as untrusted reference without raw tool detail', () => {
   assert.match(text, /E-R1-CODEX-01/)
   assert.match(text, /message-root/)
   assert.doesNotMatch(text, /raw command output/)
+})
+
+test('reserves context space for both evidence and a long Agent conclusion', () => {
+  const text = evidenceCapsuleText({
+    senderName: 'Claude',
+    content: `Conclusion starts here. ${'x'.repeat(4000)}`,
+    trace: {
+      runId: 'run-long', agentRunId: 'agent-long', status: 'completed',
+      events: [{
+        evidenceId: 'E-R1-CLAUDE-01', type: 'tool_result_summary', status: 'completed',
+        title: 'search', summary: 'Confirmed the targeted routing implementation.',
+      }],
+      sourceMessageIds: ['message-root'],
+    },
+  })
+
+  assert.equal(text.length <= 3000, true)
+  assert.match(text, /E-R1-CLAUDE-01/)
+  assert.match(text, /Source messages: message-root/)
+  assert.match(text, /Claude: Conclusion starts here/)
 })
 
 test('packs whole context entries by priority and recency within a fixed budget', () => {
@@ -318,4 +466,10 @@ test('rotates native sessions at bounded turns or estimated characters', () => {
   assert.deepEqual(nextSessionMeta({ turns: 20, estimatedChars: 90000 }, {
     promptChars: 500, replyChars: 250, rotated: true,
   }), { turns: 1, estimatedChars: 750 })
+  assert.deepEqual(nextSessionMeta({ turns: 2, estimatedChars: 1000, transport: 'acp' }, {
+    promptChars: 500, replyChars: 250,
+  }), { turns: 3, estimatedChars: 1750, transport: 'acp' })
+  assert.deepEqual(nextSessionMeta({ turns: 20, estimatedChars: 90000, transport: 'acp' }, {
+    promptChars: 500, replyChars: 250, rotated: true, transport: 'legacy',
+  }), { turns: 1, estimatedChars: 750, transport: 'legacy' })
 })

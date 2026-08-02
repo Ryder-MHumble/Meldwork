@@ -1082,7 +1082,7 @@ class LocalWorkspace extends EventEmitter {
     const sourceMessageIds = [...new Set([
       ...stable.sourceMessageIds,
       ...recent.sourceMessageIds,
-    ])].slice(0, 20)
+    ])].slice(0, 32)
     return {
       stableText: stable.text || '(none)',
       recentText: recent.text || '(none)',
@@ -1152,22 +1152,23 @@ class LocalWorkspace extends EventEmitter {
     try { this.emit('run-event', event) } catch {}
   }
 
-  clearAgentSilence(controller, kind, round) {
-    const key = `${kind}:${round}`
+  clearAgentSilence(controller, kind, round, agentRunId = '') {
+    const key = agentRunId || `${kind}:${round}`
     const timer = controller?.silenceTimers?.get(key)
     if (timer) clearTimeout(timer)
     controller?.silenceTimers?.delete(key)
   }
 
-  armAgentSilence(controller, kind, round) {
+  armAgentSilence(controller, kind, round, agentRunId = '') {
     if (!controller || !this.runSilenceWarningMs) return
-    this.clearAgentSilence(controller, kind, round)
+    const key = agentRunId || `${kind}:${round}`
+    this.clearAgentSilence(controller, kind, round, agentRunId)
     const timer = setTimeout(() => {
-      const warning = controller.harness?.markSilent(kind, round)
+      const warning = controller.harness?.markSilent(kind, round, agentRunId)
       if (warning) this.emitRunEvent(warning)
     }, this.runSilenceWarningMs)
     timer.unref?.()
-    controller.silenceTimers.set(`${kind}:${round}`, timer)
+    controller.silenceTimers.set(key, timer)
   }
 
   clearRunSilence(controller) {
@@ -1199,15 +1200,27 @@ class LocalWorkspace extends EventEmitter {
       sessionRotated = true
       this.save()
     }
-    const transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
+    let sessionTransport = sessionRef ? String(sessionMeta.transport || '') : ''
+    const hermesNeedsLegacy = kind === 'hermes' && sessionTransport === 'acp'
+      && (agent.acpAvailable === false
+        || (context.attachments || []).length > 0
+        || (context.skillHints || []).length > 0)
+    if (sessionRef && hermesNeedsLegacy) {
+      delete this.state.sessions[key]
+      sessionRef = ''
+      sessionTransport = ''
+      sessionRotated = true
+      this.save()
+    }
+    let transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
       ? kind
       : ''
-    const packedContext = this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
+    let packedContext = this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
     const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
     if (harnessRun) {
       this.emitRunEvent(harnessRun)
-      this.armAgentSilence(activeRun, kind, round)
+      this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       this.emitChanged()
     }
     const agentController = new AbortController()
@@ -1245,10 +1258,10 @@ class LocalWorkspace extends EventEmitter {
       }, this.runAgentTimeoutMs)
     })
     watchdogPromise.catch(() => {})
-    let anonymousProgressEventId = 0
     const onProgress = (step) => {
       if (agentCallbacksClosed || agentController.signal.aborted
-          || !activeRun || activeRun.currentKind !== kind) return
+          || !activeRun || this.activeRuns.get(group.id) !== activeRun
+          || activeRun.currentKind !== kind) return
       const next = [...(activeRun.progress || [])]
       const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
         ? step.id
@@ -1259,15 +1272,7 @@ class LocalWorkspace extends EventEmitter {
       if (existingIndex >= 0) next[existingIndex] = { ...step, id: progressId }
       else next.push(progressId ? { ...step, id: progressId } : step)
       activeRun.progress = next.slice(-8)
-      this.armAgentSilence(activeRun, kind, round)
-      const safeStep = cleanProgressSteps([step])[0] || { title: 'process', status: 'completed' }
-      const lifecycleId = progressId || `progress-${++anonymousProgressEventId}`
-      emitHarnessEvent({
-        id: lifecycleId,
-        type: safeStep.status === 'in_progress' ? 'tool_start' : 'tool_result_summary',
-        status: safeStep.status === 'in_progress' ? 'running' : safeStep.status,
-        title: safeStep.title,
-      })
+      this.armAgentSilence(activeRun, kind, round, harnessRun?.agentRunId)
     }
     let autoDeltaBuffer = ''
     const consensusMarkers = [
@@ -1276,11 +1281,12 @@ class LocalWorkspace extends EventEmitter {
     ]
     const emitHarnessEvent = (rawEvent) => {
       if (agentCallbacksClosed || agentController.signal.aborted
+          || this.activeRuns.get(group.id) !== activeRun
           || !harness || !harnessRun || !rawEvent) return
-      const event = harness.ingest(kind, round, rawEvent)
+      const event = harness.ingest(kind, round, rawEvent, harnessRun.agentRunId)
       if (!event) return
       this.emitRunEvent(event)
-      this.armAgentSilence(activeRun, kind, round)
+      this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       if (event.type !== 'answer_delta' || event.seq % 8 === 0) this.emitChanged()
     }
     const emitRuntimeEvent = (rawEvent) => {
@@ -1323,11 +1329,11 @@ class LocalWorkspace extends EventEmitter {
       if (!harness || !harnessRun || harnessFinished) return null
       flushRuntimeEvent()
       agentCallbacksClosed = true
-      this.clearAgentSilence(activeRun, kind, round)
+      this.clearAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       const finished = harness.finishAgent(kind, round, status, finalText, {
         ...packedContext.context,
         sessionRotated,
-      })
+      }, harnessRun.agentRunId)
       harnessFinished = true
       this.emitRunEvent(finished.event)
       this.emitChanged()
@@ -1350,7 +1356,7 @@ class LocalWorkspace extends EventEmitter {
           /* output capture is best effort */
         }
       }
-      const prompt = this.promptFor(
+      let prompt = this.promptFor(
         group, kind, mode, threadRootId, context.skillHints || [],
         context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
       )
@@ -1361,14 +1367,48 @@ class LocalWorkspace extends EventEmitter {
         group.workdir,
         {
           sessionRef,
-          onSessionRef: nextSessionRef => {
+          onSessionRef: (nextSessionRef, metadata = {}) => {
             if (agentCallbacksClosed || agentController.signal.aborted) return
             this.persistSessionRef(key, nextSessionRef)
+            const transport = ['legacy', 'acp'].includes(metadata?.transport)
+              ? metadata.transport
+              : ''
+            if (transport) {
+              sessionTransport = transport
+              this.persistSessionMeta(key, {
+                ...normalizeSessionMeta(this.state.sessionMeta[key]),
+                transport,
+              })
+            }
+          },
+          onSessionInvalidated: () => {
+            if (kind !== 'hermes') return null
+            delete this.state.sessions[key]
+            delete this.state.sessionMeta[key]
+            sessionRef = ''
+            sessionTransport = ''
+            transcriptAfterKind = ''
+            sessionRotated = true
+            packedContext = this.packedPromptContext(group.id, '', threadRootId)
+            const liveHarnessRun = harness?.current(
+              kind, round, harnessRun?.agentRunId || '',
+            )
+            if (liveHarnessRun) {
+              liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
+            }
+            prompt = this.promptFor(
+              group, kind, mode, threadRootId, context.skillHints || [],
+              context.knowledgeBaseHints || [], '', packedContext,
+            )
+            this.save()
+            this.emitChanged()
+            return { prompt }
           },
           signal: agentController.signal,
           sandbox: group.allowWrite ? 'workspace-write' : undefined,
           onProgress,
           onEvent: emitRuntimeEvent,
+          sessionTransport,
           attachments: context.attachments || [],
           ...(kind === 'hermes'
             ? { skills: (context.skillHints || []).map(skill => skill.slug) }
@@ -1438,6 +1478,7 @@ class LocalWorkspace extends EventEmitter {
       ).length,
       replyChars: reply.text.length,
       rotated: sessionRotated,
+      transport: sessionTransport,
     }))
     return { message, consensus: reply.consensus && result.completed !== false }
     } catch (caughtError) {
@@ -1449,10 +1490,12 @@ class LocalWorkspace extends EventEmitter {
           await settleWithin(Promise.allSettled(cleanupPromises), this.runAbortGraceMs)
         }
       }
-      const error = parentStopped
-        ? (caughtError?.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
-            ? caughtError
-            : agentStoppedError())
+      const error = parentTimedOut
+        ? new Error('LOCAL_AGENT_TIMEOUT')
+        : parentStopped
+          ? (caughtError?.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
+              ? caughtError
+              : agentStoppedError())
         : watchdogTimedOut
           ? (watchdogError || new Error('LOCAL_AGENT_TIMEOUT'))
           : caughtError
@@ -1564,11 +1607,11 @@ class LocalWorkspace extends EventEmitter {
   }
 
   startAutoRunner(
-    group, threadRootId, maxRounds, reservation = null, preparedContext = null,
+    group, targetKinds, threadRootId, maxRounds, reservation = null, preparedContext = null,
     unlimitedRounds = false,
   ) {
     const controller = this.beginRun(
-      group.id, 'auto', group.agentKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
+      group.id, 'auto', targetKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
     )
     const timeout = setTimeout(() => {
       if (controller.signal.aborted) return
@@ -1655,7 +1698,19 @@ class LocalWorkspace extends EventEmitter {
               successes += 1
               if (result.consensus) agreements += 1
             } catch (error) {
-              if (controller.signal.aborted) break
+              if (controller.signal.aborted) {
+                if (controller.stopReason === 'timeout' && error?.runTrace) {
+                  this.recordAgentFailure(
+                    group.id, kind, error, threadRootId, reportedFailures,
+                  )
+                  controller.failedKinds.push(kind)
+                  controller.completedKinds.push(kind)
+                  controller.currentKind = ''
+                  controller.progress = []
+                  this.emitChanged()
+                }
+                break
+              }
               this.recordAgentFailure(
                 group.id, kind, error, threadRootId, reportedFailures,
               )
@@ -1736,14 +1791,15 @@ class LocalWorkspace extends EventEmitter {
     const mode = input.mode === 'auto' && group.conversationType !== 'direct'
       ? 'auto'
       : 'manual'
-    if (mode === 'auto' && group.agentKinds.length < 2) {
-      throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    if (input.targetKinds != null && !Array.isArray(input.targetKinds)) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
-    const requested = mode === 'auto'
-      ? group.agentKinds
-      : (input.targetKinds?.length ? input.targetKinds : group.agentKinds)
+    const requested = Array.isArray(input.targetKinds) && input.targetKinds.length
+      ? normalizeTargetKinds(input.targetKinds)
+      : group.agentKinds
     const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
     if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    if (mode === 'auto' && targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     if (input.mentionedAgentKinds != null && !Array.isArray(input.mentionedAgentKinds)) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
@@ -1809,12 +1865,12 @@ class LocalWorkspace extends EventEmitter {
               attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
               skillHints: prepared.skillHints,
               knowledgeBaseHints: prepared.knowledgeBaseHints,
-              targetKinds: mentionedAgentKinds,
+              targetKinds,
             },
           )
           try {
             controller = this.startAutoRunner(
-              group, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
+              group, targetKinds, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
             )
           } catch (error) {
             const messageIndex = this.state.messages.findIndex(message => message === userMessage)
@@ -1848,7 +1904,7 @@ class LocalWorkspace extends EventEmitter {
             attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
             skillHints: prepared.skillHints,
             knowledgeBaseHints: prepared.knowledgeBaseHints,
-            targetKinds: mentionedAgentKinds,
+            targetKinds: group.conversationType === 'direct' ? [] : targetKinds,
           },
         )
         const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
@@ -1905,7 +1961,14 @@ class LocalWorkspace extends EventEmitter {
   startAuto(input) {
     const group = this.getGroup(input.groupId)
     if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
-    if (group.agentKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    if (input.targetKinds != null && !Array.isArray(input.targetKinds)) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    }
+    const requested = Array.isArray(input.targetKinds) && input.targetKinds.length
+      ? normalizeTargetKinds(input.targetKinds)
+      : group.agentKinds
+    const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
+    if (targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     const unlimitedRounds = input.unlimitedRounds === true
     const maxRounds = unlimitedRounds
       ? 0
@@ -1921,12 +1984,12 @@ class LocalWorkspace extends EventEmitter {
     const rootAttachmentCount = Array.isArray(rootMessage?.attachments)
       ? rootMessage.attachments.length
       : 0
-    for (const kind of group.agentKinds) {
+    for (const kind of targetKinds) {
       const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
       if (rootAttachmentCount && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
       if (rootAttachmentCount > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
     }
-    this.startAutoRunner(group, threadRootId, maxRounds, null, null, unlimitedRounds)
+    this.startAutoRunner(group, targetKinds, threadRootId, maxRounds, null, null, unlimitedRounds)
     return { started: true, maxRounds, ...(unlimitedRounds ? { unlimitedRounds: true } : {}) }
   }
 

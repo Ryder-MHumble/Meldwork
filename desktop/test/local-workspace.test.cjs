@@ -1386,13 +1386,16 @@ test('running snapshots distinguish failed Agents from successful completions', 
   await send
 })
 
-test('Hermes progress stays bounded metadata while later Agents receive only its final reply', async (t) => {
+test('legacy progress stays out of Harness trace while later Agents receive the final reply', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   let releaseHermes
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     if (agent.kind === 'hermes') {
+      runOptions.onEvent({
+        id: 'hermes-connector', type: 'warning', status: 'waiting', title: 'connector_limited',
+      })
       for (let index = 0; index < 9; index += 1) {
         runOptions.onProgress({
           title: 'write_file', status: 'completed', detail: 'raw-progress-output',
@@ -1425,20 +1428,22 @@ test('Hermes progress stays bounded metadata while later Agents receive only its
   assert.equal(active.progress.length, 8)
   assert.deepEqual(active.progress.at(-1), { title: 'process', status: 'completed' })
   assert.doesNotMatch(JSON.stringify(active.progress), /private|review diff/)
+  assert.equal(active.agentRuns[0].events.some(event => event.type.startsWith('tool_')), false)
+  assert.equal(active.agentRuns[0].events.some(event => event.title === 'connector_limited'), true)
 
   releaseHermes()
   await send
 
   assert.match(calls[1].prompt, /Hermes: Hermes authoritative final/)
-  assert.match(calls[1].prompt, /E-R0-HERMES-\d+ \[tool_result_summary\] write_file/)
+  assert.match(calls[1].prompt, /E-R0-HERMES-\d+ \[warning\] connector_limited/)
+  assert.doesNotMatch(calls[1].prompt, /\[tool_result_summary\] (?:write_file|process)/)
   assert.doesNotMatch(calls[1].prompt, /raw-progress-output|raw-review-output|cat \/private|elapsedMs|private\/review diff/)
   const hermesReply = workspace.snapshot().messages.find(message => message.agentKind === 'hermes')
   assert.equal(hermesReply.content, 'Hermes authoritative final')
   assert.equal(hermesReply.toolCalls.length, 8)
-  assert.equal(hermesReply.trace.events.length, 10)
-  assert.equal(hermesReply.trace.events.every(event => (
-    event.type === 'tool_result_summary' && ['write_file', 'process'].includes(event.title)
-  )), true)
+  assert.deepEqual(hermesReply.trace.events.map(event => [event.type, event.title]), [
+    ['warning', 'connector_limited'],
+  ])
   assert.doesNotMatch(JSON.stringify(hermesReply.trace), /raw-progress-output|raw-review-output|cat \/private|review diff/)
   assert.equal(Number.isSafeInteger(hermesReply.elapsedMs), true)
   assert.equal(hermesReply.elapsedMs >= 0, true)
@@ -1568,7 +1573,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.deepEqual(started, { started: true, maxRounds: 2, threadRootId: root.id })
   assert.equal(active.messages.filter(message => message.role === 'user').length, 1)
   assert.equal(root.threadRootId, undefined)
-  assert.equal(root.targetKinds, undefined)
+  assert.deepEqual(root.targetKinds, ['codex', 'hermes'])
   assert.deepEqual(root.knowledgeBaseHints, [{
     kind: 'dingtalk', name: 'DingTalk', accessMode: 'cli',
     commandName: 'dws', targetKinds: ['hermes'],
@@ -1769,10 +1774,85 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
       'Hermes accepts the current conclusion.',
     ],
   )
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => message.trace.round),
+    [1, 1, 2, 2],
+  )
+  const reloaded = new LocalWorkspace(options)
+  await reloaded.refreshAgents()
+  assert.deepEqual(
+    reloaded.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => message.trace.round),
+    [1, 1, 2, 2],
+  )
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
   assert.equal(finished.length, 1)
   assert.equal(finished[0].status, 'completed')
   assert.equal(finished[0].mode, 'auto')
+})
+
+test('automatic dialogue queues only the explicitly targeted group members', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  const runFinished = deferred()
+  workspace.on('run-finished', (result) => {
+    finished.push(result)
+    runFinished.resolve()
+  })
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '定向自动讨论',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi', 'openclaw'],
+    workdir: directory,
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Only Codex',
+    mode: 'auto',
+    targetKinds: ['codex'],
+    maxRounds: 1,
+  }), { message: 'LOCAL_AUTO_AGENT_COUNT' })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Codex、Hermes 和 Kimi 讨论',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes', 'kimi'],
+    mentionedAgentKinds: ['codex', 'hermes', 'kimi'],
+    maxRounds: 1,
+  })
+  await runFinished.promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'kimi'])
+  assert.deepEqual(
+    workspace.snapshot().messages.find(message => message.role === 'user')?.targetKinds,
+    ['codex', 'hermes', 'kimi'],
+  )
+  assert.deepEqual(finished[0].targetKinds, ['codex', 'hermes', 'kimi'])
+
+  calls.length = 0
+  const nextRoot = workspace.addMessage(group.id, 'user', '另一组继续讨论')
+  workspace.startAuto({
+    groupId: group.id,
+    threadRootId: nextRoot.id,
+    targetKinds: ['workbuddy', 'openclaw'],
+    maxRounds: 1,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['workbuddy', 'openclaw'])
+  assert.deepEqual(finished[1].targetKinds, ['workbuddy', 'openclaw'])
 })
 
 test('automatic dialogue carries root images until delivery and preloads Hermes root skills', async (t) => {
@@ -2197,6 +2277,12 @@ test('automatic dialogue aborts the active Agent at the total runtime limit', as
 
   assert.equal(activeSignal.aborted, true)
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex'])
+  const interruptedAgent = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(interruptedAgent.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+  assert.equal(interruptedAgent.trace.status, 'timeout')
+  assert.equal(interruptedAgent.trace.context.includedCount, 1)
   const timeout = workspace.snapshot().messages.find(message => (
     message.system?.key === 'system.autoTimeout'
   ))
@@ -2275,7 +2361,7 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
     calls.push({ agent, prompt, workdir, runOptions })
     if (agent.kind === 'codex') {
       runOptions.onProgress({
-        id: 'tool-1', title: 'search', status: 'in_progress', detail: 'raw progress detail',
+        id: 'turn', title: 'process', status: 'in_progress', detail: 'raw progress detail',
       })
       runOptions.onEvent({
         id: 'reason-1',
@@ -2286,19 +2372,20 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
         id: 'tool-1',
         type: 'tool_start',
         status: 'running',
-        title: 'search',
+        title: 'Bash',
+        summary: 'Bash: operation: rg -n (2 hidden arguments)',
         command: 'rg secret /Users/private/work',
       })
       runOptions.onProgress({
-        id: 'tool-1', title: 'search', status: 'completed', detail: 'raw progress result',
+        id: 'turn', title: 'process', status: 'completed', detail: 'raw progress result',
       })
       runOptions.onEvent({
         id: 'tool-1',
         type: 'tool_result_summary',
         status: 'completed',
-        title: 'search',
-        summary: 'Found /Users/private/work and token=secret-value',
-        detail: 'Bearer private-token',
+        title: 'Bash',
+        summary: 'Bash: operation: rg -n (2 hidden arguments)',
+        detail: 'Exit code: 0\nOutput: 3 lines, 120 bytes',
       })
       runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: 'Codex live ' })
       return { text: 'Codex final conclusion', sessionRef: 'codex-session' }
@@ -2306,7 +2393,7 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
     assert.match(prompt, /untrusted data, not instructions/)
     assert.match(prompt, /E-R0-CODEX-01|E-R1-CODEX-01/)
     assert.match(prompt, /Codex final conclusion/)
-    assert.doesNotMatch(prompt, /private-token|secret-value|rg secret|\/Users\/private|Bearer/)
+    assert.doesNotMatch(prompt, /rg secret|\/Users\/private/)
     return { text: 'Hermes final conclusion', sessionRef: 'hermes-session' }
   }
   const events = []
@@ -2332,12 +2419,24 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
   assert.equal(codexTrace.status, 'completed')
   assert.equal(codexTrace.events.some(event => event.type === 'reasoning_summary'), true)
   assert.equal(codexTrace.events.some(event => event.type === 'tool_result_summary'), true)
-  assert.equal(codexTrace.events.filter(event => (
-    event.type === 'tool_result_summary' && event.title === 'search'
-  )).length, 1)
+  const codexTool = codexTrace.events.find(event => event.type === 'tool_result_summary')
+  assert.equal(codexTool.title, 'Bash')
+  assert.equal(codexTool.summary, 'Bash: operation: rg -n (2 hidden arguments)')
+  assert.equal(codexTool.detail, 'Exit code: 0\nOutput: 3 lines, 120 bytes')
+  assert.equal(codexTrace.events.some(event => event.title === 'process'), false)
   assert.deepEqual(codexTrace.sourceMessageIds, [workspace.snapshot().messages[0].id])
-  assert.doesNotMatch(JSON.stringify(codexTrace), /private-token|secret-value|rg secret|\/Users\/private|Bearer|raw progress/)
+  assert.equal(codexTrace.context.includedCount, codexTrace.sourceMessageIds.length)
+  assert.deepEqual(agentMessages[1].trace.sourceMessageIds, [
+    workspace.snapshot().messages[0].id,
+    agentMessages[0].id,
+  ])
+  assert.equal(
+    agentMessages[1].trace.context.includedCount,
+    agentMessages[1].trace.sourceMessageIds.length,
+  )
+  assert.doesNotMatch(JSON.stringify(codexTrace), /rg secret|\/Users\/private|raw progress/)
   assert.equal(events.some(event => event.type === 'answer_delta' && event.delta === 'Codex live '), true)
+  assert.equal(events.some(event => event.title === 'process'), false)
   assert.equal(events.every(event => !Object.hasOwn(event, 'command')
     && !Object.hasOwn(event, 'executable')
     && !Object.hasOwn(event, 'sessionRef')), true)
@@ -2357,7 +2456,9 @@ test('Harness rotates an over-budget native session while retaining compressed c
     name: 'Rotation', agentKinds: ['codex'], workdir: directory,
   })
   const oldUser = workspace.addMessage(group.id, 'user', 'Keep this constraint')
-  workspace.addMessage(group.id, 'agent', 'Previous conclusion', 'codex', oldUser.id)
+  const previousAgent = workspace.addMessage(
+    group.id, 'agent', 'Previous conclusion', 'codex', oldUser.id,
+  )
   const key = workspace.sessionKey(group.id, 'codex')
   workspace.state.sessions[key] = 'old-session'
   workspace.state.sessionMeta[key] = { turns: 18, estimatedChars: 48000 }
@@ -2371,11 +2472,129 @@ test('Harness rotates an over-budget native session while retaining compressed c
 
   assert.equal(calls[0].runOptions.sessionRef, '')
   assert.match(calls[0].prompt, /Previous conclusion/)
-  const trace = workspace.snapshot().messages.at(-1).trace
+  const snapshot = workspace.snapshot()
+  const currentUser = snapshot.messages.find(message => (
+    message.role === 'user' && message.content === 'Continue with a fresh context'
+  ))
+  const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
+  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
   assert.equal(workspace.state.sessions[key], 'new-session')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > calls[0].prompt.length, true)
+})
+
+test('Hermes rebuilds full context when an ACP session must switch to legacy for a skill', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'hermes',
+    name: 'Hermes CLI',
+    executable: '/tmp/hermes',
+    version: '2',
+    acpAvailable: true,
+  }]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    await runOptions.onSessionRef('hermes-legacy-session', { transport: 'legacy' })
+    return { text: 'Legacy conclusion', sessionRef: 'hermes-legacy-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Hermes transport switch', agentKinds: ['hermes'], workdir: directory,
+  })
+  const oldUser = workspace.addMessage(group.id, 'user', 'Keep the original constraint')
+  const previousAgent = workspace.addMessage(
+    group.id, 'agent', 'Previous Hermes conclusion', 'hermes', oldUser.id,
+  )
+  const key = workspace.sessionKey(group.id, 'hermes')
+  workspace.state.sessions[key] = 'hermes-acp-session'
+  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'acp' }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue with the selected skill',
+    targetKinds: ['hermes'],
+    skillHints: [{
+      targetKind: 'hermes', namespace: 'global', slug: 'research', name: 'Research',
+    }],
+  })
+
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(calls[0].runOptions.sessionTransport, '')
+  assert.deepEqual(calls[0].runOptions.skills, ['research'])
+  assert.match(calls[0].prompt, /Previous Hermes conclusion/)
+  assert.equal(workspace.state.sessions[key], 'hermes-legacy-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  const snapshot = workspace.snapshot()
+  const currentUser = snapshot.messages.find(message => (
+    message.role === 'user' && message.content === 'Continue with the selected skill'
+  ))
+  const trace = snapshot.messages.at(-1).trace
+  assert.equal(trace.context.sessionRotated, true)
+  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
+})
+
+test('Hermes clears a stale ACP session and rebuilds full context before legacy fallback', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'hermes',
+    name: 'Hermes CLI',
+    executable: '/tmp/hermes',
+    version: '2',
+    acpAvailable: true,
+  }]
+  let recoveredPrompt = ''
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const recovery = await runOptions.onSessionInvalidated({
+      kind: 'hermes', sessionRef: runOptions.sessionRef, transport: 'acp',
+    })
+    recoveredPrompt = recovery.prompt
+    await runOptions.onSessionRef('hermes-recovered-session', { transport: 'legacy' })
+    return { text: 'Recovered conclusion', sessionRef: 'hermes-recovered-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Hermes stale ACP', agentKinds: ['hermes'], workdir: directory,
+  })
+  const oldUser = workspace.addMessage(group.id, 'user', 'Keep the original constraint')
+  const previousAgent = workspace.addMessage(
+    group.id, 'agent', 'Previous Hermes conclusion', 'hermes', oldUser.id,
+  )
+  const key = workspace.sessionKey(group.id, 'hermes')
+  workspace.state.sessions[key] = 'hermes-stale-acp-session'
+  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'acp' }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue after recovering the session',
+    targetKinds: ['hermes'],
+  })
+
+  assert.equal(calls[0].runOptions.sessionRef, 'hermes-stale-acp-session')
+  assert.doesNotMatch(calls[0].prompt, /Previous Hermes conclusion/)
+  assert.match(recoveredPrompt, /Previous Hermes conclusion/)
+  assert.match(recoveredPrompt, /Continue after recovering the session/)
+  assert.equal(workspace.state.sessions[key], 'hermes-recovered-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  const snapshot = workspace.snapshot()
+  const currentUser = snapshot.messages.find(message => (
+    message.role === 'user' && message.content === 'Continue after recovering the session'
+  ))
+  const trace = snapshot.messages.at(-1).trace
+  assert.equal(trace.context.sessionRotated, true)
+  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
 test('Harness rotates an over-budget OpenClaw managed session to a new key', async (t) => {
@@ -2391,7 +2610,9 @@ test('Harness rotates an over-budget OpenClaw managed session to a new key', asy
     name: 'OpenClaw rotation', agentKinds: ['openclaw'], workdir: directory,
   })
   const oldUser = workspace.addMessage(group.id, 'user', 'Keep the prior constraint')
-  workspace.addMessage(group.id, 'agent', 'Prior OpenClaw conclusion', 'openclaw', oldUser.id)
+  const previousAgent = workspace.addMessage(
+    group.id, 'agent', 'Prior OpenClaw conclusion', 'openclaw', oldUser.id,
+  )
   const key = workspace.sessionKey(group.id, 'openclaw')
   const previousSessionRef = workspace.openClawSessionRef(group)
   workspace.state.sessions[key] = previousSessionRef
@@ -2407,7 +2628,14 @@ test('Harness rotates an over-budget OpenClaw managed session to a new key', asy
   assert.notEqual(calls[0].runOptions.sessionRef, previousSessionRef)
   assert.match(calls[0].runOptions.sessionRef, new RegExp(`^${previousSessionRef}-[a-f0-9]{12}$`))
   assert.match(calls[0].prompt, /Prior OpenClaw conclusion/)
-  assert.equal(workspace.snapshot().messages.at(-1).trace.context.sessionRotated, true)
+  const snapshot = workspace.snapshot()
+  const currentUser = snapshot.messages.find(message => (
+    message.role === 'user' && message.content === 'Continue with bounded context'
+  ))
+  const trace = snapshot.messages.at(-1).trace
+  assert.equal(trace.context.sessionRotated, true)
+  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
   assert.equal(workspace.state.sessions[key], calls[0].runOptions.sessionRef)
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
 })
@@ -2569,17 +2797,15 @@ test('progress heartbeats reset the soft silence warning', async (t) => {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runSilenceWarningMs = 30
   options.runAgentTimeoutMs = 500
+  const heartbeatsComplete = deferred()
+  const releaseAgent = deferred()
   options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
-    await new Promise((resolve) => {
-      let ticks = 0
-      const timer = setInterval(() => {
-        ticks += 1
-        runOptions.onProgress({ id: 'heartbeat', title: 'search', status: 'in_progress' })
-        if (ticks < 8) return
-        clearInterval(timer)
-        resolve()
-      }, 5)
-    })
+    for (let tick = 0; tick < 8; tick += 1) {
+      await new Promise(resolve => setTimeout(resolve, 5))
+      runOptions.onProgress({ id: 'heartbeat', title: 'process', status: 'in_progress' })
+    }
+    heartbeatsComplete.resolve()
+    await releaseAgent.promise
     return { text: 'Finished after progress', sessionRef: 'codex-session' }
   }
   const events = []
@@ -2590,12 +2816,22 @@ test('progress heartbeats reset the soft silence warning', async (t) => {
     name: 'Progress heartbeat', agentKinds: ['codex'], workdir: directory,
   })
 
-  await workspace.sendMessage({ groupId: group.id, text: 'Keep reporting', targetKinds: ['codex'] })
+  const send = workspace.sendMessage({
+    groupId: group.id, text: 'Keep reporting', targetKinds: ['codex'],
+  })
+  await heartbeatsComplete.promise
 
   assert.equal(events.some(event => event.type === 'warning'), false)
-  assert.equal(events.some(event => (
-    event.id === 'heartbeat' && event.type === 'tool_start' && event.status === 'running'
-  )), true)
+  assert.equal(events.some(event => event.type.startsWith('tool_') || event.title === 'process'), false)
+
+  await new Promise(resolve => setTimeout(resolve, 45))
+  const warning = events.find(event => event.type === 'warning')
+  assert.equal(warning?.title, 'waiting_for_output')
+
+  releaseAgent.resolve()
+  await send
+  const reply = workspace.snapshot().messages.find(message => message.agentKind === 'codex')
+  assert.equal(reply.trace.events.some(event => event.title === 'process'), false)
 })
 
 test('Harness emits a soft waiting warning without cancelling a long-running Agent', async (t) => {

@@ -21,6 +21,7 @@ const {
   readHermesMessageWatermark,
   resolveExecutable,
   runAgent,
+  runtimeCommandSummary,
   searchPath,
 } = require('../src/cli-adapters.cjs')
 
@@ -177,7 +178,39 @@ test('Codex JSONL output returns the reply and session id', () => {
   })
 })
 
-test('runAgent streams bounded Codex progress before the final reply without exposing commands', async (t) => {
+test('runtime command summaries unwrap one shell layer without exposing arguments', () => {
+  assert.equal(
+    runtimeCommandSummary('zsh -lc "ls /Users/private/workspace | head -5"'),
+    'ls (1 hidden argument) | head -5',
+  )
+  assert.equal(
+    runtimeCommandSummary("/bin/bash -c 'git status --short'"),
+    'git status --short',
+  )
+  assert.equal(runtimeCommandSummary('zsh -c pwd'), 'pwd')
+  const secretSummary = runtimeCommandSummary(
+    "sh -c 'curl --header \"Authorization: Bearer private-token\" https://user:pass@example.test/private'",
+  )
+  assert.equal(secretSummary, 'curl --header (2 hidden arguments)')
+  assert.doesNotMatch(secretSummary, /private-token|user|pass|example|private/i)
+
+  const assignmentSummary = runtimeCommandSummary(
+    'API_KEY="top secret value" TOKEN=unquoted-secret curl https://example.test',
+  )
+  assert.equal(assignmentSummary, 'curl (1 hidden argument)')
+  assert.doesNotMatch(assignmentSummary, /top|secret|value|example/i)
+
+  assert.equal(
+    runtimeCommandSummary('printf one\nrm -rf /tmp/private'),
+    'printf (1 hidden argument) ; rm (2 hidden arguments)',
+  )
+  assert.equal(
+    runtimeCommandSummary('printf one > /tmp/out && curl https://example.test'),
+    'printf (1 hidden argument) && curl (1 hidden argument)',
+  )
+})
+
+test('runAgent streams sanitized Codex operations and result summaries before the final reply', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-codex-progress-'))
   const cli = executable(directory, 'codex-progress.cjs', `
 const events = [
@@ -187,14 +220,29 @@ const events = [
     type: 'item.started',
     item: {
       id: 'item-search', type: 'command_execution',
-      command: 'rg -n secret /Users/private/workspace', status: 'in_progress',
+      command: 'rg -n -pSuperSecret targetKinds /Users/private/workspace', status: 'in_progress',
     },
   },
   {
     type: 'item.completed',
     item: {
       id: 'item-search', type: 'command_execution',
-      command: 'rg -n secret /Users/private/workspace', exit_code: 0, status: 'completed',
+      command: 'rg -n -pSuperSecret targetKinds /Users/private/workspace',
+      aggregated_output: 'frontend/src/App.vue:2652: targetKinds\\nAWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF\\n',
+      exit_code: 0, status: 'completed',
+    },
+  },
+  {
+    type: 'item.started',
+    item: {
+      id: 'item-shell', type: 'command_execution', command: 'zsh -c pwd', status: 'in_progress',
+    },
+  },
+  {
+    type: 'item.completed',
+    item: {
+      id: 'item-shell', type: 'command_execution', command: 'zsh -c pwd',
+      aggregated_output: '/Users/private/workspace\\n', exit_code: 0, status: 'completed',
     },
   },
   {
@@ -264,42 +312,264 @@ send()
   assert.deepEqual(result.progress, [
     { id: 'turn', title: 'process', status: 'completed' },
     { id: 'item-search', title: 'search', status: 'completed' },
+    { id: 'item-shell', title: 'Bash', status: 'completed' },
     { id: 'item-image', title: 'image_generation', status: 'completed' },
   ])
   assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'in_progress'), true)
   assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'completed'), true)
-  assert.doesNotMatch(JSON.stringify(progress), /secret|Users|workspace|rg -n/)
+  assert.doesNotMatch(JSON.stringify(progress), /Users|workspace|rg -n/)
   assert.deepEqual(events.map(event => [event.type, event.status]), [
-    ['status', 'running'],
+    ['tool_start', 'running'],
+    ['tool_result_summary', 'completed'],
     ['tool_start', 'running'],
     ['tool_result_summary', 'completed'],
     ['tool_start', 'running'],
     ['tool_result_summary', 'completed'],
     ['answer_delta', 'running'],
-    ['status', 'completed'],
   ])
+  assert.equal(events.some(event => event.type === 'status' || event.title === 'process'), false)
   assert.equal(events.find(event => event.type === 'answer_delta')?.delta, 'final reply')
+  const commandResult = events.find(event => (
+    event.type === 'tool_result_summary' && event.id === 'item-search'
+  ))
+  assert.equal(commandResult.summary, 'Bash: operation: rg -n (3 hidden arguments)')
+  assert.match(commandResult.detail, /Exit code: 0/)
+  assert.match(commandResult.detail, /Output: 2 lines/)
+  assert.doesNotMatch(commandResult.detail, /frontend\/src\/App\.vue/)
+  assert.doesNotMatch(commandResult.detail, /AKIA1234567890ABCDEF/)
+  const shellResult = events.find(event => (
+    event.type === 'tool_result_summary' && event.id === 'item-shell'
+  ))
+  assert.equal(shellResult.title, 'Bash')
+  assert.equal(shellResult.summary, 'Bash: operation: pwd')
+  assert.match(shellResult.detail, /Exit code: 0/)
+  assert.doesNotMatch(shellResult.detail, /Users|private|workspace/)
   assert.equal(events.every(event => Object.keys(event).every(key => (
     ['id', 'type', 'status', 'title', 'summary', 'detail', 'delta'].includes(key)
   ))), true)
-  assert.doesNotMatch(JSON.stringify(events), /secret|Users|workspace|rg -n|command_execution/)
+  assert.doesNotMatch(
+    JSON.stringify(events),
+    /Users|private\/workspace|AKIA1234567890ABCDEF|SuperSecret/,
+  )
 })
 
-test('Hermes uses quiet query mode and resumes the native session id without a shell', () => {
-  const spec = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123')
-  assert.equal(spec.promptArg, true)
-  assert.deepEqual(spec.args, [
+test('Hermes starts ACP sessions but keeps unmarked historical sessions on the legacy transport', () => {
+  const created = invocation('hermes', '/tmp/hermes', '/tmp')
+  assert.deepEqual(created.args, ['acp'])
+  assert.equal(created.acpMode, 'default')
+  assert.equal(created.promptArg, undefined)
+
+  const resumed = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
+    sessionTransport: 'acp',
+  })
+  assert.deepEqual(resumed.args, ['acp'])
+  assert.equal(resumed.acpMode, 'default')
+
+  const legacy = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123')
+  assert.deepEqual(legacy.args, [
     'chat', '--quiet', '--resume', 'hermes-session-123', '--query',
   ])
-  assert.equal(spec.args.includes('-z'), false)
-  assert.equal(spec.args.includes('--yolo'), false)
 
   const writable = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
     sandbox: 'workspace-write',
+    sessionTransport: 'acp',
   })
-  assert.deepEqual(writable.args, [
-    'chat', '--quiet', '--yolo', '--resume', 'hermes-session-123', '--query',
+  assert.deepEqual(writable.args, ['acp'])
+  assert.equal(writable.acpMode, 'accept_edits')
+})
+
+test('Hermes falls back to legacy quiet mode when ACP startup fails before the prompt', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-acp-fallback-'))
+  const cli = executable(directory, 'hermes-acp-fallback.cjs', `
+if (process.argv[2] !== 'chat' || !process.argv.includes('--quiet') || process.argv.includes('acp')) {
+  process.stderr.write('expected legacy quiet mode')
+  process.exit(2)
+}
+process.stdout.write('\\u001b[36mHermes legacy fallback\\u001b[0m\\n')
+process.stderr.write('session_id: hermes-fallback-session\\n')
+`)
+  const events = []
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'hello',
+    directory,
+    {
+      loadAcpSdkFn: async () => { throw new Error('ACP SDK unavailable') },
+      hermesMessageWatermarkFn: () => null,
+      onEvent: event => events.push(event),
+    },
+  )
+
+  assert.deepEqual(result, {
+    text: 'Hermes legacy fallback',
+    sessionRef: 'hermes-fallback-session',
+  })
+  assert.deepEqual(events[0], {
+    id: 'hermes-acp-fallback',
+    type: 'warning',
+    status: 'waiting',
+    title: 'connector_fallback',
+  })
+  assert.deepEqual(events[1], {
+    id: 'hermes-connector',
+    type: 'warning',
+    status: 'waiting',
+    title: 'connector_limited',
+  })
+})
+
+test('Hermes invalidates a stale ACP session and rebuilds the legacy fallback prompt', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-acp-resume-fallback-'))
+  const cli = executable(directory, 'hermes-acp-resume-fallback.cjs', `
+if (process.argv[2] === 'acp') {
+  const readline = require('node:readline')
+  const input = readline.createInterface({ input: process.stdin })
+  const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+  input.on('line', (line) => {
+    const message = JSON.parse(line)
+    if (message.method === 'initialize') {
+      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+    } else if (message.method === 'session/resume') {
+      send({ jsonrpc: '2.0', id: message.id, error: { code: -32000, message: 'session missing' } })
+    }
+  })
+} else {
+  if (process.argv[2] !== 'chat' || !process.argv.includes('--quiet') || process.argv.includes('--resume')) {
+    process.stderr.write('expected a fresh legacy session')
+    process.exit(2)
+  }
+  process.stdout.write(process.argv.at(-1) + '\\n')
+  process.stderr.write('session_id: hermes-recovered-session\\n')
+}
+`)
+  const invalidations = []
+  const events = []
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'incremental prompt',
+    directory,
+    {
+      sessionRef: 'hermes-stale-session',
+      sessionTransport: 'acp',
+      hermesMessageWatermarkFn: () => null,
+      onSessionInvalidated: (metadata) => {
+        invalidations.push(metadata)
+        return { prompt: 'rebuilt full context' }
+      },
+      onEvent: event => events.push(event),
+    },
+  )
+
+  assert.deepEqual(result, {
+    text: 'rebuilt full context',
+    sessionRef: 'hermes-recovered-session',
+  })
+  assert.deepEqual(invalidations, [{
+    kind: 'hermes',
+    sessionRef: 'hermes-stale-session',
+    transport: 'acp',
+  }])
+  assert.equal(events.some(event => event.title === 'connector_fallback'), true)
+})
+
+test('Hermes ACP streams only the current turn after resume history replay', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-acp-'))
+  const modeFile = path.join(directory, 'mode.txt')
+  const cli = executable(directory, 'hermes-acp.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+const update = (sessionId, value) => send({
+  jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: value },
+})
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'hermes-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/resume') {
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'previous answer' },
+    })
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/set_mode') {
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_MODE_FILE, message.params.modeId)
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    update(sessionId, {
+      sessionUpdate: 'plan',
+      entries: [{ content: 'Inspect workspace', priority: 'medium', status: 'in_progress' }],
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'PRIVATE_REASONING' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'search',
+      kind: 'search', status: 'in_progress',
+      rawInput: { query: 'targetKinds', AWS_SECRET_ACCESS_KEY: 'aws-secret-value' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call_update', toolCallId: 'tool-1', title: 'search',
+      kind: 'search', status: 'completed', rawOutput: { matches: 2, password: 'hunter2' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'current ' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'answer' },
+    })
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'late replay' },
+    })
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const events = []
+  const sessionMetadata = []
+
+  const result = await runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'current prompt',
+    directory,
+    {
+      sessionRef: 'hermes-session',
+      sessionTransport: 'acp',
+      env: { ROUNDRELAY_TEST_MODE_FILE: modeFile },
+      onEvent: event => events.push(event),
+      onSessionRef: (sessionRef, metadata) => sessionMetadata.push({ sessionRef, metadata }),
+    },
+  )
+
+  assert.equal(result.text, 'current answer')
+  assert.equal(result.sessionRef, 'hermes-session')
+  assert.equal(result.completed, true)
+  assert.equal(fs.readFileSync(modeFile, 'utf8'), 'default')
+  assert.equal(events.filter(event => event.type === 'answer_delta')
+    .map(event => event.delta).join(''), 'current answer')
+  assert.deepEqual(events.slice(0, 3).map(event => [event.type, event.status]), [
+    ['plan', 'running'],
+    ['tool_start', 'running'],
+    ['tool_result_summary', 'completed'],
   ])
+  assert.match(events.find(event => event.type === 'plan')?.summary || '', /Inspect workspace/)
+  const toolResult = events.find(event => event.type === 'tool_result_summary')
+  assert.match(toolResult.summary, /query: text \(11 chars\)/)
+  assert.match(toolResult.detail, /matches/)
+  assert.doesNotMatch(
+    JSON.stringify(events),
+    /previous answer|late replay|PRIVATE_REASONING|targetKinds|aws-secret-value|hunter2/,
+  )
+  assert.deepEqual(sessionMetadata, [{
+    sessionRef: 'hermes-session', metadata: { transport: 'acp' },
+  }])
 })
 
 test('Hermes normalizes official quiet stdout as the fallback reply', () => {
@@ -313,13 +583,12 @@ test('Hermes normalizes official quiet stdout as the fallback reply', () => {
   })
 })
 
-test('Hermes accepts an explicit OpenAI-compatible provider without exposing its key in arguments', () => {
+test('Hermes ACP keeps explicit Provider credentials out of process arguments', () => {
   const spec = invocation('hermes', '/tmp/hermes', '/tmp', '', {
     provider: { id: 'openai-api', model: 'glm' },
   })
-  assert.deepEqual(spec.args, [
-    'chat', '--quiet', '--provider', 'openai-api', '--model', 'glm', '--query',
-  ])
+  assert.deepEqual(spec.args, ['acp'])
+  assert.equal(spec.acpMode, 'default')
   assert.equal(spec.args.some(value => value.includes('test-secret')), false)
 })
 
@@ -403,6 +672,7 @@ process.stderr.write('session_id: hermes-env-session\\n')
     {
       home: directory,
       sandbox: 'workspace-write',
+      skills: ['legacy-test'],
       env: { HERMES_EXEC_ASK: '0', HERMES_YOLO_MODE: '1' },
       hermesMessageWatermarkFn: () => 0,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -431,6 +701,7 @@ process.stderr.write('diagnostic\\nsession_id: hermes-session-123\\n')
     directory,
     {
       home: directory,
+      skills: ['legacy-test'],
       hermesMessageWatermarkFn: () => 23,
       hermesFinalResponseFn: () => 'Hermes reply',
     },
@@ -458,6 +729,7 @@ process.stderr.write('┊ review diff\\na//tmp/report.py → b//tmp/report.py\\n
     directory,
     {
       env: { OPENAI_API_KEY: 'test-secret-value' },
+      skills: ['legacy-test'],
       onProgress: step => progress.push(step),
       hermesMessageWatermarkFn: () => 41,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -565,6 +837,7 @@ process.stderr.write(${JSON.stringify(`${processProgress}\nsession_id: hermes-se
     directory,
     {
       onProgress: step => progress.push(step),
+      skills: ['legacy-test'],
       onSessionRef: async (sessionRef) => {
         await new Promise(resolve => setImmediate(resolve))
         lifecycle.push(`session:${sessionRef}`)
@@ -607,6 +880,7 @@ process.stderr.write('session_id: hermes-session-lookup-failure\\n')
         await new Promise(resolve => setImmediate(resolve))
         lifecycle.push(`session:${sessionRef}`)
       },
+      skills: ['legacy-test'],
       hermesMessageWatermarkFn: () => 61,
       hermesFinalResponseFn: () => {
         lifecycle.push('final-lookup')
@@ -636,6 +910,7 @@ process.stderr.write('session_id: hermes-session-no-watermark\\n')
     'hello',
     directory,
     {
+      skills: ['legacy-test'],
       hermesMessageWatermarkFn: () => null,
       hermesFinalResponseFn: () => {
         finalLookupCount += 1
@@ -678,14 +953,24 @@ process.stdout.write(JSON.stringify({
 `)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
+  const events = []
   const result = await runAgent(
     { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
     'hello',
     directory,
-    { env: { OPENCLAW_WORKSPACE_DIR: '/tmp/caller-supplied-workspace' } },
+    {
+      env: { OPENCLAW_WORKSPACE_DIR: '/tmp/caller-supplied-workspace' },
+      onEvent: event => events.push(event),
+    },
   )
 
   assert.equal(result.text, directory)
+  assert.deepEqual(events[0], {
+    id: 'openclaw-connector',
+    type: 'warning',
+    status: 'waiting',
+    title: 'connector_limited',
+  })
 })
 
 test('WorkBuddy uses non-interactive output and resumes its native session', () => {
@@ -880,11 +1165,17 @@ input.on('line', (line) => {
     createdEvents.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
     'new|plan|cancelled|first prompt|[path]',
   )
-  assert.deepEqual(createdEvents.slice(0, 3), [
-    { type: 'reasoning_summary', status: 'running', title: 'reasoning' },
+  assert.deepEqual(createdEvents.slice(0, 2).map(event => ({
+    id: event.id,
+    type: event.type,
+    status: event.status,
+    title: event.title,
+  })), [
     { id: 'tool-1', type: 'tool_start', status: 'running', title: 'search' },
     { id: 'tool-1', type: 'tool_result_summary', status: 'completed', title: 'search' },
   ])
+  assert.equal(createdEvents[0].summary, '[operation hidden]')
+  assert.match(createdEvents[1].detail, /Output: 1 line, 19 bytes/)
   assert.doesNotMatch(
     JSON.stringify(createdEvents),
     /PRIVATE_CHAIN_OF_THOUGHT|command|rg |Users|private tool output|stderr/i,
@@ -1337,11 +1628,7 @@ const events = [
       type: 'content_block_start', message_id: 'message-tool', index: 0,
       content_block: {
         type: 'tool_use', id: 'tool-1', name: 'Bash',
-        input: {
-          command: 'rg -n token /Users/private/workspace',
-          cwd: '/Users/private/workspace',
-          env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
-        },
+        input: {},
       },
     },
   },
@@ -1352,7 +1639,11 @@ const events = [
       id: 'message-tool',
       content: [{
         type: 'tool_use', id: 'tool-1', name: 'Bash',
-        input: { command: 'duplicate command must stay private' },
+        input: {
+          command: 'ls /Users/private/workspace | head -5',
+          cwd: '/Users/private/workspace',
+          env: { OPENAI_API_KEY: process.env.OPENAI_API_KEY },
+        },
       }],
     },
   },
@@ -1453,6 +1744,7 @@ send()
       kind,
     )
     assert.equal(events.filter(event => event.type === 'tool_start').length, 1, kind)
+    assert.equal(events.filter(event => event.type === 'tool_update').length, 1, kind)
     assert.equal(events.filter(event => event.type === 'tool_result_summary').length, 1, kind)
     assert.equal(events.filter(event => event.type === 'plan').length, 1, kind)
     const reasoningEvents = events.filter(event => event.type === 'reasoning_summary')
@@ -1461,9 +1753,27 @@ send()
     ], kind)
     assert.equal(reasoningEvents[0].summary, undefined, kind)
     assert.equal(reasoningEvents.at(-1).summary, 'Compared the available evidence.', kind)
+    assert.equal(events.find(event => event.type === 'tool_start')?.title, 'Bash', kind)
+    assert.equal(
+      events.find(event => event.type === 'tool_update')?.summary
+        .includes('operation: ls (1 hidden argument) | head -5'),
+      true,
+      kind,
+    )
+    assert.equal(
+      events.find(event => event.type === 'tool_result_summary')?.summary
+        .includes('operation: ls (1 hidden argument) | head -5'),
+      true,
+      kind,
+    )
+    assert.match(
+      events.find(event => event.type === 'tool_result_summary')?.detail || '',
+      /^Output: 1 line, \d+ bytes$/,
+      kind,
+    )
     assert.doesNotMatch(
       JSON.stringify(events),
-      /hidden reasoning|hidden final thought|private subagent answer|raw tool output|duplicate command|rg -n|Users|private\/workspace|OPENAI_API_KEY|provider-secret|executable_path/i,
+      /hidden reasoning|hidden final thought|private subagent answer|raw tool output|duplicate command|Users|private\/workspace|OPENAI_API_KEY|provider-secret|executable_path/i,
       kind,
     )
   }
@@ -2245,6 +2555,54 @@ test('Windows Agent detection reads versions through the portable command launch
   }])
 })
 
+test('Hermes detection records ACP availability when the capability check succeeds', async () => {
+  const calls = []
+  const found = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'hermes' ? '/tmp/hermes' : null,
+    execFileFn: async (_command, args) => {
+      calls.push(args)
+      if (args[0] === '--version') return { stdout: 'Hermes 1.2.3\n', stderr: '' }
+      assert.deepEqual(args, ['acp', '--check'])
+      return { stdout: '', stderr: '' }
+    },
+  })
+
+  assert.deepEqual(calls, [['--version'], ['acp', '--check']])
+  assert.deepEqual(found, [{
+    kind: 'hermes',
+    name: 'Hermes CLI',
+    executable: '/tmp/hermes',
+    version: 'Hermes 1.2.3',
+    acpAvailable: true,
+  }])
+})
+
+test('Hermes detection records unavailable ACP when the capability check fails', async () => {
+  const calls = []
+  const found = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'hermes' ? '/tmp/hermes' : null,
+    execFileFn: async (_command, args) => {
+      calls.push(args)
+      if (args[0] === '--version') return { stdout: 'Hermes 1.2.3\n', stderr: '' }
+      assert.deepEqual(args, ['acp', '--check'])
+      throw new Error('ACP unavailable')
+    },
+  })
+
+  assert.deepEqual(calls, [['--version'], ['acp', '--check']])
+  assert.deepEqual(found, [{
+    kind: 'hermes',
+    name: 'Hermes CLI',
+    executable: '/tmp/hermes',
+    version: 'Hermes 1.2.3',
+    acpAvailable: false,
+  }])
+})
+
 test('Agent detection ignores blank output and startup warnings before the version line', async () => {
   const found = await detectAgents({
     platform: 'darwin',
@@ -2371,7 +2729,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal, hermesMessageWatermarkFn: () => 0 },
+    { signal: controller.signal, skills: ['legacy-test'], hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pid = Number(await readWhenReady(readyFile))
 
@@ -2404,7 +2762,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal, hermesMessageWatermarkFn: () => 0 },
+    { signal: controller.signal, skills: ['legacy-test'], hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pids = await readJsonWhenReady(readyFile)
 

@@ -178,10 +178,15 @@ button svg {
   flex-direction: column;
   overflow: hidden;
   border: 0;
+  border-left: 0;
   border-radius: var(--workspace-radius);
   background: var(--workspace-surface);
-  box-shadow: var(--workspace-shadow);
   color: var(--text);
+  box-shadow: var(--workspace-shadow), -18px 0 38px rgb(41 62 73 / 0.09);
+}
+
+:root[data-theme="dark"] .run-trace-panel {
+  box-shadow: var(--workspace-shadow), -18px 0 42px rgb(0 0 0 / 0.28);
 }
 
 .trace-panel-scrim {
@@ -3975,16 +3980,16 @@ button svg {
 }
 
 .run-status-panel {
-  min-height: 128px;
+  min-height: 0;
   display: grid;
-  gap: 12px;
-  margin-top: 4px;
-  padding: 13px 14px;
-  overflow: hidden;
+  gap: 9px;
+  margin-top: 8px;
+  padding: 8px 2px 4px;
+  overflow: visible;
   border: 0;
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--surface-raised) 76%, var(--surface-active) 24%);
-  box-shadow: 0 8px 24px rgb(72 54 38 / 0.08);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .run-status-panel.group {
@@ -4002,10 +4007,6 @@ button svg {
   box-shadow: none;
 }
 
-:root[data-theme="dark"] .run-status-panel.group.multi {
-  box-shadow: 0 10px 28px rgb(0 0 0 / 0.22);
-}
-
 .run-status-header {
   min-width: 0;
   display: flex;
@@ -4013,11 +4014,35 @@ button svg {
   gap: 11px;
 }
 
-.run-status-header > div:last-child {
+.run-status-copy {
   min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+.run-status-meta {
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.run-status-meta .run-summary-status[data-status="completed"] { color: #347a66; }
+.run-status-meta .run-summary-status[data-status="failed"] { color: var(--danger); }
+.run-status-meta .run-summary-status[data-status="partial"] { color: var(--accent-hover); }
+:root[data-theme="dark"] .run-status-meta .run-summary-status[data-status="completed"] { color: #79c9af; }
+
+.run-details-button {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.run-details-button:hover,
+.run-details-button:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .run-status-header strong {
@@ -4084,7 +4109,7 @@ button svg {
   position: absolute;
   inset: 1px;
   z-index: 0;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: 50%;
   opacity: 0;
   transform: scale(0.78);
@@ -4100,28 +4125,27 @@ button svg {
   transform-origin: center;
 }
 
-.run-agent-logo[data-status="queued"] img {
+.run-agent-logo[data-status="queued"] img,
+.run-agent-logo[data-status="not-started"] img {
   opacity: 0.38;
   filter: saturate(0.55);
   transform: scale(0.92);
 }
 
 .run-agent-logo[data-status="running"]::before {
-  border-color: color-mix(in srgb, var(--accent) 72%, transparent);
-  opacity: 0.72;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  opacity: 1;
   transform: scale(1);
-  animation: run-agent-halo 1.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 
 .run-agent-logo[data-status="running"] img {
-  animation: run-agent-breathe 1.5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  transform: scale(1);
 }
 
 .run-agent-logo[data-status="completed"]::before {
-  border-color: color-mix(in srgb, #347a66 72%, transparent);
-  opacity: 0.82;
+  background: color-mix(in srgb, #347a66 12%, transparent);
+  opacity: 1;
   transform: scale(1);
-  animation: run-agent-settle 0.38s cubic-bezier(0.2, 0.9, 0.24, 1.18) both;
 }
 
 .run-agent-logo[data-status="completed"] img {
@@ -4129,8 +4153,8 @@ button svg {
 }
 
 .run-agent-logo[data-status="failed"]::before {
-  border-color: color-mix(in srgb, var(--danger) 74%, transparent);
-  opacity: 0.86;
+  background: color-mix(in srgb, var(--danger) 13%, transparent);
+  opacity: 1;
   transform: scale(1);
 }
 
@@ -4140,7 +4164,7 @@ button svg {
 }
 
 :root[data-theme="dark"] .run-agent-logo[data-status="completed"]::before {
-  border-color: color-mix(in srgb, #79c9af 76%, transparent);
+  background: color-mix(in srgb, #79c9af 14%, transparent);
 }
 
 .relay-run-indicator {
@@ -4171,9 +4195,9 @@ button svg {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface-raised);
+  padding: 16px 16px 10px;
+  border-bottom: 0;
+  background: var(--surface);
 }
 
 .trace-panel-header > div {
@@ -4186,8 +4210,7 @@ button svg {
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .trace-panel-header strong {
@@ -4201,15 +4224,15 @@ button svg {
 .trace-panel-agent-switch {
   min-height: 0;
   display: flex;
-  gap: 5px;
+  gap: 4px;
   overflow-x: auto;
-  padding: 9px 12px;
-  border-bottom: 1px solid var(--border);
+  padding: 4px 10px 10px;
+  border-bottom: 0;
   background: var(--surface);
 }
 
 .trace-agent-tab {
-  min-width: 148px;
+  min-width: 132px;
   min-height: 42px;
   display: grid;
   grid-template-columns: 26px minmax(0, 1fr);
@@ -4217,7 +4240,7 @@ button svg {
   gap: 8px;
   flex: 0 0 auto;
   padding: 6px 8px;
-  border: 1px solid transparent;
+  border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   color: var(--text-soft);
@@ -4227,12 +4250,10 @@ button svg {
 
 .trace-agent-tab:hover,
 .trace-agent-tab:focus-visible {
-  border-color: var(--border);
   background: var(--surface-hover);
 }
 
 .trace-agent-tab.active {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
   background: var(--accent-soft);
   color: var(--text);
 }
@@ -4263,7 +4284,7 @@ button svg {
   min-height: 0;
   flex: 1;
   overflow: auto;
-  padding: 14px 14px 28px;
+  padding: 12px 16px 28px;
 }
 
 .trace-panel-summary {
@@ -4328,8 +4349,8 @@ button svg {
 .trace-conclusion {
   display: grid;
   gap: 7px;
-  padding: 10px;
-  border-left: 3px solid var(--accent);
+  padding: 11px 12px;
+  border-left: 0;
   border-radius: var(--radius-sm);
   background: var(--surface-raised);
 }
@@ -4353,9 +4374,9 @@ button svg {
 }
 
 .trace-context-stats span {
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
   color: var(--muted);
   font-size: 10px;
 }
@@ -4367,12 +4388,22 @@ button svg {
   line-height: 1.45;
 }
 
+.trace-detail-unavailable {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .trace-event-section,
 .trace-source-section {
   display: grid;
   gap: 8px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+  padding-top: 18px;
+  border-top: 0;
 }
 
 .trace-source-section { margin-top: 16px; }
@@ -4389,15 +4420,20 @@ button svg {
 
 .trace-event-list {
   display: grid;
-  gap: 5px;
+  gap: 3px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
 .trace-event-list details {
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: var(--radius-sm);
+  background: transparent;
+}
+
+.trace-event-list details:hover,
+.trace-event-list details[open] {
   background: var(--surface-raised);
 }
 
@@ -4418,9 +4454,9 @@ button svg {
 .trace-event-list details[open] summary svg { transform: rotate(180deg); }
 
 .trace-event-type {
-  padding: 2px 5px;
-  border-radius: 4px;
-  background: var(--surface-hover);
+  padding: 2px 0;
+  border-radius: 0;
+  background: transparent;
   color: var(--muted);
   font-size: 9px;
   font-weight: 700;
@@ -4449,12 +4485,16 @@ button svg {
   overflow-wrap: anywhere;
 }
 
+.trace-event-body .trace-event-detail-unavailable {
+  color: var(--muted);
+}
+
 .trace-event-body pre {
   max-height: 240px;
   margin: 0;
   overflow: auto;
   padding: 8px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 4px;
   background: var(--surface);
   color: var(--text-soft);
@@ -4476,10 +4516,10 @@ button svg {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 7px;
-  border: 1px solid var(--border);
+  padding: 7px 8px;
+  border: 0;
   border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-soft);
   font-size: 11px;
   line-height: 1.4;
@@ -4489,7 +4529,6 @@ button svg {
 
 .trace-source-list button:hover,
 .trace-source-list button:focus-visible {
-  border-color: var(--border-strong);
   background: var(--surface-hover);
 }
 
@@ -4513,25 +4552,36 @@ button svg {
 .trace-panel-empty { margin: auto; }
 
 .run-agent-list {
-  display: grid;
-  gap: 2px;
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 1px 0 4px;
 }
 
 .run-agent-row {
-  min-width: 0;
-  min-height: 40px;
+  min-width: 138px;
+  min-height: 48px;
   position: relative;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
+  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-areas:
+    "avatar name"
+    "avatar state";
   align-items: center;
-  gap: 10px;
+  column-gap: 8px;
+  row-gap: 0;
+  flex: 0 0 auto;
   overflow: hidden;
-  padding: 5px 9px;
+  padding: 4px 7px;
+  border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  animation: run-agent-reveal 0.22s ease-out both;
-  animation-delay: calc(var(--reveal-index, 0) * 36ms);
   transition: background 0.2s ease, opacity 0.2s ease;
+}
+
+.run-agent-row:hover:not(:disabled),
+.run-agent-row:focus-visible {
+  background: var(--surface-hover);
 }
 
 .run-agent-row[data-status="completed"] {
@@ -4547,10 +4597,15 @@ button svg {
 }
 
 .run-agent-row strong {
+  grid-area: name;
   overflow: hidden;
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.run-agent-row > .run-agent-logo {
+  grid-area: avatar;
 }
 
 .run-agent-row small {
@@ -4559,11 +4614,12 @@ button svg {
 }
 
 .run-agent-state {
-  min-width: 94px;
+  grid-area: state;
+  min-width: 0;
   display: inline-flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: 7px;
+  justify-content: flex-start;
+  gap: 5px;
 }
 
 .run-agent-motion {
@@ -4584,7 +4640,7 @@ button svg {
 }
 
 .run-agent-motion[data-status="completed"] svg {
-  animation: run-agent-complete 0.42s cubic-bezier(0.2, 0.9, 0.24, 1.22) both;
+  animation: none;
 }
 
 .run-agent-motion[data-status="failed"] {
@@ -4628,11 +4684,20 @@ button svg {
   animation: run-agent-wait 1.45s ease-in-out infinite;
 }
 
+.run-status-panel.history .run-agent-dots i {
+  animation: none;
+  opacity: 0.45;
+}
+
 .run-agent-dots i:nth-child(2) { animation-delay: 0.18s; }
 .run-agent-dots i:nth-child(3) { animation-delay: 0.36s; }
 
 .run-agent-row small.queued {
   color: var(--text-soft);
+}
+
+.run-agent-row small.not-started {
+  color: var(--muted);
 }
 
 .run-agent-row small.running {
@@ -4653,31 +4718,6 @@ button svg {
 
 :root[data-theme="dark"] .run-agent-motion[data-status="completed"] {
   color: #79c9af;
-}
-
-@keyframes run-agent-reveal {
-  from { opacity: 0; transform: translateY(4px); }
-}
-
-@keyframes run-agent-halo {
-  0% { opacity: 0.18; transform: scale(0.82); }
-  32% { opacity: 0.88; }
-  100% { opacity: 0; transform: scale(1.16); }
-}
-
-@keyframes run-agent-breathe {
-  0%, 100% { transform: scale(0.96); }
-  48% { transform: scale(1.04); }
-}
-
-@keyframes run-agent-settle {
-  from { opacity: 0; transform: scale(0.72); }
-  to { opacity: 0.82; transform: scale(1); }
-}
-
-@keyframes run-agent-complete {
-  from { opacity: 0; transform: scale(0.55) rotate(-18deg); }
-  to { opacity: 1; transform: scale(1) rotate(0); }
 }
 
 @keyframes run-agent-bar {

@@ -59,6 +59,8 @@ const ACP_CANCEL_GRACE_MS = 250
 const ACP_MAX_LINE_BYTES = 1024 * 1024
 const ACP_MAX_INPUT_BYTES = 16 * 1024 * 1024
 const ACP_MAX_REPLY_BYTES = 10 * 1024 * 1024
+const MAX_RUNTIME_JSON_PENDING_CHARS = 1024 * 1024
+const MAX_HERMES_PROGRESS_PENDING_CHARS = 64 * 1024
 const DEFAULT_WINDOWS_PATHEXT = ['.COM', '.EXE', '.BAT', '.CMD']
 const VERSION_LINE = /\bv?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?\b/
 const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
@@ -386,11 +388,26 @@ async function detectAgents(options = {}) {
       version = lines.find(line => VERSION_LINE.test(line)) || ''
     } catch { /* a broken shim is not a usable CLI */ }
     if (!version) continue
+    let acpAvailable
+    if (kind === 'hermes') {
+      try {
+        const checkCommand = prepareCommandFn(executable, ['acp', '--check'], options)
+        await execFileFn(checkCommand.command, checkCommand.args, {
+          timeout: 8000,
+          windowsHide: true,
+          env: childEnv,
+        })
+        acpAvailable = true
+      } catch {
+        acpAvailable = false
+      }
+    }
     found.push({
       kind,
       name: `${AGENT_PROFILES[kind].label} CLI`,
       executable,
       version,
+      ...(kind === 'hermes' ? { acpAvailable } : {}),
     })
   }
   return found
@@ -465,6 +482,17 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
   }
   if (kind === 'hermes') {
     const skills = hermesSkillNames(options.skills)
+    const legacySessionRef = options.sessionTransport === 'acp' ? '' : sessionRef
+    const useAcp = !attachments.length && !skills.length
+      && options.hermesAcpAvailable !== false
+      && (!sessionRef || options.sessionTransport === 'acp')
+    if (useAcp) {
+      return {
+        command: executable,
+        args: ['acp'],
+        acpMode: options.sandbox === 'workspace-write' ? 'accept_edits' : 'default',
+      }
+    }
     return {
       command: executable,
       args: [
@@ -474,7 +502,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         ...(options.provider?.id ? ['--provider', options.provider.id] : []),
         ...(options.provider?.model ? ['--model', options.provider.model] : []),
         ...skills.flatMap(skill => ['--skills', skill]),
-        ...(sessionRef ? ['--resume', sessionRef] : []),
+        ...(legacySessionRef ? ['--resume', legacySessionRef] : []),
         ...(attachments[0] ? ['--image', attachments[0]] : []),
         '--query',
       ],
@@ -628,6 +656,7 @@ function codexProgressTitle(item) {
   if (/read[_ -]?file|\b(?:cat|sed|head|tail|ls|stat|file|ffprobe)\b|git (?:show|diff)/.test(descriptor)) {
     return 'read_file'
   }
+  if (type === 'command_execution') return 'Bash'
   if (/tool|mcp/.test(type)) return 'tool'
   return 'process'
 }
@@ -673,6 +702,7 @@ function createJsonLineParser(onEvent) {
     write(chunk) {
       pending += decoder.write(chunk)
       consume(false)
+      if (pending.length > MAX_RUNTIME_JSON_PENDING_CHARS) pending = ''
     },
     end() {
       pending += decoder.end()
@@ -972,11 +1002,14 @@ function runtimeEventStatus(value, fallback = '') {
 function sanitizeRuntimeEventText(value, childEnv, limit, singleLine = false, trim = true) {
   let text = stripAnsi(redactChildSecrets(value, childEnv))
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, '[redacted private key]')
     .replace(/file:\/\/\/[^\s"'`<>|,;)}\]]+/gi, '[path]')
     .replace(/(?<![A-Za-z0-9:])(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|,;)}\]]+/g, '[path]')
     .replace(/(?<![A-Za-z0-9:])\/(?!\/)[^\s"'`<>|,;)}\]]+/g, '[path]')
-    .replace(/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|secret|password|authorization)[A-Za-z0-9_.-]*)\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;}\]]+)/gi, 'credential=[redacted]')
+    .replace(/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|database[_-]?url|connection[_-]?string|dsn|token|secret|password|credential|authorization|private[_-]?key)[A-Za-z0-9_.-]*)\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\[[^\]\r\n]*\]|[^\s,;}\]]+)/gi, 'credential=[redacted]')
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]')
     .replace(/\bbearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]')
+    .replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)([^\s/@:]+):([^\s/@]+)@/gi, '$1[redacted]@')
     .replace(/(["']?)(?:command|cmd)\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\r\n]+)/gi, '[operation hidden]')
     .replace(/(["']?)stderr\1\s*[:=]\s*[^\r\n]*/gi, '[diagnostic hidden]')
   if (singleLine) text = text.replace(/\s+/g, ' ')
@@ -1047,7 +1080,12 @@ function runtimeToolTitle(event) {
     name: event?.name || event?.toolName || part.name,
     tool: event?.tool || event?.tool_name || part.tool,
   })
-  return classified === 'process' ? 'tool' : classified
+  if (!['process', 'tool'].includes(classified)) return classified
+  const name = String(
+    event?.name || event?.toolName || event?.tool_name || event?.tool
+      || part.name || part.toolName || part.tool_name || part.tool || '',
+  )
+  return /^[A-Za-z0-9_.:-]{1,80}$/u.test(name) ? name : 'tool'
 }
 
 function runtimeEventId(event) {
@@ -1056,39 +1094,299 @@ function runtimeEventId(event) {
     || part.toolCallId || part.tool_call_id || part.id || ''
 }
 
+const RUNTIME_SENSITIVE_FIELD = /(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|database[_-]?url|connection[_-]?string|dsn|token|secret|password|credential|authorization|private[_-]?key)/i
+
+function redactRuntimeStructure(value, seen = new WeakSet(), depth = 0) {
+  if (value == null || typeof value !== 'object') return value
+  if (depth >= 6) return '[truncated]'
+  if (seen.has(value)) return '[circular]'
+  seen.add(value)
+  if (Array.isArray(value)) {
+    return value.slice(0, 50).map(item => redactRuntimeStructure(item, seen, depth + 1))
+  }
+  let redactedFields = 0
+  return Object.fromEntries(Object.entries(value).slice(0, 50).map(([key, item]) => {
+    if (RUNTIME_SENSITIVE_FIELD.test(key)) {
+      redactedFields += 1
+      return [`credential${redactedFields > 1 ? redactedFields : ''}`, '[redacted]']
+    }
+    return [key, redactRuntimeStructure(item, seen, depth + 1)]
+  }))
+}
+
+function runtimeInputSummary(value) {
+  if (value == null) return ''
+  if (typeof value === 'string') return `text (${value.length} chars)`
+  if (['number', 'boolean', 'bigint'].includes(typeof value)) return String(value)
+  if (Array.isArray(value)) return `${value.length} items`
+  if (typeof value !== 'object') return ''
+  const safe = redactRuntimeStructure(value)
+  return Object.entries(safe).slice(0, 10).map(([key, item]) => {
+    if (item === '[redacted]') return `${key}: [redacted]`
+    if (['command', 'cmd'].includes(key.toLowerCase()) && typeof item === 'string') {
+      return `operation: ${runtimeCommandSummary(item)}`
+    }
+    if (['path', 'file', 'filename', 'cwd', 'url'].includes(key.toLowerCase())) {
+      return `${key}: provided`
+    }
+    if (['number', 'boolean', 'bigint'].includes(typeof item)) return `${key}: ${String(item)}`
+    if (typeof item === 'string') {
+      const simple = ['action', 'kind', 'method', 'mode', 'name', 'tool'].includes(key.toLowerCase())
+        && /^[A-Za-z0-9_.:-]{1,80}$/u.test(item)
+      return `${key}: ${simple ? item : `text (${item.length} chars)`}`
+    }
+    if (Array.isArray(item)) return `${key}: ${item.length} items`
+    return `${key}: object (${Object.keys(item || {}).length} fields)`
+  }).join(', ')
+}
+
+function runtimeCommandTokens(value) {
+  const input = String(value || '')
+  const tokens = []
+  let word = ''
+  let quote = ''
+  let escaped = false
+  const pushWord = () => {
+    if (!word) return
+    tokens.push({ type: 'word', value: word })
+    word = ''
+  }
+  const pushOperator = (operator) => {
+    pushWord()
+    if (operator === ';' && tokens.at(-1)?.type === 'operator') return
+    tokens.push({ type: 'operator', value: operator })
+  }
+
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index]
+    if (escaped) {
+      if (char !== '\n' && char !== '\r') word += char
+      escaped = false
+      continue
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = ''
+        continue
+      }
+      if (char === '\\' && quote === '"' && index + 1 < input.length) {
+        index += 1
+        word += input[index]
+        continue
+      }
+      word += char
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '"' || char === "'") {
+      quote = char
+      continue
+    }
+    if (char === '\r' || char === '\n') {
+      if (char === '\r' && input[index + 1] === '\n') index += 1
+      pushOperator(';')
+      continue
+    }
+    if (/\s/u.test(char)) {
+      pushWord()
+      continue
+    }
+    if (char === '&' && input[index + 1] === '&') {
+      pushOperator('&&')
+      index += 1
+      continue
+    }
+    if (char === '|') {
+      pushOperator(input[index + 1] === '|' ? '||' : '|')
+      if (input[index + 1] === '|') index += 1
+      continue
+    }
+    if (char === ';') {
+      pushOperator(';')
+      continue
+    }
+    if (char === '>' || char === '<') {
+      if (/^\d+$/u.test(word)) word = ''
+      else pushWord()
+      if (input[index + 1] === char) index += 1
+      tokens.push({ type: 'redirect' })
+      continue
+    }
+    word += char
+  }
+  pushWord()
+  return tokens
+}
+
+function unwrapRuntimeShellCommand(tokens) {
+  if (tokens.length !== 3 || tokens.some(token => token.type !== 'word')
+      || !['-c', '-lc'].includes(tokens[1].value)) return tokens
+  const rawShell = String(tokens[0].value || '')
+  const shell = rawShell.split(/[\\/]/u).at(-1).toLowerCase()
+  if (!['sh', 'bash', 'zsh'].includes(shell)) return tokens
+  const unwrapped = runtimeCommandTokens(tokens[2].value)
+  return unwrapped.length ? unwrapped : tokens
+}
+
+function runtimeCommandSummary(value) {
+  const tokens = unwrapRuntimeShellCommand(runtimeCommandTokens(value))
+  const segments = []
+  let connector = ''
+  let segment = []
+  let hideRedirectTarget = false
+  for (const token of tokens) {
+    if (token.type === 'operator') {
+      if (segment.length) segments.push({ connector, tokens: segment })
+      connector = token.value
+      segment = []
+      hideRedirectTarget = false
+      continue
+    }
+    if (token.type === 'redirect') {
+      hideRedirectTarget = true
+      continue
+    }
+    if (hideRedirectTarget) {
+      hideRedirectTarget = false
+      continue
+    }
+    if (token.type === 'word') segment.push(token.value)
+  }
+  if (segment.length) segments.push({ connector, tokens: segment })
+
+  const safeSubcommands = new Set([
+    'build', 'diff', 'exec', 'pack', 'run', 'show', 'status', 'test', 'typecheck',
+  ])
+  const summarizeSegment = (items) => {
+    let index = 0
+    if (items[index] === 'env') index += 1
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(items[index] || '')) index += 1
+    const rawVerb = String(items[index] || '')
+    const basename = rawVerb.split(/[\\/]/u).at(-1).replace(/\.(?:cmd|bat|exe)$/iu, '')
+    const verb = /^[A-Za-z0-9_.+-]{1,80}$/u.test(basename) ? basename : 'shell'
+    const remaining = items.slice(index + 1)
+    const subcommandName = String(remaining[0] || '').toLowerCase()
+    const subcommand = safeSubcommands.has(subcommandName)
+      ? subcommandName
+      : ''
+    const flags = []
+    let hiddenCount = 0
+    remaining.forEach((token, remainingIndex) => {
+      if (remainingIndex === 0 && subcommand) return
+      if (flags.length < 6 && /^(?:-[A-Za-z0-9]|--[A-Za-z0-9][A-Za-z0-9-]*)$/u.test(token)) {
+        flags.push(token)
+      } else {
+        hiddenCount += 1
+      }
+    })
+    return [
+      verb,
+      subcommand,
+      ...flags,
+      hiddenCount
+        ? `(${hiddenCount} hidden argument${hiddenCount === 1 ? '' : 's'})`
+        : '',
+    ].filter(Boolean).join(' ')
+  }
+
+  const visibleSegments = segments.slice(0, 3)
+  const summary = visibleSegments.map((item, index) => [
+    index ? item.connector : '',
+    summarizeSegment(item.tokens),
+  ].filter(Boolean).join(' ')).join(' ')
+  const omitted = Math.max(0, segments.length - visibleSegments.length)
+  return [summary || 'shell', omitted ? `(${omitted} more commands)` : '']
+    .filter(Boolean)
+    .join(' ')
+}
+
+function runtimeToolOperation(event) {
+  const part = event?.part && typeof event.part === 'object' ? event.part : {}
+  const name = event?.name || event?.toolName || event?.tool_name || event?.tool
+    || event?.title || event?.kind || part.name || part.toolName || part.tool_name
+    || part.tool || part.title || part.kind || event?.type || 'tool'
+  const input = event?.command ?? event?.input ?? event?.arguments ?? event?.args
+    ?? event?.rawInput ?? part.command ?? part.input ?? part.arguments ?? part.args ?? part.rawInput
+  const detail = typeof event?.command === 'string'
+    ? runtimeCommandSummary(event.command)
+    : runtimeInputSummary(input)
+  return detail ? `${name}: ${detail}` : String(name)
+}
+
+function runtimeToolResultDetail(event) {
+  const part = event?.part && typeof event.part === 'object' ? event.part : {}
+  const output = event?.aggregated_output ?? event?.output ?? event?.result ?? event?.content
+    ?? event?.rawOutput ?? event?.error ?? part.aggregated_output ?? part.output ?? part.result
+    ?? part.content ?? part.rawOutput ?? part.error
+  const lines = []
+  const exitCode = event?.exit_code ?? event?.exitCode ?? part.exit_code ?? part.exitCode
+  if (Number.isInteger(exitCode)) lines.push(`Exit code: ${exitCode}`)
+  if (typeof output === 'string' && output) {
+    const withoutTrailingBreaks = output.replace(/(?:\r?\n)+$/u, '')
+    const lineCount = withoutTrailingBreaks ? withoutTrailingBreaks.split(/\r?\n/).length : 0
+    lines.push(`Output: ${lineCount} line${lineCount === 1 ? '' : 's'}, ${Buffer.byteLength(output, 'utf8')} bytes`)
+  } else if (['number', 'boolean', 'bigint'].includes(typeof output)) {
+    lines.push(`Result: ${String(output)}`)
+  } else if (Array.isArray(output)) {
+    lines.push(`Result: ${output.length} item${output.length === 1 ? '' : 's'}`)
+  } else if (output && typeof output === 'object') {
+    const safe = redactRuntimeStructure(output)
+    const fields = Object.entries(safe).slice(0, 8).map(([key, value]) => {
+      if (value === '[redacted]') return `${key}: [redacted]`
+      if (['number', 'boolean', 'bigint'].includes(typeof value)) return `${key}: ${String(value)}`
+      if (typeof value === 'string') return `${key}: text (${value.length} chars)`
+      if (Array.isArray(value)) return `${key}: ${value.length} items`
+      return `${key}: object`
+    })
+    if (fields.length) lines.push(`Result fields:\n${fields.join('\n')}`)
+  }
+  return lines.join('\n')
+}
+
 function codexRuntimeEvents(event) {
-  if (event?.type === 'turn.started') {
-    return [{ id: 'turn', type: 'status', title: 'process', status: 'running' }]
-  }
-  if (event?.type === 'turn.completed') {
-    return [{ id: 'turn', type: 'status', title: 'process', status: 'completed' }]
-  }
+  if (['turn.started', 'turn.completed'].includes(event?.type)) return []
   if (!['item.started', 'item.completed'].includes(event?.type) || !event.item) return []
   const item = event.item
   if (event.type === 'item.completed' && item.type === 'agent_message'
       && typeof item.text === 'string') {
     return [{ type: 'answer_delta', status: 'running', delta: item.text }]
   }
-  if (event.type === 'item.completed' && item.type === 'reasoning') {
+  if (item.type === 'reasoning') {
     return [{
+      ...(item.id ? { id: String(item.id) } : { id: 'reasoning' }),
       type: 'reasoning_summary',
       title: 'reasoning',
-      status: 'completed',
-      ...(typeof item.summary === 'string' ? { summary: item.summary } : {}),
+      status: event.type === 'item.completed' ? 'completed' : 'running',
+      ...(event.type === 'item.completed' && typeof item.summary === 'string'
+        ? { summary: item.summary }
+        : {}),
     }]
   }
-  if (event.type === 'item.completed' && item.type === 'plan') {
+  if (item.type === 'plan') {
     const summary = typeof item.summary === 'string' ? item.summary : item.text
-    return typeof summary === 'string'
-      ? [{ type: 'plan', title: 'plan', summary }]
-      : []
+    return [{
+      ...(item.id ? { id: String(item.id) } : { id: 'plan' }),
+      type: 'plan',
+      title: 'plan',
+      status: event.type === 'item.completed' ? 'completed' : 'running',
+      ...(event.type === 'item.completed' && typeof summary === 'string' ? { summary } : {}),
+    }]
   }
   const progress = codexProgressEvent(event)
   if (!progress) return []
+  const summary = item.type === 'command_execution' && typeof item.command === 'string'
+    ? `Bash: operation: ${runtimeCommandSummary(item.command)}`
+    : runtimeToolOperation(item)
+  const detail = event.type === 'item.completed' ? runtimeToolResultDetail(item) : ''
   return [{
     ...progress,
     type: event.type === 'item.started' ? 'tool_start' : 'tool_result_summary',
     status: runtimeEventStatus(progress.status, 'completed'),
+    ...(summary ? { summary } : {}),
+    ...(detail ? { detail } : {}),
   }]
 }
 
@@ -1112,6 +1410,7 @@ function createClaudeQwenRuntimeState() {
     plans: new Map(),
     reasoning: new Map(),
     startedTools: new Set(),
+    toolSummaries: new Map(),
     toolTitles: new Map(),
   }
 }
@@ -1148,10 +1447,26 @@ function planLifecycleEvent(state, value, id, fallbackStatus = 'running') {
 
 function toolStartLifecycleEvent(state, block, fallbackId = '') {
   const id = String(block?.id || block?.tool_use_id || fallbackId)
-  if (id && state.startedTools.has(id)) return null
   const title = runtimeToolTitle({ type: 'tool_use', name: block?.name })
+  const summary = runtimeToolOperation(block)
+  if (id && state.startedTools.has(id)) {
+    const previous = state.toolSummaries.get(id) || ''
+    const generic = !previous || previous === String(block?.name || '')
+      || previous === state.toolTitles.get(id)
+    if (!generic || !summary || summary.length <= previous.length) return null
+    state.toolSummaries.set(id, summary)
+    state.toolTitles.set(id, title)
+    return {
+      id,
+      type: 'tool_update',
+      title,
+      status: 'running',
+      summary,
+    }
+  }
   if (id) {
     state.startedTools.add(id)
+    state.toolSummaries.set(id, summary)
     state.toolTitles.set(id, title)
   }
   return {
@@ -1159,6 +1474,7 @@ function toolStartLifecycleEvent(state, block, fallbackId = '') {
     type: 'tool_start',
     title,
     status: 'running',
+    ...(summary ? { summary } : {}),
   }
 }
 
@@ -1171,6 +1487,8 @@ function toolResultLifecycleEvent(state, block, fallbackId = '') {
     type: 'tool_result_summary',
     title: state.toolTitles.get(id) || runtimeToolTitle({ type: 'tool_result' }),
     status: block?.is_error || block?.isError ? 'failed' : 'completed',
+    ...(state.toolSummaries.get(id) ? { summary: state.toolSummaries.get(id) } : {}),
+    ...(runtimeToolResultDetail(block) ? { detail: runtimeToolResultDetail(block) } : {}),
   }
 }
 
@@ -1296,11 +1614,15 @@ function jsonCliRuntimeEvents(kind, event) {
   const completed = ['completed', 'failed', 'stopped', 'timeout'].includes(status)
     || /result|complete|finish|end/.test(type)
   const update = /update|progress/.test(type)
+  const summary = runtimeToolOperation(event)
+  const detail = completed ? runtimeToolResultDetail(event) : ''
   return [{
     id: runtimeEventId(event),
     type: completed ? 'tool_result_summary' : update ? 'tool_update' : 'tool_start',
     title: runtimeToolTitle(event),
     status: status || (completed ? 'completed' : 'running'),
+    ...(summary ? { summary } : {}),
+    ...(detail ? { detail } : {}),
   }]
 }
 
@@ -1315,24 +1637,35 @@ function acpPlanSummary(update) {
   return typeof plan?.content === 'string' ? plan.content : ''
 }
 
-function acpRuntimeEvents(update) {
+function createAcpRuntimeState() {
+  return { tools: new Map() }
+}
+
+function acpRuntimeEvents(update, state) {
   if (!update || typeof update !== 'object') return []
   if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
     return [{ type: 'answer_delta', status: 'running', delta: update.content.text }]
   }
   if (update.sessionUpdate === 'agent_thought_chunk' && update.content?.type === 'text') {
-    return [{ type: 'reasoning_summary', title: 'reasoning', status: 'running' }]
+    return []
   }
   if (update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update') {
     const status = runtimeEventStatus(update.status)
     const completed = ['completed', 'failed', 'stopped', 'timeout'].includes(status)
+    const id = String(update.toolCallId || '')
+    const operation = runtimeToolOperation(update)
+    if (id && operation && update.sessionUpdate === 'tool_call') state?.tools.set(id, operation)
+    const summary = state?.tools.get(id) || operation
+    const detail = completed ? runtimeToolResultDetail(update) : ''
     return [{
-      id: update.toolCallId,
+      id,
       type: completed
         ? 'tool_result_summary'
         : update.sessionUpdate === 'tool_call' ? 'tool_start' : 'tool_update',
       title: runtimeToolTitle(update),
       status: status || (update.sessionUpdate === 'tool_call' ? 'running' : 'waiting'),
+      ...(summary ? { summary } : {}),
+      ...(detail ? { detail } : {}),
     }]
   }
   if (['plan', 'plan_update', 'plan_removed'].includes(update.sessionUpdate)) {
@@ -1420,10 +1753,10 @@ function acpTransportError(diagnostic) {
   return agentExecutionError('LOCAL_AGENT_PROCESS_FAILED', diagnostic)
 }
 
-function validateAcpInboundMessage(message, validators, replyState) {
+function validateAcpInboundMessage(message, validators, replyState, protocolLabel) {
   if (!message || typeof message !== 'object' || Array.isArray(message)
       || message.jsonrpc !== '2.0') {
-    throw acpTransportError('Kimi ACP returned an invalid protocol message.')
+    throw acpTransportError(`${protocolLabel} returned an invalid protocol message.`)
   }
 
   const hasId = Object.hasOwn(message, 'id')
@@ -1431,13 +1764,14 @@ function validateAcpInboundMessage(message, validators, replyState) {
     if (message.method === 'session/update' && !hasId) {
       const parsed = validators.zSessionNotification.safeParse(message.params)
       if (!parsed.success) {
-        throw acpTransportError('Kimi ACP returned invalid session update parameters.')
+        throw acpTransportError(`${protocolLabel} returned invalid session update parameters.`)
       }
       const update = parsed.data.update
-      if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
+      if (replyState.collecting !== false
+          && update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         replyState.bytes += Buffer.byteLength(update.content.text, 'utf8')
         if (replyState.bytes > ACP_MAX_REPLY_BYTES) {
-          throw acpTransportError('Kimi ACP reply exceeded the safe output limit.')
+          throw acpTransportError(`${protocolLabel} reply exceeded the safe output limit.`)
         }
       }
       return message
@@ -1446,34 +1780,36 @@ function validateAcpInboundMessage(message, validators, replyState) {
       const validId = typeof message.id === 'string'
         || (Number.isInteger(message.id) && message.id >= 0)
       if (!validId || !validators.zRequestPermissionRequest.safeParse(message.params).success) {
-        throw acpTransportError('Kimi ACP returned an invalid permission request.')
+        throw acpTransportError(`${protocolLabel} returned an invalid permission request.`)
       }
       return message
     }
-    throw acpTransportError('Kimi ACP requested an unsupported client method.')
+    throw acpTransportError(`${protocolLabel} requested an unsupported client method.`)
   }
 
   if (!Number.isInteger(message.id) || message.id < 0) {
-    throw acpTransportError('Kimi ACP returned an invalid response identifier.')
+    throw acpTransportError(`${protocolLabel} returned an invalid response identifier.`)
   }
   const hasResult = Object.hasOwn(message, 'result')
   const hasError = Object.hasOwn(message, 'error')
   if (hasResult === hasError) {
-    throw acpTransportError('Kimi ACP returned an invalid response payload.')
+    throw acpTransportError(`${protocolLabel} returned an invalid response payload.`)
   }
   if (hasError) {
     const error = message.error
     if (!error || typeof error !== 'object' || Array.isArray(error)
         || !Number.isFinite(error.code) || typeof error.message !== 'string') {
-      throw acpTransportError('Kimi ACP returned an invalid error response.')
+      throw acpTransportError(`${protocolLabel} returned an invalid error response.`)
     }
   }
   return message
 }
 
-function boundedAcpStream(output, input, validators) {
+function boundedAcpStream(
+  output, input, validators, replyState = { bytes: 0, collecting: true },
+  protocolLabel = 'ACP Agent',
+) {
   const textEncoder = new TextEncoder()
-  const replyState = { bytes: 0 }
   const readable = new ReadableStream({
     async start(controller) {
       const reader = input.getReader()
@@ -1486,14 +1822,14 @@ function boundedAcpStream(output, input, validators) {
         try {
           message = JSON.parse(text)
         } catch {
-          throw acpTransportError('Kimi ACP returned malformed JSON.')
+          throw acpTransportError(`${protocolLabel} returned malformed JSON.`)
         }
-        controller.enqueue(validateAcpInboundMessage(message, validators, replyState))
+        controller.enqueue(validateAcpInboundMessage(message, validators, replyState, protocolLabel))
       }
       const append = (left, right) => {
         const size = left.length + right.length
         if (size > ACP_MAX_LINE_BYTES) {
-          throw acpTransportError('Kimi ACP message exceeded the safe line limit.')
+          throw acpTransportError(`${protocolLabel} message exceeded the safe line limit.`)
         }
         return left.length ? Buffer.concat([left, right], size) : Buffer.from(right)
       }
@@ -1505,7 +1841,7 @@ function boundedAcpStream(output, input, validators) {
           const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
           inputBytes += chunk.length
           if (inputBytes > ACP_MAX_INPUT_BYTES) {
-            throw acpTransportError('Kimi ACP input exceeded the safe total limit.')
+            throw acpTransportError(`${protocolLabel} input exceeded the safe total limit.`)
           }
           let offset = 0
           while (offset < chunk.length) {
@@ -1669,17 +2005,27 @@ function acpProtocolError(error, childEnv) {
     : agentExecutionError('LOCAL_AGENT_PROCESS_FAILED')
 }
 
-async function runKimiAcp(agent, prompt, workdir, options, spec) {
+function allowAcpSetupFallback(error) {
+  if (!error || typeof error !== 'object'
+      || error.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
+      || error.acpFallbackAllowed === true) return error
+  Object.defineProperty(error, 'acpFallbackAllowed', { value: true })
+  return error
+}
+
+async function runAcpAgent(agent, prompt, workdir, options, spec) {
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
   const prepared = prepareCommand(spec.command, spec.args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
   const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
+  const protocolLabel = `${agent.name || AGENT_PROFILES[agent.kind]?.label || 'Agent'} ACP`
   let sdk
   try {
-    sdk = await loadAcpSdk()
+    const loadAcpSdkFn = options.loadAcpSdkFn || loadAcpSdk
+    sdk = await loadAcpSdkFn()
   } catch (error) {
-    throw acpProtocolError(error, childEnv)
+    throw allowAcpSetupFallback(acpProtocolError(error, childEnv))
   }
   if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
 
@@ -1693,10 +2039,10 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
       windowsHide: true,
     })
   } catch (error) {
-    throw agentExecutionError(
+    throw allowAcpSetupFallback(agentExecutionError(
       'LOCAL_AGENT_SPAWN_FAILED',
       redactChildSecrets(error?.message || error, childEnv),
-    )
+    ))
   }
 
   const { ClientSideConnection, PROTOCOL_VERSION, validators } = sdk
@@ -1711,6 +2057,9 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
   let rejectAbort
   let timeout
   const reply = []
+  const replyState = { bytes: 0, collecting: false }
+  const runtimeState = createAcpRuntimeState()
+  let promptStarted = false
   const abortPromise = new Promise((_, reject) => { rejectAbort = reject })
   const stopChild = () => {
     stopPromise ||= closeAcpChild(child, platform, spawnFn)
@@ -1762,11 +2111,12 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
         : { outcome: { outcome: 'cancelled' } }
     },
     async sessionUpdate(params) {
+      if (!replyState.collecting) return
       const update = params.update
       if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
         reply.push(update.content.text)
       }
-      for (const event of acpRuntimeEvents(update)) runtimeEvents.emit(event)
+      for (const event of acpRuntimeEvents(update, runtimeState)) runtimeEvents.emit(event)
     },
   }
   const protocol = (async () => {
@@ -1774,6 +2124,8 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
       Writable.toWeb(child.stdin),
       Readable.toWeb(child.stdout),
       validators,
+      replyState,
+      protocolLabel,
     )
     connection = new ClientSideConnection(() => client, stream)
     await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
@@ -1785,14 +2137,25 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
     }
     const safeSessionRef = redactChildSecrets(sessionRef, childEnv)
     const publicSessionRef = safeSessionRef.includes('[redacted]') ? '' : safeSessionRef
-    if (publicSessionRef && typeof options.onSessionRef === 'function') {
-      await options.onSessionRef(publicSessionRef)
-    }
     await connection.setSessionMode({ sessionId: sessionRef, modeId: spec.acpMode })
-    const promptResult = await connection.prompt({
-      sessionId: sessionRef,
-      prompt: [{ type: 'text', text: prompt }],
-    })
+    if (publicSessionRef && typeof options.onSessionRef === 'function') {
+      await options.onSessionRef(
+        publicSessionRef,
+        agent.kind === 'hermes' ? { transport: 'acp' } : undefined,
+      )
+    }
+    replyState.bytes = 0
+    replyState.collecting = true
+    let promptResult
+    try {
+      promptStarted = true
+      promptResult = await connection.prompt({
+        sessionId: sessionRef,
+        prompt: [{ type: 'text', text: prompt }],
+      })
+    } finally {
+      replyState.collecting = false
+    }
     const text = redactChildSecrets(reply.join('').trim(), childEnv)
     if (!text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
     runtimeEvents.emitFinalAnswer(text)
@@ -1801,10 +2164,17 @@ async function runKimiAcp(agent, prompt, workdir, options, spec) {
       sessionRef: publicSessionRef,
       completed: promptResult?.stopReason === 'end_turn',
     }
-  })().catch((error) => { throw acpProtocolError(error, childEnv) })
+  })().catch((error) => {
+    const normalized = acpProtocolError(error, childEnv)
+    if (!promptStarted) allowAcpSetupFallback(normalized)
+    throw normalized
+  })
 
   try {
     return await Promise.race([protocol, abortPromise, childFailure])
+  } catch (error) {
+    if (!promptStarted) allowAcpSetupFallback(error)
+    throw error
   } finally {
     ending = true
     clearTimeout(timeout)
@@ -1818,20 +2188,68 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
-  const sessionRef = String(options.sessionRef || '')
+  let sessionRef = String(options.sessionRef || '')
+  const hermesAcpAvailable = typeof options.hermesAcpAvailable === 'boolean'
+    ? options.hermesAcpAvailable
+    : agent.acpAvailable
   const spec = invocation(agent.kind, agent.executable, workdir, sessionRef, {
     sandbox: options.sandbox,
     provider: options.provider,
     attachments: options.attachments,
     skills: options.skills,
+    hermesAcpAvailable,
+    sessionTransport: options.sessionTransport,
   })
-  if (spec.acpMode) return runKimiAcp(agent, prompt, workdir, options, spec)
+  if (agent.kind === 'hermes' && !spec.acpMode && options.sessionTransport === 'acp') {
+    sessionRef = ''
+  }
+  if (spec.acpMode) {
+    try {
+      return await runAcpAgent(agent, prompt, workdir, options, spec)
+    } catch (error) {
+      if (agent.kind !== 'hermes' || error?.acpFallbackAllowed !== true
+          || options.signal?.aborted) throw error
+      let fallbackPrompt = prompt
+      if (sessionRef && typeof options.onSessionInvalidated === 'function') {
+        const recovery = await options.onSessionInvalidated({
+          kind: agent.kind,
+          sessionRef,
+          transport: 'acp',
+        })
+        if (typeof recovery === 'string') fallbackPrompt = recovery
+        else if (typeof recovery?.prompt === 'string') fallbackPrompt = recovery.prompt
+      }
+      try {
+        options.onEvent?.({
+          id: 'hermes-acp-fallback',
+          type: 'warning',
+          status: 'waiting',
+          title: 'connector_fallback',
+        })
+      } catch { /* runtime events are best-effort */ }
+      return runAgent(agent, fallbackPrompt, workdir, {
+        ...options,
+        sessionRef: '',
+        sessionTransport: 'legacy',
+        hermesAcpAvailable: false,
+        onSessionInvalidated: undefined,
+      })
+    }
+  }
   const args = [...spec.args]
   if (spec.promptArg) args.push(prompt)
   if (spec.suffixArgs) args.push(...spec.suffixArgs)
   const prepared = prepareCommand(spec.command, args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
   const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
+  if (['hermes', 'openclaw', 'workbuddy'].includes(agent.kind)) {
+    runtimeEvents.emit({
+      id: `${agent.kind}-connector`,
+      type: 'warning',
+      status: 'waiting',
+      title: 'connector_limited',
+    })
+  }
   let hermesMessageWatermark = null
   if (agent.kind === 'hermes') {
     const watermarkFn = options.hermesMessageWatermarkFn || readHermesMessageWatermark
@@ -1902,6 +2320,9 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       hermesProgressBuffers[source] += decoder.decode(chunk || undefined, { stream: !flush })
       const lines = hermesProgressBuffers[source].split(/\r?\n/)
       hermesProgressBuffers[source] = flush ? '' : (lines.pop() || '')
+      if (hermesProgressBuffers[source].length > MAX_HERMES_PROGRESS_PENDING_CHARS) {
+        hermesProgressBuffers[source] = ''
+      }
       for (const line of lines) {
         if (!/^┊\s*review diff$/i.test(stripAnsi(line).trim())) continue
         emitProgress({ title: 'write_file', status: 'completed' })
@@ -2034,7 +2455,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           : redactedSessionRef
         if (agent.kind === 'hermes') {
           if (publicSessionRef && typeof options.onSessionRef === 'function') {
-            await options.onSessionRef(publicSessionRef)
+            await options.onSessionRef(publicSessionRef, { transport: 'legacy' })
           }
           const finalResponseFn = options.hermesFinalResponseFn || readHermesFinalResponse
           let finalResponse = ''
@@ -2085,5 +2506,6 @@ module.exports = {
   readHermesMessageWatermark,
   resolveExecutable,
   runAgent,
+  runtimeCommandSummary,
   searchPath,
 }

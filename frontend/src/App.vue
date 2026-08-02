@@ -1346,86 +1346,107 @@
               </article>
 
                 <section
-                  v-if="activeRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
+                  v-if="displayedRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
                   class="run-status-panel"
                   :class="{
                     direct: activeGroup.conversationType === 'direct',
                     group: activeGroup.conversationType !== 'direct',
-                    solo: !isCoordinatedRun,
-                    multi: isCoordinatedRun,
+                    solo: !isDisplayedCoordinatedRun,
+                    multi: isDisplayedCoordinatedRun,
+                    history: !activeRun,
                   }"
                   aria-live="polite"
                 >
                   <header class="run-status-header">
-                    <div v-if="!isCoordinatedRun" class="direct-run-indicator" aria-hidden="true">
-                      <span class="run-agent-logo" :data-status="activeRunAgentStatus">
-                        <img :src="agentLogo(activeRunAgentKind, theme)" alt="" />
+                    <div v-if="!isDisplayedCoordinatedRun" class="direct-run-indicator" aria-hidden="true">
+                      <span class="run-agent-logo" :data-status="displayedRunAgentStatus">
+                        <img :src="agentLogo(displayedRunAgentKind, theme)" alt="" />
                       </span>
-                      <div v-if="activeRunAgentStatus === 'running'" class="typing-bars"><span /><span /><span /></div>
+                      <div v-if="displayedRunAgentStatus === 'running'" class="typing-bars"><span /><span /><span /></div>
                     </div>
                     <div v-else class="relay-run-indicator" aria-hidden="true">
                       <span
-                        v-for="(kind, index) in runTargetKinds.slice(0, 4)"
+                        v-for="(kind, index) in displayedRunTargetKinds.slice(0, 4)"
                         :key="kind"
                         class="run-agent-logo relay-run-agent"
-                        :data-status="runAgentStatus(kind)"
+                        :data-status="displayedRunAgentStatusForKind(kind)"
                         :style="{ '--avatar-index': index }"
                       >
                         <img :src="agentLogo(kind, theme)" alt="" />
                       </span>
                     </div>
-                    <div>
-                      <strong>{{ activeRunLabel }}</strong>
+                    <div class="run-status-copy">
+                      <strong>{{ displayedRunLabel }}</strong>
                       <span
-                        v-if="!isCoordinatedRun"
+                        v-if="!isDisplayedCoordinatedRun"
                         class="solo-run-status"
-                        :data-status="activeRunAgentStatus"
+                        :data-status="displayedRunAgentStatus"
                       >
-                        {{ runStatusLabel(activeRunAgentStatus) }}
+                        {{ runStatusLabel(displayedRunAgentStatus) }}
                       </span>
-                      <span v-if="activeRunTopicRootId">
-                        {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
-                      </span>
-                      <span v-if="runRoundProgress" class="run-round-progress">
-                        {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
-                      </span>
+                      <div class="run-status-meta">
+                        <span v-if="displayedRunTopicRootId">
+                          {{ t(activeRun
+                            ? (activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic')
+                            : 'conversation.retainedTopic') }}
+                        </span>
+                        <span v-if="runRoundProgress" class="run-round-progress">
+                          {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
+                        </span>
+                        <span v-if="!activeRun" class="run-summary-status" :data-status="runStatusTone(displayedRun.status)">
+                          {{ runStatusLabel(displayedRun.status) }}
+                        </span>
+                        <span v-if="!activeRun">
+                          {{ t('run.retainedEvents', { count: displayedRun.eventCount }) }}
+                        </span>
+                      </div>
                     </div>
+                    <button
+                      v-if="activeGroup.conversationType !== 'direct' && displayedRunAgentRuns.length"
+                      class="icon-button run-details-button"
+                      type="button"
+                      :title="t('run.openDetails')"
+                      :aria-label="t('run.openDetails')"
+                      @click="openDisplayedRunTrace($event.currentTarget)"
+                    >
+                      <TerminalOutline />
+                    </button>
                   </header>
                   <div
-                    v-if="isCoordinatedRun"
+                    v-if="isDisplayedCoordinatedRun"
                     class="run-agent-list"
                     :aria-label="t('run.agents')"
                   >
                     <button
-                      v-for="(kind, index) in runTargetKinds"
+                      v-for="(kind, index) in displayedRunTargetKinds"
                       :key="kind"
                       class="run-agent-row"
-                      :data-status="runAgentStatus(kind)"
-                      :data-trace-agent-run-id="runAgentForKind(kind)?.agentRunId || undefined"
+                      :data-status="displayedRunAgentStatusForKind(kind)"
+                      :data-trace-agent-run-id="displayedRunAgentForKind(kind)?.agentRunId || undefined"
                       :style="{ '--reveal-index': index }"
                       type="button"
-                      :disabled="!runAgentForKind(kind)"
-                      :aria-label="runAgentTraceLabel(kind)"
-                      @click="openTraceForAgent(kind, $event.currentTarget)"
+                      :disabled="!displayedRunAgentForKind(kind)"
+                      :aria-label="displayedRunAgentTraceLabel(kind)"
+                      @click="openDisplayedTraceForAgent(kind, $event.currentTarget)"
                     >
-                      <span class="run-agent-logo" :data-status="runAgentStatus(kind)" aria-hidden="true">
+                      <span class="run-agent-logo" :data-status="displayedRunAgentStatusForKind(kind)" aria-hidden="true">
                         <img :src="agentLogo(kind, theme)" alt="" />
                       </span>
                       <strong>{{ agentLabel(kind) }}</strong>
                       <span class="run-agent-state">
                         <span
                           class="run-agent-motion"
-                          :data-status="runAgentStatus(kind)"
+                          :data-status="displayedRunAgentStatusForKind(kind)"
                           aria-hidden="true"
                         >
-                          <CheckmarkCircleOutline v-if="runAgentStatus(kind) === 'completed'" />
-                          <CloseCircleOutline v-else-if="runAgentStatus(kind) === 'failed'" />
-                          <span v-else-if="runAgentStatus(kind) === 'running'" class="run-agent-bars">
+                          <CheckmarkCircleOutline v-if="displayedRunAgentStatusForKind(kind) === 'completed'" />
+                          <CloseCircleOutline v-else-if="displayedRunAgentStatusForKind(kind) === 'failed'" />
+                          <span v-else-if="displayedRunAgentStatusForKind(kind) === 'running'" class="run-agent-bars">
                             <i /><i /><i />
                           </span>
                           <span v-else class="run-agent-dots"><i /><i /><i /></span>
                         </span>
-                        <small :class="runAgentStatus(kind)">{{ runStatusLabel(runAgentStatus(kind)) }}</small>
+                        <small :class="displayedRunAgentStatusForKind(kind)">{{ runStatusLabel(displayedRunAgentStatusForKind(kind)) }}</small>
                       </span>
                     </button>
                   </div>
@@ -1523,7 +1544,7 @@
                       data-mode="auto"
                       :class="{ active: discussionMode === 'auto' }"
                       :aria-pressed="discussionMode === 'auto'"
-                      :disabled="Boolean(activeRun) || sending || selectedAgentKinds.length > 0"
+                      :disabled="Boolean(activeRun) || sending"
                       @click="discussionMode = 'auto'"
                     >
                       {{ t('composer.auto') }}
@@ -2153,6 +2174,7 @@ import {
 } from '@vicons/ionicons5'
 import MarkdownMessage from './components/MarkdownMessage.vue'
 import RunTracePanel from './components/RunTracePanel.vue'
+import { parseAgentRoutingPrefix } from './agent-routing.js'
 import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
 import { useAttachmentPreviews } from './composables/useAttachmentPreviews.js'
 import { KNOWLEDGE_BASE_CATALOG } from './knowledgeBaseCatalog.js'
@@ -2268,6 +2290,7 @@ const tracePanelOpen = ref(false)
 const selectedTraceAgentRunId = ref('')
 const tracePanel = ref(null)
 const tracePanelGroupId = ref('')
+const tracePanelRunId = ref('')
 const tracePanelDrawer = ref(typeof matchMedia === 'function' && matchMedia('(max-width: 1179px)').matches)
 const messageNearBottom = ref(true)
 const dismissedSystemMessageIds = ref(new Set())
@@ -2469,11 +2492,14 @@ function latestAgentRunForKind(kind) {
 
 const runTargetKinds = computed(() => {
   if (!activeRun.value) return []
-  const targets = Array.isArray(activeRun.value.targetKinds) && activeRun.value.targetKinds.length
-    ? activeRun.value.targetKinds
+  const runTargets = Array.isArray(activeRun.value.targetKinds) ? activeRun.value.targetKinds : []
+  const rootMessage = activeMessages.value.find(message => message.id === activeRun.value.threadRootId)
+  const messageTargets = messageScopedTargetKinds(rootMessage, activeGroup.value)
+  const targets = runTargets.length
+    ? runTargets
     : activeRunAgentRuns.value.length
       ? activeRunAgentRuns.value.map(agent => agent.kind)
-      : activeGroup.value?.agentKinds || []
+      : messageTargets
   return [...new Set(targets)]
 })
 const isCoordinatedRun = computed(() => (
@@ -2545,9 +2571,23 @@ const provisionalMessages = computed(() => {
       createdAt: agent.startedAt || Date.now(),
       threadRootId: rootId,
       provisional: true,
+      traceRunId: run.runId,
       liveAgentRun: agent,
       sourceMessageIds: agent.sourceMessageIds || [],
     }))
+})
+
+const messagesWithLiveTrace = computed(() => {
+  const run = activeRun.value
+  if (!run) return activeMessages.value
+  const liveByAgentRunId = new Map(activeRunAgentRuns.value.map(agent => [agent.agentRunId, agent]))
+  return activeMessages.value.map((message) => {
+    if (!run.runId || !message?.trace?.runId || message.trace.runId !== run.runId) return message
+    const liveAgentRun = liveByAgentRunId.get(message.trace.agentRunId)
+    return liveAgentRun
+      ? { ...message, liveAgentRun, traceRunId: run.runId }
+      : message
+  })
 })
 
 function traceRound(item) {
@@ -2573,11 +2613,14 @@ function traceSourceItems(sourceIds) {
   })
 }
 
-const tracePanelItems = computed(() => {
+const allTracePanelItems = computed(() => {
   if (activeGroup.value?.conversationType === 'direct') return []
-  const byAgentRunId = new Map()
+  const byRunAgentId = new Map()
   for (const agent of activeRunAgentRuns.value) {
-    byAgentRunId.set(agent.agentRunId, {
+    const runId = String(activeRun.value?.runId || '')
+    if (!runId) continue
+    byRunAgentId.set(`${runId}\u0000${agent.agentRunId}`, {
+      runId,
       agentRunId: agent.agentRunId,
       agentKind: agent.kind,
       round: agent.round,
@@ -2589,15 +2632,19 @@ const tracePanelItems = computed(() => {
       sources: traceSourceItems(agent.sourceMessageIds),
       truncated: agent.truncated === true,
       context: {},
+      threadRootId: activeRun.value?.threadRootId || '',
+      createdAt: agent.startedAt,
       startedAt: agent.startedAt,
       live: true,
     })
   }
   for (const message of activeMessages.value) {
     const trace = message?.trace
-    if (!['agent', 'system'].includes(message.role) || !message.agentKind || !trace?.agentRunId) continue
-    if (message.role === 'system' && byAgentRunId.has(trace.agentRunId)) continue
-    byAgentRunId.set(trace.agentRunId, {
+    if (!['agent', 'system'].includes(message.role) || !message.agentKind || !trace?.runId || !trace?.agentRunId) continue
+    const key = `${trace.runId}\u0000${trace.agentRunId}`
+    if (message.role === 'system' && byRunAgentId.has(key)) continue
+    const durable = {
+      runId: trace.runId,
       agentRunId: trace.agentRunId,
       agentKind: message.agentKind,
       round: traceRound(trace),
@@ -2610,12 +2657,132 @@ const tracePanelItems = computed(() => {
       truncated: trace.truncated === true,
       context: trace.context || {},
       messageId: message.id,
+      threadRootId: messageThreadRootId(message),
+      createdAt: message.createdAt,
       live: false,
-    })
+    }
+    const live = byRunAgentId.get(key)
+    byRunAgentId.set(key, live ? {
+      ...durable,
+      round: live.round || durable.round,
+      status: live.status || durable.status,
+      output: durable.output || live.output,
+      events: live.events?.length ? live.events : durable.events,
+      sourceMessageIds: live.sourceMessageIds?.length
+        ? live.sourceMessageIds
+        : durable.sourceMessageIds,
+      sources: live.sources?.length ? live.sources : durable.sources,
+      truncated: live.truncated || durable.truncated,
+      threadRootId: live.threadRootId || durable.threadRootId,
+      createdAt: live.createdAt || durable.createdAt,
+      startedAt: live.startedAt || durable.startedAt,
+      live: true,
+    } : durable)
   }
-  return [...byAgentRunId.values()].sort((left, right) => (
+  return [...byRunAgentId.values()].sort((left, right) => (
     (Number(left.round) || 0) - (Number(right.round) || 0)
   ))
+})
+const tracePanelItems = computed(() => (
+  tracePanelRunId.value
+    ? allTracePanelItems.value.filter(item => item.runId === tracePanelRunId.value)
+    : []
+))
+
+function retainedTraceEvents(events) {
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    const type = String(event?.type || '').toLowerCase()
+    const title = String(event?.title || '').trim().toLowerCase()
+    return type !== 'answer_delta' && !(type === 'status' && ['agent', 'process'].includes(title))
+  })
+}
+
+const historicalGroupRun = computed(() => {
+  const group = activeGroup.value
+  if (!group || group.conversationType === 'direct' || activeRun.value) return null
+  const rootOrder = new Map(topLevelUserMessages.value.map((message, index) => [message.id, index]))
+  const runs = new Map()
+  for (const item of allTracePanelItems.value) {
+    if (!item.runId || !item.threadRootId) continue
+    const current = runs.get(item.runId) || {
+      runId: item.runId,
+      threadRootId: item.threadRootId,
+      agentRuns: [],
+      rootIndex: rootOrder.get(item.threadRootId) ?? -1,
+      createdAt: 0,
+    }
+    current.agentRuns.push(item)
+    current.createdAt = Math.max(current.createdAt, Date.parse(item.createdAt || item.startedAt || '') || 0)
+    runs.set(item.runId, current)
+  }
+  const latest = [...runs.values()].sort((left, right) => (
+    left.rootIndex - right.rootIndex || left.createdAt - right.createdAt
+  )).at(-1)
+  if (!latest || latest.threadRootId !== topLevelUserMessages.value.at(-1)?.id) return null
+
+  const topicMessages = activeMessages.value.filter(message => (
+    message.id === latest.threadRootId || messageThreadRootId(message) === latest.threadRootId
+  ))
+  const rootMessage = topicMessages.find(message => message.id === latest.threadRootId)
+  const scopedTargets = messageScopedTargetKinds(rootMessage, group)
+  const systemKeys = new Set(topicMessages.map(message => message?.system?.key).filter(Boolean))
+  const traceKinds = [...new Set(latest.agentRuns.map(item => item.agentKind).filter(Boolean))]
+  const targetKinds = scopedTargets.length
+    ? scopedTargets
+    : systemKeys.has('system.autoTimeout') || systemKeys.has('system.autoRoundLimit')
+      ? [...group.agentKinds]
+      : traceKinds
+  const latestByKind = new Map()
+  for (const item of latest.agentRuns) {
+    const previous = latestByKind.get(item.agentKind)
+    if (!previous || traceRound(item) >= traceRound(previous)) latestByKind.set(item.agentKind, item)
+  }
+  const agentRuns = targetKinds.map(kind => latestByKind.get(kind)).filter(Boolean)
+  const statuses = agentRuns.map(item => runStatusTone(item.status))
+  let status = 'completed'
+  if (systemKeys.has('system.autoTimeout')) status = 'timeout'
+  else if (systemKeys.has('system.autoRoundLimit')) status = 'round-limit'
+  else if (systemKeys.has('system.autoStopped')) status = 'stopped'
+  else if (statuses.length && statuses.every(value => value === 'failed')) status = 'failed'
+  else if (statuses.includes('failed') || statuses.includes('partial')) status = 'partial'
+  return {
+    ...latest,
+    targetKinds,
+    agentRuns,
+    status,
+    eventCount: latest.agentRuns.reduce(
+      (count, item) => count + retainedTraceEvents(item.events).length,
+      0,
+    ),
+  }
+})
+
+const displayedRun = computed(() => activeRun.value || historicalGroupRun.value)
+const displayedRunAgentRuns = computed(() => (
+  activeRun.value ? activeRunAgentRuns.value : historicalGroupRun.value?.agentRuns || []
+))
+const displayedRunTargetKinds = computed(() => (
+  activeRun.value ? runTargetKinds.value : historicalGroupRun.value?.targetKinds || []
+))
+const isDisplayedCoordinatedRun = computed(() => (
+  activeGroup.value?.conversationType !== 'direct' && displayedRunTargetKinds.value.length > 1
+))
+const displayedRunAgentKind = computed(() => (
+  activeRun.value?.currentKind
+  || displayedRunAgentRuns.value.at(-1)?.agentKind
+  || displayedRunAgentRuns.value.at(-1)?.kind
+  || displayedRunTargetKinds.value[0]
+  || activeGroup.value?.directAgentKind
+  || ''
+))
+const displayedRunAgentStatus = computed(() => displayedRunAgentStatusForKind(displayedRunAgentKind.value))
+const displayedRunTopicRootId = computed(() => (
+  activeRunTopicRootId.value || historicalGroupRun.value?.threadRootId || ''
+))
+const displayedRunLabel = computed(() => {
+  if (!displayedRun.value || !activeGroup.value) return ''
+  if (!activeRun.value) return t('conversation.groupRunHistory')
+  return activeRunLabel.value
 })
 
 const traceDrawerBlocking = computed(() => tracePanelOpen.value && tracePanelDrawer.value)
@@ -2642,7 +2809,7 @@ const activeRunTopicSignature = computed(() => {
   if (!activeRunTopicRootId.value) return ''
   return `${activeRun.value?.groupId || ''}\u0000${activeRunTopicRootId.value}`
 })
-const timelineMessages = computed(() => [...activeMessages.value, ...provisionalMessages.value].filter((message) => {
+const timelineMessages = computed(() => [...messagesWithLiveTrace.value, ...provisionalMessages.value].filter((message) => {
   if (dismissedSystemMessageIds.value.has(message.id)) return false
   const rootId = messageThreadRootId(message)
   return !rootId || isTopicExpanded(rootId)
@@ -2653,20 +2820,26 @@ const conversationEmptyVisible = computed(() => (
   && !timelineMessages.value.length
   && !activeRun.value
 ))
+const addressedAgentKinds = computed(() => {
+  const group = activeGroup.value
+  if (!group || group.conversationType === 'direct') return []
+  const natural = parseAgentRoutingPrefix(draft.value, AGENTS, group.agentKinds).targetKinds
+  const addressed = new Set([...selectedAgentKinds.value, ...natural])
+  return group.agentKinds.filter(kind => addressed.has(kind))
+})
 const composerTargetKinds = computed(() => {
   const group = activeGroup.value
   if (!group) return []
-  if (group.conversationType !== 'direct' && selectedAgentKinds.value.length) {
-    return [...selectedAgentKinds.value]
+  if (group.conversationType !== 'direct' && addressedAgentKinds.value.length) {
+    return [...addressedAgentKinds.value]
   }
   if (group.conversationType === 'direct' || discussionMode.value === 'auto') return [...group.agentKinds]
   return [...targetKinds.value]
 })
-const composerMode = computed(() => (
-  activeGroup.value?.conversationType === 'direct' || selectedAgentKinds.value.length
-    ? 'manual'
-    : discussionMode.value
-))
+const composerMode = computed(() => {
+  if (activeGroup.value?.conversationType === 'direct') return 'manual'
+  return addressedAgentKinds.value.length === 1 ? 'manual' : discussionMode.value
+})
 const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
 const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
 const currentSkillTrigger = computed(() => parseSkillTrigger(draft.value))
@@ -3498,11 +3671,20 @@ function messageAgentRunId(message) {
 
 function messageTraceEvents(message) {
   const events = message?.liveAgentRun?.events || message?.trace?.events
-  return (Array.isArray(events) ? events : []).filter(event => event?.type !== 'answer_delta')
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    const type = String(event?.type || '').toLowerCase()
+    const title = String(event?.title || '').trim().toLowerCase()
+    return type !== 'answer_delta' && !(type === 'status' && ['agent', 'process'].includes(title))
+  })
 }
 
 function messageHasTrace(message) {
-  return Boolean(message?.provisional || message?.trace?.summary || messageTraceEvents(message).length)
+  return Boolean(
+    message?.provisional
+    || message?.trace?.agentRunId
+    || message?.trace?.summary
+    || messageTraceEvents(message).length,
+  )
 }
 
 function messageTraceSummary(message) {
@@ -3528,6 +3710,11 @@ function traceEventTypeLabel(type) {
 
 function traceEventTitle(event) {
   const title = String(event?.title || '').trim()
+  const connectorTitleKey = {
+    connector_fallback: 'trace.eventConnectorFallback',
+    connector_limited: 'trace.eventConnectorLimited',
+  }[title.toLowerCase()]
+  if (connectorTitleKey) return t(connectorTitleKey)
   if (!title || ['agent', 'waiting_for_output'].includes(title.toLowerCase())) return ''
   return title
 }
@@ -3584,6 +3771,7 @@ function runStatusLabel(status) {
     stopped: 'stopped',
     timeout: 'timeout',
     interrupted: 'interrupted',
+    'not-started': 'notStarted',
     'round-limit': 'roundLimit',
   }[normalized] || 'unknown'
   return t(`run.status.${key}`)
@@ -3593,7 +3781,7 @@ function runStatusTone(status) {
   const normalized = String(status || '').trim().toLowerCase()
   if (['completed', 'succeeded'].includes(normalized)) return 'completed'
   if (['failed', 'timeout'].includes(normalized)) return 'failed'
-  if (['partial', 'round-limit'].includes(normalized)) return 'partial'
+  if (['partial', 'round-limit', 'stopped', 'cancelled', 'interrupted'].includes(normalized)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(normalized)) return 'running'
   return 'queued'
 }
@@ -3611,11 +3799,22 @@ function runAgentStatus(kind) {
   return 'queued'
 }
 
-function runAgentTraceLabel(kind) {
-  const agent = runAgentForKind(kind)
+function displayedRunAgentForKind(kind) {
+  if (activeRun.value) return runAgentForKind(kind)
+  return displayedRunAgentRuns.value.filter(item => item.agentKind === kind).at(-1) || null
+}
+
+function displayedRunAgentStatusForKind(kind) {
+  if (activeRun.value) return runAgentStatus(kind)
+  const agent = displayedRunAgentForKind(kind)
+  return agent ? runStatusTone(agent.status) : 'not-started'
+}
+
+function displayedRunAgentTraceLabel(kind) {
+  const agent = displayedRunAgentForKind(kind)
   return t('trace.viewAgentProcess', {
     agent: agentLabel(kind),
-    status: runStatusLabel(agent?.status || runAgentStatus(kind)),
+    status: runStatusLabel(agent?.status || displayedRunAgentStatusForKind(kind)),
   })
 }
 
@@ -3720,6 +3919,10 @@ function hasFinishedDirectRun(groupId) {
 
 function onboardingSeen() {
   try { return localStorage.getItem(ONBOARDING_KEY) === '1' } catch { return false }
+}
+
+function hasPersistedWorkspaceActivity(value) {
+  return Boolean(value?.groups?.length || value?.messages?.length)
 }
 
 function completeOnboarding(options = {}) {
@@ -3858,7 +4061,19 @@ function messageKnowledgeBases(message) {
 }
 
 function messageTargetKinds(message) {
-  return Array.isArray(message?.targetKinds) ? message.targetKinds : []
+  return [...new Set((Array.isArray(message?.targetKinds) ? message.targetKinds : [])
+    .map(kind => String(kind || ''))
+    .filter(Boolean))]
+}
+
+function messageScopedTargetKinds(message, group) {
+  if (!message || !group || !Array.isArray(group.agentKinds)) return []
+  const explicit = messageTargetKinds(message)
+  const mentioned = Array.isArray(message?.mentionedAgentKinds) ? message.mentionedAgentKinds : []
+  const natural = parseAgentRoutingPrefix(message.content, AGENTS, group.agentKinds).targetKinds
+  const requested = explicit.length ? explicit : mentioned.length ? mentioned : natural
+  const selected = new Set(requested.map(kind => String(kind || '')))
+  return group.agentKinds.filter(kind => selected.has(kind))
 }
 
 function normalizeAttachment(attachment) {
@@ -4003,9 +4218,12 @@ function selectTraceAgentRun(agentRunId) {
   selectedTraceAgentRunId.value = agentRunId
 }
 
-function openTracePanel(agentRunId, opener = null) {
+function openTracePanel(agentRunId, opener = null, runId = '') {
   if (activeGroup.value?.conversationType === 'direct') return
-  if (!tracePanelItems.value.some(item => item.agentRunId === agentRunId)) return
+  const item = allTracePanelItems.value.find(candidate => (
+    candidate.agentRunId === agentRunId && (!runId || candidate.runId === runId)
+  ))
+  if (!item) return
   if (!tracePanelOpen.value) {
     tracePanelFocusReturn = opener instanceof HTMLElement ? opener : document.activeElement
     tracePanelFocusReturnAgentRunId = agentRunId
@@ -4013,19 +4231,28 @@ function openTracePanel(agentRunId, opener = null) {
     tracePanelHistoryPushed = true
   }
   tracePanelGroupId.value = selectedGroupId.value
+  tracePanelRunId.value = item.runId
   selectedTraceAgentRunId.value = agentRunId
   tracePanelOpen.value = true
   void nextTick(() => tracePanel.value?.focus?.())
 }
 
-function openTraceForAgent(kind, opener = null) {
-  const agent = runAgentForKind(kind)
-  if (agent) openTracePanel(agent.agentRunId, opener)
+function openDisplayedTraceForAgent(kind, opener = null) {
+  const agent = displayedRunAgentForKind(kind)
+  if (agent) openTracePanel(agent.agentRunId, opener, displayedRun.value?.runId || '')
+}
+
+function openDisplayedRunTrace(opener = null) {
+  const preferred = displayedRunAgentForKind(displayedRunAgentKind.value)
+    || displayedRunAgentRuns.value.find(item => retainedTraceEvents(item.events).length)
+    || displayedRunAgentRuns.value.at(-1)
+  if (preferred) openTracePanel(preferred.agentRunId, opener, displayedRun.value?.runId || '')
 }
 
 function openTraceForMessage(message, opener = null) {
   const agentRunId = messageAgentRunId(message)
-  if (agentRunId) openTracePanel(agentRunId, opener)
+  const runId = message?.traceRunId || message?.trace?.runId || ''
+  if (agentRunId) openTracePanel(agentRunId, opener, runId)
 }
 
 function focusTraceReturnTarget(target, agentRunId) {
@@ -4046,6 +4273,7 @@ function closeTracePanel(options = {}) {
   if (!tracePanelOpen.value) return false
   tracePanelOpen.value = false
   tracePanelGroupId.value = ''
+  tracePanelRunId.value = ''
   selectedTraceAgentRunId.value = ''
   const target = tracePanelFocusReturn
   const agentRunId = tracePanelFocusReturnAgentRunId
@@ -4577,7 +4805,6 @@ async function addAgentMention(kind) {
     selectedAgentKinds.value = [...selectedAgentKinds.value, kind]
   }
   activeMentionAgentKind.value = kind
-  discussionMode.value = 'manual'
   skillMenuOpen.value = false
   skillsLoading.value = false
   void preloadAgentSkills([kind])
@@ -4803,7 +5030,7 @@ async function sendMessage() {
   const contextVersion = composerContextVersion.value
   const text = draft.value.trim()
   const attachments = composerAttachments.value.map(safeAttachmentPayload)
-  const mode = selectedAgentKinds.value.length ? 'manual' : composerMode.value
+  const mode = composerMode.value
   if (!text && !attachments.length) {
     notify(t('composer.messageRequired'))
     return
@@ -4840,6 +5067,7 @@ async function sendMessage() {
     }))
     .filter(source => source.kind && source.targetKinds.length)
   const previousDraft = draft.value
+  const mentionedAgentKinds = [...addressedAgentKinds.value]
   const previousAgentKinds = [...selectedAgentKinds.value]
   const previousActiveMentionAgentKind = activeMentionAgentKind.value
   const previousSkills = selectedSkills.value.map(skill => ({ ...skill }))
@@ -4862,7 +5090,7 @@ async function sendMessage() {
       groupId,
       text,
       targetKinds: targets,
-      ...(previousAgentKinds.length ? { mentionedAgentKinds: previousAgentKinds } : {}),
+      ...(mentionedAgentKinds.length ? { mentionedAgentKinds } : {}),
       skillHints,
       knowledgeBaseHints,
       attachments,
@@ -5625,6 +5853,9 @@ async function boot() {
     showError(error)
   } finally {
     booting.value = false
+  }
+  if (!onboardingCompleted.value && hasPersistedWorkspaceActivity(snapshot.value)) {
+    completeOnboarding({ fromHistory: true })
   }
   if (!onboardingCompleted.value) {
     openOnboarding()
