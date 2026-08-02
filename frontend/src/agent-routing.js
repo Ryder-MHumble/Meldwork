@@ -47,6 +47,56 @@ function skipRecipientSeparators(value, offset) {
   return cursor
 }
 
+function agentAliasOccurrences(value, lowerValue, aliases) {
+  const matches = []
+  for (const alias of aliases) {
+    let offset = lowerValue.indexOf(alias.lower)
+    while (offset >= 0) {
+      const previous = value[offset - 1] || ''
+      const next = value[offset + alias.value.length] || ''
+      if ((!previous || !/[A-Za-z0-9_.-]/u.test(previous))
+          && (!next || !/[A-Za-z0-9_.-]/u.test(next))) {
+        matches.push({ ...alias, offset, end: offset + alias.value.length })
+      }
+      offset = lowerValue.indexOf(alias.lower, offset + alias.value.length)
+    }
+  }
+  const selected = []
+  for (const match of matches.sort((left, right) => (
+    left.offset - right.offset || right.value.length - left.value.length
+  ))) {
+    if (selected.some(item => match.offset < item.end && match.end > item.offset)) continue
+    selected.push(match)
+  }
+  return selected.sort((left, right) => left.offset - right.offset)
+}
+
+function occurrenceIsExcluded(value, occurrence) {
+  const before = value.slice(Math.max(0, occurrence.offset - 32), occurrence.offset)
+  const after = value.slice(occurrence.end, occurrence.end + 40)
+  const action = '(?:运行|回答|参与|回复|发言|执行|响应|工作)'
+  const beforeChinese = new RegExp(`(?:(?:不要|别|无需|不用|不必)\\s*(?:让|叫)?|不让|不叫|排除)\\s*$`, 'u')
+  const afterChinese = new RegExp(`^\\s*${action}`, 'u')
+  const afterChineseNegation = new RegExp(`^\\s*(?:(?:不要|别|无需|不用|不必)\\s*|不)${action}`, 'u')
+  if ((beforeChinese.test(before) && afterChinese.test(after)) || afterChineseNegation.test(after)) {
+    return true
+  }
+  const englishAction = '(?:run|answer|respond|participate|reply|work|execute)'
+  if (/(?:without|exclude|excluding)\s*$/iu.test(before)) return true
+  if (/(?:do\s+not|don['’]t|must\s+not|should\s+not)\s+(?:let|have|ask)\s*$/iu.test(before)
+      && new RegExp(`^\\s*(?:to\\s+)?${englishAction}\\b`, 'iu').test(after)) {
+    return true
+  }
+  if (/(?:do\s+not|don['’]t|must\s+not|should\s+not)\s*$/iu.test(before)
+      && new RegExp(`^\\s*(?:to\\s+)?${englishAction}\\b`, 'iu').test(after)) {
+    return true
+  }
+  return new RegExp(
+    `^\\s*(?:do\\s+not|don['’]t|must\\s+not|should\\s+not)\\s+${englishAction}\\b`,
+    'iu',
+  ).test(after)
+}
+
 export function parseAgentRoutingPrefix(text, profiles, groupKinds) {
   const value = String(text || '')
   const availableKinds = [...new Set((Array.isArray(groupKinds) ? groupKinds : [])
@@ -82,8 +132,24 @@ export function parseAgentRoutingPrefix(text, profiles, groupKinds) {
     cursor = next
   }
 
+  const occurrences = agentAliasOccurrences(value, lowerValue, aliases)
+  const excluded = new Set(occurrences
+    .filter(occurrence => occurrenceIsExcluded(value, occurrence))
+    .map(occurrence => occurrence.kind))
+  const mentionedKinds = new Set(occurrences
+    .map(occurrence => occurrence.kind)
+    .filter(kind => !excluded.has(kind)))
+  if (mentionedKinds.size >= 2) {
+    for (const kind of mentionedKinds) selected.add(kind)
+  }
+  if (excluded.size) {
+    for (const occurrence of occurrences) {
+      if (!excluded.has(occurrence.kind)) selected.add(occurrence.kind)
+    }
+  }
+
   return {
-    targetKinds: availableKinds.filter(kind => selected.has(kind)),
+    targetKinds: availableKinds.filter(kind => selected.has(kind) && !excluded.has(kind)),
     all: false,
   }
 }

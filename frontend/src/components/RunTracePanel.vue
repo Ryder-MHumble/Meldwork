@@ -82,6 +82,9 @@
             <span>{{ t('trace.contextChars', { count: selectedItem.context.charCount }) }}</span>
             <span v-if="selectedItem.context.sessionRotated">{{ t('trace.contextRotated') }}</span>
           </div>
+          <p v-if="hasOnlyBareEvents(selectedItem)" class="trace-detail-unavailable">
+            {{ t('trace.detailUnavailable') }}
+          </p>
           <p v-if="selectedItem.truncated" class="trace-truncated">{{ t('trace.truncated') }}</p>
         </section>
 
@@ -104,6 +107,9 @@
                 <div class="trace-event-body">
                   <p v-if="event.summary">{{ event.summary }}</p>
                   <pre v-if="event.detail">{{ event.detail }}</pre>
+                  <p v-if="!eventHasDetails(event)" class="trace-event-detail-unavailable">
+                    {{ t('trace.eventDetailUnavailable') }}
+                  </p>
                   <small v-if="formatEventTime(event.timestamp)" class="trace-event-time">
                     {{ formatEventTime(event.timestamp) }}
                   </small>
@@ -219,7 +225,20 @@ function trapFocus(event) {
 }
 
 function filteredEvents(item) {
-  return (Array.isArray(item?.events) ? item.events : []).filter(event => event?.type !== 'answer_delta')
+  return (Array.isArray(item?.events) ? item.events : []).filter((event) => {
+    const type = String(event?.type || '').toLowerCase()
+    const title = String(event?.title || '').trim().toLowerCase()
+    return type !== 'answer_delta' && !(type === 'status' && ['agent', 'process'].includes(title))
+  })
+}
+
+function eventHasDetails(event) {
+  return Boolean(String(event?.summary || '').trim() || String(event?.detail || '').trim())
+}
+
+function hasOnlyBareEvents(item) {
+  const events = filteredEvents(item)
+  return events.length > 0 && events.every(event => !eventHasDetails(event))
 }
 
 function eventKey(event, index) {
@@ -241,6 +260,11 @@ function eventTypeLabel(type) {
 
 function eventTitle(event) {
   const title = String(event?.title || '').trim()
+  const connectorTitleKey = {
+    connector_fallback: 'trace.eventConnectorFallback',
+    connector_limited: 'trace.eventConnectorLimited',
+  }[title.toLowerCase()]
+  if (connectorTitleKey) return t(connectorTitleKey)
   if (!title || ['agent', 'waiting_for_output'].includes(title.toLowerCase())) return eventTypeLabel(event?.type)
   return title
 }
@@ -276,7 +300,10 @@ function statusLabel(status) {
 
 function roundLabel(item) {
   const round = Number(item?.round)
-  return Number.isInteger(round) && round > 0 ? t('trace.round', { count: round }) : t('trace.live')
+  if (Number.isInteger(round) && round > 0) return t('trace.round', { count: round })
+  return item?.live && ['running', 'streaming', 'waiting'].includes(String(item?.status || '').toLowerCase())
+    ? t('trace.live')
+    : t('trace.singleResponse')
 }
 
 function hasContextStats(context) {

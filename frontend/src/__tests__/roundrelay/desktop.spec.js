@@ -104,6 +104,7 @@ describe('run event normalization', () => {
     const trace = normalizeMessageTrace({
       runId: 'run-1',
       agentRunId: 'agent-run-1',
+      round: 2,
       status: 'completed',
       summary: 'Final trace summary',
       events: [
@@ -113,7 +114,7 @@ describe('run event normalization', () => {
           status: 'completed',
           summary: 'Compare both options',
           seq: 99,
-          detail: 'must not survive',
+          detail: 'Output: 5 lines, 47 bytes',
         },
         { evidenceId: 'E-R2-CODEX-02', type: 'raw_stdout', status: 'completed' },
       ],
@@ -125,6 +126,7 @@ describe('run event normalization', () => {
     expect(trace).toMatchObject({
       runId: 'run-1',
       agentRunId: 'agent-run-1',
+      round: 2,
       status: 'completed',
       summary: 'Final trace summary',
       truncated: true,
@@ -135,6 +137,7 @@ describe('run event normalization', () => {
       type: 'reasoning_summary',
       status: 'completed',
       summary: 'Compare both options',
+      detail: 'Output: 5 lines, 47 bytes',
     }])
     expect(trace.context).not.toHaveProperty('ignored')
 
@@ -149,6 +152,7 @@ describe('run event normalization', () => {
     })
     expect(snapshot.runs[0].agentRuns[0].output).toBe('Streaming answer')
     expect(snapshot.messages[0].trace.agentRunId).toBe('agent-run-1')
+    expect(snapshot.messages[0].trace.round).toBe(2)
   })
 
   it('merges answer deltas by run, Agent run, and sequence without duplicates', () => {
@@ -305,6 +309,89 @@ describe('run event normalization', () => {
     expect(autoRoundDone.runningGroupIds).toContain('group-1')
   })
 
+  it('keeps a persisted message target subset authoritative across snapshots and later run events', () => {
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [{
+        id: 'root-subset',
+        groupId: 'group-1',
+        role: 'user',
+        content: 'openclaw和claude code你们俩互相了解下对方',
+        targetKinds: ['openclaw', 'claude'],
+      }],
+      runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-subset',
+        groupId: 'group-1',
+        threadRootId: 'root-subset',
+        mode: 'auto',
+        targetKinds: ['codex', 'openclaw', 'claude'],
+        currentKind: 'codex',
+        completedKinds: ['openclaw', 'codex'],
+        failedKinds: ['codex'],
+        agentRuns: [
+          { agentRunId: 'subset-openclaw-r1', kind: 'openclaw', round: 1, status: 'completed' },
+          { agentRunId: 'subset-claude-r1', kind: 'claude', round: 1, status: 'completed' },
+          { agentRunId: 'subset-codex-r2', kind: 'codex', round: 2, status: 'running' },
+        ],
+      }],
+    })
+
+    expect(snapshot.runs[0]).toMatchObject({
+      targetKinds: ['openclaw', 'claude'],
+      currentKind: '',
+      completedKinds: ['openclaw'],
+      failedKinds: [],
+    })
+    expect(snapshot.runs[0].agentRuns.map(agent => agent.kind)).toEqual(['openclaw', 'claude'])
+
+    const stray = mergeRunEvent(snapshot, event({
+      runId: 'run-subset',
+      agentRunId: 'subset-codex-r3',
+      agentKind: 'codex',
+      round: 3,
+      seq: 60,
+      type: 'status',
+      delta: undefined,
+      status: 'running',
+    }))
+    expect(stray).toBe(snapshot)
+
+    const nextRound = mergeRunEvent(snapshot, event({
+      runId: 'run-subset',
+      agentRunId: 'subset-openclaw-r2',
+      agentKind: 'openclaw',
+      round: 2,
+      seq: 61,
+      type: 'reasoning_summary',
+      delta: undefined,
+      summary: 'Round two remains scoped',
+      status: 'running',
+    }))
+    expect(nextRound.runs[0].targetKinds).toEqual(['openclaw', 'claude'])
+    expect(nextRound.runs[0].agentRuns.map(agent => agent.kind)).toEqual(['openclaw', 'claude', 'openclaw'])
+  })
+
+  it('initializes an empty live run scope from its first accepted event', () => {
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: [],
+      runs: [{ runId: 'run-empty', groupId: 'group-1', targetKinds: [], agentRuns: [] }],
+    })
+    const first = mergeRunEvent(snapshot, event({
+      runId: 'run-empty',
+      agentRunId: 'empty-openclaw-r1',
+      agentKind: 'openclaw',
+      seq: 70,
+    }))
+
+    expect(first.runs[0].targetKinds).toEqual(['openclaw'])
+    expect(first.runs[0].agentRuns.map(agent => agent.kind)).toEqual(['openclaw'])
+  })
+
   it('drops late events after the durable traced message has replaced the active run', () => {
     const snapshot = normalizeSnapshot({
       agents: [],
@@ -332,6 +419,7 @@ describe('run event normalization', () => {
       status: 'waiting',
       title: 'Browser research',
       summary: 'Collected three sources',
+      detail: 'Result: 3 items\nBearer private-token',
       runId: 'must-not-survive',
       seq: 42,
     })).toEqual({
@@ -340,6 +428,7 @@ describe('run event normalization', () => {
       status: 'waiting',
       title: 'Browser research',
       summary: 'Collected three sources',
+      detail: 'Result: 3 items',
     })
   })
 })

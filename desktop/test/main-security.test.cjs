@@ -33,7 +33,6 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-workspace:update-group',
   'local-workspace:delete-group',
   'local-workspace:send',
-  'local-workspace:start-auto',
   'local-workspace:stop',
   'local-workspace:pick-directory',
   'local-workspace:default-directory',
@@ -854,7 +853,7 @@ test('runtime trace IPC forwards only sanitized allowlisted fields', async (t) =
       id: 'tool-1',
       type: 'tool_result_summary',
       title: 'search',
-      summary: 'Read [path] with token=[redacted]',
+      summary: 'Read [path] with credential=[redacted]',
     },
   ])
 
@@ -916,7 +915,7 @@ test('attachment storage initialization failure does not block text chat startup
   await assert.doesNotReject(
     harness.ipcHandlers.get('local-workspace:send')(
       harness.event(),
-      { groupId: 'group-1', text: 'text still works', attachments: [] },
+      { groupId: 'group-1', text: 'text still works', targetKinds: ['codex'], attachments: [] },
     ),
   )
   for (const [channel, args] of [
@@ -928,6 +927,24 @@ test('attachment storage initialization failure does not block text chat startup
     await assert.rejects(
       async () => harness.ipcHandlers.get(channel)(harness.event(), ...args),
       { message: 'LOCAL_ATTACHMENT_STORAGE_UNAVAILABLE' },
+    )
+  }
+})
+
+test('workspace run IPC requires an explicit non-empty Agent target contract', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-target-contract-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+
+  for (const [channel, input] of [
+    ['local-workspace:send', { groupId: 'group-1', text: 'Do the work' }],
+    ['local-workspace:send', { groupId: 'group-1', text: 'Do the work', targetKinds: [] }],
+  ]) {
+    await assert.rejects(
+      async () => harness.ipcHandlers.get(channel)(harness.event(), input),
+      { message: 'LOCAL_MESSAGE_TARGET_REQUIRED' },
+      channel,
     )
   }
 })

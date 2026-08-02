@@ -50,6 +50,11 @@ function agentKind(value) {
   return AGENT_KIND.test(normalized) ? normalized : ''
 }
 
+function normalizedAgentKinds(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.slice(0, MAX_RUN_AGENTS).map(agentKind).filter(Boolean))]
+}
+
 function nonNegativeInteger(value, maximum = Number.MAX_SAFE_INTEGER) {
   return Number.isInteger(value) && value >= 0 && value <= maximum ? value : null
 }
@@ -82,6 +87,20 @@ function normalizeTraceContext(value) {
   return context
 }
 
+function capsuleDetail(value) {
+  const detail = boundedString(value, 600, { trim: false })
+  if (!detail) return ''
+  return detail.split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(line => (
+      /^Exit code: -?\d+$/u.test(line)
+      || /^Output: \d+ lines?, \d+ bytes$/u.test(line)
+      || /^Result: (?:-?\d+(?:\.\d+)?|true|false|\d+ items?|\d+ fields?)$/u.test(line)
+    ))
+    .slice(0, 4)
+    .join('\n')
+}
+
 export function normalizeCapsuleEvent(value, index = 0) {
   const input = record(value)
   if (!input) return null
@@ -95,8 +114,10 @@ export function normalizeCapsuleEvent(value, index = 0) {
   }
   const title = boundedString(input.title, 120)
   const summary = boundedString(input.summary, 600)
+  const detail = capsuleDetail(input.detail)
   if (title) event.title = title
   if (summary) event.summary = summary
+  if (detail) event.detail = detail
   return event
 }
 
@@ -191,6 +212,7 @@ export function normalizeMessageTrace(value, message = {}) {
   const runId = identifier(input.runId)
   const agentRunId = identifier(input.agentRunId)
   if (!runId || !agentRunId) return null
+  const round = nonNegativeInteger(input.round, 100000)
   const context = normalizeTraceContext(input.context)
   const events = (Array.isArray(input.events) ? input.events : [])
     .slice(0, MAX_CAPSULE_EVENTS)
@@ -199,6 +221,7 @@ export function normalizeMessageTrace(value, message = {}) {
   const trace = {
     runId,
     agentRunId,
+    ...(round != null ? { round } : {}),
     status: normalizedStatus(input.status) || 'completed',
     summary: boundedString(input.summary, 8000),
     events,
@@ -238,26 +261,69 @@ function normalizeRun(value) {
     ? rawAgentRuns.slice(0, MAX_RUN_AGENTS).map(agent => normalizeRunAgent(agent, run)).filter(Boolean)
     : []
   delete run.agents
-  return run
+  const declaredTargetKinds = normalizedAgentKinds(input.targetKinds)
+  const inferredTargetKinds = normalizedAgentKinds([
+    ...run.agentRuns.map(agent => agent.kind),
+    input.currentKind,
+    ...(Array.isArray(input.completedKinds) ? input.completedKinds : []),
+    ...(Array.isArray(input.failedKinds) ? input.failedKinds : []),
+  ])
+  return scopeRunToTargetKinds(
+    run,
+    declaredTargetKinds.length ? declaredTargetKinds : inferredTargetKinds,
+  )
 }
 
 function normalizeMessage(value) {
   const input = record(value)
   if (!input) return null
   const message = { ...input }
+  const targetKinds = normalizedAgentKinds(input.targetKinds)
+  const mentionedAgentKinds = normalizedAgentKinds(input.mentionedAgentKinds)
+  if (targetKinds.length) message.targetKinds = targetKinds
+  else delete message.targetKinds
+  if (mentionedAgentKinds.length) message.mentionedAgentKinds = mentionedAgentKinds
+  else delete message.mentionedAgentKinds
   const trace = normalizeMessageTrace(input.trace, input)
   if (trace) message.trace = trace
   else delete message.trace
   return message
 }
 
+function scopeRunToTargetKinds(run, values) {
+  const targetKinds = normalizedAgentKinds(values)
+  const targets = new Set(targetKinds)
+  const scoped = {
+    ...run,
+    targetKinds,
+    completedKinds: normalizedAgentKinds(run.completedKinds).filter(kind => targets.has(kind)),
+    failedKinds: normalizedAgentKinds(run.failedKinds).filter(kind => targets.has(kind)),
+    currentKind: targets.has(agentKind(run.currentKind)) ? agentKind(run.currentKind) : '',
+    agentRuns: (Array.isArray(run.agentRuns) ? run.agentRuns : []).filter(agent => targets.has(agent.kind)),
+  }
+  delete scoped._targetKindsInferred
+  return scoped
+}
+
 export function normalizeSnapshot(value) {
+  const messages = Array.isArray(value?.messages) ? value.messages.map(normalizeMessage).filter(Boolean) : []
+  const messagesById = new Map(messages.map(message => [message.id, message]))
+  const runs = (Array.isArray(value?.runs) ? value.runs : [])
+    .map(normalizeRun)
+    .filter(Boolean)
+    .map((run) => {
+      const rootMessage = messagesById.get(run.threadRootId)
+      const messageTargets = normalizedAgentKinds(rootMessage?.targetKinds)
+      const mentionedTargets = normalizedAgentKinds(rootMessage?.mentionedAgentKinds)
+      const targets = messageTargets.length ? messageTargets : mentionedTargets
+      return targets.length ? scopeRunToTargetKinds(run, targets) : run
+    })
   return {
     agents: Array.isArray(value?.agents) ? value.agents : [],
     groups: Array.isArray(value?.groups) ? value.groups : [],
-    messages: Array.isArray(value?.messages) ? value.messages.map(normalizeMessage).filter(Boolean) : [],
+    messages,
     runningGroupIds: Array.isArray(value?.runningGroupIds) ? value.runningGroupIds : [],
-    runs: Array.isArray(value?.runs) ? value.runs.map(normalizeRun).filter(Boolean) : [],
+    runs,
   }
 }
 
@@ -303,6 +369,8 @@ export function mergeRunEvent(snapshot, value) {
     progress: [],
     agentRuns: [],
   }
+  const existingTargetKinds = normalizedAgentKinds(existingRun.targetKinds)
+  if (existingTargetKinds.length && !existingTargetKinds.includes(event.agentKind)) return snapshot
   const existingAgents = Array.isArray(existingRun.agentRuns)
     ? existingRun.agentRuns
     : (Array.isArray(existingRun.agents) ? existingRun.agents : [])
@@ -372,7 +440,7 @@ export function mergeRunEvent(snapshot, value) {
     agents.push(nextAgent)
   }
 
-  const targetKinds = [...new Set([...(existingRun.targetKinds || []), event.agentKind])]
+  const targetKinds = existingTargetKinds.length ? existingTargetKinds : [event.agentKind]
   const completedKinds = [...new Set(existingRun.completedKinds || [])]
   const failedKinds = [...new Set(existingRun.failedKinds || [])]
   if (runAgentTerminal(nextStatus)) {
@@ -395,6 +463,7 @@ export function mergeRunEvent(snapshot, value) {
     agentRuns: agents,
   }
   delete run.agents
+  delete run._targetKindsInferred
   const allTargetKindsTerminal = targetKinds.length > 0
     && targetKinds.every(kind => completedKinds.includes(kind))
   const runningGroupIds = new Set(snapshot.runningGroupIds || [])

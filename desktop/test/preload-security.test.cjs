@@ -63,7 +63,7 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
     [
       'createGroup', 'defaultDirectory', 'deleteGroup', 'get', 'onChanged',
       'onOpenGroup', 'onRunEvent', 'onRunFinished', 'pickDirectory', 'refreshAgents', 'send',
-      'startAuto', 'stop', 'updateGroup',
+      'stop', 'updateGroup',
     ].sort(),
   )
   assert.equal('configure' in api.localWorkspace, false)

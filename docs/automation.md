@@ -71,7 +71,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 
 | Control | Implementation |
 | --- | --- |
-| User approval | Send/start-auto/install actions originate from explicit UI commands; install uses confirmation |
+| User approval | Send/install actions originate from explicit UI commands; install uses confirmation |
 | Rate/bounds | Manual targets run sequentially; auto discussion defaults to 6 complete rounds and is capped at 10 rounds and 30 minutes; one installer task at a time |
 | Cancellation | Per-group stop aborts the process tree; installer cancel aborts download/process; quit waits for cleanup |
 | Failure handling | Validation and submission errors are returned before persistence; execution failures after acceptance are stored as local diagnostic messages. Automatic runs isolate a failed Agent, continue the round, and retry it in later bounded rounds; terminal state is emitted separately |

@@ -809,11 +809,10 @@ function registerIpc() {
   })
   registerTrustedHandle('local-workspace:send', async (input) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
-    return workspace.sendMessage(input || {})
-  })
-  registerTrustedHandle('local-workspace:start-auto', (input) => {
-    if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
-    return workspace.startAuto(input || {})
+    if (!Array.isArray(input?.targetKinds) || !input.targetKinds.length) {
+      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    }
+    return workspace.sendMessage(input)
   })
   registerTrustedHandle('local-workspace:stop', (groupId) => {
     if (!workspace) return false
