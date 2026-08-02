@@ -1490,10 +1490,12 @@ class LocalWorkspace extends EventEmitter {
           await settleWithin(Promise.allSettled(cleanupPromises), this.runAbortGraceMs)
         }
       }
-      const error = parentStopped
-        ? (caughtError?.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
-            ? caughtError
-            : agentStoppedError())
+      const error = parentTimedOut
+        ? new Error('LOCAL_AGENT_TIMEOUT')
+        : parentStopped
+          ? (caughtError?.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
+              ? caughtError
+              : agentStoppedError())
         : watchdogTimedOut
           ? (watchdogError || new Error('LOCAL_AGENT_TIMEOUT'))
           : caughtError
@@ -1696,7 +1698,19 @@ class LocalWorkspace extends EventEmitter {
               successes += 1
               if (result.consensus) agreements += 1
             } catch (error) {
-              if (controller.signal.aborted) break
+              if (controller.signal.aborted) {
+                if (controller.stopReason === 'timeout' && error?.runTrace) {
+                  this.recordAgentFailure(
+                    group.id, kind, error, threadRootId, reportedFailures,
+                  )
+                  controller.failedKinds.push(kind)
+                  controller.completedKinds.push(kind)
+                  controller.currentKind = ''
+                  controller.progress = []
+                  this.emitChanged()
+                }
+                break
+              }
               this.recordAgentFailure(
                 group.id, kind, error, threadRootId, reportedFailures,
               )

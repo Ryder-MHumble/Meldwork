@@ -2277,6 +2277,12 @@ test('automatic dialogue aborts the active Agent at the total runtime limit', as
 
   assert.equal(activeSignal.aborted, true)
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex'])
+  const interruptedAgent = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(interruptedAgent.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+  assert.equal(interruptedAgent.trace.status, 'timeout')
+  assert.equal(interruptedAgent.trace.context.includedCount, 1)
   const timeout = workspace.snapshot().messages.find(message => (
     message.system?.key === 'system.autoTimeout'
   ))

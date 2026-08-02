@@ -1938,12 +1938,12 @@ describe('RoundRelay workbench', () => {
     await range.setValue(6)
     await wrapper.get('.round-unlimited-button').trigger('click')
     await flushPromises()
-    expect(wrapper.get('.confirmation-modal-body').text()).toContain('consume more Provider quota')
+    expect(wrapper.get('.confirmation-modal-body').text()).toContain('30-minute safety timeout')
     expect(wrapper.find('.round-range-input').exists()).toBe(true)
     await wrapper.get('.confirmation-modal-footer .primary-button').trigger('click')
     await flushPromises()
     expect(wrapper.find('.round-range-input').exists()).toBe(false)
-    expect(wrapper.get('.round-settings-trigger').text()).toContain('Unlimited')
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('No round limit')
     await wrapper.get('.round-bounded-button').trigger('click')
     await flushPromises()
     expect(wrapper.find('.round-range-input').exists()).toBe(true)
@@ -2019,7 +2019,7 @@ describe('RoundRelay workbench', () => {
       maxRounds: 6,
       unlimitedRounds: true,
     })
-    expect(wrapper.get('.run-round-progress').text()).toBe('Round 1 / Unlimited')
+    expect(wrapper.get('.run-round-progress').text()).toBe('Round 1 / No round limit')
     wrapper.unmount()
   })
 
