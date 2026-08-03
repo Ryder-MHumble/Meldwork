@@ -32,3 +32,19 @@ test('private file writes remove their temporary file when replacement fails', (
   assert.throws(() => atomicWritePrivateFile(filename, 'blocked'))
   assert.deepEqual(fs.readdirSync(directory), ['occupied'])
 })
+
+test('permission failures leave the previous destination unchanged', (t) => {
+  const directory = fixture(t)
+  const filename = path.join(directory, 'private.json')
+  atomicWritePrivateFile(filename, 'first')
+  const chmodSync = fs.chmodSync
+  fs.chmodSync = () => { throw new Error('CHMOD_FAILED') }
+  t.after(() => { fs.chmodSync = chmodSync })
+
+  assert.throws(
+    () => atomicWritePrivateFile(filename, 'second'),
+    { message: 'CHMOD_FAILED' },
+  )
+  assert.equal(fs.readFileSync(filename, 'utf8'), 'first')
+  assert.deepEqual(fs.readdirSync(directory), ['private.json'])
+})

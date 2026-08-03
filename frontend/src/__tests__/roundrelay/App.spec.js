@@ -70,7 +70,7 @@ function createBridge() {
       cloneInput(input)
       return snapshot()
     }),
-    stop: vi.fn(async () => true),
+    stop: vi.fn(async (_groupId, _runId) => true),
     pickDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
     defaultDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
     onChanged: vi.fn((callback) => {
@@ -1866,6 +1866,12 @@ describe('RoundRelay workbench', () => {
           output: '',
           events: [],
           sourceMessageIds: ['root-1', 'missing-source'],
+          context: {
+            includedCount: 4,
+            omittedCount: 3,
+            charCount: 720,
+            sessionRotated: true,
+          },
           seenSeqs: [],
         }],
       }]
@@ -1877,6 +1883,10 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
     expect(pushState).toHaveBeenCalledWith({ roundrelayTracePanel: true }, '', window.location.href)
+    expect(wrapper.get('.trace-context-stats').text()).toContain('4 messages included')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages compacted')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('720 context characters')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('Session context rotated')
 
     emitRunEvent({
       runId: 'run-1',
@@ -1920,10 +1930,13 @@ describe('RoundRelay workbench', () => {
     expect(sourceButtons[1].text()).toContain('Source unavailable')
     expect(sourceButtons[1].attributes()).toHaveProperty('disabled')
     const scrollIntoView = vi.fn()
-    wrapper.get('#message-root-1').element.scrollIntoView = scrollIntoView
+    const sourceMessage = wrapper.get('#message-root-1')
+    sourceMessage.element.scrollIntoView = scrollIntoView
     await sourceButtons[0].trigger('click')
     await flushPromises()
     expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(document.activeElement).toBe(sourceMessage.element)
+    expect(sourceMessage.attributes('tabindex')).toBe('-1')
 
     emitRunEvent({
       runId: 'run-1',
@@ -2059,6 +2072,33 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('uses the partial tone for terminal trace statuses', () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          agentRunId: 'agent-run-terminal',
+          agentKind: 'codex',
+          status: 'stopped',
+          output: '',
+          summary: '',
+          events: [
+            { type: 'warning', status: 'interrupted' },
+            { type: 'warning', status: 'cancelled' },
+          ],
+          sourceMessageIds: [],
+          context: {},
+        }],
+        selectedAgentRunId: 'agent-run-terminal',
+      },
+    })
+
+    expect(wrapper.get('.trace-status').attributes('data-status')).toBe('partial')
+    expect(wrapper.findAll('.trace-event-status').map(status => status.attributes('data-status')))
+      .toEqual(['partial', 'partial'])
+    wrapper.unmount()
+  })
+
   it('saves the exact Provider payload exposed by preload', async () => {
     const { wrapper, bridge } = await mountApp()
 
@@ -2105,10 +2145,10 @@ describe('RoundRelay workbench', () => {
         groupId: 'group-1',
         role: 'system',
         agentKind: 'hermes',
-        content: 'Hermes failed: LOCAL_AGENT_EXECUTION_STOPPED',
+        content: 'Hermes failed: LOCAL_AGENT_TIMEOUT\nRecovered conclusion before timeout.',
         system: {
           key: 'system.agentCallFailed',
-          params: { agent: 'Hermes', reason: 'LOCAL_AGENT_EXECUTION_STOPPED' },
+          params: { agent: 'Hermes', reason: 'LOCAL_AGENT_TIMEOUT' },
         },
         createdAt: '2026-07-29T08:01:00Z',
       })
@@ -2116,11 +2156,62 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.conversation-link').text()).toContain('Agent group')
     await wrapper.get('.conversation-link').trigger('click')
-    expect(wrapper.get('.system-message').text()).toContain('Hermes failed: Agent execution stopped.')
+    expect(wrapper.get('.system-message').text()).toContain('Hermes failed: This Agent took too long to respond.')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Recovered conclusion before timeout.')
+    expect(wrapper.get('.system-message').text()).not.toContain('Hermes failed: LOCAL_AGENT_TIMEOUT')
 
     await wrapper.findAll('.sidebar-footer-actions button')[0].trigger('click')
     expect(wrapper.get('.conversation-link').text()).toContain('Agent 群聊')
-    expect(wrapper.get('.system-message').text()).toContain('Hermes 调用失败：Agent 执行已停止。')
+    expect(wrapper.get('.system-message').text()).toContain('Hermes 调用失败：该 Agent 响应超时')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Recovered conclusion before timeout.')
+    expect(wrapper.get('.system-message').text()).not.toContain('Hermes failed: LOCAL_AGENT_TIMEOUT')
+    wrapper.unmount()
+  })
+
+  it('does not treat a multiline failure reason as a streamed Agent conclusion', async () => {
+    const reason = 'process failed\n**legacy diagnostic only**'
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-multiline-failure',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Multiline failure',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:01:00Z',
+      })
+      state.messages.push({
+        id: 'multiline-failure',
+        groupId: 'direct-multiline-failure',
+        role: 'system',
+        agentKind: 'codex',
+        content: `Codex failed: ${reason}`,
+        system: {
+          key: 'system.agentCallFailed',
+          params: { agent: 'Codex', reason },
+        },
+        trace: {
+          runId: 'run-multiline-failure',
+          agentRunId: 'agent-multiline-failure',
+          status: 'failed',
+          events: [],
+        },
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    expect(wrapper.get('.system-message').text()).toContain('Codex failed: process failed')
+    expect(wrapper.find('.system-message .markdown-body').exists()).toBe(false)
+    expect(wrapper.find('.system-message strong').exists()).toBe(false)
+
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.system-message').text()).toContain('Codex 调用失败：process failed')
+    expect(wrapper.find('.system-message .markdown-body').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -4313,7 +4404,7 @@ describe('RoundRelay workbench', () => {
   it('maps direct tasks onto the turn rail without group reply styling', async () => {
     const scrollIntoView = vi.fn()
     HTMLElement.prototype.scrollIntoView = scrollIntoView
-    const { wrapper } = await mountApp(({ state }) => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'direct-codex',
         conversationType: 'direct',
@@ -4360,6 +4451,7 @@ describe('RoundRelay workbench', () => {
       )
       state.runningGroupIds = ['direct-codex']
       state.runs = [{
+        runId: 'run-direct-turns',
         groupId: 'direct-codex',
         mode: 'manual',
         targetKinds: ['codex'],
@@ -4397,6 +4489,8 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('#message-agent-1').text()).toContain('First answer')
     expect(scrollIntoView).toHaveBeenCalled()
+    await wrapper.get('.stop-button').trigger('click')
+    expect(bridge.localWorkspace.stop).toHaveBeenCalledWith('direct-codex', 'run-direct-turns')
     wrapper.unmount()
   })
 
@@ -4423,6 +4517,7 @@ describe('RoundRelay workbench', () => {
       })
       state.runningGroupIds = ['group-1']
       state.runs = [{
+        runId: 'run-focused-review',
         groupId: 'group-1',
         phase: 'preparing',
         mode: 'manual',
@@ -4470,6 +4565,31 @@ describe('RoundRelay workbench', () => {
     expect(panel.text()).not.toContain('Codex is working in this chat')
     expect(panel.find('.typing-bars').exists()).toBe(false)
 
+    state.runs[0].agentRuns = [{
+      agentRunId: 'focused-codex-round-2',
+      kind: 'codex',
+      round: 2,
+      status: 'partial',
+      events: [],
+    }]
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('partial')
+    expect(panel.get('.solo-run-status').text()).toBe('Partially completed')
+
+    state.runs[0].agentRuns[0].status = 'stopped'
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('partial')
+    expect(panel.get('.solo-run-status').text()).toBe('Stopped')
+
+    state.runs[0].agentRuns[0].status = 'timeout'
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(panel.get('.run-agent-logo').attributes('data-status')).toBe('failed')
+    expect(panel.get('.solo-run-status').text()).toBe('Timed out')
+
+    state.runs[0].agentRuns = []
     state.runs[0].failedKinds = ['codex']
     emitWorkspaceChanged()
     await flushPromises()
@@ -4477,6 +4597,73 @@ describe('RoundRelay workbench', () => {
     expect(panel.get('.solo-run-status').text()).toBe('Failed')
     expect(panel.text()).not.toContain('Codex is working in this chat')
     expect(panel.find('.typing-bars').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('uses a static terminal indicator for partial, stopped, and interrupted Agent rows', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'claude',
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        version: '1.0.0',
+      })
+      state.groups.push({
+        id: 'group-terminal-agent-rows',
+        conversationType: 'group',
+        name: 'Terminal Agent rows',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'claude'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.runningGroupIds = ['group-terminal-agent-rows']
+      state.runs = [{
+        runId: 'run-terminal-agent-rows',
+        groupId: 'group-terminal-agent-rows',
+        mode: 'auto',
+        targetKinds: ['codex', 'hermes', 'claude'],
+        currentKind: '',
+        agentRuns: [{
+          agentRunId: 'agent-terminal-codex',
+          kind: 'codex',
+          round: 1,
+          status: 'partial',
+          events: [],
+        }, {
+          agentRunId: 'agent-terminal-hermes',
+          kind: 'hermes',
+          round: 1,
+          status: 'interrupted',
+          events: [],
+        }, {
+          agentRunId: 'agent-terminal-claude',
+          kind: 'claude',
+          round: 1,
+          status: 'stopped',
+          events: [],
+        }],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    const rows = wrapper.findAll('.run-agent-row')
+    expect(rows).toHaveLength(3)
+    expect(rows.map(row => row.get('.run-agent-state small').text()))
+      .toEqual(['Partially completed', 'Interrupted', 'Stopped'])
+    for (const row of rows) {
+      expect(row.get('.run-agent-motion').attributes('data-status')).toBe('partial')
+      expect(row.find('.run-agent-motion svg').exists()).toBe(true)
+      expect(row.find('.run-agent-dots').exists()).toBe(false)
+      expect(row.find('.run-agent-bars').exists()).toBe(false)
+    }
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(styles).toMatch(/\.run-agent-motion\[data-status="partial"\] svg\s*\{[^}]*animation:\s*none;/s)
     wrapper.unmount()
   })
 
@@ -4861,14 +5048,14 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.direct-conclusion-live-status').text()).not.toContain('First')
     const traceDetails = wrapper.get('.trace-inline-details')
     expect(traceDetails.exists()).toBe(true)
-    expect(traceDetails.element.open).toBe(false)
+    expect(traceDetails.element.open).toBe(true)
     expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
     expect(wrapper.find('.message-trace-button').exists()).toBe(false)
 
-    traceDetails.element.open = true
+    traceDetails.element.open = false
     await traceDetails.trigger('toggle')
     await flushPromises()
-    expect(traceDetails.element.open).toBe(true)
+    expect(traceDetails.element.open).toBe(false)
 
     emitRunEvent({
       runId: 'run-direct', agentRunId: 'agent-direct', groupId: 'direct-trace',
@@ -4883,10 +5070,85 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-copy-surface').text()).toContain('First answer')
     expect(wrapper.get('.direct-conclusion-live-status').text()).toBe('Codex / Conclusion / Streaming')
-    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+    expect(wrapper.get('.direct-trace-event-live-status').text()).toContain('Codex / Execution details / Warning')
+    expect(wrapper.get('.direct-trace-event-live-status').text()).toContain('Waiting for output')
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(false)
     expect(wrapper.get('.trace-inline-event small').text())
       .toBe('Connector provided only the final answer; structured tool activity was unavailable.')
     expect(wrapper.get('.trace-inline-details').text()).not.toContain('connector_limited')
+    wrapper.unmount()
+  })
+
+  it('keeps a live direct trace open by default and collapses its durable replacement', async () => {
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'direct-live-durable',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex live trace',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.messages.push({
+        id: 'direct-live-root',
+        groupId: 'direct-live-durable',
+        role: 'user',
+        content: 'Keep the live trace visible',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      nextState.runningGroupIds = ['direct-live-durable']
+      nextState.runs = [{
+        runId: 'run-direct-live-durable',
+        groupId: 'direct-live-durable',
+        threadRootId: 'direct-live-root',
+        targetKinds: ['codex'],
+        currentKind: 'codex',
+        agentRuns: [{
+          agentRunId: 'agent-direct-live-durable',
+          kind: 'codex',
+          round: 1,
+          status: 'running',
+          output: 'Live answer',
+          events: [{ seq: 1, type: 'reasoning_summary', status: 'running', title: 'Reviewing' }],
+        }],
+      }]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+
+    state.messages.push({
+      id: 'direct-live-answer',
+      groupId: 'direct-live-durable',
+      role: 'agent',
+      agentKind: 'codex',
+      threadRootId: 'direct-live-root',
+      content: 'Durable answer',
+      trace: {
+        runId: 'run-direct-live-durable',
+        agentRunId: 'agent-direct-live-durable',
+        round: 1,
+        status: 'completed',
+        events: [{ evidenceId: 'E-R1-CODEX-01', type: 'reasoning_summary', status: 'completed', title: 'Reviewed' }],
+      },
+      createdAt: '2026-07-29T08:02:00Z',
+    })
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+
+    state.runs = []
+    state.runningGroupIds = []
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(false)
+    expect(wrapper.find('.run-status-panel').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -4917,7 +5179,7 @@ describe('RoundRelay workbench', () => {
           groupId: 'direct-failed-trace',
           role: 'system',
           agentKind: 'codex',
-          content: 'Codex failed: process failed',
+          content: 'Codex failed: process failed\nPartial conclusion before failure.',
           system: {
             key: 'system.agentCallFailed',
             params: { agent: 'Codex', reason: 'process failed' },
@@ -4953,7 +5215,549 @@ describe('RoundRelay workbench', () => {
     expect(details.text()).toContain('Tool result')
     expect(details.text()).toContain('Exit code 1')
     expect(details.text()).toContain('Failed')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Partial conclusion before failure.')
     expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('renders stopped and interrupted system traces in the conversation-specific disclosure', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'direct-stopped-trace',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Stopped direct trace',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-interrupted-trace',
+          conversationType: 'group',
+          name: 'Interrupted group trace',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:03:00Z',
+        },
+      )
+      state.messages.push(
+        {
+          id: 'direct-stopped-root',
+          groupId: 'direct-stopped-trace',
+          role: 'user',
+          content: 'Stop this run',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'direct-stopped-system',
+          groupId: 'direct-stopped-trace',
+          role: 'system',
+          agentKind: 'codex',
+          content: 'Codex was stopped.\nStopped conclusion retained.',
+          system: { key: 'system.agentStopped', params: { agent: 'Codex' } },
+          trace: {
+            runId: 'run-direct-stopped',
+            agentRunId: 'agent-direct-stopped',
+            status: 'stopped',
+            summary: 'The user stopped this run.',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-interrupted-root',
+          groupId: 'group-interrupted-trace',
+          role: 'user',
+          content: 'Resume after restart',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'group-interrupted-system',
+          groupId: 'group-interrupted-trace',
+          role: 'system',
+          agentKind: 'hermes',
+          threadRootId: 'group-interrupted-root',
+          content: 'Hermes was interrupted when Meldwork closed.\nInterrupted conclusion retained.',
+          system: { key: 'system.agentInterrupted', params: { agent: 'Hermes' } },
+          trace: {
+            runId: 'run-group-interrupted',
+            agentRunId: 'agent-group-interrupted',
+            round: 1,
+            status: 'interrupted',
+            summary: 'The application restarted before completion.',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    expect(wrapper.get('.turn-rail button').attributes('data-status')).toBe('stopped')
+    expect(wrapper.get('.turn-rail button').attributes('aria-label')).toContain('Stopped')
+    expect(wrapper.get('.system-message').text()).toContain('Codex was stopped by the user.')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Stopped conclusion retained.')
+    expect(wrapper.get('.system-message').text()).not.toContain('Codex was stopped.')
+    expect(wrapper.get('.trace-system-details').exists()).toBe(true)
+    expect(wrapper.find('.message-trace-button').exists()).toBe(false)
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.system-message').text()).toContain('Hermes was interrupted when Meldwork restarted.')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Interrupted conclusion retained.')
+    expect(wrapper.get('.system-message').text()).not.toContain('Hermes was interrupted when Meldwork closed.')
+    expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
+    const traceButton = wrapper.get('.message-trace-button')
+    await traceButton.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.run-trace-panel').text()).toContain('The application restarted before completion.')
+    expect(wrapper.get('.trace-status').text()).toBe('Interrupted')
+
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.system-message').text()).toContain('Meldwork 重启时，Hermes 的运行已中断。')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Interrupted conclusion retained.')
+    expect(wrapper.get('.system-message').text()).not.toContain('Hermes was interrupted when Meldwork closed.')
+    wrapper.unmount()
+  })
+
+  it('restores an interrupted direct turn from a rootless terminal trace after restart', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-interrupted-trace',
+        conversationType: 'direct',
+        directAgentKind: 'hermes',
+        name: 'Interrupted direct trace',
+        topic: '',
+        agentKinds: ['hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:02:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'direct-interrupted-root',
+          groupId: 'direct-interrupted-trace',
+          role: 'user',
+          content: 'Resume after renderer restart',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'direct-interrupted-system',
+          groupId: 'direct-interrupted-trace',
+          role: 'system',
+          agentKind: 'hermes',
+          content: 'Hermes was interrupted when Meldwork closed.\nInterrupted conclusion retained.',
+          system: { key: 'system.agentInterrupted', params: { agent: 'Hermes' } },
+          trace: {
+            runId: 'run-direct-interrupted',
+            agentRunId: 'agent-direct-interrupted',
+            status: 'interrupted',
+            summary: 'The application restarted before completion.',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const turn = wrapper.get('.turn-rail button')
+    expect(turn.attributes('data-status')).toBe('interrupted')
+    expect(turn.attributes('aria-label')).toContain('Interrupted')
+    expect(wrapper.get('.system-message .markdown-body').text()).toBe('Interrupted conclusion retained.')
+    expect(wrapper.get('.trace-system-details').exists()).toBe(true)
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps an interrupted run-finished event as interrupted', async () => {
+    const { wrapper, emitRunFinished } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-interrupted-event',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Interrupted event',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:01:00Z',
+      })
+      state.messages.push({
+        id: 'direct-interrupted-event-root',
+        groupId: 'direct-interrupted-event',
+        role: 'user',
+        content: 'Interrupt this live run',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    emitRunFinished({
+      groupId: 'direct-interrupted-event',
+      threadRootId: 'direct-interrupted-event-root',
+      status: 'interrupted',
+    })
+    await flushPromises()
+
+    const turn = wrapper.get('.turn-rail button')
+    expect(turn.attributes('data-status')).toBe('interrupted')
+    expect(turn.attributes('aria-label')).toContain('Interrupted')
+    wrapper.unmount()
+  })
+
+  it('restores durable group turn statuses ahead of reply-count fallbacks after restart', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-terminal-turns',
+        conversationType: 'group',
+        name: 'Recovered terminal turns',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:08:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'group-stopped-root',
+          groupId: 'group-terminal-turns',
+          role: 'user',
+          content: 'Stop without a reply',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'group-stopped-system',
+          groupId: 'group-terminal-turns',
+          role: 'system',
+          agentKind: 'codex',
+          threadRootId: 'group-stopped-root',
+          content: 'Codex was stopped.',
+          system: { key: 'system.agentStopped', params: { agent: 'Codex' } },
+          trace: {
+            runId: 'run-group-stopped',
+            agentRunId: 'agent-group-stopped',
+            status: 'stopped',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-interrupted-with-reply-root',
+          groupId: 'group-terminal-turns',
+          role: 'user',
+          content: 'Interrupt after one reply',
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+        {
+          id: 'group-interrupted-reply',
+          groupId: 'group-terminal-turns',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'group-interrupted-with-reply-root',
+          content: 'First Agent completed.',
+          trace: {
+            runId: 'run-group-interrupted',
+            agentRunId: 'agent-group-completed',
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:04:00Z',
+        },
+        {
+          id: 'group-interrupted-system',
+          groupId: 'group-terminal-turns',
+          role: 'system',
+          agentKind: 'hermes',
+          threadRootId: 'group-interrupted-with-reply-root',
+          content: 'Hermes was interrupted when Meldwork closed.',
+          system: { key: 'system.agentInterrupted', params: { agent: 'Hermes' } },
+          trace: {
+            runId: 'run-group-interrupted',
+            agentRunId: 'agent-group-interrupted',
+            status: 'interrupted',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:05:00Z',
+        },
+        {
+          id: 'group-timeout-root',
+          groupId: 'group-terminal-turns',
+          role: 'user',
+          content: 'Time out this run',
+          createdAt: '2026-07-29T08:06:00Z',
+        },
+        {
+          id: 'group-timeout-system',
+          groupId: 'group-terminal-turns',
+          role: 'system',
+          agentKind: 'hermes',
+          threadRootId: 'group-timeout-root',
+          content: 'Hermes failed: LOCAL_AGENT_TIMEOUT',
+          system: {
+            key: 'system.agentCallFailed',
+            params: { agent: 'Hermes', reason: 'LOCAL_AGENT_TIMEOUT' },
+          },
+          trace: {
+            runId: 'run-group-timeout',
+            agentRunId: 'agent-group-timeout',
+            status: 'timeout',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:07:00Z',
+        },
+        {
+          id: 'group-partial-root',
+          groupId: 'group-terminal-turns',
+          role: 'user',
+          content: 'Keep the partial result',
+          createdAt: '2026-07-29T08:08:00Z',
+        },
+        {
+          id: 'group-partial-reply',
+          groupId: 'group-terminal-turns',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'group-partial-root',
+          content: 'Partial result retained.',
+          trace: {
+            runId: 'run-group-partial',
+            agentRunId: 'agent-group-partial',
+            status: 'partial',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:09:00Z',
+        },
+        {
+          id: 'group-round-limit-root',
+          groupId: 'group-terminal-turns',
+          role: 'user',
+          content: 'Reach the round limit',
+          createdAt: '2026-07-29T08:10:00Z',
+        },
+        {
+          id: 'group-round-limit-reply',
+          groupId: 'group-terminal-turns',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'group-round-limit-root',
+          content: 'A completed round without consensus.',
+          trace: {
+            runId: 'run-group-round-limit',
+            agentRunId: 'agent-group-round-limit',
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:11:00Z',
+        },
+        {
+          id: 'group-round-limit-system',
+          groupId: 'group-terminal-turns',
+          role: 'system',
+          threadRootId: 'group-round-limit-root',
+          content: 'Automatic discussion reached the 4-round safety limit without consensus.',
+          system: { key: 'system.autoRoundLimit', params: { rounds: 4 } },
+          createdAt: '2026-07-29T08:12:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const turns = wrapper.findAll('.turn-rail button')
+    expect(turns.map(turn => turn.attributes('data-status')))
+      .toEqual(['stopped', 'interrupted', 'timeout', 'partial', 'round-limit'])
+    expect(turns.map(turn => turn.attributes('aria-label'))).toEqual([
+      expect.stringContaining('Stopped'),
+      expect.stringContaining('Interrupted'),
+      expect.stringContaining('Timed out'),
+      expect.stringContaining('Partially completed'),
+      expect.stringContaining('Round limit reached'),
+    ])
+    wrapper.unmount()
+  })
+
+  it('derives mixed and controller-only run outcomes from durable group messages', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      const createdAt = '2026-07-29T08:00:00Z'
+      const root = id => ({
+        id,
+        groupId: 'group-run-outcomes',
+        role: 'user',
+        content: id,
+        createdAt,
+      })
+      const reply = (id, rootId, runId, status) => ({
+        id,
+        groupId: 'group-run-outcomes',
+        role: 'agent',
+        agentKind: 'codex',
+        threadRootId: rootId,
+        content: `${status} reply`,
+        trace: { runId, agentRunId: id, status, events: [] },
+        createdAt,
+      })
+      const failure = (id, rootId, runId, status) => ({
+        id,
+        groupId: 'group-run-outcomes',
+        role: 'system',
+        agentKind: 'hermes',
+        threadRootId: rootId,
+        content: `Hermes failed: ${status}`,
+        system: { key: 'system.agentCallFailed', params: { agent: 'Hermes', reason: status } },
+        trace: { runId, agentRunId: id, status, events: [] },
+        createdAt,
+      })
+      const controllerTerminal = (id, rootId, key, params = {}) => ({
+        id,
+        groupId: 'group-run-outcomes',
+        role: 'system',
+        threadRootId: rootId,
+        content: key,
+        system: { key, params },
+        createdAt,
+      })
+
+      state.groups.push({
+        id: 'group-run-outcomes',
+        conversationType: 'group',
+        name: 'Recovered run outcomes',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt,
+        updatedAt: createdAt,
+      })
+      state.messages.push(
+        root('manual-failed-root'),
+        reply('manual-failed-success', 'manual-failed-root', 'run-manual-failed', 'completed'),
+        failure('manual-failed-error', 'manual-failed-root', 'run-manual-failed', 'failed'),
+        root('manual-timeout-root'),
+        reply('manual-timeout-success', 'manual-timeout-root', 'run-manual-timeout', 'completed'),
+        failure('manual-timeout-error', 'manual-timeout-root', 'run-manual-timeout', 'timeout'),
+        root('auto-round-limit-root'),
+        reply('auto-round-limit-success', 'auto-round-limit-root', 'run-auto-round-limit', 'completed'),
+        failure('auto-round-limit-error', 'auto-round-limit-root', 'run-auto-round-limit', 'failed'),
+        controllerTerminal('auto-round-limit-system', 'auto-round-limit-root', 'system.autoRoundLimit', { rounds: 4 }),
+        root('controller-timeout-root'),
+        controllerTerminal('controller-timeout-system', 'controller-timeout-root', 'system.autoTimeout'),
+        root('controller-stopped-root'),
+        controllerTerminal('controller-stopped-system', 'controller-stopped-root', 'system.autoStopped', { reason: 'stopped' }),
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.findAll('.turn-rail button').map(turn => turn.attributes('data-status')))
+      .toEqual(['partial', 'partial', 'round-limit', 'timeout', 'stopped'])
+    wrapper.unmount()
+  })
+
+  it('uses each Agent latest round when rebuilding an automatic run outcome', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-retry-consensus',
+        conversationType: 'group',
+        name: 'Retry consensus',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:05:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'retry-consensus-root',
+          groupId: 'group-retry-consensus',
+          role: 'user',
+          content: 'Retry until both Agents agree',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'retry-codex-round-1',
+          groupId: 'group-retry-consensus',
+          role: 'system',
+          agentKind: 'codex',
+          threadRootId: 'retry-consensus-root',
+          content: 'Codex failed: first attempt failed',
+          system: {
+            key: 'system.agentCallFailed',
+            params: { agent: 'Codex', reason: 'first attempt failed' },
+          },
+          trace: {
+            runId: 'run-retry-consensus',
+            agentRunId: 'retry-codex-round-1',
+            round: 1,
+            status: 'failed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'retry-hermes-round-1',
+          groupId: 'group-retry-consensus',
+          role: 'agent',
+          agentKind: 'hermes',
+          threadRootId: 'retry-consensus-root',
+          content: 'Hermes round one answer',
+          trace: {
+            runId: 'run-retry-consensus',
+            agentRunId: 'retry-hermes-round-1',
+            round: 1,
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+        {
+          id: 'retry-codex-round-2',
+          groupId: 'group-retry-consensus',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'retry-consensus-root',
+          content: 'Codex recovered in round two',
+          trace: {
+            runId: 'run-retry-consensus',
+            agentRunId: 'retry-codex-round-2',
+            round: 2,
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:04:00Z',
+        },
+        {
+          id: 'retry-hermes-round-2',
+          groupId: 'group-retry-consensus',
+          role: 'agent',
+          agentKind: 'hermes',
+          threadRootId: 'retry-consensus-root',
+          content: 'Hermes agreed in round two',
+          trace: {
+            runId: 'run-retry-consensus',
+            agentRunId: 'retry-hermes-round-2',
+            round: 2,
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:05:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const turn = wrapper.get('.turn-rail button')
+    expect(turn.attributes('data-status')).toBe('completed')
+    expect(turn.attributes('aria-label')).toContain('Completed')
     wrapper.unmount()
   })
 
@@ -4986,6 +5790,7 @@ describe('RoundRelay workbench', () => {
           agentKind: 'codex',
           threadRootId: 'direct-empty-root',
           content: 'Final answer',
+          toolCalls: [{ title: 'search', status: 'completed' }],
           trace: {
             runId: 'run-direct-empty',
             agentRunId: 'agent-direct-empty',
@@ -5003,6 +5808,8 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.direct-session-open').trigger('click')
     const details = wrapper.get('.trace-inline-details')
     expect(details.get('summary small').text()).toBe('0')
+    expect(wrapper.findAll('.execution-details')).toHaveLength(1)
+    expect(wrapper.text()).not.toContain('Execution process')
 
     details.element.open = true
     await details.trigger('toggle')
@@ -5076,9 +5883,9 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('keeps historical message traces and the active run in separate trace panels', async () => {
+  it('keeps historical message traces open when an unrelated active run finishes', async () => {
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
-    const { wrapper } = await mountApp(({ state }) => {
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
       for (const kind of ['claude', 'openclaw']) {
         state.agents.push({
           kind,
@@ -5213,9 +6020,24 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Active Claude work')
 
+    const activeRun = state.runs[0]
+    state.runningGroupIds = []
+    state.runs = []
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
+    expect(historyBack).not.toHaveBeenCalled()
+
     await wrapper.get('.run-trace-panel .icon-button').trigger('click')
     await flushPromises()
     expect(historyBack).toHaveBeenCalledTimes(1)
+
+    state.runningGroupIds = ['group-trace-boundaries']
+    state.runs = [activeRun]
+    emitWorkspaceChanged()
+    await flushPromises()
 
     const activeClaudeRow = wrapper.findAll('.run-agent-row')
       .find(row => row.get('strong').text() === 'Claude Code')
@@ -5532,21 +6354,27 @@ describe('RoundRelay workbench', () => {
     emitWorkspaceChanged()
     await flushPromises()
 
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.run-status-panel').exists()).toBe(false)
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    const durableTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    await durableTraceButton.trigger('click')
+    await flushPromises()
+
     expect(wrapper.get('.trace-event-list').text()).not.toContain('live reasoning')
     expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 1 / Completed')
     const durableEventDetails = wrapper.get('.trace-event-list details')
     durableEventDetails.element.open = true
     await durableEventDetails.trigger('toggle')
     expect(wrapper.get('.trace-event-body').text()).toContain('Output: 5 lines, 47 bytes')
-    const durableTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
     expect(document.activeElement).toBe(durableTraceButton.element)
-    expect(historyBack).toHaveBeenCalledTimes(1)
+    expect(historyBack).toHaveBeenCalledTimes(2)
     wrapper.unmount()
   })
 
-  it('keeps a retained group run summary after timeout and opens its durable trace', async () => {
+  it('omits historical run status after timeout and reopens the durable trace from its message', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.agents.push({
         kind: 'workbuddy', installed: true, available: true, credentialState: 'ready', version: '1.0.0',
@@ -5621,20 +6449,69 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    const summary = wrapper.get('.run-status-panel.group.history')
-    expect(summary.text()).toContain('Agent activity for this topic')
-    expect(summary.text()).toContain('Timed out')
-    expect(summary.text()).toContain('1 retained events')
-    expect(summary.findAll('.run-agent-row').map(row => row.get('strong').text()))
-      .toEqual(['Codex', 'Hermes', 'WorkBuddy'])
-    expect(summary.findAll('.run-agent-row').map(row => row.attributes('data-status')))
-      .toEqual(['completed', 'failed', 'not-started'])
-    expect(summary.findAll('.run-agent-row')[2].attributes()).toHaveProperty('disabled')
-
-    await summary.findAll('.run-agent-row')[0].trigger('click')
+    expect(wrapper.find('.run-status-panel').exists()).toBe(false)
+    expect(wrapper.findAll('.message-trace-button')).toHaveLength(2)
+    expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
+    await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button').trigger('click')
     await flushPromises()
     expect(wrapper.get('.run-trace-panel').text()).toContain('Codex retained conclusion')
     expect(wrapper.get('.trace-event-list').text()).toContain('Read 12 files')
+    wrapper.unmount()
+  })
+
+  it('groups trace tabs by Agent and selects individual rounds', async () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [
+          {
+            runId: 'run-multi-round',
+            agentRunId: 'run-multi-round:1:codex',
+            agentKind: 'codex',
+            round: 1,
+            status: 'completed',
+            events: [],
+          },
+          {
+            runId: 'run-multi-round',
+            agentRunId: 'run-multi-round:1:hermes',
+            agentKind: 'hermes',
+            round: 1,
+            status: 'completed',
+            events: [],
+          },
+          {
+            runId: 'run-multi-round',
+            agentRunId: 'run-multi-round:2:codex',
+            agentKind: 'codex',
+            round: 2,
+            status: 'partial',
+            events: [],
+          },
+        ],
+        selectedAgentRunId: 'run-multi-round:1:codex',
+      },
+    })
+
+    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text())).toEqual(['Codex', 'Hermes'])
+    expect(wrapper.findAll('.trace-agent-tab')).toHaveLength(2)
+    const roundSelector = wrapper.get('.trace-round-selector')
+    expect(roundSelector.get('span').text()).toBe('Round')
+    expect(roundSelector.findAll('option').map(option => option.text()))
+      .toEqual(['Round 1 / Completed', 'Round 2 / Partially completed'])
+
+    await roundSelector.get('select').setValue('run-multi-round:2:codex')
+    expect(wrapper.emitted('select').at(-1)).toEqual(['run-multi-round:2:codex'])
+    await wrapper.setProps({ selectedAgentRunId: 'run-multi-round:2:codex' })
+    expect(wrapper.get('.trace-panel-summary-heading').text()).toContain('Round 2')
+
+    const hermesTab = wrapper.findAll('.trace-agent-tab').find(tab => tab.text().includes('Hermes'))
+    await hermesTab.trigger('click')
+    expect(wrapper.emitted('select').at(-1)).toEqual(['run-multi-round:1:hermes'])
+
+    setLocale('zh')
+    await flushPromises()
+    expect(roundSelector.get('span').text()).toBe('轮次')
     wrapper.unmount()
   })
 

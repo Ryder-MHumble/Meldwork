@@ -155,6 +155,16 @@ test('local preload exposes cancellable read-only run lifecycle subscriptions', 
   assert.equal(listeners.has('local-workspace:open-group'), false)
 })
 
+test('local preload binds stop requests to the visible run identifier', async () => {
+  const { api, invocations } = loadPreload('file:')
+
+  await api.localWorkspace.stop('group-1', 'run-1')
+
+  assert.deepEqual(invocations, [
+    { channel: 'local-workspace:stop', args: ['group-1', 'run-1'] },
+  ])
+})
+
 test('local preload exposes only the narrow Agent installer methods', async () => {
   const { api, invocations } = loadPreload('file:')
 

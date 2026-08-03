@@ -60,7 +60,7 @@ if (isLocalDocument) Object.assign(desktopApi, {
     deleteGroup: groupId => ipcRenderer.invoke('local-workspace:delete-group', groupId),
     deleteMessage: (groupId, messageId) => ipcRenderer.invoke('local-workspace:delete-message', groupId, messageId),
     send: input => ipcRenderer.invoke('local-workspace:send', input),
-    stop: groupId => ipcRenderer.invoke('local-workspace:stop', groupId),
+    stop: (groupId, runId) => ipcRenderer.invoke('local-workspace:stop', groupId, runId),
     pickDirectory: () => ipcRenderer.invoke('local-workspace:pick-directory'),
     defaultDirectory: () => ipcRenderer.invoke('local-workspace:default-directory'),
     onChanged: callback => {

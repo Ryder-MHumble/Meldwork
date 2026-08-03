@@ -70,6 +70,46 @@ describe('run event normalization', () => {
     expect(normalizeRunEvent(event({ delta: 'x'.repeat(16001) }))).toBeNull()
   })
 
+  it('preserves bounded Unicode group ids while keeping execution ids ASCII-only', () => {
+    const groupId = '项目协作组-甲'
+    const normalized = normalizeRunEvent(event({ groupId }))
+
+    expect(normalized).toMatchObject({
+      runId: 'run-1',
+      agentRunId: 'agent-run-1',
+      groupId,
+      threadRootId: 'root-1',
+    })
+    expect(normalizeRunEvent(event({ groupId: '项目\n组' }))).toBeNull()
+    expect(normalizeRunEvent(event({ groupId: '组'.repeat(101) }))).toBeNull()
+    expect(normalizeRunEvent(event({ groupId, runId: '运行-1' }))).toBeNull()
+    expect(normalizeRunEvent(event({ groupId, agentRunId: '代理-1' }))).toBeNull()
+    expect(normalizeRunEvent(event({ groupId, threadRootId: '线程-1' }))).not.toHaveProperty('threadRootId')
+
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: [groupId],
+      runs: [{
+        runId: 'run-1',
+        groupId,
+        threadRootId: 'root-1',
+        targetKinds: ['codex'],
+        agentRuns: [{
+          agentRunId: 'agent-run-1',
+          kind: 'codex',
+          round: 1,
+          status: 'running',
+          events: [{ seq: 1, type: 'reasoning_summary', summary: 'Visible summary' }],
+        }],
+      }],
+    })
+
+    expect(snapshot.runs[0].groupId).toBe(groupId)
+    expect(snapshot.runs[0].agentRuns[0].events[0].groupId).toBe(groupId)
+  })
+
   it('normalizes bounded run agents and durable traces from snapshots', () => {
     const run = {
       runId: 'run-1',
@@ -428,7 +468,7 @@ describe('run event normalization', () => {
     expect(mergeRunEvent(snapshot, event({ seq: 99, delta: 'late' }))).toBe(snapshot)
   })
 
-  it('normalizes durable capsule events without requiring live event fields', () => {
+  it('normalizes allowlisted durable tool lifecycle events without live-only fields', () => {
     expect(normalizeCapsuleEvent({
       evidenceId: 'E-R1-HERMES-01',
       type: 'tool_result_summary',
@@ -446,5 +486,41 @@ describe('run event normalization', () => {
       summary: 'Collected three sources',
       detail: 'Result: 3 items',
     })
+
+    expect(normalizeCapsuleEvent({
+      evidenceId: 'E-R1-HERMES-02',
+      type: 'tool_start',
+      status: 'partial',
+      title: 'Read file',
+      summary: 'frontend/package.json',
+      detail: 'Output: 1 line, 400 bytes\nraw private payload',
+      command: 'cat frontend/package.json',
+    })).toEqual({
+      evidenceId: 'E-R1-HERMES-02',
+      type: 'tool_start',
+      status: 'partial',
+      title: 'Read file',
+      summary: 'frontend/package.json',
+      detail: 'Output: 1 line, 400 bytes',
+    })
+
+    expect(normalizeCapsuleEvent({
+      evidenceId: 'E-R1-HERMES-03',
+      type: 'tool_update',
+      status: 'partial',
+      title: 'Read file',
+      summary: 'desktop/package.json',
+      executable: '/private/bin/hermes',
+    })).toEqual({
+      evidenceId: 'E-R1-HERMES-03',
+      type: 'tool_update',
+      status: 'partial',
+      title: 'Read file',
+      summary: 'desktop/package.json',
+    })
+
+    expect(normalizeCapsuleEvent({
+      evidenceId: 'E-R1-HERMES-04', type: 'raw_stdout', status: 'partial',
+    })).toBeNull()
   })
 })

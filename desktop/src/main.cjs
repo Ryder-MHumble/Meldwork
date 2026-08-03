@@ -21,6 +21,7 @@ const {
 } = require('./local-agent-readiness.cjs')
 const { LocalWorkspace } = require('./local-workspace.cjs')
 const { normalizeRunEvent } = require('./run-harness.cjs')
+const { RunLedger } = require('./run-ledger.cjs')
 const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
 const { managedOpenClawOptions } = require('./openclaw-runtime.cjs')
 const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
@@ -40,13 +41,14 @@ const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
 const MAX_ATTACHMENT_PICK_REQUEST = 4
 const MAX_ATTACHMENT_DISCARD_REQUEST = 4
 const RUN_FINISHED_STATUSES = new Set([
-  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
 ])
 const LOCAL_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   'opencodereview',
 ])
 const LOCAL_IDENTIFIER = /^[A-Za-z0-9_-]{1,100}$/
+const LOCAL_GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
 const LOCAL_RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 let mainWindow = null
 let workspace = null
@@ -568,7 +570,7 @@ function normalizeRunFinished(input) {
   const groupId = String(input.groupId || '')
   const runId = String(input.runId || '')
   const status = String(input.status || '')
-  if (!LOCAL_IDENTIFIER.test(groupId) || !RUN_FINISHED_STATUSES.has(status)) return null
+  if (!LOCAL_GROUP_IDENTIFIER.test(groupId) || !RUN_FINISHED_STATUSES.has(status)) return null
   const threadRootId = String(input.threadRootId || '')
   const kinds = value => [...new Set((Array.isArray(value) ? value : [])
     .filter(isLocalAgentKind))]
@@ -589,7 +591,7 @@ function normalizeRunFinished(input) {
 function normalizeRendererRunEvent(input) {
   const event = normalizeRunEvent(input)
   if (!event || !isLocalAgentKind(event.agentKind)) return null
-  if (!LOCAL_IDENTIFIER.test(event.groupId)) return null
+  if (!LOCAL_GROUP_IDENTIFIER.test(event.groupId)) return null
   if (event.threadRootId && !LOCAL_IDENTIFIER.test(event.threadRootId)) return null
   return event
 }
@@ -706,6 +708,9 @@ async function validateKnowledgeBaseSelections(targetKinds, selections) {
 function createWorkspace() {
   return new LocalWorkspace({
     storagePath: workspaceStoragePath(),
+    runLedger: new RunLedger({
+      storagePath: path.join(app.getPath('userData'), 'roundrelay-run-ledger.json'),
+    }),
     detectAgents: async () => [
       ...await installer.detectedAgents(),
       ...await customAgentStore.detectAgents(),
@@ -905,9 +910,13 @@ function registerIpc() {
     }
     return workspace.sendMessage(input)
   })
-  registerTrustedHandle('local-workspace:stop', (groupId) => {
+  registerTrustedHandle('local-workspace:stop', (groupId, runId) => {
     if (!workspace) return false
-    return workspace.stop(String(groupId || ''))
+    const normalizedGroupId = String(groupId || '')
+    const normalizedRunId = String(runId || '')
+    if (!LOCAL_GROUP_IDENTIFIER.test(normalizedGroupId)
+        || !LOCAL_RUN_IDENTIFIER.test(normalizedRunId)) return false
+    return workspace.stop(normalizedGroupId, normalizedRunId)
   })
   registerTrustedHandle('local-workspace:pick-directory', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {

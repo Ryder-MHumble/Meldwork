@@ -16,8 +16,9 @@ Authorization is process-bound:
 | Resource / operation | Local user through trusted renderer | Other document/frame | Agent child process | Enforcement |
 | --- | --- | --- | --- | --- |
 | Read sanitized workspace snapshot | Allowed | Denied | No IPC access | `requireDesktopRenderer`; `LocalWorkspace.snapshot` removes executable paths |
-| Create/update/delete Meldwork conversations and messages | Allowed | Denied | No direct state-file API | Named IPC handlers plus `LocalWorkspace` validation; renderer cannot address CLI-native sessions |
-| Receive active/terminal run state | Sanitized events only | Denied | N/A | Main allowlists conversation IDs, Agent kinds, status, topic ID, and timestamps; no native session IDs, internal paths, credentials, or message text |
+| Create/update/delete Meldwork conversations and messages | Allowed | Denied | No direct state-file API | Named IPC handlers plus `LocalWorkspace` validation; deletion is blocked while running and must purge app-owned Run Ledger records before conversation state |
+| Receive active/terminal run state | Sanitized events and compact message traces only | Denied | N/A | Main allowlists run/conversation IDs, Agent kinds, status, conclusion deltas, summarized reasoning/plan/tool events, source message IDs, and bounded result metadata; direct details render inline and group details render in the right panel |
+| Read or mutate the private Run Ledger | No direct API | Denied | No direct API | Electron main owns `RunLedger`; renderer receives live allowlisted events and durable compact message capsules, never the ledger file or arbitrary records |
 | Create operating-system notifications | Not directly allowed | Denied | N/A | Main creates notifications only from trusted terminal run events; renderer cannot supply notification content |
 | Select a working directory | Allowed through OS dialog | Denied | Receives selected path only at invocation | Main-owned `dialog.showOpenDialog` |
 | List/select local Skills | Sanitized coordinates and display names for installed target Agents | Denied | Receives only its validated selections in prompt/native arguments | Installed-Agent gate; main-owned `LocalSkillCatalog`; per-target revalidation; no renderer-supplied path |
@@ -35,7 +36,7 @@ Authorization is process-bound:
 
 `desktop/src/preload.cjs` exposes only:
 
-- `localWorkspace`: get/refresh/create/update/delete/send/start/stop/directory selection plus sanitized change, run-finished, and notification-open events.
+- `localWorkspace`: get/refresh/create/update/delete/send/directory selection, a stop request bound to the current `(groupId, runId)`, plus sanitized change, run-event, run-finished, and notification-open events.
 - `agentInstaller`: catalog/Skill listing/state/start/cancel/sidebar visibility/change events. Skill listing accepts one Agent kind and returns sanitized records only.
 - `localAttachments`: `pickImages`, exact-payload `importImage`, ID-only `preview`, and ID-list `discard`. It exposes no filesystem read, path resolution, or arbitrary file picker method.
 - `localAgentProvider`: non-probing status, explicit encryption probe, save, and delete.
@@ -46,10 +47,11 @@ Node integration, webviews, insecure content, and renderer permission requests a
 ## Filesystem Permissions
 
 - Meldwork state is written only by main.
+- `roundrelay-run-ledger.json` is written atomically by main as a private `0600` file; parent directories created by the private writer use `0700`. It retains at most 64 bounded sanitized runs and is purged before its conversation is removed.
 - Provider and managed OpenClaw secret-bearing files use atomic writes and mode `0600`; their directories use mode `0700` where created by those modules.
 - Imported PNG/JPEG copies live under the Electron user-data attachment directory. The root/entry directories use mode `0700`, files use `0600`, metadata carries a SHA-256 checksum, and symlink/path escape or tampering fails closed.
-- Conversation data is local JSON and is not application-encrypted.
-- Agent executable paths, native session IDs, native session storage paths, attachment paths, Skill paths, preview payloads, and credential material are stripped from renderer snapshots and lifecycle events. User-selected conversation workdirs are intentionally returned for display and editing.
+- Conversation data and bounded sanitized Run Ledger records are private local JSON but are not application-encrypted. The ledger assumes one Electron main-process writer and is a recovery/audit aid, not an immutable forensic log.
+- Raw chain-of-thought, commands, unrestricted stdout/stderr, arbitrary tool payloads, Agent executable paths, native session IDs, native session storage paths, attachment paths, Skill paths, preview payloads, and credential material are stripped from renderer snapshots, lifecycle events, compact trace capsules, and Run Ledger records. User-selected conversation workdirs are intentionally returned for display and editing.
 - Main scans known per-Agent Skill roots and reads only bounded Skill manifest prefixes for catalog metadata. The renderer cannot request an arbitrary directory or file.
 - `KnowledgeBaseStore` persists only the normalized user-selected Obsidian Vault path. Feishu and DingTalk authentication remain in their local CLI-owned stores; Meldwork does not receive or persist their tokens.
 - Knowledge-source selection accepts only code-defined source kinds. Main resolves an allowlisted CLI command name or the selected absolute Vault path and scopes the hint to explicit target Agents.
@@ -66,6 +68,7 @@ Node integration, webviews, insecure content, and renderer permission requests a
 - Provider URLs require HTTPS, except loopback HTTP for local development.
 - Installer scripts require HTTPS and an allowlisted host; npm packages are selected from a fixed map.
 - Once `before-quit` starts, every trusted IPC handler rejects new work with `DESKTOP_CLIENT_SHUTTING_DOWN` until active runs and installer work have settled.
+- A renderer stop request must name the currently visible `runId`; stale or malformed run identifiers cannot abort a newer run. A successful response acknowledges cancellation, while the conversation remains locked until bounded child/output cleanup settles.
 
 ## Explicit Limitations
 

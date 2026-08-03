@@ -7,11 +7,12 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 | Automation | Trigger / owner | Automatic scope | External side effects |
 | --- | --- | --- | --- |
 | Manual Agent reply | Local user sends a message and selects targets | Invokes selected Agents sequentially once | Agent process, Provider/native network use, local message/session writes |
-| Automatic discussion | Local user sends a group message in automatic mode | Runs every group Agent in complete rounds, 6 rounds by default and up to 10 or 30 minutes, and stops early on unanimous explicit consensus | Same as manual replies, repeated within the bound |
+| Automatic discussion | Local user sends a group message in automatic mode | Runs the explicitly selected group Agents in complete rounds, 6 rounds by default, with either a finite 1-10 round limit or an explicitly confirmed no-round-limit mode; every mode stops on consensus, manual stop, or the 30-minute safety timeout | Same as manual replies, repeated within the bound |
 | Agent detection/readiness | App startup or explicit refresh | Scans fixed command names and credential evidence | Local process/file reads; Claude may run `auth status --json` |
 | Knowledge-source readiness | Explicit Knowledge Base settings refresh or source validation | Probes code-defined Feishu/DingTalk CLI status and Obsidian installation/Vault access | Local process/file reads; document-list permission probes may call the configured knowledge service through its CLI |
 | Agent installation | Local user confirms installation | One installer task at a time | Network download/npm access and global CLI installation |
 | Managed OpenClaw setup | OpenClaw invocation with configured Provider | Writes isolated runtime configuration if changed | Local config directories/files; Provider call by OpenClaw |
+| Harness trace checkpoint | A run starts, emits a meaningful sanitized event, changes context, stops, or finishes | Atomically updates one bounded local Run Ledger record; terminal messages retain streamed conclusions, and restart marks unfinished attempts interrupted, reconstructs missing terminal messages, or enriches an existing matching message with missing output | Private Run Ledger/workspace file writes only; no network request and no automatic writable resume |
 | Run completion notification | A manual or automatic run reaches a terminal state while the app window is unfocused | Main emits one sanitized lifecycle event and one local operating-system notification | Local notification only; no network request or conversation message |
 
 ## Agent Invocation Contract
@@ -19,7 +20,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 **Inputs Agents may read:**
 
 - The current user message.
-- Stable group-level user constraints plus a bounded group transcript. A resumed native session receives only messages after that Agent's previous final reply.
+- Stable group-level user constraints plus a bounded non-duplicated group transcript and compact evidence capsules from prior Agent results. A resumed native session receives only messages after that Agent's previous final reply.
 - Group name/topic and selected working directory.
 - Main-resolved paths for selected root images when the target Agent's declared capability accepts the complete set. Automatic discussion keeps offering the root images to each Agent until that Agent first receives them successfully.
 - Up to four main-revalidated Skill hints scoped to the selected target Agent. Hermes also receives the validated Skill slugs through its native `--skills` arguments.
@@ -38,15 +39,16 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 
 - `LocalWorkspace.promptFor` identifies the Agent, repeats bounded stable user constraints, adds only the group transcript delta needed by that Agent's conversation-scoped native session, and asks it not to impersonate other Agents.
 - Selected knowledge sources add an explicit read-only instruction, source identity, and either a main-resolved local Vault location or detected CLI command name. Meldwork asks the Agent to identify sources used, but does not independently guarantee retrieval completeness or citation correctness.
-- Automatic discussion preflights root-image limits for every Agent, so each participant can receive the same root image set or the run does not start. This equal-context guarantee applies to root-image availability, not identical prompts: Agents still run sequentially, so later participants can see earlier replies, while native sessions remain conversation-and-Agent-specific and Skill hints remain Agent-specific.
+- Automatic discussion preflights root-image limits for every explicitly targeted Agent, so each selected participant can receive the same root image set or the run does not start. This equal-context guarantee applies to root-image availability, not identical prompts: Agents still run sequentially, so later participants can see earlier replies, while native sessions remain conversation-and-Agent-specific and Skill hints remain Agent-specific.
 
 **Output contract:**
 
 - CLI-specific parsers reduce output to final text, a main-only native session reference, bounded execution metadata, and completion state where the protocol exposes it.
 - Output size and runtime are bounded in the adapter; secrets found in child errors are redacted before persistence.
+- The Harness exposes only allowlisted status, conclusion deltas, reasoning summaries, plans, tool lifecycle summaries, warnings, bounded result metadata, and source message IDs. It never exposes raw chain-of-thought, commands, unrestricted stdout/stderr, credentials, executable paths, native session references, or arbitrary tool payloads.
 - Before launching Hermes, main makes a best-effort read of the message-ID watermark through Electron's read-only SQLite API. After exit, a non-empty post-watermark `assistant` row with `finish_reason` equal to `stop` or `length` is authoritative. If the database is absent, locked, incompatible, or has no current-turn final row, Meldwork falls back to the ANSI-stripped official `--quiet` stdout instead of blocking the Agent. Any newly reported native session reference is persisted before this lookup. Final text becomes `message.content`; up to eight sanitized process steps and elapsed time remain separate metadata and are not included in later Agent prompts.
 - Successful final text becomes a local Agent message. User-visible failure diagnostics remain local system messages; an all-failed manual run resolves after recording each failure because the user message has already been accepted and persisted.
-- Active progress and terminal statuses are separate transient events. They are not appended to the durable message history, native session references are never exposed to the renderer, listener failures cannot change a completed run result, and shutdown suppresses terminal desktop notifications.
+- Live progress events are transient renderer updates. Main also stores bounded sanitized checkpoints in the private Run Ledger and persists compact evidence capsules with terminal conversation messages, including partial, failure, stop, timeout, and interruption outcomes. Native session references are never exposed to the renderer, listener failures cannot change a completed run result, and shutdown suppresses terminal desktop notifications.
 - Automatic replies carry an internal final-line consensus marker. Meldwork removes the marker before persistence and stops only when every Agent completes and agrees in the same round.
 
 ## Workspace Side Effects
@@ -76,14 +78,14 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 | Control | Implementation |
 | --- | --- |
 | User approval | Send/install actions originate from explicit UI commands; install uses confirmation |
-| Rate/bounds | Manual targets run sequentially; auto discussion defaults to 6 complete rounds and is capped at 10 rounds and 30 minutes; one installer task at a time |
-| Cancellation | Per-group stop aborts the process tree; installer cancel aborts download/process; quit waits for cleanup |
-| Failure handling | Validation and submission errors are returned before persistence; execution failures after acceptance are stored as local diagnostic messages. Automatic runs isolate a failed Agent, continue the round, and retry it in later bounded rounds; terminal state is emitted separately |
-| Audit trail | Conversation messages and bounded execution metadata are local; active/terminal events are transient and there is no separate immutable audit log |
+| Rate/bounds | Manual targets run sequentially; auto discussion defaults to 6 complete rounds, finite mode is capped at 10 rounds, optional no-round-limit mode remains capped at 30 minutes, and one installer task runs at a time |
+| Cancellation | Stop is bound to the current `(groupId, runId)` and acknowledges the abort request while cleanup retains the group lock; installer cancel aborts download/process; quit waits for settled cleanup |
+| Failure handling | Synchronous shape/target validation fails before reservation. Asynchronous attachment/Skill/knowledge preflight may fail after the preparing Ledger checkpoint but before user-message acceptance; the reservation is terminalized without accepting the message. Execution failures after acceptance are stored as local diagnostics, and automatic runs isolate a failed Agent and continue within the configured bounds |
+| Audit trail | Conversation results and compact evidence capsules are local; a private 64-run bounded Ledger supports crash/restart reconciliation and stop traceability. It is sanitized, mutable, and not an immutable forensic log |
 | Kill switch | Stop the active group, cancel the installer, or quit the application |
 
 ## App-Owned Versus Agent-Owned Actions
 
-- The app owns Meldwork conversation persistence, permission selection, process launch, run lifecycle events, operating-system notifications, installer selection, Provider encryption, and cancellation.
+- The app owns Meldwork conversation persistence, permission selection, process launch, bounded Run Ledger checkpoints, run lifecycle events, operating-system notifications, installer selection, Provider encryption, and cancellation.
 - Agents own generated text, their CLI-native session/history stores, and any work they perform through their CLI under the granted mode. Removing an app-owned session reference does not delete the Agent-owned native session.
 - Agent suggestions do not directly mutate Meldwork configuration; configuration changes require renderer IPC handled by main.

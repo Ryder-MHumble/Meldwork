@@ -16,8 +16,8 @@ function atomicWritePrivateFile(filename, contents) {
     fs.fsyncSync(descriptor)
     fs.closeSync(descriptor)
     descriptor = undefined
+    fs.chmodSync(temporaryPath, 0o600)
     fs.renameSync(temporaryPath, filename)
-    fs.chmodSync(filename, 0o600)
   } catch (error) {
     if (descriptor !== undefined) {
       try { fs.closeSync(descriptor) } catch { /* already closed */ }

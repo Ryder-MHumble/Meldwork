@@ -6,13 +6,14 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **Precondition:** The local user launches Meldwork.
 
-1. Electron main creates `ProviderStore`, `KnowledgeBaseStore`, `AttachmentStore`, and `LocalWorkspace` under `app.getPath('userData')`, plus a `LocalSkillCatalog` rooted at `app.getPath('home')`.
+1. Electron main creates `ProviderStore`, `KnowledgeBaseStore`, `AttachmentStore`, a private bounded `RunLedger`, and `LocalWorkspace` under `app.getPath('userData')`, plus a `LocalSkillCatalog` rooted at `app.getPath('home')`.
 2. Main registers IPC handlers, creates a sandboxed `BrowserWindow`, and loads the bundled frontend with `loadFile`.
 3. Before accepting attachment work, main reconciles the private attachment directory against persisted message references. Malformed workspace state disables destructive cleanup.
 4. Preload exposes workspace, installer, Skill, attachment, and Provider methods only when `location.protocol === 'file:'`.
 5. The renderer requests a sanitized workspace snapshot and a non-probing Provider status.
 6. The renderer performs the single startup Agent refresh, which detects installed CLIs and evaluates credential readiness. Main does not launch a duplicate eager scan.
-7. On the first renderer launch, a three-slide onboarding carousel opens while that refresh runs. Its completion action remains disabled until detection actually settles; completion is stored only in renderer `localStorage`.
+7. `LocalWorkspace` asks the Run Ledger to mark nonterminal runs and Agent attempts `interrupted`, then scans all bounded Ledger records. For every recoverable terminal Agent attempt not already represented in the conversation, it persists one compact message with the recorded status, output, and trace. When a matching `agentRunId` message exists without the recorded output, it enriches that message once. Reconciliation retries on a later startup if the workspace write failed and never auto-resumes writable work.
+8. On the first renderer launch, a three-slide onboarding carousel opens while that refresh runs. Its completion action remains disabled until detection actually settles; completion is stored only in renderer `localStorage`.
 
 **Deny case:** IPC from a different frame, web contents instance, protocol, or file path fails `requireDesktopRenderer`.
 
@@ -61,7 +62,7 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **Deny cases:** No available Agent, invalid group ID, or attempts to enable an unavailable Agent.
 
-**State/side effects:** Writes local conversation configuration. Deleting a conversation removes its Meldwork messages and native session-reference mapping and is denied while that conversation is running. It does not delete any CLI-native session or history from the CLI's own storage.
+**State/side effects:** Writes local conversation configuration. Deleting a conversation is denied while it is running, first purges its Run Ledger records, then removes Meldwork messages and native session-reference mappings. A failed ledger purge leaves the conversation intact; a later workspace-write failure rolls back the in-memory conversation state, so deletion remains retryable without retaining app-owned trace checkpoints. It does not delete any CLI-native session or history from the CLI's own storage.
 
 ## 5. Select Skills And Import Images
 
@@ -98,14 +99,14 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **Precondition:** The conversation is not already running and at least one selected target belongs to the group.
 
-1. `LocalWorkspace` persists the user message and creates a cancellable run.
-2. It builds a bounded prompt from stable group-level user constraints and the recent group transcript. When the same native session is resumed, only messages after that Agent's previous final reply are added, together with Skill and knowledge-source hints assigned to that Agent.
+1. `LocalWorkspace` reserves a unique `runId`, checkpoints the preparing state, validates the complete request, persists the user message, and begins a cancellable run for the explicit target Agents.
+2. It builds a bounded prompt from stable group-level user constraints, recent non-duplicated transcript entries, and compact evidence capsules from prior Agent conclusions. When the same native session is resumed, only messages after that Agent's previous final reply are added, together with Skill and knowledge-source hints assigned to that Agent.
 3. Main resolves the Agent executable and attachment paths internally, selects Provider/native credential environment, and invokes the CLI in the group working directory. Codex, Hermes, and OpenCode receive images through their validated native arguments; Hermes also receives selected Skill slugs through `--skills`.
 4. CLI adapters apply per-Agent read-only or write-enabled arguments. Child processes receive an allowlisted system environment plus only current-Agent credentials.
-5. Main emits sanitized active progress. Hermes process details are bounded and kept separate from the final answer; a pre-run message-ID watermark prevents an earlier turn from being selected as the current result.
-6. Normalized final Agent text is stored as message content, while native session references remain main-only. For Hermes, a post-watermark non-empty `assistant` row with `finish_reason` `stop` or `length` overrides process output. When the watermark or final lookup is unavailable, locked, incompatible, or empty, the ANSI-stripped official `--quiet` stdout is used as the fallback; `tool_calls` rows are never selected. A newly reported Hermes session reference is persisted before this lookup, including when the database path cannot provide a result.
-7. Failures are recorded as diagnostic system messages. One failed Agent does not cancel successful Agents; when every Agent fails after the user message has been persisted, the send resolves as an accepted failed run so the renderer does not restore and duplicate the committed draft or attachments.
-8. On terminal state, main emits a best-effort sanitized run event. When the window is unfocused it also creates a content-free operating-system notification whose click action focuses the app and opens the Meldwork conversation; shutdown suppresses these notifications.
+5. Main emits allowlisted status, conclusion deltas, reasoning summaries, plans, tool lifecycle summaries, warnings, and bounded result metadata. Direct conversations render these inline while running; group conversations stream conclusions in the shared conversation and keep detailed process events in the right-side panel. Raw chain-of-thought and unrestricted tool output are never emitted.
+6. Meaningful Agent events and context statistics update the bounded Run Ledger checkpoint. Normalized final Agent text is stored as message content with a compact evidence capsule, while native session references remain main-only. For Hermes, a post-watermark non-empty `assistant` row with `finish_reason` `stop` or `length` overrides process output. When the watermark or final lookup is unavailable, locked, incompatible, or empty, the ANSI-stripped official `--quiet` stdout is used as the fallback; `tool_calls` rows are never selected. A newly reported Hermes session reference is persisted before this lookup, including when the database path cannot provide a result.
+7. Failures are recorded as diagnostic system messages, with any conclusion already emitted through answer deltas retained below the status text. One failed Agent does not cancel successful Agents; when every Agent fails after the user message has been persisted, the send resolves as an accepted failed run so the renderer does not restore and duplicate the committed draft or attachments.
+8. On terminal state, main finalizes the Ledger record and emits a best-effort sanitized run event. Live direct disclosures collapse; the active group process panel closes, while result messages retain a trace entry that can reopen durable compact evidence. A historical panel opened from a result remains open across unrelated run completion. When the window is unfocused main also creates a content-free operating-system notification whose click action focuses the app and opens the Meldwork conversation; shutdown suppresses these notifications.
 
 **Deny cases:** Empty text and no image, target outside the group, unavailable Agent, concurrent run, invalid Skill/attachment context, invalid sandbox, or authentication failure.
 
@@ -113,18 +114,18 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 ## 8. Equal-Context Automatic Discussion And Stop
 
-**Precondition:** A group has at least two Agents and a persisted user topic root.
+**Precondition:** A group has at least two explicitly targeted Agents and a persisted user topic root.
 
-1. Before creating a run, `LocalWorkspace` checks the root message's entire image set against every group Agent. If any Agent cannot receive the same set, the discussion is rejected before any process starts.
-2. The user chooses a bounded round count; the default is six and the hard cap is ten.
-3. `LocalWorkspace` invokes every group Agent once per complete round, preserving one main-only native session reference for each conversation and Agent. The topic root remains a visual and run-lifecycle boundary, not a native-session boundary. Root images are delivered once to each Agent; a failed delivery is retried on that Agent's next attempt instead of silently dropping context. Root Skill and knowledge-source selections are revalidated and remain scoped to their target Agent on every attempt.
+1. Before creating a run, `LocalWorkspace` checks the root message's entire image set against every explicitly targeted Agent. If any target cannot receive the same set, the discussion is rejected before any process starts.
+2. The user chooses either a finite round count from one to ten, defaulting to six, or explicitly confirms no round limit. Unlimited mode still stops on consensus, manual stop, or the 30-minute total safety timeout.
+3. `LocalWorkspace` invokes every explicitly targeted group Agent once per complete round, preserving one main-only native session reference for each conversation and Agent. The topic root remains a visual and run-lifecycle boundary, not a native-session boundary. Root images are delivered once to each Agent; a failed delivery is retried on that Agent's next attempt instead of silently dropping context. Root Skill and knowledge-source selections are revalidated and remain scoped to their target Agent on every attempt.
 4. Each Agent must end with one internal consensus marker. The marker is removed before persistence, and the run stops early only when every Agent completes and agrees in the same round.
-5. A failed Agent is recorded once per stable failure, while later Agents and later bounded rounds continue. Active progress and terminal state are emitted separately from message history.
-6. The user can stop the group, and a 30-minute total runtime limit also aborts the active process tree.
+5. A failed Agent is recorded once per stable failure, while later Agents and later bounded rounds continue. Each later Agent receives prior conclusions plus compact, source-addressable evidence capsules instead of complete tool logs.
+6. The user can stop only the currently displayed `(groupId, runId)` pair. A missing or stale `runId` is rejected, preventing an old UI request from cancelling a newer run. Stop requests abort the active process tree immediately but retain the conversation run lock until child/output cleanup settles. A 30-minute total runtime limit uses the same bounded termination path.
 
-**Deny cases:** Missing topic root, fewer than two Agents, or another active run.
+**Deny cases:** Missing topic root, fewer than two selected target Agents, or another active run.
 
-**State/side effects:** Final messages, bounded execution metadata, and main-only session-reference mappings are updated. Active and terminal run events remain transient. There is a per-run safety timer, but no recurring schedule, unattended cron trigger, or retry daemon.
+**State/side effects:** Final messages, compact evidence capsules, bounded private Run Ledger checkpoints, and main-only session-reference mappings are updated. Live renderer events remain transient. A manual stop persists the last available Agent trace as `stopped`; shutdown-originated cancellation and crash recovery use `interrupted`, while a prior user-stop or timeout intent is preserved. There is a per-run safety timer, but no recurring schedule, unattended cron trigger, auto-resume worker, or retry daemon.
 
 “Equal context” here means every Agent can receive the same root image set before the run is allowed. Discussion remains sequential, so later Agents in a round can see earlier replies; native sessions remain conversation-and-Agent-specific, while selected Skills remain Agent-specific.
 
@@ -134,9 +135,9 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 1. Main sets `shutdownStarted` before beginning asynchronous cleanup.
 2. Every registered trusted IPC handler continues to verify the renderer and then rejects with `DESKTOP_CLIENT_SHUTTING_DOWN`; no new read, mutation, import, install, Provider, or Agent operation can enter during teardown.
-3. Main cancels pending/active installation work, aborts all Agent runs, and waits for both workspace and installer settlement.
+3. Main cancels pending/active installation work, assigns `shutdown` only to run controllers without an existing stop reason, aborts all Agent processes, checkpoints/finalizes shutdown-originated attempts as `interrupted` while preserving prior stopped/timeout intent, and waits for both workspace and installer settlement.
 4. Repeated quit requests reuse the same cleanup operation. After settlement, main marks cleanup complete and calls `app.quit()` once more to exit.
 
 **Deny case:** Any renderer IPC request after shutdown starts is rejected even when it comes from the otherwise trusted main frame.
 
-**State/side effects:** Active child processes are stopped before exit, and no new IPC side effect can race with final persistence or attachment cleanup.
+**State/side effects:** Active child processes are stopped before exit, the last bounded sanitized trace is retained, and no new IPC side effect can race with final persistence or attachment cleanup. An abrupt exit is reconciled from the last atomic Run Ledger checkpoint on the next launch.

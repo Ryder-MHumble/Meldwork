@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { createHash, randomUUID } = require('node:crypto')
 const {
+  DEFAULT_MAX_OUTPUT_CHARS,
   RunHarness,
   evidenceCapsuleText,
   nextSessionMeta,
@@ -10,6 +11,7 @@ const {
   normalizeTraceCapsule,
   packContextEntries,
   shouldRotateSession,
+  traceCapsuleFromAgentRun,
 } = require('./run-harness.cjs')
 
 const AGENT_LABELS = {
@@ -34,9 +36,15 @@ const DEFAULT_RUN_AGENT_TIMEOUT_MS = 15 * 60 * 1000
 const DEFAULT_RUN_ABORT_GRACE_MS = 2500
 const DEFAULT_AUTO_ROUNDS = 6
 const MAX_AUTO_ROUNDS = 10
+const MAX_MESSAGE_TEXT_CHARS = 20000
 const MAX_MESSAGE_ATTACHMENTS = 4
 const MAX_SKILL_HINTS = 4
 const MAX_KNOWLEDGE_BASE_HINTS = 4
+const MAX_SYSTEM_PARAM_TEXT_CHARS = 1000
+const MAX_TERMINAL_PREFIX_TEXT_CHARS = (MAX_SYSTEM_PARAM_TEXT_CHARS * 2) + 128
+const MAX_TERMINAL_MESSAGE_TEXT_CHARS = MAX_TERMINAL_PREFIX_TEXT_CHARS
+  + 1
+  + DEFAULT_MAX_OUTPUT_CHARS
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const STABLE_USER_TURNS_PER_EDGE = 3
 const STABLE_USER_TURN_TEXT_LIMIT = 700
@@ -59,8 +67,15 @@ const SESSION_REF = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$/
 const SECRET_LIKE_SESSION_REF = /^(?:sk|rk|pk|ghp|github_pat|xox[baprs]?)[_-][A-Za-z0-9_-]{12,}$/i
 const KNOWLEDGE_BASE_KINDS = new Set(['feishu', 'dingtalk', 'obsidian'])
 const RUN_STATUSES = new Set([
-  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
 ])
+const RECOVERABLE_AGENT_STATUSES = new Set([
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
+])
+const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
+  'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
+])
+const RUN_LEDGER_CHECKPOINT_DELAY_MS = 120
 const PROGRESS_TITLES = new Set([
   'reasoning', 'process', 'read_file', 'write_file', 'search',
   'image_generation', 'audio_generation', 'video_generation', 'tool',
@@ -72,6 +87,13 @@ function isSupportedAgentKind(kind) {
 
 function defaultAgentLabel(kind) {
   return AGENT_LABELS[kind] || String(kind || 'Agent')
+}
+
+function isTracedAgentTerminalMessage(message) {
+  return message?.role === 'system'
+    && isSupportedAgentKind(message.agentKind)
+    && AGENT_TERMINAL_SYSTEM_KEYS.has(message.system?.key)
+    && Boolean(normalizeTraceCapsule(message.trace))
 }
 
 function emptyState() {
@@ -91,8 +113,44 @@ function credentialFailure(error) {
     .test(String(error?.message || error || ''))
 }
 
-function cleanText(value, limit = 20000) {
+function cleanText(value, limit = MAX_MESSAGE_TEXT_CHARS) {
   return String(value || '').trim().slice(0, limit)
+}
+
+function terminalMessageContent(prefix, streamedConclusion) {
+  const safePrefix = cleanText(prefix, MAX_TERMINAL_PREFIX_TEXT_CHARS)
+  const conclusion = cleanText(streamedConclusion, DEFAULT_MAX_OUTPUT_CHARS)
+  return cleanText(
+    [safePrefix, conclusion].filter(Boolean).join('\n'),
+    MAX_TERMINAL_MESSAGE_TEXT_CHARS,
+  )
+}
+
+function terminalMessageContentLimit(role, agentKind, systemKey) {
+  return role === 'system' && agentKind && AGENT_TERMINAL_SYSTEM_KEYS.has(systemKey)
+    ? MAX_TERMINAL_MESSAGE_TEXT_CHARS
+    : MAX_MESSAGE_TEXT_CHARS
+}
+
+function terminalStatusPrefix(label, status, reason = '') {
+  const agent = cleanText(label, MAX_SYSTEM_PARAM_TEXT_CHARS)
+  if (status === 'interrupted') return `${agent} was interrupted when Meldwork closed.`
+  if (status === 'stopped') return `${agent} was stopped.`
+  return `${agent} failed: ${cleanText(reason, MAX_SYSTEM_PARAM_TEXT_CHARS)}`
+}
+
+function terminalStatusPrefixFromMessage(message, fallbackLabel, fallbackStatus, fallbackReason) {
+  const key = message?.system?.key
+  const label = cleanText(message?.system?.params?.agent, MAX_SYSTEM_PARAM_TEXT_CHARS)
+    || fallbackLabel
+  if (key === 'system.agentInterrupted') return terminalStatusPrefix(label, 'interrupted')
+  if (key === 'system.agentStopped') return terminalStatusPrefix(label, 'stopped')
+  if (key === 'system.agentCallFailed') {
+    const reason = cleanText(message?.system?.params?.reason, MAX_SYSTEM_PARAM_TEXT_CHARS)
+      || fallbackReason
+    return terminalStatusPrefix(label, 'failed', reason)
+  }
+  return terminalStatusPrefix(fallbackLabel, fallbackStatus, fallbackReason)
 }
 
 function cleanInline(value, limit = 80) {
@@ -195,7 +253,9 @@ function normalizeSystemParams(input) {
   for (const [rawKey, rawValue] of Object.entries(input).slice(0, 12)) {
     const key = cleanInline(rawKey, 60)
     if (!key) continue
-    if (typeof rawValue === 'string') params[key] = cleanText(rawValue, 1000)
+    if (typeof rawValue === 'string') {
+      params[key] = cleanText(rawValue, MAX_SYSTEM_PARAM_TEXT_CHARS)
+    }
     else if (typeof rawValue === 'boolean') params[key] = rawValue
     else if (typeof rawValue === 'number' && Number.isFinite(rawValue)) params[key] = rawValue
   }
@@ -321,6 +381,7 @@ function normalizeLoadedMessage(input) {
   const requestedAgentKind = cleanInline(input.agentKind, 40)
   const agentKind = isSupportedAgentKind(requestedAgentKind) ? requestedAgentKind : ''
   if (!id || !groupId || !role || (role === 'agent' && !agentKind)) return null
+  const systemKey = role === 'system' ? cleanInline(input.system?.key, 100) : ''
 
   const message = {
     id,
@@ -334,12 +395,14 @@ function normalizeLoadedMessage(input) {
               ? cleanInline(input.senderName, 60) || defaultAgentLabel(agentKind)
               : defaultAgentLabel(agentKind))
           : 'System'),
-    content: cleanText(input.content),
+    content: cleanText(
+      input.content,
+      terminalMessageContentLimit(role, agentKind, systemKey),
+    ),
     createdAt: cleanText(input.createdAt, 80),
   }
   const threadRootId = cleanText(input.threadRootId, 100)
   if (threadRootId) message.threadRootId = threadRootId
-  const systemKey = role === 'system' ? cleanInline(input.system?.key, 100) : ''
   if (systemKey) {
     message.system = {
       key: systemKey,
@@ -423,11 +486,14 @@ class LocalWorkspace extends EventEmitter {
     this.now = options.now || (() => new Date().toISOString())
     this.createId = options.createId || randomUUID
     this.createRunId = options.createRunId || randomUUID
+    this.runLedger = options.runLedger || null
     this.detectedAgents = []
     this.preparingRuns = new Map()
     this.activeRuns = new Map()
+    this.runCheckpointTimers = new Map()
     this.shuttingDown = false
     this.state = this.load()
+    this.restoreInterruptedRuns()
   }
 
   agentLabel(kind) {
@@ -490,6 +556,159 @@ class LocalWorkspace extends EventEmitter {
     const tempPath = `${this.storagePath}.tmp`
     fs.writeFileSync(tempPath, `${JSON.stringify(this.state, null, 2)}\n`, { mode: 0o600 })
     fs.renameSync(tempPath, this.storagePath)
+  }
+
+  restoreInterruptedRuns() {
+    let recovered = []
+    let records = []
+    try {
+      recovered = this.runLedger?.recoverInterrupted?.() || []
+      records = this.runLedger?.list?.() || recovered
+    } catch {
+      return
+    }
+    let changed = false
+    for (const record of records) {
+      const group = this.state.groups.find(item => item.id === record.groupId)
+      if (!group) {
+        try { this.runLedger?.deleteGroup?.(record.groupId) } catch {}
+        continue
+      }
+      for (const agentRun of Array.isArray(record.agentRuns) ? record.agentRuns : []) {
+        const status = String(agentRun?.status || '').toLowerCase()
+        if (!RECOVERABLE_AGENT_STATUSES.has(status)
+            || !isSupportedAgentKind(agentRun?.kind)) continue
+        const output = cleanText(agentRun.output, DEFAULT_MAX_OUTPUT_CHARS)
+        const trace = traceCapsuleFromAgentRun({
+          ...agentRun,
+          summary: output || agentRun.reason || '',
+        }, {
+          runId: record.runId,
+          status,
+          context: agentRun.context,
+        })
+        if (!trace) continue
+        const label = this.agentLabel(agentRun.kind)
+        const completed = status === 'completed' || status === 'partial'
+        const interrupted = status === 'interrupted'
+        const stopped = status === 'stopped'
+        const reason = cleanText(agentRun.reason, MAX_SYSTEM_PARAM_TEXT_CHARS)
+          || (status === 'timeout' ? 'LOCAL_AGENT_TIMEOUT' : 'LOCAL_AGENT_UNKNOWN_FAILURE')
+        const fallbackContent = terminalStatusPrefix(label, status, reason)
+        const existingMessage = this.state.messages.find(message => (
+          message.trace?.agentRunId === trace.agentRunId
+        ))
+        if (existingMessage) {
+          if (!completed && output) {
+            const prefix = terminalStatusPrefixFromMessage(
+              existingMessage, label, status, reason,
+            )
+            const content = terminalMessageContent(prefix, output)
+            if (content !== existingMessage.content) {
+              existingMessage.content = content
+              changed = true
+            }
+          }
+          continue
+        }
+        const duplicateStableFailure = ['failed', 'timeout'].includes(status)
+          && this.state.messages.some(message => (
+            message.groupId === group.id
+              && message.role === 'system'
+              && message.agentKind === agentRun.kind
+              && message.system?.key === 'system.agentCallFailed'
+              && cleanText(message.system?.params?.reason, MAX_SYSTEM_PARAM_TEXT_CHARS) === reason
+              && message.trace?.runId === trace.runId
+              && message.trace?.status === status
+              && message.trace?.agentRunId !== trace.agentRunId
+              && (!output || message.content === terminalMessageContent(fallbackContent, output))
+          ))
+        if (duplicateStableFailure) continue
+        const system = completed
+          ? null
+          : interrupted
+            ? { key: 'system.agentInterrupted', params: { agent: label } }
+            : stopped
+              ? { key: 'system.agentStopped', params: { agent: label } }
+              : { key: 'system.agentCallFailed', params: { agent: label, reason } }
+        const message = normalizeLoadedMessage({
+          id: this.createId(),
+          groupId: group.id,
+          role: completed ? 'agent' : 'system',
+          agentKind: agentRun.kind,
+          content: completed
+            ? output
+            : terminalMessageContent(fallbackContent, output),
+          createdAt: this.now(),
+          threadRootId: record.threadRootId,
+          system,
+          trace,
+        })
+        if (!message) continue
+        this.state.messages.push(message)
+        group.updatedAt = message.createdAt
+        changed = true
+      }
+    }
+    if (changed) this.save()
+  }
+
+  runLedgerRecord(groupId, controller, status = '') {
+    const group = this.state.groups.find(item => item.id === groupId)
+    const agentRuns = (controller.harness?.snapshot?.() || []).map((agentRun) => {
+      const reason = controller.agentFailureReasons?.get(agentRun.agentRunId) || ''
+      return reason ? { ...agentRun, reason } : agentRun
+    })
+    return {
+      runId: controller.runId,
+      groupId,
+      threadRootId: controller.threadRootId,
+      mode: controller.mode === 'auto' ? 'auto' : 'manual',
+      targetKinds: controller.targetKinds,
+      status: status || (this.preparingRuns.get(groupId) === controller ? 'preparing' : 'running'),
+      startedAt: controller.startedAt,
+      updatedAt: Date.now(),
+      reason: controller.stopReason,
+      permissionMode: group?.allowWrite ? 'workspace-write' : 'read-only',
+      currentRound: controller.currentRound,
+      maxRounds: controller.maxRounds,
+      unlimitedRounds: controller.unlimitedRounds,
+      agentRuns,
+    }
+  }
+
+  checkpointRun(groupId, controller, status = '') {
+    if (!this.runLedger || !controller?.runId) return false
+    try {
+      this.runLedger.checkpoint(this.runLedgerRecord(groupId, controller, status))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  scheduleRunCheckpoint(groupId, controller) {
+    if (!this.runLedger || !controller?.runId) return
+    const key = controller.runId
+    const previous = this.runCheckpointTimers.get(key)
+    if (previous) clearTimeout(previous)
+    const timer = setTimeout(() => {
+      this.runCheckpointTimers.delete(key)
+      this.checkpointRun(groupId, controller)
+    }, RUN_LEDGER_CHECKPOINT_DELAY_MS)
+    timer.unref?.()
+    this.runCheckpointTimers.set(key, timer)
+  }
+
+  finishRunCheckpoint(groupId, controller, status) {
+    if (!this.runLedger || !controller?.runId) return
+    const timer = this.runCheckpointTimers.get(controller.runId)
+    if (timer) clearTimeout(timer)
+    this.runCheckpointTimers.delete(controller.runId)
+    if (!this.checkpointRun(groupId, controller, status)) return
+    try {
+      this.runLedger.finish?.(controller.runId, status, controller.stopReason || '')
+    } catch { /* the conversation result remains authoritative */ }
   }
 
   snapshot() {
@@ -557,6 +776,7 @@ class LocalWorkspace extends EventEmitter {
     controller.startedAt = Date.now()
     controller.stopReason = ''
     controller.harness = null
+    controller.agentFailureReasons = new Map()
     controller.silenceTimers = new Map()
     return controller
   }
@@ -573,7 +793,9 @@ class LocalWorkspace extends EventEmitter {
     const controller = this.createRunController(
       mode, targetKinds, threadRootId, maxRounds, unlimitedRounds,
     )
+    controller.groupId = groupId
     this.preparingRuns.set(groupId, controller)
+    this.checkpointRun(groupId, controller, 'preparing')
     try {
       this.emitChanged()
     } catch (error) {
@@ -588,6 +810,13 @@ class LocalWorkspace extends EventEmitter {
   releasePreparation(groupId, controller) {
     if (this.preparingRuns.get(groupId) !== controller) return false
     this.preparingRuns.delete(groupId)
+    this.finishRunCheckpoint(
+      groupId,
+      controller,
+      controller.signal.aborted
+        ? (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped')
+        : 'failed',
+    )
     try {
       this.emitChanged()
     } finally {
@@ -615,6 +844,7 @@ class LocalWorkspace extends EventEmitter {
       )
     }
     controller.mode = mode
+    controller.groupId = groupId
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
     controller.failedKinds = []
@@ -630,6 +860,7 @@ class LocalWorkspace extends EventEmitter {
     controller.startedAt = Date.now()
     controller.stopReason = ''
     this.activeRuns.set(groupId, controller)
+    this.checkpointRun(groupId, controller, 'running')
     try {
       this.emitChanged()
     } catch (error) {
@@ -645,13 +876,15 @@ class LocalWorkspace extends EventEmitter {
     if (controller.finished) return
     controller.finished = true
     this.clearRunSilence(controller)
+    const finalStatus = RUN_STATUSES.has(status) ? status : 'failed'
+    this.finishRunCheckpoint(groupId, controller, finalStatus)
     const ownsActiveRun = this.activeRuns.get(groupId) === controller
     if (ownsActiveRun) this.activeRuns.delete(groupId)
     const payload = {
       groupId: cleanText(groupId, 100),
       runId: cleanText(controller.runId, 120),
       mode: controller.mode === 'auto' ? 'auto' : 'manual',
-      status: RUN_STATUSES.has(status) ? status : 'failed',
+      status: finalStatus,
       threadRootId: cleanText(controller.threadRootId, 100),
       targetKinds: controller.targetKinds.filter(isSupportedAgentKind),
       completedKinds: controller.completedKinds.filter(isSupportedAgentKind),
@@ -670,14 +903,28 @@ class LocalWorkspace extends EventEmitter {
 
   recordAgentFailure(groupId, kind, error, threadRootId, reportedFailures = null) {
     const label = this.agentLabel(kind)
-    const reason = cleanText(error?.message || error, 2000) || 'LOCAL_AGENT_UNKNOWN_FAILURE'
-    const failureKey = `${kind}:${reason}`
+    const reason = cleanText(error?.message || error, MAX_SYSTEM_PARAM_TEXT_CHARS)
+      || 'LOCAL_AGENT_UNKNOWN_FAILURE'
+    const controller = this.activeRuns.get(groupId)
+    const agentRunId = error?.runTrace?.agentRunId
+    if (controller && agentRunId) {
+      controller.agentFailureReasons.set(agentRunId, reason)
+      this.checkpointRun(groupId, controller)
+    }
+    const streamedConclusion = this.streamedAgentConclusion(
+      groupId, agentRunId,
+    )
+    const content = terminalMessageContent(
+      terminalStatusPrefix(label, 'failed', reason),
+      streamedConclusion,
+    )
+    const failureKey = `${kind}:${reason}:${createHash('sha256').update(content).digest('hex')}`
     if (!reportedFailures || !reportedFailures.has(failureKey)) {
       reportedFailures?.add(failureKey)
       this.addMessage(
         groupId,
         'system',
-        `${label} failed: ${reason}`,
+        content,
         kind,
         threadRootId,
         { key: 'system.agentCallFailed', params: { agent: label, reason } },
@@ -685,6 +932,45 @@ class LocalWorkspace extends EventEmitter {
       )
     }
     return { label, reason }
+  }
+
+  streamedAgentConclusion(groupId, agentRunId) {
+    if (!agentRunId) return ''
+    const agentRun = this.activeRuns.get(groupId)?.harness?.snapshot?.().find(run => (
+      run.agentRunId === agentRunId
+    ))
+    return cleanText(agentRun?.output)
+  }
+
+  recordAgentInterruption(
+    groupId, kind, error, threadRootId, status = 'stopped', reportedFailures = null,
+  ) {
+    const trace = normalizeTraceCapsule(error?.runTrace
+      ? { ...error.runTrace, status }
+      : null)
+    if (!trace) return null
+    const label = AGENT_LABELS[kind] || kind
+    const interruptionKey = `${kind}:${trace.agentRunId}:${status}`
+    if (reportedFailures?.has(interruptionKey)) return trace
+    reportedFailures?.add(interruptionKey)
+    if (this.state.messages.some(message => message.trace?.agentRunId === trace.agentRunId)) {
+      return trace
+    }
+    const interrupted = status === 'interrupted'
+    const streamedConclusion = this.streamedAgentConclusion(groupId, trace.agentRunId)
+    this.addMessage(
+      groupId,
+      'system',
+      terminalMessageContent(terminalStatusPrefix(label, status), streamedConclusion),
+      kind,
+      threadRootId,
+      {
+        key: interrupted ? 'system.agentInterrupted' : 'system.agentStopped',
+        params: { agent: label },
+      },
+      { trace },
+    )
+    return trace
   }
 
   async refreshAgents() {
@@ -825,12 +1111,7 @@ class LocalWorkspace extends EventEmitter {
       const nextWorkdir = path.resolve(cleanText(input.workdir, 1000))
       if (nextWorkdir !== group.workdir) {
         group.workdir = nextWorkdir
-        for (const key of Object.keys(this.state.sessions)) {
-          if (key.startsWith(`${group.id}:`)) delete this.state.sessions[key]
-        }
-        for (const key of Object.keys(this.state.sessionMeta)) {
-          if (key.startsWith(`${group.id}:`)) delete this.state.sessionMeta[key]
-        }
+        this.clearSessionState(group.id)
       }
     }
     if (input.allowWrite != null) group.allowWrite = input.allowWrite === true
@@ -849,17 +1130,25 @@ class LocalWorkspace extends EventEmitter {
 
   deleteGroup(groupId) {
     if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-    const before = this.state.groups.length
+    if (!this.state.groups.some(group => group.id === groupId)) {
+      throw new Error('LOCAL_GROUP_NOT_FOUND')
+    }
+    const previous = {
+      groups: this.state.groups,
+      messages: this.state.messages,
+      sessions: { ...this.state.sessions },
+      sessionMeta: { ...this.state.sessionMeta },
+    }
+    this.runLedger?.deleteGroup?.(groupId)
     this.state.groups = this.state.groups.filter(group => group.id !== groupId)
-    if (before === this.state.groups.length) throw new Error('LOCAL_GROUP_NOT_FOUND')
     this.state.messages = this.state.messages.filter(message => message.groupId !== groupId)
-    for (const key of Object.keys(this.state.sessions)) {
-      if (key.startsWith(`${groupId}:`)) delete this.state.sessions[key]
+    this.clearSessionState(groupId)
+    try {
+      this.save()
+    } catch (error) {
+      Object.assign(this.state, previous)
+      throw error
     }
-    for (const key of Object.keys(this.state.sessionMeta)) {
-      if (key.startsWith(`${groupId}:`)) delete this.state.sessionMeta[key]
-    }
-    this.save()
     this.emitChanged()
   }
 
@@ -909,19 +1198,23 @@ class LocalWorkspace extends EventEmitter {
   addMessage(
     groupId, role, content, agentKind = '', threadRootId = '', system = null, metadata = {},
   ) {
+    const systemKey = role === 'system' ? cleanInline(system?.key, 100) : ''
     const message = {
       id: this.createId(),
       groupId,
       role,
       agentKind,
       senderName: role === 'user' ? 'User' : (agentKind ? this.agentLabel(agentKind) : 'System'),
-      content: cleanText(content),
+      content: cleanText(
+        content,
+        terminalMessageContentLimit(role, agentKind, systemKey),
+      ),
       createdAt: this.now(),
     }
     if (threadRootId) message.threadRootId = threadRootId
-    if (role === 'system' && system?.key) {
+    if (systemKey) {
       message.system = {
-        key: cleanInline(system.key, 100),
+        key: systemKey,
         params: system.params && typeof system.params === 'object' ? system.params : {},
       }
     }
@@ -965,7 +1258,25 @@ class LocalWorkspace extends EventEmitter {
   }
 
   sessionKey(groupId, kind) {
-    return `${groupId}:${kind}`
+    const existingKey = `${groupId}:${kind}`
+    if (SESSION_KEY.test(existingKey)) return existingKey
+    const digest = createHash('sha256')
+      .update(JSON.stringify([String(groupId || ''), String(kind || '')]))
+      .digest('hex')
+    return `session:${digest}`
+  }
+
+  clearSessionState(groupId) {
+    const existingPrefix = `${groupId}:`
+    const derivedKeys = new Set(Object.keys(AGENT_LABELS).map(kind => (
+      this.sessionKey(groupId, kind)
+    )))
+    for (const key of Object.keys(this.state.sessions)) {
+      if (key.startsWith(existingPrefix) || derivedKeys.has(key)) delete this.state.sessions[key]
+    }
+    for (const key of Object.keys(this.state.sessionMeta)) {
+      if (key.startsWith(existingPrefix) || derivedKeys.has(key)) delete this.state.sessionMeta[key]
+    }
   }
 
   openClawSessionRef(group, generation = '') {
@@ -1117,8 +1428,8 @@ class LocalWorkspace extends EventEmitter {
     if (afterAgentKind) {
       for (let index = this.state.messages.length - 1; index >= 0; index -= 1) {
         const message = this.state.messages[index]
-        if (message.groupId === groupId && message.role === 'agent'
-            && message.agentKind === afterAgentKind) {
+        if (message.groupId === groupId && message.agentKind === afterAgentKind
+            && (message.role === 'agent' || isTracedAgentTerminalMessage(message))) {
           afterIndex = index
           break
         }
@@ -1127,7 +1438,8 @@ class LocalWorkspace extends EventEmitter {
     return this.state.messages
       .filter((message, index) => (
         index > afterIndex && message.groupId === groupId
-          && ['user', 'agent'].includes(message.role)
+          && (['user', 'agent'].includes(message.role)
+            || isTracedAgentTerminalMessage(message))
       ))
       .slice(-RECENT_TRANSCRIPT_MESSAGE_LIMIT)
  }
@@ -1137,8 +1449,10 @@ class LocalWorkspace extends EventEmitter {
  }
 
   packedPromptContext(groupId, afterAgentKind = '', threadRootId = '') {
+    const stableMessages = this.stableUserMessages(groupId, threadRootId)
+    const stableMessageIds = new Set(stableMessages.map(message => message.id))
     const stable = packContextEntries(
-      this.stableUserMessages(groupId, threadRootId).map(message => ({
+      stableMessages.map(message => ({
         id: message.id,
         sender: message.senderName,
         text: this.promptMessageText(message, STABLE_USER_TURN_TEXT_LIMIT),
@@ -1147,15 +1461,20 @@ class LocalWorkspace extends EventEmitter {
       { budget: STABLE_CONTEXT_TEXT_LIMIT, entryLimit: STABLE_USER_TURN_TEXT_LIMIT, maxEntries: 8 },
     )
     const recent = packContextEntries(
-      this.recentTranscriptEntries(groupId, afterAgentKind).map(message => {
-        const traced = message.role === 'agent' && message.trace
+      this.recentTranscriptEntries(groupId, afterAgentKind)
+        .filter(message => !stableMessageIds.has(message.id))
+        .map(message => {
+        const traced = (message.role === 'agent' && message.trace)
+          || isTracedAgentTerminalMessage(message)
         return {
           id: message.id,
           sender: traced ? '' : message.senderName,
-          text: traced ? evidenceCapsuleText(message) : this.promptMessageText(message),
+          text: traced
+            ? evidenceCapsuleText(message, this.agentLabel(message.agentKind))
+            : this.promptMessageText(message),
           priority: message.role === 'user' ? 3 : (traced ? 2 : 1),
         }
-      }),
+        }),
       { budget: RECENT_TRANSCRIPT_TEXT_LIMIT, entryLimit: 3000, maxEntries: RECENT_TRANSCRIPT_MESSAGE_LIMIT },
     )
     const sourceMessageIds = [...new Set([
@@ -1244,7 +1563,10 @@ class LocalWorkspace extends EventEmitter {
     this.clearAgentSilence(controller, kind, round, agentRunId)
     const timer = setTimeout(() => {
       const warning = controller.harness?.markSilent(kind, round, agentRunId)
-      if (warning) this.emitRunEvent(warning)
+      if (warning) {
+        this.emitRunEvent(warning)
+        this.scheduleRunCheckpoint(controller.groupId, controller)
+      }
     }, this.runSilenceWarningMs)
     timer.unref?.()
     controller.silenceTimers.set(key, timer)
@@ -1306,8 +1628,13 @@ class LocalWorkspace extends EventEmitter {
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
     const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
     if (harnessRun) {
+      const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
+      if (liveHarnessRun) {
+        liveHarnessRun.context = { ...packedContext.context, sessionRotated }
+      }
       this.emitRunEvent(harnessRun)
       this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
+      this.checkpointRun(group.id, activeRun)
       this.emitChanged()
     }
     const agentController = new AbortController()
@@ -1374,7 +1701,10 @@ class LocalWorkspace extends EventEmitter {
       if (!event) return
       this.emitRunEvent(event)
       this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
-      if (event.type !== 'answer_delta' || event.seq % 8 === 0) this.emitChanged()
+      if (event.type !== 'answer_delta' || event.seq % 8 === 0) {
+        this.scheduleRunCheckpoint(group.id, activeRun)
+        this.emitChanged()
+      }
     }
     const emitRuntimeEvent = (rawEvent) => {
       if (agentCallbacksClosed || agentController.signal.aborted) return
@@ -1423,6 +1753,7 @@ class LocalWorkspace extends EventEmitter {
       }, harnessRun.agentRunId)
       harnessFinished = true
       this.emitRunEvent(finished.event)
+      this.checkpointRun(group.id, activeRun)
       this.emitChanged()
       return finished.capsule
     }
@@ -1482,12 +1813,14 @@ class LocalWorkspace extends EventEmitter {
             )
             if (liveHarnessRun) {
               liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
+              liveHarnessRun.context = { ...packedContext.context, sessionRotated }
             }
             prompt = this.promptFor(
               group, kind, mode, threadRootId, context.skillHints || [],
               context.knowledgeBaseHints || [], '', packedContext,
             )
             this.save()
+            this.scheduleRunCheckpoint(group.id, activeRun)
             this.emitChanged()
             return { prompt }
           },
@@ -1571,6 +1904,7 @@ class LocalWorkspace extends EventEmitter {
     } catch (caughtError) {
       const parentTimedOut = Boolean(signal?.aborted && activeRun?.stopReason === 'timeout')
       const parentStopped = Boolean(signal?.aborted || parentAbortObserved)
+      const parentInterrupted = parentStopped && activeRun?.stopReason === 'shutdown'
       if (parentStopped || watchdogTimedOut) {
         const cleanupPromises = [capturePromise, runPromise, importPromise].filter(Boolean)
         if (cleanupPromises.length) {
@@ -1589,11 +1923,13 @@ class LocalWorkspace extends EventEmitter {
       if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
       const status = parentTimedOut
         ? 'timeout'
-        : parentStopped
-          ? 'stopped'
-          : watchdogTimedOut
-            ? 'timeout'
-            : 'failed'
+        : parentInterrupted
+          ? 'interrupted'
+          : parentStopped
+            ? 'stopped'
+            : watchdogTimedOut
+              ? 'timeout'
+              : 'failed'
       const trace = finishHarness(status)
       if (trace && error && (typeof error === 'object' || typeof error === 'function')) {
         Object.defineProperty(error, 'runTrace', {
@@ -1808,6 +2144,19 @@ class LocalWorkspace extends EventEmitter {
                   controller.currentKind = ''
                   controller.progress = []
                   this.emitChanged()
+                } else if (error?.runTrace) {
+                  this.recordAgentInterruption(
+                    group.id,
+                    kind,
+                    error,
+                    threadRootId,
+                    controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
+                    reportedFailures,
+                  )
+                  controller.completedKinds.push(kind)
+                  controller.currentKind = ''
+                  controller.progress = []
+                  this.emitChanged()
                 }
                 break
               }
@@ -1830,7 +2179,9 @@ class LocalWorkspace extends EventEmitter {
           }
         }
         if (controller.stopReason === 'timeout') runStatus = 'timeout'
-        else if (controller.signal.aborted) runStatus = 'stopped'
+        else if (controller.signal.aborted) {
+          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+        }
         else if (consensusReached) runStatus = 'completed'
         else runStatus = totalSuccesses > 0 ? 'round-limit' : 'failed'
         if (runStatus === 'timeout') {
@@ -1854,7 +2205,9 @@ class LocalWorkspace extends EventEmitter {
         }
       } catch (error) {
         runStatus = controller.signal.aborted
-          ? (controller.stopReason === 'timeout' ? 'timeout' : 'stopped')
+          ? (controller.stopReason === 'timeout'
+              ? 'timeout'
+              : (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'))
           : 'failed'
         if (!controller.signal.aborted) {
           const rawReason = cleanText(error?.message || error, 2000)
@@ -1877,7 +2230,9 @@ class LocalWorkspace extends EventEmitter {
         controller.currentKind = ''
         controller.progress = []
         if (controller.stopReason === 'timeout') runStatus = 'timeout'
-        else if (controller.signal.aborted) runStatus = 'stopped'
+        else if (controller.signal.aborted) {
+          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+        }
         this.finishRun(group.id, controller, runStatus)
       }
     })()
@@ -2023,7 +2378,17 @@ class LocalWorkspace extends EventEmitter {
             })
             successCount += 1
           } catch (error) {
-            if (controller.signal.aborted) break
+            if (controller.signal.aborted) {
+              this.recordAgentInterruption(
+                group.id,
+                kind,
+                error,
+                threadRootId,
+                controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
+              )
+              controller.completedKinds.push(kind)
+              break
+            }
             this.recordAgentFailure(group.id, kind, error, threadRootId)
             controller.failedKinds.push(kind)
             if (error?.message === 'LOCAL_AGENT_TIMEOUT') runStatus = 'timeout'
@@ -2034,7 +2399,7 @@ class LocalWorkspace extends EventEmitter {
           this.emitChanged()
         }
         if (controller.signal.aborted) {
-          runStatus = 'stopped'
+          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
           return this.snapshot()
         }
         if (!successCount) return this.snapshot()
@@ -2046,7 +2411,9 @@ class LocalWorkspace extends EventEmitter {
         } else if (controller) {
           controller.currentKind = ''
           controller.progress = []
-          if (controller.signal.aborted) runStatus = 'stopped'
+          if (controller.signal.aborted) {
+            runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+          }
           else if (runStatus === 'failed' && successCount > 0) runStatus = 'partial'
           this.finishRun(group.id, controller, runStatus)
         } else {
@@ -2089,9 +2456,9 @@ class LocalWorkspace extends EventEmitter {
     return { started: true, maxRounds, ...(unlimitedRounds ? { unlimitedRounds: true } : {}) }
   }
 
-  stop(groupId) {
+  stop(groupId, runId) {
     const controller = this.activeRuns.get(groupId) || this.preparingRuns.get(groupId)
-    if (!controller) return false
+    if (!controller || !runId || controller.runId !== runId) return false
     controller.stopReason ||= 'user'
     controller.abort()
     return true
