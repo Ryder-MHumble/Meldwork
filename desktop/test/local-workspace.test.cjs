@@ -1996,51 +1996,86 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
   assert.equal(finished[0].mode, 'auto')
 })
 
-for (const acpKind of ['hermes', 'kimi']) {
-  test(`automatic dialogue starts a fresh ${acpKind} ACP session each round`, async (t) => {
-    const { directory, calls, options } = fixture()
-    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-    options.runAgent = async (agent, prompt, workdir, runOptions) => {
-      calls.push({ agent, prompt, workdir, runOptions })
-      const agentCallCount = calls.filter(call => call.agent.kind === agent.kind).length
-      if (agent.kind === acpKind) {
-        await runOptions.onSessionRef(`${acpKind}-acp-session-${agentCallCount}`, { transport: 'acp' })
-      }
-      const consensus = agentCallCount > 1 ? 'agree' : 'continue'
-      const sessionRef = agent.kind === acpKind
-        ? `${acpKind}-acp-session-${agentCallCount}`
-        : runOptions.sessionRef || `${agent.kind}-session-${agentCallCount}`
-      return {
-        text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
-        sessionRef,
-      }
+test('automatic dialogue reuses Kimi ACP sessions across rounds', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const agentCallCount = calls.filter(call => call.agent.kind === agent.kind).length
+    const consensus = agentCallCount > 1 ? 'agree' : 'continue'
+    const sessionRef = agent.kind === 'kimi'
+      ? (runOptions.sessionRef || 'kimi-acp-session')
+      : (runOptions.sessionRef || `${agent.kind}-session`)
+    if (agent.kind === 'kimi') {
+      await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
     }
-    const workspace = new LocalWorkspace(options)
-    await workspace.refreshAgents()
-    const group = workspace.createGroup({
-      name: `${acpKind} ACP discussion`, agentKinds: ['codex', acpKind], workdir: directory,
-    })
-
-    const started = await workspace.sendMessage({
-      groupId: group.id,
-      text: 'Check ACP session isolation',
-      mode: 'auto',
-      maxRounds: 2,
-    })
-    assert.equal(started.started, true)
-    await workspace.activeRuns.get(group.id).promise
-
-    const acpCalls = calls.filter(call => call.agent.kind === acpKind)
-    assert.deepEqual(acpCalls.map(call => call.runOptions.sessionRef), ['', ''])
-    assert.equal(acpCalls[1].runOptions.sessionTransport, '')
-    assert.match(acpCalls[1].prompt, new RegExp(`${acpKind} continue`))
-    assert.equal(
-      workspace.state.sessions[workspace.sessionKey(group.id, acpKind)],
-      `${acpKind}-acp-session-2`,
-    )
-    assert.equal(workspace.state.sessionMeta[workspace.sessionKey(group.id, acpKind)].transport, 'acp')
+    return {
+      text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      sessionRef,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Kimi ACP discussion', agentKinds: ['codex', 'kimi'], workdir: directory,
   })
-}
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Check ACP session continuity',
+    mode: 'auto',
+    maxRounds: 2,
+  })
+  assert.equal(started.started, true)
+  await workspace.activeRuns.get(group.id).promise
+
+  const kimiCalls = calls.filter(call => call.agent.kind === 'kimi')
+  assert.deepEqual(kimiCalls.map(call => call.runOptions.sessionRef), ['', 'kimi-acp-session'])
+  assert.deepEqual(kimiCalls.map(call => call.runOptions.sessionTransport), ['', 'acp'])
+  assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'kimi')], 'kimi-acp-session')
+  assert.equal(workspace.state.sessionMeta[workspace.sessionKey(group.id, 'kimi')].transport, 'acp')
+})
+
+test('automatic dialogue keeps Hermes on one legacy session across rounds', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const agentCallCount = calls.filter(call => call.agent.kind === agent.kind).length
+    const consensus = agentCallCount > 1 ? 'agree' : 'continue'
+    const sessionRef = agent.kind === 'hermes'
+      ? (runOptions.sessionRef || 'hermes-legacy-session')
+      : (runOptions.sessionRef || `${agent.kind}-session`)
+    if (agent.kind === 'hermes') {
+      await runOptions.onSessionRef(sessionRef, { transport: 'legacy' })
+    }
+    return {
+      text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      sessionRef,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Hermes legacy discussion', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Check Hermes session continuity',
+    mode: 'auto',
+    maxRounds: 2,
+  })
+  assert.equal(started.started, true)
+  await workspace.activeRuns.get(group.id).promise
+
+  const hermesCalls = calls.filter(call => call.agent.kind === 'hermes')
+  assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionRef), ['', 'hermes-legacy-session'])
+  assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionTransport), ['', 'legacy'])
+  assert.deepEqual(hermesCalls.map(call => call.runOptions.hermesAcpAvailable), [false, false])
+  assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'hermes')], 'hermes-legacy-session')
+  assert.equal(workspace.state.sessionMeta[workspace.sessionKey(group.id, 'hermes')].transport, 'legacy')
+})
 
 test('automatic dialogue queues only the explicitly targeted group members', async (t) => {
   const { directory, calls, options } = fixture()
@@ -2955,7 +2990,7 @@ test('Hermes rebuilds full context when an ACP session must switch to legacy for
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
-test('Hermes clears a stale ACP session and rebuilds full context before legacy fallback', async (t) => {
+test('Hermes migrates a stored ACP session to legacy with rebuilt context before running', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -2965,13 +3000,8 @@ test('Hermes clears a stale ACP session and rebuilds full context before legacy 
     version: '2',
     acpAvailable: true,
   }]
-  let recoveredPrompt = ''
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
-    const recovery = await runOptions.onSessionInvalidated({
-      kind: 'hermes', sessionRef: runOptions.sessionRef, transport: 'acp',
-    })
-    recoveredPrompt = recovery.prompt
     await runOptions.onSessionRef('hermes-recovered-session', { transport: 'legacy' })
     return { text: 'Recovered conclusion', sessionRef: 'hermes-recovered-session' }
   }
@@ -2995,10 +3025,11 @@ test('Hermes clears a stale ACP session and rebuilds full context before legacy 
     targetKinds: ['hermes'],
   })
 
-  assert.equal(calls[0].runOptions.sessionRef, 'hermes-stale-acp-session')
-  assert.doesNotMatch(calls[0].prompt, /Previous Hermes conclusion/)
-  assert.match(recoveredPrompt, /Previous Hermes conclusion/)
-  assert.match(recoveredPrompt, /Continue after recovering the session/)
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(calls[0].runOptions.sessionTransport, '')
+  assert.equal(calls[0].runOptions.hermesAcpAvailable, false)
+  assert.match(calls[0].prompt, /Previous Hermes conclusion/)
+  assert.match(calls[0].prompt, /Continue after recovering the session/)
   assert.equal(workspace.state.sessions[key], 'hermes-recovered-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)

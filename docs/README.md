@@ -10,6 +10,7 @@ Meldwork 是一个本地优先的 Agent 工作系统。当前仓库是一个 Ele
 | --- | --- | --- |
 | [市场与用户调研](market-user-research.md) | 判断为什么做、为谁做、先验证什么 | 聚焦 Agent + Knowledge + Outcome，不做聚合聊天器 |
 | [产品迭代规划](product-iteration-plan.md) | 把愿景拆成一个 OPC 能执行的优先级路线 | 先完成 Context Pack 与 Task Outcome，再扩展 Cloud/Channel |
+| [Harness Engine 战略](harness-engine-strategy.md) | 定义异构 Agent 接入、动态协作、业务 Pack 与商业化路径 | 任意 CLI 是入口，Connector、Evaluation、Outcome 与业务交付才是壁垒 |
 | [产品 BP](product-bp.md) | 对外解释定位、价值、增长和后续收入 | 开源优先，以重复使用和标准化回款决定商业化 |
 
 ## 配套文档

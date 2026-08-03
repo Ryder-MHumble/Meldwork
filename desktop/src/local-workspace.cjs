@@ -80,6 +80,9 @@ const PROGRESS_TITLES = new Set([
   'reasoning', 'process', 'read_file', 'write_file', 'search',
   'image_generation', 'audio_generation', 'video_generation', 'tool',
 ])
+// Hermes ACP resume currently returns provider 401 after a successful first turn.
+// Keep RoundRelay conversations on Hermes legacy transport so native sessions remain continuous.
+const HERMES_WORKSPACE_ACP_ENABLED = false
 
 function isSupportedAgentKind(kind) {
   return Object.hasOwn(AGENT_LABELS, kind) || CUSTOM_AGENT_KIND.test(String(kind || ''))
@@ -1602,16 +1605,9 @@ class LocalWorkspace extends EventEmitter {
       this.save()
     }
     let sessionTransport = sessionRef ? String(sessionMeta.transport || '') : ''
-    const shouldStartFreshAcpSession = mode === 'auto' && sessionRef && sessionTransport === 'acp'
-    if (shouldStartFreshAcpSession) {
-      delete this.state.sessions[key]
-      sessionRef = ''
-      sessionTransport = ''
-      sessionRotated = true
-      this.save()
-    }
     const hermesNeedsLegacy = kind === 'hermes' && sessionTransport === 'acp'
-      && (agent.acpAvailable === false
+      && (!HERMES_WORKSPACE_ACP_ENABLED
+        || agent.acpAvailable === false
         || (context.attachments || []).length > 0
         || (context.skillHints || []).length > 0)
     if (sessionRef && hermesNeedsLegacy) {
@@ -1831,7 +1827,10 @@ class LocalWorkspace extends EventEmitter {
           sessionTransport,
           attachments: context.attachments || [],
           ...(kind === 'hermes'
-            ? { skills: (context.skillHints || []).map(skill => skill.slug) }
+            ? {
+                hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false,
+                skills: (context.skillHints || []).map(skill => skill.slug),
+              }
             : {}),
         },
       ))
