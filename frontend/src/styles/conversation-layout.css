@@ -1,0 +1,445 @@
+.conversation-pane {
+  --conversation-content-width: clamp(820px, 70vw, 1360px);
+  height: 100%;
+  display: grid;
+  grid-template-rows: 68px minmax(0, 1fr) auto;
+  background: transparent;
+}
+
+.conversation-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0 20px 0 24px;
+  border-bottom: 0;
+  background: transparent;
+}
+
+.conversation-identity {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  overflow: hidden;
+}
+
+.conversation-title-block {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.conversation-identity h1 {
+  overflow: hidden;
+  font-size: 17px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-title-button {
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-weight: inherit;
+  cursor: text;
+}
+
+.conversation-title-button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conversation-title-button svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.conversation-title-button:hover svg,
+.conversation-title-button:focus-visible svg {
+  opacity: 1;
+}
+
+.inline-title-form {
+  width: min(520px, 100%);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.inline-title-form input {
+  width: auto;
+  min-width: 0;
+  height: 36px;
+  flex: 1 1 auto;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: color-mix(in srgb, var(--surface-raised) 76%, var(--surface-hover));
+  color: var(--text);
+  font-size: 17px;
+  font-weight: 700;
+  box-shadow: none;
+  transition: background 0.14s ease;
+}
+
+.inline-title-form input:hover {
+  background: var(--surface-raised);
+}
+
+.inline-title-form input:focus-visible {
+  outline: none;
+  background: var(--surface-raised);
+  box-shadow: none;
+}
+
+.inline-title-form input::selection {
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+  color: var(--text);
+}
+
+.inline-title-form button {
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.inline-title-form button[type="submit"] {
+  color: var(--accent);
+}
+
+.inline-title-form button:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.inline-title-form button[type="submit"]:hover {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+
+.conversation-identity p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.conversation-capabilities {
+  max-width: min(62vw, 760px);
+  overflow-x: auto;
+  scrollbar-width: none;
+  white-space: nowrap;
+}
+
+.conversation-capabilities::-webkit-scrollbar {
+  display: none;
+}
+
+.meta-separator {
+  color: var(--border-strong);
+}
+
+.conversation-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+}
+
+.conversation-avatar.single img {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  object-fit: contain;
+}
+
+.conversation-avatar.stack {
+  position: relative;
+}
+
+.conversation-avatar.stack img {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  background: transparent;
+  filter: drop-shadow(0 1px 1px rgb(24 31 38 / 0.16));
+  object-fit: contain;
+}
+
+.conversation-avatar.stack img:nth-child(1) { top: 0; left: 0; }
+.conversation-avatar.stack img:nth-child(2) { right: 0; bottom: 0; }
+.conversation-avatar.stack img:nth-child(3) { left: 0; bottom: 0; }
+
+.workspace-chip {
+  max-width: min(36vw, 360px);
+  height: 34px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.workspace-chip:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.workspace-chip span {
+  min-width: 0;
+  overflow: hidden;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-scroll {
+  min-height: 0;
+  overflow: auto;
+  scroll-behavior: smooth;
+}
+
+.conversation-empty {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 40px 24px 120px;
+  text-align: center;
+}
+
+.conversation-empty-wordmark {
+  width: min(210px, 52vw);
+  height: auto;
+  display: block;
+  opacity: 0.92;
+}
+
+.conversation-empty-copy {
+  min-height: 58px;
+  display: grid;
+  place-items: center;
+  gap: 6px;
+}
+
+.conversation-empty-copy strong {
+  color: var(--text-soft);
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.conversation-empty-copy p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.empty-showcase-enter-active,
+.empty-showcase-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.empty-showcase-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+
+.empty-showcase-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.message-stage {
+  width: 100%;
+  min-height: 100%;
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: start;
+  gap: 0;
+  padding-right: 48px;
+}
+
+.turn-rail {
+  position: sticky;
+  top: 50%;
+  z-index: 3;
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 12px 0;
+  transform: translateY(-50%);
+}
+
+.turn-rail button {
+  --turn-offset: 0px;
+  --turn-scale: 1;
+  --turn-width: 14px;
+  --turn-height: 4px;
+  width: 28px;
+  height: 28px;
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.turn-rail button > span:first-child {
+  width: var(--turn-width);
+  height: var(--turn-height);
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--faint) 82%, transparent);
+  box-shadow: 0 2px 5px rgb(40 34 28 / 0.14);
+  filter: drop-shadow(0 2px 3px rgb(40 34 28 / 0.12));
+  transform-origin: left center;
+  transform: translateX(var(--turn-offset)) scaleX(var(--turn-scale));
+  transition: background 0.16s ease, box-shadow 0.16s ease, filter 0.18s ease, transform 0.24s cubic-bezier(0.16, 1, 0.3, 1), width 0.18s ease, height 0.18s ease;
+}
+
+.turn-rail button.active > span:first-child {
+  --turn-width: 18px;
+  --turn-height: 5px;
+  --turn-scale: 1.12;
+}
+
+.turn-rail button:hover > span:first-child,
+.turn-rail button:focus-visible > span:first-child {
+  --turn-offset: 10px;
+  --turn-scale: 2.4;
+  filter: drop-shadow(0 5px 7px rgb(40 34 28 / 0.24));
+}
+
+.turn-rail button:has(+ button:hover) > span:first-child,
+.turn-rail button:hover + button > span:first-child,
+.turn-rail button:has(+ button:focus-visible) > span:first-child,
+.turn-rail button:focus-visible + button > span:first-child {
+  --turn-offset: 7px;
+  --turn-scale: 1.78;
+}
+
+.turn-rail button:has(+ button + button:hover) > span:first-child,
+.turn-rail button:hover + button + button > span:first-child,
+.turn-rail button:has(+ button + button:focus-visible) > span:first-child,
+.turn-rail button:focus-visible + button + button > span:first-child {
+  --turn-offset: 4px;
+  --turn-scale: 1.38;
+}
+
+.turn-rail button:has(+ button + button + button:hover) > span:first-child,
+.turn-rail button:hover + button + button + button > span:first-child,
+.turn-rail button:has(+ button + button + button:focus-visible) > span:first-child,
+.turn-rail button:focus-visible + button + button + button > span:first-child {
+  --turn-offset: 2px;
+  --turn-scale: 1.16;
+}
+
+.turn-rail button[data-status="running"] > span:first-child {
+  background: var(--accent);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.turn-rail button[data-status="completed"] > span:first-child {
+  background: var(--text-soft);
+}
+
+.turn-rail button[data-status="partial"] > span:first-child,
+.turn-rail button[data-status="round-limit"] > span:first-child {
+  background: var(--accent);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.turn-rail button[data-status="failed"] > span:first-child,
+.turn-rail button[data-status="timeout"] > span:first-child {
+  background: var(--danger);
+  box-shadow: 0 3px 8px color-mix(in srgb, var(--danger) 28%, transparent);
+}
+
+.turn-rail button[data-status="stopped"] > span:first-child {
+  background: var(--muted);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--muted) 22%, transparent);
+}
+
+.turn-rail-tooltip {
+  width: max-content;
+  max-width: min(280px, calc(100vw - 96px));
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 28px);
+  z-index: 5;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 11px 11px 11px 5px;
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: left;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(4px, -50%);
+  visibility: hidden;
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+}
+
+.turn-rail-tooltip::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: -7px;
+  width: 8px;
+  height: 14px;
+  background: var(--surface-raised);
+  clip-path: polygon(100% 0, 0 50%, 100% 100%);
+  transform: translateY(-50%);
+}
+
+.turn-rail button:hover .turn-rail-tooltip,
+.turn-rail button:focus-visible .turn-rail-tooltip {
+  opacity: 1;
+  transform: translate(0, -50%);
+  visibility: visible;
+}

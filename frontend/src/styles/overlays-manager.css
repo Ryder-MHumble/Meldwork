@@ -1,0 +1,172 @@
+.manager-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.manager-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.agent-manager .manager-toolbar .secondary-button {
+  border: 0;
+  background: transparent;
+}
+
+.agent-manager .manager-toolbar .secondary-button:hover {
+  background: var(--surface-hover);
+}
+
+.knowledge-base-toolbar .secondary-button {
+  border: 0;
+  background: transparent;
+}
+
+.knowledge-base-toolbar .secondary-button:hover {
+  background: var(--surface-hover);
+}
+
+.manager-list {
+  display: grid;
+  gap: 6px;
+}
+
+.manager-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.manager-row.focused {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.manager-row > img {
+  width: 44px;
+  height: 44px;
+  padding: 4px;
+  border-radius: 7px;
+  background: var(--surface);
+  object-fit: contain;
+}
+
+.manager-copy {
+  min-width: 0;
+}
+
+.manager-copy > div:first-child {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.manager-copy p,
+.manager-copy small {
+  display: block;
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.manager-note {
+  max-width: 190px;
+  color: var(--muted);
+  font-size: 11px;
+  text-align: right;
+}
+
+.install-confirm,
+.install-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 7px;
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.install-progress {
+  color: var(--muted);
+}
+
+.provider-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.provider-status > span {
+  min-width: 0;
+}
+
+.provider-status svg {
+  width: 17px;
+  height: 17px;
+}
+
+.provider-status.configured {
+  border-color: var(--provider-success-border);
+  background: var(--provider-success-soft);
+  color: var(--provider-success);
+}
+
+.provider-status.checking {
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.provider-status.error {
+  border-color: color-mix(in srgb, var(--danger) 30%, var(--border));
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.provider-status-retry {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, currentColor 28%, var(--border));
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: inherit;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.provider-status-retry:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.provider-status-retry svg {
+  width: 13px;
+  height: 13px;
+}
+
+.footer-spacer {
+  flex: 1;
+}

@@ -1,0 +1,269 @@
+import { computed, nextTick, ref } from 'vue'
+import { parseAgentRoutingPrefix } from '../agent-routing.js'
+import {
+  MAX_KNOWLEDGE_BASES,
+  MAX_SKILLS,
+  parseSkillTrigger,
+  skillKey,
+  useComposerMentionMenu,
+} from './useComposerMentionMenu.js'
+
+export { MAX_KNOWLEDGE_BASES, MAX_SKILLS, parseSkillTrigger, skillKey }
+
+const COMPOSER_INPUT_MIN_HEIGHT = 58
+const COMPOSER_INPUT_MAX_HEIGHT = 180
+
+export function normalizeSkill(skill, requestedTarget) {
+  const targetKind = String(skill?.targetKind || requestedTarget || '')
+  const namespace = String(skill?.namespace || '')
+  const slug = String(skill?.slug || '')
+  const name = String(skill?.name || slug)
+  if (!targetKind || targetKind !== requestedTarget || !slug) return null
+  return { targetKind, namespace, slug, name }
+}
+
+export function useComposerContext({
+  activeGroup,
+  activeRun,
+  agentDescription,
+  agentSkillsSnapshot,
+  knowledgeBaseName,
+  knowledgeBaseReady,
+  loadAgentSkills,
+  localKnowledgeBaseEntries,
+  mergedCatalog,
+  notify,
+  onSubmit = () => {},
+  preloadAgentSkills,
+  sending,
+  t,
+  theme,
+}) {
+  const composerInput = ref(null)
+  const draft = ref('')
+  const targetKinds = ref([])
+  const selectedAgentKinds = ref([])
+  const activeMentionAgentKind = ref('')
+  const selectedSkills = ref([])
+  const selectedKnowledgeBases = ref([])
+  const discussionMode = ref('auto')
+
+  const addressedAgentKinds = computed(() => {
+    const group = activeGroup.value
+    if (!group || group.conversationType === 'direct') return []
+    const natural = parseAgentRoutingPrefix(draft.value, mergedCatalog.value, group.agentKinds).targetKinds
+    const addressed = new Set([...selectedAgentKinds.value, ...natural])
+    return group.agentKinds.filter(kind => addressed.has(kind))
+  })
+  const composerTargetKinds = computed(() => {
+    const group = activeGroup.value
+    if (!group) return []
+    if (group.conversationType !== 'direct' && addressedAgentKinds.value.length) {
+      return [...addressedAgentKinds.value]
+    }
+    if (group.conversationType === 'direct' || discussionMode.value === 'auto') return [...group.agentKinds]
+    return [...targetKinds.value]
+  })
+  const composerMode = computed(() => {
+    if (activeGroup.value?.conversationType === 'direct') return 'manual'
+    return addressedAgentKinds.value.length === 1 ? 'manual' : discussionMode.value
+  })
+  const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
+  const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
+  const mentionMenu = useComposerMentionMenu({
+    activeGroup,
+    activeMentionAgentKind,
+    addressedAgentKinds,
+    agentDescription,
+    agentSkillsSnapshot,
+    composerInput,
+    composerTargetKinds,
+    draft,
+    knowledgeBaseName,
+    knowledgeBaseReady,
+    loadAgentSkills,
+    localKnowledgeBaseEntries,
+    notify,
+    preloadAgentSkills,
+    selectedAgentKinds,
+    selectedKnowledgeBases,
+    selectedSkills,
+    skillTargetSignature,
+    t,
+    theme,
+  })
+  const {
+    activeSkillOptionId,
+    addAgentMention,
+    composerMenuGroups,
+    composerMenuOptionDescription,
+    composerMenuOptionDisabled,
+    composerMenuOptionIndex,
+    composerMenuOptionKey,
+    composerMenuOptionKindLabel,
+    composerMenuOptionLogo,
+    composerMenuOptions,
+    composerMenuOptionTitle,
+    disposeMentionMenu,
+    handleMentionInput,
+    handleMentionKeydown,
+    openSkillMenu,
+    removeAgentMention,
+    removeKnowledgeBase,
+    removeSkill,
+    resetMentionMenu,
+    selectComposerMenuOption,
+    skillActiveIndex,
+    skillMenuOpen,
+    skillsLoading,
+  } = mentionMenu
+
+  function resizeComposerInput() {
+    const input = composerInput.value
+    if (!input) return
+    input.style.height = 'auto'
+    const scrollHeight = Math.max(Number(input.scrollHeight) || 0, COMPOSER_INPUT_MIN_HEIGHT)
+    input.style.height = `${Math.min(scrollHeight, COMPOSER_INPUT_MAX_HEIGHT)}px`
+    input.style.overflowY = scrollHeight > COMPOSER_INPUT_MAX_HEIGHT ? 'auto' : 'hidden'
+  }
+
+  function scheduleComposerResize() {
+    void nextTick(resizeComposerInput)
+  }
+
+  function handleComposerInput() {
+    resizeComposerInput()
+    handleMentionInput()
+  }
+
+  function toggleTarget(kind) {
+    if (sending.value || activeRun.value || composerMode.value === 'auto') return
+    if (selectedAgentKinds.value.length) {
+      if (selectedAgentKinds.value.includes(kind)) removeAgentMention(kind)
+      else void addAgentMention(kind)
+      return
+    }
+    if (targetKinds.value.includes(kind)) targetKinds.value = targetKinds.value.filter(item => item !== kind)
+    else targetKinds.value = [...targetKinds.value, kind]
+  }
+
+  function isComposerTargetSelected(kind) {
+    return composerTargetKinds.value.includes(kind)
+  }
+
+  function handleComposerKeydown(event) {
+    if (handleMentionKeydown(event)) return
+    if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
+      event.preventDefault()
+      void onSubmit()
+    }
+  }
+
+  function captureComposerContext() {
+    return {
+      draft: draft.value,
+      selectedAgentKinds: [...selectedAgentKinds.value],
+      activeMentionAgentKind: activeMentionAgentKind.value,
+      selectedSkills: selectedSkills.value.map(skill => ({ ...skill })),
+      selectedKnowledgeBases: selectedKnowledgeBases.value.map(source => ({
+        ...source,
+        targetKinds: [...source.targetKinds],
+      })),
+    }
+  }
+
+  function clearComposerContext() {
+    draft.value = ''
+    selectedAgentKinds.value = []
+    activeMentionAgentKind.value = ''
+    selectedSkills.value = []
+    selectedKnowledgeBases.value = []
+    resetMentionMenu()
+  }
+
+  function restoreComposerContext(context) {
+    draft.value = String(context?.draft || '')
+    selectedAgentKinds.value = [...(context?.selectedAgentKinds || [])]
+    activeMentionAgentKind.value = String(context?.activeMentionAgentKind || '')
+    selectedSkills.value = (context?.selectedSkills || []).map(skill => ({ ...skill }))
+    selectedKnowledgeBases.value = (context?.selectedKnowledgeBases || []).map(source => ({
+      ...source,
+      targetKinds: [...(source.targetKinds || [])],
+    }))
+  }
+
+  function resetComposerContext(group) {
+    discussionMode.value = group?.conversationType === 'direct' ? 'manual' : 'auto'
+    targetKinds.value = group ? [...group.agentKinds] : []
+    clearComposerContext()
+  }
+
+  function serializeComposerContext(targets) {
+    const allowedTargets = new Set(Array.isArray(targets) ? targets : [])
+    return {
+      mentionedAgentKinds: [...addressedAgentKinds.value],
+      skillHints: selectedSkills.value
+        .filter(skill => allowedTargets.has(skill.targetKind))
+        .map(skill => ({
+          targetKind: String(skill.targetKind),
+          namespace: String(skill.namespace),
+          slug: String(skill.slug),
+          name: String(skill.name),
+        })),
+      knowledgeBaseHints: selectedKnowledgeBases.value
+        .map(source => ({
+          kind: String(source.kind),
+          targetKinds: source.targetKinds.filter(kind => allowedTargets.has(kind)),
+        }))
+        .filter(source => source.kind && source.targetKinds.length),
+    }
+  }
+
+  function disposeComposerContext() {
+    disposeMentionMenu()
+  }
+
+  return {
+    activeMentionAgentKind,
+    activeSkillOptionId,
+    addressedAgentKinds,
+    captureComposerContext,
+    clearComposerContext,
+    composerInput,
+    composerMenuGroups,
+    composerMenuOptionDescription,
+    composerMenuOptionDisabled,
+    composerMenuOptionIndex,
+    composerMenuOptionKey,
+    composerMenuOptionKindLabel,
+    composerMenuOptionLogo,
+    composerMenuOptions,
+    composerMenuOptionTitle,
+    composerMode,
+    composerTargetKinds,
+    discussionMode,
+    disposeComposerContext,
+    draft,
+    handleComposerInput,
+    handleComposerKeydown,
+    isComposerTargetSelected,
+    openSkillMenu,
+    removeAgentMention,
+    removeKnowledgeBase,
+    removeSkill,
+    resetComposerContext,
+    restoreComposerContext,
+    scheduleComposerResize,
+    selectComposerMenuOption,
+    selectedAgentKinds,
+    selectedKnowledgeBases,
+    selectedSkills,
+    sendButtonLabel,
+    serializeComposerContext,
+    skillActiveIndex,
+    skillMenuOpen,
+    skillsLoading,
+    targetKinds,
+    toggleTarget,
+  }
+}

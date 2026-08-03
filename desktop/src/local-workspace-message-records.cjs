@@ -1,0 +1,264 @@
+const path = require('node:path')
+const { normalizeTraceCapsule } = require('./run-harness.cjs')
+const {
+  CUSTOM_AGENT_KIND,
+  MAX_SYSTEM_PARAM_TEXT_CHARS,
+  cleanInline,
+  cleanText,
+  defaultAgentLabel,
+  isSupportedAgentKind,
+} = require('./local-workspace-contracts.cjs')
+const {
+  cleanElapsedMs,
+  cleanProgressSteps,
+  terminalMessageContentLimit,
+} = require('./local-workspace-runtime-contracts.cjs')
+
+const MAX_MESSAGE_ATTACHMENTS = 4
+const MAX_SKILL_HINTS = 4
+const MAX_KNOWLEDGE_BASE_HINTS = 4
+const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
+const USER_ATTACHMENT_MIME_TYPES = new Set([
+  'image/png', 'image/jpeg',
+  'audio/mpeg', 'audio/wav', 'audio/mp4',
+  'video/mp4', 'video/quicktime', 'video/webm',
+])
+const ATTACHMENT_MIME_TYPES = new Set([
+  ...USER_ATTACHMENT_MIME_TYPES,
+  'audio/mpeg', 'audio/wav', 'audio/mp4',
+  'video/mp4', 'video/quicktime', 'video/webm',
+])
+const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const KNOWLEDGE_BASE_KINDS = new Set(['feishu', 'dingtalk', 'obsidian'])
+
+function emptyState() {
+  return {
+    version: 3,
+    groups: [],
+    messages: [],
+    sessions: {},
+    sessionMeta: {},
+    agentPreferences: {},
+    agentRuntime: {},
+  }
+}
+
+function normalizeSystemParams(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  const params = {}
+  for (const [rawKey, rawValue] of Object.entries(input).slice(0, 12)) {
+    const key = cleanInline(rawKey, 60)
+    if (!key) continue
+    if (typeof rawValue === 'string') {
+      params[key] = cleanText(rawValue, MAX_SYSTEM_PARAM_TEXT_CHARS)
+    }
+    else if (typeof rawValue === 'boolean') params[key] = rawValue
+    else if (typeof rawValue === 'number' && Number.isFinite(rawValue)) params[key] = rawValue
+  }
+  return params
+}
+
+function normalizeAttachmentMetadata(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const id = String(input.id || '')
+  const name = cleanInline(input.name, 160)
+  const mimeType = String(input.mimeType || '').toLowerCase()
+  const size = Number(input.size)
+  if (!ATTACHMENT_ID.test(id) || !name || !ATTACHMENT_MIME_TYPES.has(mimeType)
+      || !Number.isSafeInteger(size) || size <= 0 || size > MAX_ATTACHMENT_BYTES) {
+    return null
+  }
+  return { id, name, mimeType, size }
+}
+
+function attachmentType(mimeType) {
+  const normalized = String(mimeType || '').toLowerCase()
+  if (normalized.startsWith('image/')) return 'image'
+  if (normalized.startsWith('audio/')) return 'audio'
+  if (normalized.startsWith('video/')) return 'video'
+  return ''
+}
+
+function attachmentLimitError(type, limited = false) {
+  if (type === 'image') return limited ? 'LOCAL_AGENT_IMAGE_LIMIT' : 'LOCAL_AGENT_IMAGE_UNSUPPORTED'
+  return limited ? 'LOCAL_AGENT_MEDIA_LIMIT' : 'LOCAL_AGENT_MEDIA_UNSUPPORTED'
+}
+
+function normalizeSkillHint(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const targetKind = cleanInline(input.targetKind, 40)
+  const namespace = cleanInline(input.namespace, 100)
+  const slug = cleanInline(input.slug, 100)
+  const name = cleanInline(input.name, 100)
+  if (!isSupportedAgentKind(targetKind) || !namespace || !slug || !name) return null
+  return { targetKind, namespace, slug, name }
+}
+
+function normalizeKnowledgeBaseHint(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const kind = cleanInline(input.kind, 40)
+  const name = cleanInline(input.name, 100)
+  const accessMode = cleanInline(input.accessMode, 20)
+  const targetKinds = normalizeTargetKinds(input.targetKinds)
+  if (!KNOWLEDGE_BASE_KINDS.has(kind) || !name || !['cli', 'vault'].includes(accessMode)
+      || !targetKinds.length) return null
+  if (accessMode === 'vault') {
+    const location = cleanText(input.location, 1000)
+    if (!path.isAbsolute(location)) return null
+    return { kind, name, accessMode, targetKinds, location: path.normalize(location) }
+  }
+  const commandName = cleanInline(input.commandName, 80)
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(commandName)) return null
+  return { kind, name, accessMode, targetKinds, commandName }
+}
+
+function normalizeTargetKinds(input) {
+  return [...new Set((Array.isArray(input) ? input : [])
+    .map(kind => cleanInline(kind, 40))
+    .filter(isSupportedAgentKind))]
+}
+
+function skillHintsPrompt(hints) {
+  if (!hints.length) return ''
+  return [
+    'The user explicitly selected these local skills for this Agent. Load and follow them when relevant:',
+    ...hints.map(skill => `- ${skill.namespace}/${skill.slug}: ${skill.name}`),
+  ].join('\n')
+}
+
+function knowledgeBaseHintsPrompt(hints) {
+  if (!hints.length) return ''
+  return [
+    'The user explicitly granted this Agent read access to these configured knowledge bases for this task. Use them when relevant, identify the source used in the answer, and do not modify source content:',
+    ...hints.map((source) => {
+      if (source.accessMode === 'vault') {
+        return `- ${source.name} (${source.kind}): read from the local vault at ${source.location}`
+      }
+      return `- ${source.name} (${source.kind}): use the configured ${source.commandName} command-line connection with read-only operations`
+    }),
+  ].join('\n')
+}
+
+function normalizeLoadedGroup(input, defaultAllowWrite = false) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const id = cleanText(input.id, 100)
+  const agentKinds = [...new Set((Array.isArray(input.agentKinds) ? input.agentKinds : [])
+    .map(kind => cleanInline(kind, 40))
+    .filter(isSupportedAgentKind))]
+  if (!id || !agentKinds.length) return null
+
+  const group = {
+    id,
+    name: cleanText(input.name, 60),
+    topic: cleanText(input.topic, 200),
+    agentKinds,
+    workdir: path.resolve(cleanText(input.workdir, 1000) || process.cwd()),
+    allowWrite: defaultAllowWrite || input.allowWrite === true,
+    createdAt: cleanText(input.createdAt, 80),
+    updatedAt: cleanText(input.updatedAt, 80),
+  }
+  if (input.conversationType === 'direct') {
+    const requestedDirectKind = cleanInline(input.directAgentKind, 40)
+    const directAgentKind = isSupportedAgentKind(requestedDirectKind)
+      ? requestedDirectKind
+      : agentKinds[0]
+    group.conversationType = 'direct'
+    group.directAgentKind = directAgentKind
+    group.agentKinds = [directAgentKind]
+  }
+  return group
+}
+
+function normalizeLoadedMessage(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return null
+  const id = cleanText(input.id, 100)
+  const groupId = cleanText(input.groupId, 100)
+  const role = ['user', 'agent', 'system'].includes(input.role) ? input.role : ''
+  const requestedAgentKind = cleanInline(input.agentKind, 40)
+  const agentKind = isSupportedAgentKind(requestedAgentKind) ? requestedAgentKind : ''
+  if (!id || !groupId || !role || (role === 'agent' && !agentKind)) return null
+  const systemKey = role === 'system' ? cleanInline(input.system?.key, 100) : ''
+
+  const message = {
+    id,
+    groupId,
+    role,
+    agentKind,
+    senderName: role === 'user'
+      ? 'User'
+      : (role === 'agent'
+          ? (CUSTOM_AGENT_KIND.test(agentKind)
+              ? cleanInline(input.senderName, 60) || defaultAgentLabel(agentKind)
+              : defaultAgentLabel(agentKind))
+          : 'System'),
+    content: cleanText(
+      input.content,
+      terminalMessageContentLimit(role, agentKind, systemKey),
+    ),
+    createdAt: cleanText(input.createdAt, 80),
+  }
+  const threadRootId = cleanText(input.threadRootId, 100)
+  if (threadRootId) message.threadRootId = threadRootId
+  if (systemKey) {
+    message.system = {
+      key: systemKey,
+      params: normalizeSystemParams(input.system?.params),
+    }
+  }
+  if (role === 'agent') {
+    const elapsedMs = cleanElapsedMs(input.elapsedMs)
+    const toolCalls = cleanProgressSteps(input.toolCalls)
+    const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
+      .slice(0, MAX_MESSAGE_ATTACHMENTS)
+      .map(normalizeAttachmentMetadata)
+      .filter(Boolean)
+    if (elapsedMs != null) message.elapsedMs = elapsedMs
+    if (toolCalls.length) message.toolCalls = toolCalls
+    if (attachments.length) message.attachments = attachments
+  }
+  if (role === 'agent' || (role === 'system' && agentKind)) {
+    const trace = normalizeTraceCapsule(input.trace)
+    if (trace) message.trace = trace
+  }
+  if (role === 'user') {
+    const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
+      .slice(0, MAX_MESSAGE_ATTACHMENTS)
+      .map(normalizeAttachmentMetadata)
+      .filter(attachment => attachment && USER_ATTACHMENT_MIME_TYPES.has(attachment.mimeType))
+    const skillHints = (Array.isArray(input.skillHints) ? input.skillHints : [])
+      .slice(0, MAX_SKILL_HINTS)
+      .map(normalizeSkillHint)
+      .filter(Boolean)
+    const knowledgeBaseHints = (Array.isArray(input.knowledgeBaseHints) ? input.knowledgeBaseHints : [])
+      .slice(0, MAX_KNOWLEDGE_BASE_HINTS)
+      .map(normalizeKnowledgeBaseHint)
+      .filter(Boolean)
+    const targetKinds = normalizeTargetKinds(input.targetKinds)
+    if (attachments.length) message.attachments = attachments
+    if (skillHints.length) message.skillHints = skillHints
+    if (knowledgeBaseHints.length) message.knowledgeBaseHints = knowledgeBaseHints
+    if (targetKinds.length) message.targetKinds = targetKinds
+  }
+  return message
+}
+
+module.exports = {
+  ATTACHMENT_ID,
+  KNOWLEDGE_BASE_KINDS,
+  MAX_ATTACHMENT_BYTES,
+  MAX_KNOWLEDGE_BASE_HINTS,
+  MAX_MESSAGE_ATTACHMENTS,
+  MAX_SKILL_HINTS,
+  USER_ATTACHMENT_MIME_TYPES,
+  attachmentLimitError,
+  attachmentType,
+  emptyState,
+  knowledgeBaseHintsPrompt,
+  normalizeAttachmentMetadata,
+  normalizeKnowledgeBaseHint,
+  normalizeLoadedGroup,
+  normalizeLoadedMessage,
+  normalizeSkillHint,
+  normalizeTargetKinds,
+  skillHintsPrompt,
+}

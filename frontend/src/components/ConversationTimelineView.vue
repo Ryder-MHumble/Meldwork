@@ -1,0 +1,568 @@
+<template>
+  <p
+    v-if="activeGroup.conversationType === 'direct'"
+    class="visually-hidden direct-conclusion-live-status"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+  >
+    {{ directConclusionLiveStatus }}
+  </p>
+  <p
+    v-if="activeGroup.conversationType === 'direct'"
+    class="visually-hidden direct-trace-event-live-status"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+  >
+    {{ directTraceEventLiveStatus }}
+  </p>
+
+  <div ref="messageScroller" class="message-scroll" @scroll="handleMessageScroll">
+    <section v-if="conversationEmptyVisible" class="conversation-empty">
+      <img class="conversation-empty-wordmark" :src="productWordmark" alt="Meldwork" />
+      <Transition name="empty-showcase" mode="out-in">
+        <div :key="emptyShowcaseIndex" class="conversation-empty-copy" aria-live="polite">
+          <strong>{{ t(`conversation.emptyShowcase.${emptyShowcaseIndex}.title`) }}</strong>
+          <p>{{ t(`conversation.emptyShowcase.${emptyShowcaseIndex}.body`) }}</p>
+        </div>
+      </Transition>
+    </section>
+
+    <div v-else class="message-stage">
+      <nav class="turn-rail" :aria-label="t('conversation.turnRail')">
+        <button
+          v-for="turn in turnRailItems"
+          :key="turn.id"
+          type="button"
+          :class="{ active: activeTurnRailId === turn.id }"
+          :data-status="turn.status"
+          :aria-label="turnRailLabel(turn)"
+          :aria-current="activeTurnRailId === turn.id ? 'true' : undefined"
+          @click="focusTurn(turn.id)"
+        >
+          <span aria-hidden="true" />
+          <span class="turn-rail-tooltip" aria-hidden="true">{{ turnRailLabel(turn) }}</span>
+        </button>
+      </nav>
+
+      <div class="message-list">
+        <article
+          v-for="message in timelineMessages"
+          :key="message.id"
+          :id="messageElementId(message.id)"
+          class="message-row"
+          :data-agent-kind="message.role === 'agent' ? message.agentKind : undefined"
+          :class="[
+            message.role,
+            {
+              'direct-message': activeGroup.conversationType === 'direct',
+              'group-message': activeGroup.conversationType !== 'direct',
+              'topic-root': activeGroup.conversationType !== 'direct' && isTopicRoot(message),
+              'topic-reply': activeGroup.conversationType !== 'direct' && Boolean(messageThreadRootId(message)),
+              'active-topic': isActiveRunTopic(message),
+              copied: isMessageCopied(message.id),
+            },
+          ]"
+        >
+          <template v-if="message.role === 'system'">
+            <div class="system-message-stack">
+              <div class="system-message">
+                <WarningOutline />
+                <span>
+                  <span>{{ translateSystemMessage(message) }}</span>
+                  <MarkdownMessage
+                    v-if="terminalSystemConclusion(message)"
+                    :content="terminalSystemConclusion(message)"
+                  />
+                </span>
+                <button
+                  v-if="activeGroup.conversationType !== 'direct' && message.agentKind && messageHasTrace(message)"
+                  class="message-trace-button"
+                  type="button"
+                  :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
+                  :title="t('trace.viewProcess')"
+                  :aria-label="t('trace.viewProcess')"
+                  @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                >
+                  <TerminalOutline />
+                </button>
+                <button
+                  v-if="isDismissibleSystemWarning(message)"
+                  class="message-dismiss-button"
+                  type="button"
+                  :title="t('common.dismiss')"
+                  :aria-label="t('common.dismiss')"
+                  @click="dismissSystemMessage(message.id)"
+                >
+                  <CloseOutline />
+                </button>
+              </div>
+              <details
+                v-if="activeGroup.conversationType === 'direct' && message.agentKind && messageHasTrace(message)"
+                class="execution-details trace-inline-details trace-system-details"
+                :open="isDirectTraceOpen(message)"
+                @toggle="syncDirectTraceDisclosure(message, $event)"
+              >
+                <summary>
+                  <TerminalOutline />
+                  <span>{{ t('trace.process') }}</span>
+                  <small>{{ messageTraceEvents(message).length }}</small>
+                  <time v-if="messageTraceStatus(message)">{{ runStatusLabel(messageTraceStatus(message)) }}</time>
+                </summary>
+                <p v-if="messageTraceSummary(message)" class="trace-inline-summary">
+                  {{ messageTraceSummary(message) }}
+                </p>
+                <ol v-if="messageTraceEvents(message).length">
+                  <li
+                    v-for="(event, index) in messageTraceEvents(message)"
+                    :key="`${messageTraceKey(message)}-${index}`"
+                    class="trace-inline-event"
+                  >
+                    <div class="trace-inline-event-heading">
+                      <span>
+                        <strong>{{ traceEventTypeLabel(event.type) }}</strong>
+                        <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
+                      </span>
+                      <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
+                    </div>
+                    <p v-if="event.summary">{{ event.summary }}</p>
+                    <pre v-if="event.detail">{{ event.detail }}</pre>
+                  </li>
+                </ol>
+                <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
+              </details>
+            </div>
+          </template>
+          <template v-else>
+            <img
+              v-if="message.role === 'agent'"
+              class="message-avatar"
+              :src="agentLogo(message.agentKind, theme)"
+              :alt="agentLabel(message.agentKind)"
+            />
+            <div class="message-body" :class="{ 'has-topic-replies': isTopicRoot(message) }">
+              <div class="message-meta">
+                <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
+                <time>{{ formatTime(message.createdAt) }}</time>
+                <span v-if="isActiveRunTopic(message)" class="active-topic-label">
+                  {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
+                </span>
+                <button
+                  v-if="activeGroup.conversationType !== 'direct' && messageHasTrace(message)"
+                  class="message-trace-button"
+                  type="button"
+                  :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
+                  :title="t('trace.viewProcess')"
+                  :aria-label="t('trace.viewProcess')"
+                  @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                >
+                  <TerminalOutline />
+                </button>
+                <button
+                  v-if="message.content"
+                  class="message-copy-button"
+                  type="button"
+                  :title="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                  :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                  @click.stop="copyMessageContent(message, $event, true)"
+                  @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                  @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                >
+                  <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                  <CopyOutline v-else />
+                </button>
+                <button
+                  v-if="!message.provisional"
+                  class="message-delete-button"
+                  :class="{
+                    armed: messageDeleteArmedId === message.id,
+                    deleting: deletingMessageId === message.id,
+                  }"
+                  type="button"
+                  :disabled="messageDeleteDisabled(message)"
+                  :title="messageDeleteTitle(message)"
+                  :aria-label="messageDeleteTitle(message)"
+                  :aria-pressed="messageDeleteArmedId === message.id ? 'true' : 'false'"
+                  @click.stop="requestMessageDelete(message)"
+                >
+                  <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
+                  <TrashOutline v-else />
+                </button>
+              </div>
+              <template v-if="message.role === 'agent'">
+                <div
+                  class="message-copy-surface"
+                  :class="{ copied: isMessageCopied(message.id) }"
+                  @click="copyMessageContent(message, $event)"
+                >
+                  <MarkdownMessage v-if="message.content" :content="message.content" />
+                  <span v-else class="trace-waiting-output">
+                    <span class="typing-bars" aria-hidden="true"><span /><span /><span /></span>
+                    {{ t('trace.waitingOutput') }}
+                  </span>
+                </div>
+                <details
+                  v-if="messageExecutionSteps(message).length && !messageHasTrace(message)"
+                  class="execution-details"
+                >
+                  <summary>
+                    <TerminalOutline />
+                    <span>{{ t('conversation.executionProcess') }}</span>
+                    <small>{{ messageExecutionSteps(message).length }}</small>
+                    <time v-if="messageElapsedLabel(message)">{{ messageElapsedLabel(message) }}</time>
+                  </summary>
+                  <ol>
+                    <li v-for="(step, index) in messageExecutionSteps(message)" :key="`${message.id}-${index}`">
+                      <span>{{ localizedStepTitle(step, index) }}</span>
+                      <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
+                    </li>
+                  </ol>
+                </details>
+                <details
+                  v-if="activeGroup.conversationType === 'direct' && messageHasTrace(message)"
+                  class="execution-details trace-inline-details"
+                  :open="isDirectTraceOpen(message)"
+                  @toggle="syncDirectTraceDisclosure(message, $event)"
+                >
+                  <summary>
+                    <TerminalOutline />
+                    <span>{{ t('trace.process') }}</span>
+                    <small>{{ messageTraceEvents(message).length }}</small>
+                    <time v-if="messageTraceStatus(message)">{{ runStatusLabel(messageTraceStatus(message)) }}</time>
+                  </summary>
+                  <p v-if="messageTraceSummary(message)" class="trace-inline-summary">
+                    {{ messageTraceSummary(message) }}
+                  </p>
+                  <ol v-if="messageTraceEvents(message).length">
+                    <li
+                      v-for="(event, index) in messageTraceEvents(message)"
+                      :key="`${messageTraceKey(message)}-${index}`"
+                      class="trace-inline-event"
+                    >
+                      <div class="trace-inline-event-heading">
+                        <span>
+                          <strong>{{ traceEventTypeLabel(event.type) }}</strong>
+                          <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
+                        </span>
+                        <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
+                      </div>
+                      <p v-if="event.summary">{{ event.summary }}</p>
+                      <pre v-if="event.detail">{{ event.detail }}</pre>
+                    </li>
+                  </ol>
+                  <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
+                </details>
+              </template>
+              <template v-else>
+                <div class="user-message-flow">
+                  <div
+                    v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
+                    class="message-target-list"
+                    :aria-label="t('composer.mentionedAgents')"
+                  >
+                    <span v-for="kind in messageTargetKinds(message)" :key="kind">
+                      <img :src="agentLogo(kind, theme)" alt="" />
+                      {{ agentLabel(kind) }}
+                    </span>
+                  </div>
+                  <div
+                    v-if="message.content"
+                    class="message-content plain-message message-copy-surface"
+                    :class="{ copied: isMessageCopied(message.id) }"
+                    @click="copyMessageContent(message, $event)"
+                  >
+                    {{ message.content }}
+                  </div>
+                </div>
+                <button
+                  v-if="isTopicRoot(message)"
+                  class="topic-toggle topic-reply-summary"
+                  type="button"
+                  :aria-expanded="isTopicExpanded(message.id) ? 'true' : 'false'"
+                  :aria-label="topicToggleLabel(message.id)"
+                  @click="toggleTopic(message.id)"
+                >
+                  <span class="topic-reply-avatars" aria-hidden="true">
+                    <img
+                      v-for="kind in topicReplyAgentKinds(message.id)"
+                      :key="kind"
+                      :src="agentLogo(kind, theme)"
+                      :alt="agentLabel(kind)"
+                    />
+                  </span>
+                  <span>{{ topicReplyLabel(topicReplyCount(message.id)) }}</span>
+                  <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
+                </button>
+                <div
+                  v-if="messageSkills(message).length || messageKnowledgeBases(message).length"
+                  class="message-skill-list"
+                >
+                  <span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
+                    @{{ skill.name || skill.slug }}
+                  </span>
+                  <span
+                    v-for="source in messageKnowledgeBases(message)"
+                    :key="`knowledge:${source.kind}`"
+                    class="message-knowledge-base"
+                  >
+                    <img :src="knowledgeBaseLogo(source.kind)" alt="" />
+                    @{{ knowledgeBaseName(source.kind) }}
+                  </span>
+                </div>
+              </template>
+              <div v-if="messageAttachments(message).length" class="message-attachment-grid">
+                <figure
+                  v-for="attachment in messageAttachments(message)"
+                  :key="attachment.id"
+                  v-attachment-preview="isImageAttachment(attachment) ? attachment : null"
+                  :class="`media-${attachmentKind(attachment)}`"
+                >
+                  <img
+                    v-if="isImageAttachment(attachment) && attachmentPreviewUrl(attachment)"
+                    :src="attachmentPreviewUrl(attachment)"
+                    :alt="attachment.name"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                  <audio
+                    v-else-if="attachmentKind(attachment) === 'audio'"
+                    :src="attachmentMediaUrl(attachment)"
+                    :aria-label="attachment.name"
+                    controls
+                    preload="metadata"
+                  />
+                  <video
+                    v-else-if="attachmentKind(attachment) === 'video'"
+                    :src="attachmentMediaUrl(attachment)"
+                    :aria-label="attachment.name"
+                    controls
+                    preload="metadata"
+                    playsinline
+                  />
+                  <div v-else class="message-attachment-placeholder" aria-hidden="true">
+                    <AttachOutline />
+                  </div>
+                  <figcaption :title="attachment.name">{{ attachment.name }}</figcaption>
+                </figure>
+              </div>
+            </div>
+          </template>
+        </article>
+
+        <section
+          v-if="displayedRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
+          class="run-status-panel"
+          :class="{
+            direct: activeGroup.conversationType === 'direct',
+            group: activeGroup.conversationType !== 'direct',
+            solo: !isDisplayedCoordinatedRun,
+            multi: isDisplayedCoordinatedRun,
+            history: !activeRun,
+          }"
+          aria-live="polite"
+        >
+          <header class="run-status-header">
+            <div v-if="!isDisplayedCoordinatedRun" class="direct-run-indicator" aria-hidden="true">
+              <span class="run-agent-logo" :data-status="displayedRunAgentTone">
+                <img :src="agentLogo(displayedRunAgentKind, theme)" alt="" />
+              </span>
+              <div v-if="displayedRunAgentTone === 'running'" class="typing-bars"><span /><span /><span /></div>
+            </div>
+            <div v-else class="relay-run-indicator" aria-hidden="true">
+              <span
+                v-for="(kind, index) in displayedRunTargetKinds.slice(0, 4)"
+                :key="kind"
+                class="run-agent-logo relay-run-agent"
+                :data-status="displayedRunAgentToneForKind(kind)"
+                :style="{ '--avatar-index': index }"
+              >
+                <img :src="agentLogo(kind, theme)" alt="" />
+              </span>
+            </div>
+            <div class="run-status-copy">
+              <strong>{{ displayedRunLabel }}</strong>
+              <span
+                v-if="!isDisplayedCoordinatedRun"
+                class="solo-run-status"
+                :data-status="displayedRunAgentTone"
+              >
+                {{ runStatusLabel(displayedRunAgentStatus) }}
+              </span>
+              <div class="run-status-meta">
+                <span v-if="displayedRunTopicRootId">
+                  {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
+                </span>
+                <span v-if="runRoundProgress" class="run-round-progress">
+                  {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
+                </span>
+              </div>
+            </div>
+            <button
+              v-if="activeGroup.conversationType !== 'direct' && displayedRunAgentRuns.length"
+              class="icon-button run-details-button"
+              type="button"
+              :title="t('run.openDetails')"
+              :aria-label="t('run.openDetails')"
+              @click="openDisplayedRunTrace($event.currentTarget)"
+            >
+              <TerminalOutline />
+            </button>
+          </header>
+          <div v-if="isDisplayedCoordinatedRun" class="run-agent-list" :aria-label="t('run.agents')">
+            <button
+              v-for="(kind, index) in displayedRunTargetKinds"
+              :key="kind"
+              class="run-agent-row"
+              :data-status="displayedRunAgentToneForKind(kind)"
+              :data-trace-agent-run-id="displayedRunAgentForKind(kind)?.agentRunId || undefined"
+              :style="{ '--reveal-index': index }"
+              type="button"
+              :disabled="!displayedRunAgentForKind(kind)"
+              :aria-label="displayedRunAgentTraceLabel(kind)"
+              @click="openDisplayedTraceForAgent(kind, $event.currentTarget)"
+            >
+              <span class="run-agent-logo" :data-status="displayedRunAgentToneForKind(kind)" aria-hidden="true">
+                <img :src="agentLogo(kind, theme)" alt="" />
+              </span>
+              <strong>{{ agentLabel(kind) }}</strong>
+              <span class="run-agent-state">
+                <span class="run-agent-motion" :data-status="displayedRunAgentToneForKind(kind)" aria-hidden="true">
+                  <CheckmarkCircleOutline v-if="displayedRunAgentToneForKind(kind) === 'completed'" />
+                  <CloseCircleOutline v-else-if="displayedRunAgentToneForKind(kind) === 'failed'" />
+                  <span v-else-if="displayedRunAgentToneForKind(kind) === 'running'" class="run-agent-bars">
+                    <i /><i /><i />
+                  </span>
+                  <WarningOutline v-else-if="displayedRunAgentToneForKind(kind) === 'partial'" />
+                  <span v-else class="run-agent-dots"><i /><i /><i /></span>
+                </span>
+                <small :class="displayedRunAgentToneForKind(kind)">
+                  {{ runStatusLabel(displayedRunAgentStatusForKind(kind)) }}
+                </small>
+              </span>
+            </button>
+          </div>
+          <div v-if="activeRunProgress.length && !activeRunHasAgentRuns" class="execution-details run-progress-details">
+            <div class="execution-progress-header">
+              <TerminalOutline />
+              <span>{{ t('run.progress') }}</span>
+              <small>{{ activeRunProgress.length }}</small>
+            </div>
+            <ol>
+              <li v-for="(step, index) in activeRunProgress" :key="`${step.title}-${index}`">
+                <span>{{ localizedStepTitle(step, index) }}</span>
+                <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
+              </li>
+            </ol>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import {
+  AttachOutline,
+  CheckmarkCircleOutline,
+  ChevronDownOutline,
+  CloseCircleOutline,
+  CloseOutline,
+  CopyOutline,
+  TerminalOutline,
+  TrashOutline,
+  WarningOutline,
+} from '@vicons/ionicons5'
+import { agentLabel, agentLogo } from '../catalog.js'
+import { skillKey } from '../composables/useComposerContext.js'
+import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
+import MarkdownMessage from './MarkdownMessage.vue'
+
+const props = defineProps({
+  controller: { type: Object, required: true },
+})
+
+const {
+  activeGroup,
+  activeRun,
+  activeRunHasAgentRuns,
+  activeRunProgress,
+  activeTurnRailId,
+  attachmentKind,
+  attachmentMediaUrl,
+  attachmentPreviewUrl,
+  conversationEmptyVisible,
+  copyMessageContent,
+  deletingMessageId,
+  directConclusionLiveStatus,
+  directTraceEventLiveStatus,
+  dismissSystemMessage,
+  displayedRun,
+  displayedRunAgentForKind,
+  displayedRunAgentKind,
+  displayedRunAgentRuns,
+  displayedRunAgentStatus,
+  displayedRunAgentStatusForKind,
+  displayedRunAgentTone,
+  displayedRunAgentToneForKind,
+  displayedRunAgentTraceLabel,
+  displayedRunLabel,
+  displayedRunTargetKinds,
+  displayedRunTopicRootId,
+  emptyShowcaseIndex,
+  focusTurn,
+  formatTime,
+  handleMessageScroll,
+  isActiveRunTopic,
+  isDirectTraceOpen,
+  isDismissibleSystemWarning,
+  isDisplayedCoordinatedRun,
+  isImageAttachment,
+  isMessageCopied,
+  isTopicExpanded,
+  isTopicRoot,
+  knowledgeBaseLogo,
+  knowledgeBaseName,
+  localizedStepTitle,
+  messageAgentRunId,
+  messageAttachments,
+  messageDeleteArmedId,
+  messageDeleteDisabled,
+  messageDeleteTitle,
+  messageElapsedLabel,
+  messageElementId,
+  messageExecutionSteps,
+  messageHasTrace,
+  messageScroller,
+  messageThreadRootId,
+  messageTraceEvents,
+  messageTraceKey,
+  messageTraceStatus,
+  messageTraceSummary,
+  openDisplayedRunTrace,
+  openDisplayedTraceForAgent,
+  openTraceForMessage,
+  productWordmark,
+  provisionalMessages,
+  requestMessageDelete,
+  runRoundProgress,
+  runStatusLabel,
+  runStatusTone,
+  syncDirectTraceDisclosure,
+  t,
+  terminalSystemConclusion,
+  theme,
+  timelineMessages,
+  toggleTopic,
+  topicReplyAgentKinds,
+  topicReplyCount,
+  topicReplyLabel,
+  topicToggleLabel,
+  traceEventTitle,
+  traceEventTypeLabel,
+  translateSystemMessage,
+  turnRailItems,
+  turnRailLabel,
+  vAttachmentPreview,
+} = props.controller
+</script>

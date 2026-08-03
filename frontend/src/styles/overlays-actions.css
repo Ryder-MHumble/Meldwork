@@ -1,0 +1,133 @@
+.modal-footer {
+  position: sticky;
+  bottom: -20px;
+  z-index: 1;
+  justify-content: flex-end;
+  margin: 4px -20px -20px;
+  padding: 13px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.settings-modal-footer {
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.modal-footer-actions,
+.settings-delete-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-delete-control {
+  position: relative;
+  margin-right: auto;
+}
+
+.settings-delete-trigger {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+  transition: color 0.16s ease, transform 0.16s ease;
+}
+
+.settings-delete-trigger:hover:not(:disabled) {
+  color: color-mix(in srgb, var(--danger) 82%, var(--text));
+}
+
+.settings-delete-trigger:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.settings-delete-trigger svg {
+  width: 16px;
+  height: 16px;
+}
+
+.settings-delete-popover {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 9px);
+  z-index: 2;
+  width: min(310px, calc(100vw - 48px));
+  padding: 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: 0 14px 34px rgb(25 20 16 / 0.18);
+  animation: settings-delete-popover-in 0.16s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.settings-delete-popover::after {
+  content: "";
+  position: absolute;
+  bottom: -5px;
+  left: 18px;
+  width: 9px;
+  height: 9px;
+  border-right: 1px solid var(--border-strong);
+  border-bottom: 1px solid var(--border-strong);
+  background: var(--surface-raised);
+  transform: rotate(45deg);
+}
+
+.sidebar-delete-popover {
+  position: fixed;
+  right: auto;
+  bottom: auto;
+  z-index: 80;
+  width: 278px;
+  max-width: calc(100vw - 24px);
+  border: 0;
+  transform: translateY(calc(-100% + 18px));
+}
+
+.sidebar-delete-popover::after {
+  bottom: 12px;
+  left: auto;
+  right: calc(100% - 5px);
+  border: 0;
+}
+
+.settings-delete-popover strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings-delete-popover p {
+  margin: 6px 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-delete-actions {
+  justify-content: flex-end;
+}
+
+.settings-delete-actions .danger-button {
+  min-height: 32px;
+  padding-inline: 10px;
+}
+
+@keyframes settings-delete-popover-in {
+  from { opacity: 0; transform: translateY(5px) scale(0.985); }
+}
+
+.danger-button {
+  border: 1px solid var(--danger);
+  background: transparent;
+  color: var(--danger);
+}

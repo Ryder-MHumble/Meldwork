@@ -5,7 +5,18 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { PassThrough } = require('node:stream')
-const { CustomAgentStore } = require('../src/custom-agent-store.cjs')
+const customAgentStoreApi = require('../src/custom-agent-store.cjs')
+const { CustomAgentStore } = customAgentStoreApi
+
+test('custom Agent store keeps its public facade stable', () => {
+  assert.deepEqual(Object.keys(customAgentStoreApi), [
+    'CUSTOM_AGENT_KIND',
+    'CustomAgentStore',
+    'childEnvironment',
+    'executablePath',
+    'isCustomAgentKind',
+  ])
+})
 
 function fixture(t, options = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-custom-agent-'))

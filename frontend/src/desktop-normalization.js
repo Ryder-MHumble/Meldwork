@@ -1,0 +1,239 @@
+const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
+const GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
+const AGENT_KIND = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
+const RUN_EVENT_TYPES = new Set([
+  'status',
+  'answer_delta',
+  'reasoning_summary',
+  'plan',
+  'tool_start',
+  'tool_update',
+  'tool_result_summary',
+  'warning',
+])
+const CAPSULE_EVENT_TYPES = new Set([
+  'reasoning_summary',
+  'plan',
+  'tool_start',
+  'tool_update',
+  'tool_result_summary',
+  'warning',
+])
+const EVENT_STATUSES = new Set([
+  'pending', 'queued', 'preparing', 'in_progress', 'running', 'streaming', 'waiting',
+  'completed', 'succeeded', 'failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted',
+])
+
+export const MAX_RUN_AGENTS = 64
+export const MAX_TRACE_EVENTS = 200
+const MAX_CAPSULE_EVENTS = 12
+export const MAX_SEEN_EVENT_SEQUENCES = 512
+const MAX_SOURCE_MESSAGE_IDS = 32
+export const MAX_AGENT_OUTPUT = 20000
+
+export function record(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : null
+}
+
+export function boundedString(value, limit, { trim = true } = {}) {
+  if (typeof value !== 'string' || value.length > limit) return ''
+  return trim ? value.trim() : value
+}
+
+export function identifier(value) {
+  const normalized = boundedString(value, 160)
+  return IDENTIFIER.test(normalized) ? normalized : ''
+}
+
+export function groupIdentifier(value) {
+  const normalized = typeof value === 'string' ? value : ''
+  return GROUP_IDENTIFIER.test(normalized) ? normalized : ''
+}
+
+export function agentKind(value) {
+  const normalized = boundedString(value, 40)
+  return AGENT_KIND.test(normalized) ? normalized : ''
+}
+
+export function normalizedAgentKinds(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.slice(0, MAX_RUN_AGENTS).map(agentKind).filter(Boolean))]
+}
+
+function nonNegativeInteger(value, maximum = Number.MAX_SAFE_INTEGER) {
+  return Number.isInteger(value) && value >= 0 && value <= maximum ? value : null
+}
+
+function normalizedTimestamp(value) {
+  if (Number.isFinite(value) && value >= 0) return value
+  const text = boundedString(value, 80)
+  return text && !Number.isNaN(Date.parse(text)) ? text : ''
+}
+
+function normalizedStatus(value) {
+  const status = boundedString(value, 32).toLowerCase()
+  return EVENT_STATUSES.has(status) ? status : ''
+}
+
+function sourceMessageIds(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.slice(0, MAX_SOURCE_MESSAGE_IDS).map(identifier).filter(Boolean))]
+}
+
+function normalizeTraceContext(value) {
+  const input = record(value)
+  if (!input) return { includedCount: 0, omittedCount: 0, charCount: 0 }
+  const context = {
+    includedCount: nonNegativeInteger(input.includedCount, 1000) ?? 0,
+    omittedCount: nonNegativeInteger(input.omittedCount, 100000) ?? 0,
+    charCount: nonNegativeInteger(input.charCount, 1000000) ?? 0,
+  }
+  if (input.sessionRotated === true) context.sessionRotated = true
+  return context
+}
+
+function capsuleDetail(value) {
+  const detail = boundedString(value, 600, { trim: false })
+  if (!detail) return ''
+  return detail.split(/\r?\n/u)
+    .map(line => line.trim())
+    .filter(line => (
+      /^Exit code: -?\d+$/u.test(line)
+      || /^Output: \d+ lines?, \d+ bytes$/u.test(line)
+      || /^Result: (?:-?\d+(?:\.\d+)?|true|false|\d+ items?|\d+ fields?)$/u.test(line)
+    ))
+    .slice(0, 4)
+    .join('\n')
+}
+
+export function normalizeCapsuleEvent(value, index = 0) {
+  const input = record(value)
+  if (!input) return null
+  const type = boundedString(input.type, 40).toLowerCase()
+  if (!CAPSULE_EVENT_TYPES.has(type)) return null
+  const evidenceId = identifier(input.evidenceId) || `E-${index + 1}`
+  const event = {
+    evidenceId,
+    type,
+    status: normalizedStatus(input.status) || 'completed',
+  }
+  const title = boundedString(input.title, 120)
+  const summary = boundedString(input.summary, 600)
+  const detail = capsuleDetail(input.detail)
+  if (title) event.title = title
+  if (summary) event.summary = summary
+  if (detail) event.detail = detail
+  return event
+}
+
+export function normalizeRunEvent(value, fallback = {}) {
+  const input = record(value)
+  const defaults = record(fallback) || {}
+  if (!input) return null
+  const runId = identifier(input.runId || defaults.runId)
+  const agentRunId = identifier(input.agentRunId || defaults.agentRunId)
+  const groupId = groupIdentifier(input.groupId || defaults.groupId)
+  const threadRootId = identifier(input.threadRootId || defaults.threadRootId)
+  const kind = agentKind(input.agentKind || input.kind || defaults.agentKind || defaults.kind)
+  const round = nonNegativeInteger(input.round ?? defaults.round, 10000)
+  const seq = nonNegativeInteger(input.seq)
+  const type = boundedString(input.type, 40).toLowerCase()
+  if (!runId || !agentRunId || !groupId || !kind || seq == null || !RUN_EVENT_TYPES.has(type)) {
+    return null
+  }
+
+  const event = { runId, agentRunId, groupId, agentKind: kind, round: round ?? 0, seq, type }
+  if (threadRootId) event.threadRootId = threadRootId
+  const id = identifier(input.id)
+  const status = normalizedStatus(input.status)
+  const title = boundedString(input.title, 160)
+  const summary = boundedString(input.summary, 4000)
+  const detail = boundedString(input.detail, 12000, { trim: false })
+  const delta = boundedString(input.delta, 16000, { trim: false })
+  const timestamp = normalizedTimestamp(input.timestamp)
+  if (id) event.id = id
+  if (status) event.status = status
+  if (title) event.title = title
+  if (summary) event.summary = summary
+  if (detail) event.detail = detail
+  if (delta) event.delta = delta
+  if (timestamp !== '') event.timestamp = timestamp
+  if (type === 'answer_delta' && !delta) return null
+  return event
+}
+
+function normalizeStoredEvents(value, fallback) {
+  if (!Array.isArray(value)) return []
+  const bySequence = new Map()
+  for (const item of value.slice(-MAX_TRACE_EVENTS)) {
+    const event = normalizeRunEvent(item, fallback)
+    if (event) bySequence.set(event.seq, event)
+  }
+  return [...bySequence.values()].sort((left, right) => left.seq - right.seq)
+}
+
+export function normalizeRunAgent(value, run = {}) {
+  const input = record(value)
+  const parent = record(run) || {}
+  if (!input) return null
+  const runId = identifier(parent.runId || input.runId)
+  const groupId = groupIdentifier(parent.groupId || input.groupId)
+  const threadRootId = identifier(parent.threadRootId || input.threadRootId)
+  const agentRunId = identifier(input.agentRunId)
+  const kind = agentKind(input.kind || input.agentKind)
+  if (!runId || !groupId || !agentRunId || !kind) return null
+  const round = nonNegativeInteger(input.round, 10000) ?? 0
+  const status = normalizedStatus(input.status) || 'pending'
+  const events = normalizeStoredEvents(input.events, {
+    runId, agentRunId, groupId, threadRootId, agentKind: kind, round,
+  })
+  const output = boundedString(input.output, MAX_AGENT_OUTPUT, { trim: false })
+  const startedAt = normalizedTimestamp(input.startedAt)
+  const lastActivityAt = normalizedTimestamp(input.lastActivityAt)
+  const seenSeqs = [...new Set([
+    ...events.map(event => event.seq),
+    ...(Array.isArray(input.seenSeqs) ? input.seenSeqs : []),
+  ].map(value => nonNegativeInteger(value)).filter(value => value != null))]
+    .slice(-MAX_SEEN_EVENT_SEQUENCES)
+  return {
+    agentRunId,
+    kind,
+    round,
+    status,
+    output,
+    events,
+    sourceMessageIds: sourceMessageIds(input.sourceMessageIds),
+    context: normalizeTraceContext(input.context),
+    ...(startedAt !== '' ? { startedAt } : {}),
+    ...(lastActivityAt !== '' ? { lastActivityAt } : {}),
+    silent: input.silent === true,
+    truncated: input.truncated === true,
+    seenSeqs,
+  }
+}
+
+export function normalizeMessageTrace(value, message = {}) {
+  void message
+  const input = record(value)
+  if (!input) return null
+  const runId = identifier(input.runId)
+  const agentRunId = identifier(input.agentRunId)
+  if (!runId || !agentRunId) return null
+  const round = nonNegativeInteger(input.round, 100000)
+  const context = normalizeTraceContext(input.context)
+  const events = (Array.isArray(input.events) ? input.events : [])
+    .slice(0, MAX_CAPSULE_EVENTS)
+    .map(normalizeCapsuleEvent)
+    .filter(Boolean)
+  return {
+    runId,
+    agentRunId,
+    ...(round != null ? { round } : {}),
+    status: normalizedStatus(input.status) || 'completed',
+    summary: boundedString(input.summary, 8000),
+    events,
+    sourceMessageIds: sourceMessageIds(input.sourceMessageIds),
+    truncated: input.truncated === true,
+    context,
+  }
+}

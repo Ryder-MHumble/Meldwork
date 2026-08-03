@@ -1,0 +1,140 @@
+.toast-message {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 120;
+  max-width: min(420px, calc(100vw - 44px));
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 13px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+  color: var(--text-soft);
+  line-height: 1.45;
+}
+
+.copy-toast-message {
+  position: fixed;
+  top: calc(var(--desktop-titlebar-height) + 14px);
+  left: 50%;
+  z-index: 130;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-raised) 92%, var(--accent-soft));
+  box-shadow: 0 6px 18px rgb(23 35 40 / 0.16);
+  color: var(--text-soft);
+  font-size: 12px;
+  transform: translateX(-50%);
+}
+
+.copy-toast-message svg {
+  width: 15px;
+  height: 15px;
+  color: var(--accent);
+}
+
+.toast-message > span {
+  min-width: 0;
+  flex: 1;
+}
+
+.toast-message svg {
+  width: 17px;
+  height: 17px;
+  margin-top: 1px;
+  color: var(--accent);
+}
+
+.toast-message .toast-dismiss-button svg {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  color: currentColor;
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.copy-toast-enter-active,
+.copy-toast-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.copy-toast-enter-from,
+.copy-toast-leave-to {
+  opacity: 0;
+  transform: translate(-50%, -5px);
+}
+
+.shortcut-menu-anchor {
+  position: relative;
+}
+
+.shortcut-menu {
+  width: 250px;
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  padding: 10px;
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+  box-shadow: var(--shadow);
+}
+
+.shortcut-menu header {
+  padding: 2px 4px 8px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.shortcut-menu ul {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.shortcut-menu li {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.shortcut-menu kbd {
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  color: var(--text-soft);
+  font: 10px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.spinning {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}

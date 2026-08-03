@@ -8,12 +8,27 @@ import {
   normalizeRunEvent,
   normalizeSnapshot,
 } from '../../desktop.js'
+import * as desktop from '../../desktop.js'
 
 afterEach(() => {
   delete window.roundrelayDesktop
 })
 
 describe('desktop bridge access', () => {
+  it('keeps the public desktop facade stable', () => {
+    expect(Object.keys(desktop).sort()).toEqual([
+      'desktopApi',
+      'emptySnapshot',
+      'errorCode',
+      'mergeRunEvent',
+      'normalizeCapsuleEvent',
+      'normalizeMessageTrace',
+      'normalizeRunAgent',
+      'normalizeRunEvent',
+      'normalizeSnapshot',
+    ])
+  })
+
   it('reads the RoundRelay preload bridge', () => {
     const bridge = {
       localWorkspace: { get() {} },

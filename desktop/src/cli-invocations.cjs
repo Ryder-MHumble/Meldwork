@@ -1,0 +1,231 @@
+const path = require('node:path')
+
+const CODEX_SANDBOXES = new Set(['read-only', 'workspace-write'])
+const IMAGE_ATTACHMENT_LIMITS = Object.freeze({
+  codex: 4,
+  hermes: 1,
+  opencode: 4,
+})
+const MAX_NATIVE_SKILLS = 4
+const NATIVE_SKILL_NAME = /^[\p{L}\p{N}._-]{1,100}$/u
+
+function codexSandbox(requested) {
+  if (requested != null) {
+    if (!CODEX_SANDBOXES.has(requested)) throw new Error('CODEX_SANDBOX_UNSUPPORTED')
+    return requested
+  }
+  const configured = process.env.ROUNDRELAY_CODEX_SANDBOX || 'read-only'
+  return CODEX_SANDBOXES.has(configured) ? configured : 'read-only'
+}
+
+function imageAttachmentLimit(kind) {
+  return IMAGE_ATTACHMENT_LIMITS[kind] || 0
+}
+
+function attachmentPaths(kind, value) {
+  if (value == null) return []
+  if (!Array.isArray(value)) throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+  const limit = imageAttachmentLimit(kind)
+  if (value.length && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
+  if (value.length > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
+  const normalized = value.map((filename) => {
+    if (typeof filename !== 'string' || !filename || filename.length > 4096
+        || !path.isAbsolute(filename) || /[\u0000-\u001f\u007f]/.test(filename)) {
+      throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+    }
+    return path.normalize(filename)
+  })
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+  }
+  return normalized
+}
+
+function hermesSkillNames(value) {
+  if (value == null) return []
+  if (!Array.isArray(value)) throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+  if (value.length > MAX_NATIVE_SKILLS) throw new Error('LOCAL_SKILL_LIMIT')
+  const normalized = value.map((skill) => {
+    if (typeof skill !== 'string' || !NATIVE_SKILL_NAME.test(skill)) {
+      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+    }
+    return skill
+  })
+  return [...new Set(normalized)]
+}
+
+function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
+  const attachments = attachmentPaths(kind, options.attachments)
+  if (kind === 'codex') {
+    const sandbox = codexSandbox(options.sandbox)
+    const imageArgs = attachments.flatMap(filename => ['--image', filename])
+    if (sessionRef) {
+      return {
+        command: executable,
+        args: [
+          'exec', 'resume', '--json', '--skip-git-repo-check',
+          '-c', `sandbox_mode="${sandbox}"`, ...imageArgs, sessionRef, '-',
+        ],
+        stdin: true,
+      }
+    }
+    return {
+      command: executable,
+      args: ['exec', '--json', '--skip-git-repo-check', '--sandbox',
+        sandbox, '-C', workdir, ...imageArgs, '-'],
+      stdin: true,
+    }
+  }
+  if (kind === 'hermes') {
+    const skills = hermesSkillNames(options.skills)
+    const legacySessionRef = options.sessionTransport === 'acp' ? '' : sessionRef
+    const useAcp = !attachments.length && !skills.length
+      && options.hermesAcpAvailable !== false
+      && (!sessionRef || options.sessionTransport === 'acp')
+    if (useAcp) {
+      return {
+        command: executable,
+        args: ['acp'],
+        acpMode: options.sandbox === 'workspace-write' ? 'accept_edits' : 'default',
+      }
+    }
+    return {
+      command: executable,
+      args: [
+        'chat',
+        '--quiet',
+        ...(options.sandbox === 'workspace-write' ? ['--yolo'] : []),
+        ...(options.provider?.id ? ['--provider', options.provider.id] : []),
+        ...(options.provider?.model ? ['--model', options.provider.model] : []),
+        ...skills.flatMap(skill => ['--skills', skill]),
+        ...(legacySessionRef ? ['--resume', legacySessionRef] : []),
+        ...(attachments[0] ? ['--image', attachments[0]] : []),
+        '--query',
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'openclaw') {
+    return {
+      command: executable,
+      args: [
+        'agent', '--local', '--agent', 'main',
+        ...(sessionRef ? ['--session-key', sessionRef] : []),
+        '--message',
+      ],
+      suffixArgs: ['--json'],
+      promptArg: true,
+    }
+  }
+  if (kind === 'workbuddy') {
+    return {
+      command: executable,
+      args: [
+        '--print',
+        '--output-format', 'json',
+        '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
+        '--max-turns', '20',
+        ...(sessionRef ? ['--resume', sessionRef] : []),
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'kimi') {
+    if (options.sandbox !== 'workspace-write') {
+      return {
+        command: executable,
+        args: ['acp'],
+        acpMode: 'plan',
+      }
+    }
+    return {
+      command: executable,
+      args: [
+        '--output-format', 'stream-json',
+        '--auto',
+        ...(sessionRef ? ['--session', sessionRef] : []),
+        '--prompt',
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'mimo') {
+    return {
+      command: executable,
+      args: [
+        'run', '--pure', '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        '--format', 'json', '--dir', workdir,
+        ...(sessionRef ? ['--session', sessionRef] : []),
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'claude') {
+    return {
+      command: executable,
+      args: [
+        '--print',
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
+        '--verbose',
+        '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
+        ...(sessionRef ? ['--resume', sessionRef] : []),
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'qwen') {
+    return {
+      command: executable,
+      args: [
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
+        '--approval-mode', options.sandbox === 'workspace-write' ? 'auto-edit' : 'plan',
+        ...(options.provider?.id === 'openai' ? ['--auth-type', 'openai'] : []),
+        ...(options.provider?.model ? ['--model', options.provider.model] : []),
+        ...(sessionRef ? ['--resume', sessionRef] : []),
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'gemini') {
+    return {
+      command: executable,
+      args: [
+        '--output-format', 'stream-json',
+        '--approval-mode', options.sandbox === 'workspace-write' ? 'auto_edit' : 'plan',
+        ...(sessionRef ? ['--resume', sessionRef] : []),
+        '--prompt',
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'opencode') {
+    return {
+      command: executable,
+      args: [
+        'run', '--format', 'json',
+        '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        ...(sessionRef ? ['--session', sessionRef] : []),
+        ...attachments.flatMap(filename => ['--file', filename]),
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'opencodereview') {
+    return {
+      command: executable,
+      args: [
+        'review', '--audience', 'agent', '--format', 'text', '--repo', workdir,
+        '--background',
+      ],
+      promptArg: true,
+    }
+  }
+  throw new Error('LOCAL_AGENT_KIND_UNSUPPORTED')
+}
+
+module.exports = {
+  imageAttachmentLimit,
+  invocation,
+}

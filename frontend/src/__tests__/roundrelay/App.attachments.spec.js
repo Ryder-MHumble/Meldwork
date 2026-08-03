@@ -1,0 +1,732 @@
+import { readFileSync as readNodeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AGENTS } from '../../catalog.js'
+import RunTracePanel from '../../components/RunTracePanel.vue'
+import { setLocale } from '../../i18n.js'
+import { deferred, imageAttachment, mountApp } from './app-test-harness.js'
+import { readStylesSource } from './style-test-helpers.js'
+
+function readFileSync(filename, encoding) {
+  if (filename === resolve(process.cwd(), 'src/styles.css')) {
+    return readStylesSource(filename)
+  }
+  return readNodeFileSync(filename, encoding)
+}
+
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+const originalClipboard = navigator.clipboard
+const originalExecCommand = document.execCommand
+
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem('roundrelay-theme', 'light')
+  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn(async () => {}) },
+  })
+  setLocale('en')
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  delete window.roundrelayDesktop
+  document.body.className = ''
+  document.body.innerHTML = ''
+  if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
+  else delete HTMLElement.prototype.scrollIntoView
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: originalClipboard })
+  if (originalExecCommand) Object.defineProperty(document, 'execCommand', { configurable: true, value: originalExecCommand })
+  else delete document.execCommand
+  vi.restoreAllMocks()
+})
+
+describe('RoundRelay workbench', () => {
+  it('imports a pasted image and sends safe attachment metadata without text', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const imageFile = {
+      name: 'diagram.png',
+      type: 'image/png',
+      size: 3,
+      arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3]).buffer),
+    }
+    await wrapper.get('.composer-box textarea').trigger('paste', {
+      clipboardData: {
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => imageFile }],
+      },
+    })
+    await flushPromises()
+
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith({
+      name: 'diagram.png',
+      mimeType: 'image/png',
+      bytes: Uint8Array.from([1, 2, 3]),
+    })
+    expect(wrapper.get('.composer-attachment img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
+
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'direct-codex',
+      text: '',
+      targetKinds: ['codex'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [{ id: 'attachment-1', name: 'diagram.png', mimeType: 'image/png', size: 3 }],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
+  it('keeps an all-failed accepted image message out of the composer', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localWorkspace.send.mockImplementation(async (input) => {
+        state.messages.push(
+          {
+            id: 'failed-user-message',
+            groupId: input.groupId,
+            role: 'user',
+            agentKind: '',
+            content: input.text,
+            attachments: structuredClone(input.attachments),
+            createdAt: '2026-07-29T08:01:00Z',
+          },
+          {
+            id: 'failed-system-message',
+            groupId: input.groupId,
+            role: 'system',
+            agentKind: '',
+            content: 'Codex failed: process failed',
+            createdAt: '2026-07-29T08:01:01Z',
+          },
+        )
+        return structuredClone(state)
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const imageFile = {
+      name: 'failure.png',
+      type: 'image/png',
+      size: 3,
+      arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3]).buffer),
+    }
+    await wrapper.get('.composer-box textarea').trigger('paste', {
+      clipboardData: {
+        items: [{ kind: 'file', type: 'image/png', getAsFile: () => imageFile }],
+      },
+    })
+    await flushPromises()
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.composer-box textarea').element.value).toBe('')
+    expect(wrapper.find('.composer-attachment').exists()).toBe(false)
+    expect(wrapper.findAll('.message-row.user')).toHaveLength(1)
+    expect(wrapper.findAll('.message-attachment-grid')).toHaveLength(1)
+    expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
+  it('rejects an oversized pasted media file before reading its bytes', async () => {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('.composer-box textarea').trigger('paste', {
+      clipboardData: {
+        items: [{
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => ({
+            name: 'large.png',
+            type: 'image/png',
+            size: (128 * 1024 * 1024) + 1,
+            arrayBuffer,
+          }),
+        }],
+      },
+    })
+    await flushPromises()
+
+    expect(arrayBuffer).not.toHaveBeenCalled()
+    expect(bridge.localAttachments.importAttachment).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('too large')
+    wrapper.unmount()
+  })
+
+  it('reloads Skill counts when Agent kinds are unchanged after manual refresh', async () => {
+    let total = 1
+    const { wrapper, bridge } = await mountApp(({ bridge: desktopBridge }) => {
+      desktopBridge.agentInstaller.skills.mockImplementation(async () => ({
+        supported: true,
+        total,
+        skills: [],
+      }))
+    })
+    bridge.agentInstaller.skills.mockClear()
+    total = 3
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    const refresh = wrapper.findAll('.manager-toolbar-actions button')
+      .find(button => button.text().includes('Refresh catalog'))
+    await refresh.trigger('click')
+    await flushPromises()
+
+    expect(bridge.agentInstaller.skills.mock.calls.map(([kind]) => kind).sort()).toEqual(['codex', 'hermes'])
+    for (const card of wrapper.findAll('.agent-card').slice(0, 2)) {
+      expect(card.get('.agent-capability-list').text()).toContain('3 local skills')
+    }
+    wrapper.unmount()
+  })
+
+  it('discards an unsent image when the user removes it', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
+        attachments: [imageAttachment('remove-me')],
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[aria-label="Remove attachment"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.composer-attachment').exists()).toBe(false)
+    expect(bridge.localAttachments.discard).toHaveBeenCalledWith(['remove-me'])
+    wrapper.unmount()
+  })
+
+  it('passes the remaining image capacity to the picker and reports truncated selections', async () => {
+    const firstPick = [imageAttachment('picked-1')]
+    const secondPick = Array.from({ length: 3 }, (_, index) => imageAttachment(`picked-${index + 2}`))
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.pickAttachments
+        .mockResolvedValueOnce({ attachments: firstPick, truncated: false })
+        .mockResolvedValueOnce({ attachments: secondPick, truncated: true })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.composer-attachment')).toHaveLength(4)
+    expect(bridge.localAttachments.pickAttachments.mock.calls).toEqual([[4], [3]])
+    expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('up to 4 files')
+    wrapper.unmount()
+  })
+
+  it('limits picked media to the selected Agent capability', async () => {
+    const picked = [imageAttachment('hermes-1')]
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-hermes',
+        conversationType: 'direct',
+        directAgentKind: 'hermes',
+        name: 'Hermes',
+        agentKinds: ['hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
+        attachments: picked,
+        truncated: true,
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.composer-attachment')).toHaveLength(1)
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(1)
+    expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
+    expect(wrapper.get('[aria-label="Attach media"]').attributes()).not.toHaveProperty('disabled')
+
+    await wrapper.get('.composer-box textarea').trigger('paste', {
+      clipboardData: {
+        items: [{
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => ({
+            name: 'overflow.png',
+            type: 'image/png',
+            arrayBuffer: vi.fn(async () => Uint8Array.from([1]).buffer),
+          }),
+        }],
+      },
+    })
+    await flushPromises()
+
+    expect(bridge.localAttachments.importAttachment).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('supports fewer files')
+    wrapper.unmount()
+  })
+
+  it('keeps the attachment action clickable when support is unavailable', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'workbuddy',
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        version: '1.0.0',
+      })
+      state.groups.push({
+        id: 'direct-workbuddy',
+        conversationType: 'direct',
+        directAgentKind: 'workbuddy',
+        name: 'WorkBuddy',
+        agentKinds: ['workbuddy'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const attachmentButton = wrapper.get('.composer-attachment-button')
+    expect(attachmentButton.attributes()).not.toHaveProperty('disabled')
+    await attachmentButton.trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.pickAttachments).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('does not support attachments')
+    wrapper.unmount()
+  })
+
+  it('discards unsent draft images when switching conversations', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push(
+        {
+          id: 'group-alpha',
+          conversationType: 'group',
+          name: 'Alpha review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-beta',
+          conversationType: 'group',
+          name: 'Beta review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
+        attachments: [imageAttachment('alpha-draft')],
+      })
+    })
+
+    const links = wrapper.findAll('.conversation-link')
+    const alphaLink = links.find(link => link.text().includes('Alpha review'))
+    const betaLink = links.find(link => link.text().includes('Beta review'))
+    await alphaLink.trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await flushPromises()
+    await betaLink.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.composer-attachment').exists()).toBe(false)
+    expect(bridge.localAttachments.discard).toHaveBeenCalledWith(['alpha-draft'])
+    wrapper.unmount()
+  })
+
+  it('loads persisted attachment previews by id without requiring preview data in the snapshot', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'message-1',
+        groupId: 'direct-codex',
+        role: 'user',
+        content: '',
+        attachments: [{ id: 'persisted-image', name: 'diagram.png', mimeType: 'image/png', size: 3 }],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.preview).toHaveBeenCalledWith('persisted-image')
+    expect(wrapper.get('.message-attachment-grid img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.message-attachment-grid figcaption').text()).toBe('diagram.png')
+    wrapper.unmount()
+  })
+
+  it('renders Agent image, audio, and video outputs inside the conversation', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'agent-media',
+        groupId: 'direct-codex',
+        role: 'agent',
+        agentKind: 'codex',
+        content: 'Generated media is ready.',
+        attachments: [
+          { id: 'poster-image', name: 'poster.png', mimeType: 'image/png', size: 3 },
+          { id: 'briefing-audio', name: 'briefing.mp3', mimeType: 'audio/mpeg', size: 12 },
+          { id: 'demo-video', name: 'demo.mp4', mimeType: 'video/mp4', size: 24 },
+        ],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.preview).toHaveBeenCalledTimes(1)
+    expect(bridge.localAttachments.preview).toHaveBeenCalledWith('poster-image')
+    expect(wrapper.get('.message-attachment-grid img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.message-attachment-grid audio').attributes('src'))
+      .toBe('meldwork-media://attachment/briefing-audio')
+    expect(wrapper.get('.message-attachment-grid video').attributes('src'))
+      .toBe('meldwork-media://attachment/demo-video')
+    expect(wrapper.findAll('.message-attachment-grid figcaption').map(item => item.text()))
+      .toEqual(['poster.png', 'briefing.mp3', 'demo.mp4'])
+    wrapper.unmount()
+  })
+
+  it('blocks button and Enter sends until a pasted image finishes importing', async () => {
+    const pendingImport = deferred()
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.importAttachment.mockReturnValueOnce(pendingImport.promise)
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('Include this image')
+    await textarea.trigger('paste', {
+      clipboardData: {
+        items: [{
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => ({
+            name: 'diagram.png',
+            type: 'image/png',
+            arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3]).buffer),
+          }),
+        }],
+      },
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.send-button').attributes()).toHaveProperty('disabled')
+    await textarea.trigger('keydown', { key: 'Enter' })
+    expect(bridge.localWorkspace.send).not.toHaveBeenCalled()
+
+    pendingImport.resolve({
+      id: 'attachment-1',
+      name: 'diagram.png',
+      mimeType: 'image/png',
+      size: 3,
+      previewDataUrl: 'data:image/png;base64,AQID',
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'direct-codex',
+      text: 'Include this image',
+      attachments: [{ id: 'attachment-1', name: 'diagram.png', mimeType: 'image/png', size: 3 }],
+    }))
+    wrapper.unmount()
+  })
+
+  it('does not start a second paste import while the current batch is pending', async () => {
+    const pendingImport = deferred()
+    const secondRead = vi.fn(async () => Uint8Array.from([4, 5, 6]).buffer)
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.importAttachment.mockReturnValueOnce(pendingImport.promise)
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.trigger('paste', {
+      clipboardData: {
+        items: [{
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => ({
+            name: 'first.png',
+            type: 'image/png',
+            size: 3,
+            arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3]).buffer),
+          }),
+        }],
+      },
+    })
+    await flushPromises()
+    await textarea.trigger('paste', {
+      clipboardData: {
+        items: [{
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => ({
+            name: 'second.png',
+            type: 'image/png',
+            size: 3,
+            arrayBuffer: secondRead,
+          }),
+        }],
+      },
+    })
+    await flushPromises()
+
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledTimes(1)
+    expect(secondRead).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('current file import')
+
+    pendingImport.resolve(imageAttachment('first'))
+    await flushPromises()
+    wrapper.unmount()
+  })
+
+  it('discards attachment imports that finish after switching conversations', async () => {
+    const pendingImport = deferred()
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push(
+        {
+          id: 'group-alpha',
+          conversationType: 'group',
+          name: 'Alpha review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-beta',
+          conversationType: 'group',
+          name: 'Beta review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+      desktopBridge.localAttachments.importAttachment.mockReturnValueOnce(pendingImport.promise)
+    })
+
+    const links = wrapper.findAll('.conversation-link')
+    const alphaLink = links.find(link => link.text().includes('Alpha review'))
+    const betaLink = links.find(link => link.text().includes('Beta review'))
+    await alphaLink.trigger('click')
+    await wrapper.get('.composer-box textarea').trigger('paste', {
+      clipboardData: {
+        items: [{
+          kind: 'file',
+          type: 'image/png',
+          getAsFile: () => ({
+            name: 'alpha.png',
+            type: 'image/png',
+            arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3]).buffer),
+          }),
+        }],
+      },
+    })
+    await flushPromises()
+
+    await betaLink.trigger('click')
+    const betaTextarea = wrapper.get('.composer-box textarea')
+    await betaTextarea.setValue('Beta task')
+    expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'group-beta',
+      text: 'Beta task',
+      attachments: [],
+    }))
+
+    pendingImport.resolve({
+      id: 'alpha-image',
+      name: 'alpha.png',
+      mimeType: 'image/png',
+      size: 3,
+      previewDataUrl: 'data:image/png;base64,AQID',
+    })
+    await flushPromises()
+    expect(wrapper.find('.composer-attachment').exists()).toBe(false)
+    expect(bridge.localAttachments.discard).toHaveBeenCalledWith(['alpha-image'])
+    wrapper.unmount()
+  })
+
+  it('does not restore a failed send draft after switching conversations', async () => {
+    const pendingSend = deferred()
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push(
+        {
+          id: 'group-alpha',
+          conversationType: 'group',
+          name: 'Alpha review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-beta',
+          conversationType: 'group',
+          name: 'Beta review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+      desktopBridge.localWorkspace.send.mockReturnValueOnce(pendingSend.promise)
+    })
+
+    const links = wrapper.findAll('.conversation-link')
+    const alphaLink = links.find(link => link.text().includes('Alpha review'))
+    const betaLink = links.find(link => link.text().includes('Beta review'))
+    await alphaLink.trigger('click')
+    await wrapper.get('.composer-box textarea').setValue('Alpha draft')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith(expect.objectContaining({
+      groupId: 'group-alpha',
+      text: 'Alpha draft',
+    }))
+
+    await betaLink.trigger('click')
+    pendingSend.reject(new Error('LOCAL_AGENT_PROCESS_FAILED'))
+    await flushPromises()
+
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Beta review')
+    expect(wrapper.get('.composer-box textarea').element.value).toBe('')
+    wrapper.unmount()
+  })
+})

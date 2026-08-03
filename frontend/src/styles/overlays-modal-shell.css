@@ -1,0 +1,223 @@
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgb(13 17 23 / 0.56);
+}
+
+.modal-backdrop-enter-active,
+.modal-backdrop-leave-active {
+  transition: opacity 0.16s ease;
+}
+
+.modal-backdrop-enter-from,
+.modal-backdrop-leave-to {
+  opacity: 0;
+}
+
+.modal-pop-enter-active,
+.modal-pop-leave-active {
+  transition: opacity 0.16s ease, transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.modal-pop-enter-from,
+.modal-pop-leave-to {
+  opacity: 0;
+  transform: translateY(10px) scale(0.985);
+}
+
+.modal {
+  width: min(540px, 100%);
+  max-height: min(780px, calc(100dvh - 48px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  will-change: transform, opacity;
+}
+
+.modal.medium {
+  width: min(640px, 100%);
+  container-type: inline-size;
+}
+
+.modal.agent-detail-modal {
+  width: min(700px, 100%);
+  border: 0;
+}
+
+.modal.agent-detail-modal .modal-header,
+.modal.unlimited-confirm-modal .modal-header {
+  border-bottom: 0;
+}
+
+.modal.unlimited-confirm-modal {
+  border: 0;
+}
+
+.agent-detail-body {
+  display: grid;
+  gap: 16px;
+}
+
+.agent-detail-hero {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  padding: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--surface-raised) 76%, var(--surface-active) 24%);
+  animation: agent-detail-in 0.18s ease-out both;
+}
+
+.agent-detail-hero img {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  background: transparent;
+}
+
+.agent-detail-hero p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.agent-detail-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.agent-detail-metrics > span,
+.agent-detail-section {
+  min-width: 0;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.agent-detail-metrics strong,
+.agent-detail-metrics small {
+  display: block;
+}
+
+.agent-detail-metrics strong,
+.agent-detail-section h3 {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.agent-detail-metrics small {
+  overflow: hidden;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail-section p {
+  margin: 7px 0 0;
+  color: var(--muted);
+  line-height: 1.58;
+}
+
+.agent-detail-muted {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.agent-detail-skill-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.agent-detail-skill-grid span {
+  max-width: 100%;
+  min-width: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-hover);
+}
+
+.agent-detail-skill-grid strong,
+.agent-detail-skill-grid small {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-detail-skill-grid strong {
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.agent-detail-skill-grid small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.agent-detail-footer {
+  margin-top: 2px;
+}
+
+.agent-detail-footer .secondary-button,
+.agent-detail-footer .primary-button,
+.agent-detail-footer .danger-button,
+.unlimited-confirm-modal .secondary-button,
+.unlimited-confirm-modal .primary-button {
+  border: 0;
+}
+
+.agent-detail-footer .secondary-button,
+.unlimited-confirm-modal .secondary-button {
+  background: var(--surface-hover);
+}
+
+.sidebar-visibility-control {
+  min-height: 52px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.sidebar-visibility-control > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.sidebar-visibility-control strong,
+.sidebar-visibility-control small {
+  display: block;
+}
+
+.sidebar-visibility-control strong {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.sidebar-visibility-control small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+@keyframes agent-detail-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+}

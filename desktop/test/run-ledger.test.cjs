@@ -6,6 +6,10 @@ const path = require('node:path')
 
 const { RunLedger } = require('../src/run-ledger.cjs')
 
+test('keeps the ledger facade limited to RunLedger', () => {
+  assert.deepEqual(Object.keys(require('../src/run-ledger.cjs')), ['RunLedger'])
+})
+
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-run-ledger-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

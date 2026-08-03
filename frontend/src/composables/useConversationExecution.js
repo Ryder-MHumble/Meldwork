@@ -1,0 +1,112 @@
+import { computed } from 'vue'
+import { MAX_ATTACHMENTS } from './useComposerAttachments.js'
+
+export function useConversationExecution({
+  activeGroup,
+  activeRun,
+  attachmentLimitMessage,
+  composerAttachmentSupported,
+  composerAttachments,
+  composerContextVersion,
+  composerMode,
+  composerTargetKinds,
+  composerTargetsReady,
+  discardAttachments,
+  draft,
+  importingAttachment,
+  maxRounds,
+  normalizeSnapshot,
+  notify,
+  readyAgentKinds,
+  restoreComposerContext,
+  roundSettingsOpen,
+  safeAttachmentPayload,
+  sending,
+  serializeComposerContext,
+  showError,
+  snapshot,
+  t,
+  unlimitedRounds,
+  workspace,
+  captureComposerContext,
+  clearComposerContext,
+}) {
+  const canSendMessage = computed(() => (
+    composerTargetsReady.value
+    && (composerMode.value !== 'auto' || composerTargetKinds.value.length >= 2)
+    && !importingAttachment.value
+    && composerAttachmentSupported.value
+    && Boolean(draft.value.trim() || composerAttachments.value.length)
+  ))
+
+  async function sendMessage() {
+    if (!activeGroup.value || sending.value || activeRun.value || importingAttachment.value) return
+    const groupId = activeGroup.value.id
+    const contextVersion = composerContextVersion.value
+    const text = draft.value.trim()
+    const attachments = composerAttachments.value.map(safeAttachmentPayload)
+    const mode = composerMode.value
+    if (!text && !attachments.length) {
+      notify(t('composer.messageRequired'))
+      return
+    }
+    const targets = [...composerTargetKinds.value]
+    if (!targets.length) {
+      notify(t('composer.selectTarget'))
+      return
+    }
+    if (mode === 'auto' && targets.length < 2) {
+      notify(t('error.autoAgentCount'))
+      return
+    }
+    if (targets.some(kind => !readyAgentKinds.value.has(kind))) {
+      notify(t('error.agentUnavailable'))
+      return
+    }
+    if (!composerAttachmentSupported.value || attachments.length > MAX_ATTACHMENTS) {
+      notify(attachmentLimitMessage())
+      return
+    }
+    const { mentionedAgentKinds, skillHints, knowledgeBaseHints } = serializeComposerContext(targets)
+    const previousComposerContext = captureComposerContext()
+    const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
+    clearComposerContext()
+    composerAttachments.value = []
+    roundSettingsOpen.value = false
+    sending.value = true
+    try {
+      await workspace.value.send({
+        groupId,
+        text,
+        targetKinds: targets,
+        ...(mentionedAgentKinds.length ? { mentionedAgentKinds } : {}),
+        skillHints,
+        knowledgeBaseHints,
+        attachments,
+        mode,
+        maxRounds: maxRounds.value,
+        ...(mode === 'auto' && unlimitedRounds.value ? { unlimitedRounds: true } : {}),
+      })
+      snapshot.value = normalizeSnapshot(await workspace.value.get())
+    } catch (error) {
+      if (contextVersion === composerContextVersion.value && groupId === activeGroup.value?.id) {
+        restoreComposerContext(previousComposerContext)
+        composerAttachments.value = previousAttachments
+      } else {
+        void discardAttachments(previousAttachments)
+      }
+      showError(error)
+    } finally {
+      sending.value = false
+    }
+  }
+
+  async function stopRun() {
+    const groupId = activeGroup.value?.id
+    const runId = activeRun.value?.runId
+    if (!groupId || !runId) return
+    try { await workspace.value.stop(groupId, runId) } catch (error) { showError(error) }
+  }
+
+  return { canSendMessage, sendMessage, stopRun }
+}

@@ -1,0 +1,1075 @@
+import { readFileSync as readNodeFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { flushPromises, mount } from '@vue/test-utils'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { AGENTS } from '../../catalog.js'
+import RunTracePanel from '../../components/RunTracePanel.vue'
+import { setLocale } from '../../i18n.js'
+import { deferred, imageAttachment, mountApp } from './app-test-harness.js'
+import { readStylesSource } from './style-test-helpers.js'
+
+function readFileSync(filename, encoding) {
+  if (filename === resolve(process.cwd(), 'src/styles.css')) {
+    return readStylesSource(filename)
+  }
+  return readNodeFileSync(filename, encoding)
+}
+
+const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+const originalClipboard = navigator.clipboard
+const originalExecCommand = document.execCommand
+
+beforeEach(() => {
+  localStorage.clear()
+  localStorage.setItem('roundrelay-theme', 'light')
+  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: vi.fn(async () => {}) },
+  })
+  setLocale('en')
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.unstubAllGlobals()
+  delete window.roundrelayDesktop
+  document.body.className = ''
+  document.body.innerHTML = ''
+  if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
+  else delete HTMLElement.prototype.scrollIntoView
+  Object.defineProperty(navigator, 'clipboard', { configurable: true, value: originalClipboard })
+  if (originalExecCommand) Object.defineProperty(document, 'execCommand', { configurable: true, value: originalExecCommand })
+  else delete document.execCommand
+  vi.restoreAllMocks()
+})
+
+describe('RoundRelay workbench', () => {
+  it('opens the selected Agent execution details in a group trace panel', async () => {
+    const addMediaListener = vi.fn()
+    const removeMediaListener = vi.fn()
+    vi.stubGlobal('matchMedia', vi.fn(query => ({
+      matches: query === '(max-width: 1179px)',
+      addEventListener: addMediaListener,
+      removeEventListener: removeMediaListener,
+    })))
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-trace',
+        conversationType: 'group',
+        name: 'Trace review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'group-root',
+        groupId: 'group-trace',
+        role: 'user',
+        content: 'Compare the approaches',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['group-trace']
+      state.runs = [{
+        runId: 'run-group',
+        groupId: 'group-trace',
+        threadRootId: 'group-root',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'hermes',
+        agentRuns: [
+          {
+            agentRunId: 'agent-codex',
+            kind: 'codex',
+            round: 1,
+            status: 'completed',
+            output: 'Codex conclusion',
+            events: [{ seq: 1, type: 'reasoning_summary', status: 'completed', summary: 'Codex evidence' }],
+          },
+          {
+            agentRunId: 'agent-hermes',
+            kind: 'hermes',
+            round: 1,
+            status: 'running',
+            output: 'Hermes conclusion',
+            events: [{ seq: 2, type: 'tool_result_summary', status: 'completed', title: 'Research', summary: 'Hermes evidence' }],
+          },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const hermesRow = wrapper.findAll('.run-agent-row').find(row => row.get('strong').text() === 'Hermes')
+    expect(hermesRow).toBeTruthy()
+    await hermesRow.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
+    expect(wrapper.get('.trace-panel-header strong').text()).toBe('Hermes')
+    expect(wrapper.get('.trace-agent-tab.active strong').text()).toBe('Hermes')
+    expect(wrapper.get('.trace-agent-tab.active').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('.trace-conclusion').text()).toContain('Hermes conclusion')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Tool result')
+    expect(document.body.classList.contains('trace-drawer-open')).toBe(true)
+    expect(addMediaListener).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+    expect(document.body.classList.contains('trace-drawer-open')).toBe(false)
+    expect(removeMediaListener).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps historical message traces open when an unrelated active run finishes', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
+      for (const kind of ['claude', 'openclaw']) {
+        state.agents.push({
+          kind,
+          installed: true,
+          available: true,
+          credentialState: 'ready',
+          version: '1.0.0',
+        })
+      }
+      state.groups.push({
+        id: 'group-trace-boundaries',
+        conversationType: 'group',
+        name: 'Trace boundaries',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'claude', 'openclaw'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:06:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'trace-history-root',
+          groupId: 'group-trace-boundaries',
+          role: 'user',
+          content: 'First historical request',
+          targetKinds: ['codex'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'trace-history-codex',
+          groupId: 'group-trace-boundaries',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'trace-history-root',
+          content: 'Historical Codex answer',
+          trace: {
+            runId: 'run-trace-history-one',
+            agentRunId: 'agent-trace-history-codex',
+            status: 'completed',
+            events: [{ evidenceId: 'E-R1-CODEX-01', type: 'reasoning_summary', status: 'completed', title: 'Old evidence' }],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'trace-current-root',
+          groupId: 'group-trace-boundaries',
+          role: 'user',
+          content: 'Second historical request',
+          targetKinds: ['claude', 'hermes'],
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+        {
+          id: 'trace-current-claude',
+          groupId: 'group-trace-boundaries',
+          role: 'agent',
+          agentKind: 'claude',
+          threadRootId: 'trace-current-root',
+          content: 'Current Claude answer',
+          trace: {
+            runId: 'run-trace-history-two',
+            agentRunId: 'agent-trace-shared-claude',
+            status: 'completed',
+            events: [{ evidenceId: 'E-R1-CLAUDE-01', type: 'reasoning_summary', status: 'completed', title: 'Current Claude evidence' }],
+          },
+          createdAt: '2026-07-29T08:04:00Z',
+        },
+        {
+          id: 'trace-current-hermes',
+          groupId: 'group-trace-boundaries',
+          role: 'agent',
+          agentKind: 'hermes',
+          threadRootId: 'trace-current-root',
+          content: 'Current Hermes answer',
+          trace: {
+            runId: 'run-trace-history-two',
+            agentRunId: 'agent-trace-current-hermes',
+            status: 'completed',
+            events: [{ evidenceId: 'E-R1-HERMES-01', type: 'tool_result_summary', status: 'completed', title: 'Current Hermes evidence' }],
+          },
+          createdAt: '2026-07-29T08:05:00Z',
+        },
+        {
+          id: 'trace-active-root',
+          groupId: 'group-trace-boundaries',
+          role: 'user',
+          content: 'Active request',
+          targetKinds: ['openclaw', 'claude'],
+          createdAt: '2026-07-29T08:06:00Z',
+        },
+      )
+      state.runningGroupIds = ['group-trace-boundaries']
+      state.runs = [{
+        runId: 'run-trace-active',
+        groupId: 'group-trace-boundaries',
+        threadRootId: 'trace-active-root',
+        targetKinds: ['openclaw', 'claude'],
+        currentKind: 'claude',
+        currentRound: 1,
+        maxRounds: 4,
+        agentRuns: [
+          {
+            agentRunId: 'agent-trace-active-openclaw',
+            kind: 'openclaw',
+            round: 1,
+            status: 'completed',
+            output: 'Active OpenClaw answer',
+            events: [{ seq: 1, type: 'reasoning_summary', status: 'completed', title: 'Active OpenClaw evidence' }],
+          },
+          {
+            agentRunId: 'agent-trace-shared-claude',
+            kind: 'claude',
+            round: 1,
+            status: 'running',
+            output: 'Active Claude work',
+            events: [{ seq: 2, type: 'tool_start', status: 'running', title: 'Active Claude evidence' }],
+          },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const currentClaudeMessage = wrapper.findAll('.message-row.agent[data-agent-kind="claude"]')
+      .find(row => row.text().includes('Current Claude answer'))
+    expect(currentClaudeMessage).toBeTruthy()
+    await currentClaudeMessage.get('.message-trace-button').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text()))
+      .toEqual(['Claude Code', 'Hermes'])
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Active Claude work')
+
+    const activeRun = state.runs[0]
+    state.runningGroupIds = []
+    state.runs = []
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
+    expect(historyBack).not.toHaveBeenCalled()
+
+    await wrapper.get('.run-trace-panel .icon-button').trigger('click')
+    await flushPromises()
+    expect(historyBack).toHaveBeenCalledTimes(1)
+
+    state.runningGroupIds = ['group-trace-boundaries']
+    state.runs = [activeRun]
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    const activeClaudeRow = wrapper.findAll('.run-agent-row')
+      .find(row => row.get('strong').text() === 'Claude Code')
+    expect(activeClaudeRow).toBeTruthy()
+    await activeClaudeRow.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text()))
+      .toEqual(['OpenClaw', 'Claude Code'])
+    expect(wrapper.get('.trace-conclusion').text()).toContain('Active Claude work')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude answer')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
+    wrapper.unmount()
+  })
+
+  it('opens a retained group trace with no events and keeps its context statistics visible', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-empty-retained-trace',
+        conversationType: 'group',
+        name: 'Retained empty trace',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:02:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'empty-retained-root',
+          groupId: 'group-empty-retained-trace',
+          role: 'user',
+          content: 'Keep the trace identity',
+          targetKinds: ['codex'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'empty-retained-agent',
+          groupId: 'group-empty-retained-trace',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'empty-retained-root',
+          content: 'Retained conclusion',
+          trace: {
+            runId: 'run-empty-retained',
+            agentRunId: 'agent-empty-retained',
+            round: 4,
+            status: 'completed',
+            summary: '',
+            events: [],
+            context: {
+              includedCount: 3,
+              omittedCount: 2,
+              charCount: 480,
+              sessionRotated: true,
+            },
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const traceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    expect(traceButton.exists()).toBe(true)
+    await traceButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.trace-event-section .trace-empty-state').text())
+      .toBe('No detailed events were retained.')
+    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 4 / Completed')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages included')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('2 messages compacted')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('480 context characters')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('Session context rotated')
+
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.trace-event-section .trace-empty-state').text()).toBe('没有保留详细过程事件。')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('纳入 3 条消息')
+    wrapper.unmount()
+  })
+
+  it('closes the group trace panel when leaving the conversation or its group disappears', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'group-trace-lifecycle',
+        conversationType: 'group',
+        name: 'Trace lifecycle',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.runs = [{
+        runId: 'run-trace-lifecycle',
+        groupId: 'group-trace-lifecycle',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'codex',
+        agentRuns: [
+          { agentRunId: 'agent-lifecycle-codex', kind: 'codex', round: 1, status: 'running', output: '', events: [] },
+          { agentRunId: 'agent-lifecycle-hermes', kind: 'hermes', round: 1, status: 'queued', output: '', events: [] },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.run-agent-row:not([disabled])').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.system-settings-page').exists()).toBe(true)
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.run-agent-row:not([disabled])').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+
+    state.groups = []
+    state.messages = []
+    state.runs = []
+    state.runningGroupIds = []
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.agent-home').exists()).toBe(true)
+    expect(historyBack).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('reuses the trace history entry when opening conversation settings', async () => {
+    const historyPush = vi.spyOn(window.history, 'pushState')
+    const historyReplace = vi.spyOn(window.history, 'replaceState')
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-trace-modal-history',
+        conversationType: 'group',
+        name: 'Trace modal history',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:02:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'trace-modal-root',
+          groupId: 'group-trace-modal-history',
+          role: 'user',
+          content: 'Inspect modal history',
+          targetKinds: ['codex'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'trace-modal-agent',
+          groupId: 'group-trace-modal-history',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'trace-modal-root',
+          content: 'Trace result',
+          trace: {
+            runId: 'run-trace-modal-history',
+            agentRunId: 'agent-trace-modal-history',
+            status: 'completed',
+            events: [{ type: 'reasoning_summary', status: 'completed', title: 'Reviewed' }],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.message-trace-button').trigger('click')
+    await flushPromises()
+    expect(historyPush).toHaveBeenCalledTimes(1)
+
+    const settingsButton = wrapper.findAll('.conversation-header-actions > .icon-button').at(-1)
+    await settingsButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.modal').exists()).toBe(true)
+    expect(historyReplace).toHaveBeenCalledWith(
+      { roundrelayOverlay: true },
+      '',
+      window.location.href,
+    )
+    expect(historyPush).toHaveBeenCalledTimes(1)
+
+    await wrapper.get('.modal-header .icon-button').trigger('click')
+    await flushPromises()
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('closes the group trace panel with Escape and restores the Agent row focus', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-trace-focus',
+        conversationType: 'group',
+        name: 'Trace focus',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.runningGroupIds = ['group-trace-focus']
+      state.runs = [{
+        runId: 'run-focus',
+        groupId: 'group-trace-focus',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [
+          { agentRunId: 'agent-focus-codex', kind: 'codex', round: 1, status: 'running', output: 'Codex', events: [] },
+          { agentRunId: 'agent-focus-hermes', kind: 'hermes', round: 1, status: 'running', output: 'Hermes', events: [] },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const opener = wrapper.findAll('.run-agent-row').find(row => row.get('strong').text() === 'Hermes')
+    await opener.trigger('click')
+    await flushPromises()
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(document.activeElement).toBe(opener.element)
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('closes an empty trace panel and falls back to the conversation title', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'group-trace-title-focus',
+        conversationType: 'group',
+        name: 'Trace title focus',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.runs = [{
+        runId: 'run-title-focus',
+        groupId: 'group-trace-title-focus',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'codex',
+        agentRuns: [
+          { agentRunId: 'agent-title-focus-codex', kind: 'codex', round: 1, status: 'running', output: '', events: [] },
+          { agentRunId: 'agent-title-focus-hermes', kind: 'hermes', round: 1, status: 'queued', output: '', events: [] },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const opener = wrapper.get('.run-agent-row:not([disabled])')
+    await opener.trigger('click')
+    await flushPromises()
+
+    state.runs = []
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(opener.element.isConnected).toBe(false)
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('.conversation-title-block').element)
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    wrapper.unmount()
+  })
+
+  it('keeps the full live ledger until the run ends, then uses the durable trace capsule', async () => {
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
+      nextState.groups.push({
+        id: 'group-durable-trace',
+        conversationType: 'group',
+        name: 'Durable trace',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.messages.push({
+        id: 'durable-root',
+        groupId: 'group-durable-trace',
+        role: 'user',
+        content: 'Keep the evidence',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      nextState.runningGroupIds = ['group-durable-trace']
+      nextState.runs = [{
+        runId: 'run-durable',
+        groupId: 'group-durable-trace',
+        threadRootId: 'durable-root',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [{
+          agentRunId: 'agent-durable',
+          kind: 'codex',
+          round: 1,
+          status: 'completed',
+          output: 'live output',
+          events: [
+            { seq: 1, type: 'reasoning_summary', status: 'completed', summary: 'live reasoning' },
+            { seq: 2, type: 'tool_result_summary', status: 'completed', title: 'Bash', summary: 'live tool result' },
+          ],
+        }, {
+          agentRunId: 'agent-durable-hermes',
+          kind: 'hermes',
+          round: 1,
+          status: 'running',
+          output: '',
+          events: [],
+        }],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('live output')
+    const provisionalTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    await provisionalTraceButton.trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
+
+    state.messages.push({
+      id: 'durable-agent',
+      groupId: 'group-durable-trace',
+      role: 'agent',
+      agentKind: 'codex',
+      threadRootId: 'durable-root',
+      content: 'durable output',
+      createdAt: '2026-07-29T08:02:00Z',
+      trace: {
+        runId: 'run-durable',
+        agentRunId: 'agent-durable',
+        round: 1,
+        status: 'completed',
+        summary: 'durable summary',
+        events: [{
+          evidenceId: 'E-R1-CODEX-01',
+          type: 'tool_result_summary',
+          status: 'completed',
+          title: 'Bash',
+          summary: 'Bash: operation: ls -1 (3 hidden arguments)',
+          detail: 'Output: 5 lines, 47 bytes',
+        }],
+      },
+    })
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('durable output')
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).not.toContain('live output')
+    expect(provisionalTraceButton.element.isConnected).toBe(false)
+    expect(wrapper.get('.trace-summary-copy').text()).toContain('durable summary')
+    expect(wrapper.get('.trace-conclusion').text()).toContain('durable output')
+    expect(wrapper.get('.trace-event-list').text()).toContain('live reasoning')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Bash')
+    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 1 / Completed')
+
+    state.runs = []
+    state.runningGroupIds = []
+    emitWorkspaceChanged()
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.find('.run-status-panel').exists()).toBe(false)
+    expect(historyBack).toHaveBeenCalledTimes(1)
+    const durableTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    await durableTraceButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.trace-event-list').text()).not.toContain('live reasoning')
+    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 1 / Completed')
+    const durableEventDetails = wrapper.get('.trace-event-list details')
+    durableEventDetails.element.open = true
+    await durableEventDetails.trigger('toggle')
+    expect(wrapper.get('.trace-event-body').text()).toContain('Output: 5 lines, 47 bytes')
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.activeElement).toBe(durableTraceButton.element)
+    expect(historyBack).toHaveBeenCalledTimes(2)
+    wrapper.unmount()
+  })
+
+  it('omits historical run status after timeout and reopens the durable trace from its message', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'workbuddy', installed: true, available: true, credentialState: 'ready', version: '1.0.0',
+      })
+      state.groups.push({
+        id: 'group-timeout-trace',
+        conversationType: 'group',
+        name: 'Timeout trace',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'workbuddy'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:04:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'timeout-root',
+          groupId: 'group-timeout-trace',
+          role: 'user',
+          content: 'Research the available approaches',
+          targetKinds: ['codex', 'hermes', 'workbuddy'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'timeout-codex',
+          groupId: 'group-timeout-trace',
+          role: 'agent',
+          agentKind: 'codex',
+          threadRootId: 'timeout-root',
+          content: 'Codex retained conclusion',
+          trace: {
+            runId: 'run-timeout-retained',
+            agentRunId: 'run-timeout-retained:1:codex:one',
+            round: 1,
+            status: 'completed',
+            events: [
+              { evidenceId: 'E-R1-CODEX-01', type: 'status', status: 'running', title: 'Agent' },
+              { evidenceId: 'E-R1-CODEX-02', type: 'tool_result_summary', status: 'completed', title: 'Bash', summary: 'Read 12 files' },
+            ],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'timeout-hermes',
+          groupId: 'group-timeout-trace',
+          role: 'system',
+          agentKind: 'hermes',
+          threadRootId: 'timeout-root',
+          content: 'Hermes failed: process failed',
+          trace: {
+            runId: 'run-timeout-retained',
+            agentRunId: 'run-timeout-retained:1:hermes:two',
+            round: 1,
+            status: 'failed',
+            summary: 'Hermes stopped before returning a conclusion.',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+        {
+          id: 'timeout-system',
+          groupId: 'group-timeout-trace',
+          role: 'system',
+          agentKind: '',
+          threadRootId: 'timeout-root',
+          content: 'Automatic discussion reached its runtime limit without consensus.',
+          system: { key: 'system.autoTimeout', params: {} },
+          createdAt: '2026-07-29T08:04:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.find('.run-status-panel').exists()).toBe(false)
+    expect(wrapper.findAll('.message-trace-button')).toHaveLength(2)
+    expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
+    await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Codex retained conclusion')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Read 12 files')
+    wrapper.unmount()
+  })
+
+  it('groups trace tabs by Agent and selects individual rounds', async () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [
+          {
+            runId: 'run-multi-round',
+            agentRunId: 'run-multi-round:1:codex',
+            agentKind: 'codex',
+            round: 1,
+            status: 'completed',
+            events: [],
+          },
+          {
+            runId: 'run-multi-round',
+            agentRunId: 'run-multi-round:1:hermes',
+            agentKind: 'hermes',
+            round: 1,
+            status: 'completed',
+            events: [],
+          },
+          {
+            runId: 'run-multi-round',
+            agentRunId: 'run-multi-round:2:codex',
+            agentKind: 'codex',
+            round: 2,
+            status: 'partial',
+            events: [],
+          },
+        ],
+        selectedAgentRunId: 'run-multi-round:1:codex',
+      },
+    })
+
+    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text())).toEqual(['Codex', 'Hermes'])
+    expect(wrapper.findAll('.trace-agent-tab')).toHaveLength(2)
+    const roundSelector = wrapper.get('.trace-round-selector')
+    expect(roundSelector.get('span').text()).toBe('Round')
+    expect(roundSelector.findAll('option').map(option => option.text()))
+      .toEqual(['Round 1 / Completed', 'Round 2 / Partially completed'])
+
+    await roundSelector.get('select').setValue('run-multi-round:2:codex')
+    expect(wrapper.emitted('select').at(-1)).toEqual(['run-multi-round:2:codex'])
+    await wrapper.setProps({ selectedAgentRunId: 'run-multi-round:2:codex' })
+    expect(wrapper.get('.trace-panel-summary-heading').text()).toContain('Round 2')
+
+    const hermesTab = wrapper.findAll('.trace-agent-tab').find(tab => tab.text().includes('Hermes'))
+    await hermesTab.trigger('click')
+    expect(wrapper.emitted('select').at(-1)).toEqual(['run-multi-round:1:hermes'])
+
+    setLocale('zh')
+    await flushPromises()
+    expect(roundSelector.get('span').text()).toBe('轮次')
+    wrapper.unmount()
+  })
+
+  it('labels a retained manual trace as a completed single response', () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-manual',
+          agentRunId: 'run-manual:0:codex:one',
+          agentKind: 'codex',
+          round: 0,
+          status: 'completed',
+          output: 'Manual conclusion',
+          events: [],
+          live: false,
+        }],
+        selectedAgentRunId: 'run-manual:0:codex:one',
+      },
+    })
+
+    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Single response / Completed')
+    wrapper.unmount()
+  })
+
+  it('labels historical trace events whose detailed input and result were not captured', async () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-legacy',
+          agentRunId: 'run-legacy:1:codex:one',
+          agentKind: 'codex',
+          round: 1,
+          status: 'completed',
+          events: [{
+            evidenceId: 'E-R1-CODEX-01',
+            type: 'tool_result_summary',
+            status: 'completed',
+            title: 'search',
+          }],
+        }],
+        selectedAgentRunId: 'run-legacy:1:codex:one',
+      },
+    })
+
+    expect(wrapper.get('.trace-detail-unavailable').text())
+      .toContain('retained tool names and statuses')
+    await wrapper.get('.trace-event-list summary').trigger('click')
+    expect(wrapper.get('.trace-event-detail-unavailable').text())
+      .toContain('was not captured')
+    wrapper.unmount()
+  })
+
+  it('does not force-scroll a direct stream while the user is reading above the bottom', async () => {
+    const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-scroll',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Scroll protection',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'scroll-root',
+        groupId: 'direct-scroll',
+        role: 'user',
+        content: 'Read this carefully',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['direct-scroll']
+      state.runs = [{
+        runId: 'run-scroll',
+        groupId: 'direct-scroll',
+        threadRootId: 'scroll-root',
+        targetKinds: ['codex'],
+        agentRuns: [{ agentRunId: 'agent-scroll', kind: 'codex', round: 1, status: 'running', output: '', events: [] }],
+      }]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const scroller = wrapper.get('.message-scroll').element
+    let scrollTop = 400
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => { scrollTop = value },
+      },
+    })
+    await wrapper.get('.message-scroll').trigger('scroll')
+    emitRunEvent({
+      runId: 'run-scroll', agentRunId: 'agent-scroll', groupId: 'direct-scroll',
+      threadRootId: 'scroll-root', agentKind: 'codex', round: 1, seq: 1,
+      type: 'answer_delta', status: 'running', delta: 'new output',
+    })
+    await flushPromises()
+
+    expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('new output')
+    expect(scrollTop).toBe(400)
+    wrapper.unmount()
+  })
+
+  it('marks a background direct run as finished and opens its notification target', async () => {
+    const directGroup = (id, kind, name, updatedAt) => ({
+      id,
+      conversationType: 'direct',
+      directAgentKind: kind,
+      name,
+      topic: '',
+      agentKinds: [kind],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt,
+    })
+    const { wrapper, emitRunFinished, emitOpenGroup } = await mountApp(({ state }) => {
+      state.groups.push(
+        directGroup('direct-codex', 'codex', 'Codex review', '2026-07-29T08:02:00Z'),
+        directGroup('direct-hermes', 'hermes', 'Hermes review', '2026-07-29T08:01:00Z'),
+      )
+    })
+
+    await wrapper.findAll('.direct-session-open')
+      .find(button => button.text().includes('Codex review'))
+      .trigger('click')
+    emitRunFinished({ groupId: 'direct-hermes', status: 'failed' })
+    emitRunFinished({ groupId: 'direct-hermes', status: 'stopped' })
+    await flushPromises()
+    expect(wrapper.find('.run-finished-mark').exists()).toBe(false)
+
+    emitRunFinished({ groupId: 'direct-hermes', status: 'completed' })
+    await flushPromises()
+
+    expect(wrapper.findAll('.run-finished-mark')).toHaveLength(1)
+    emitOpenGroup({ groupId: 'direct-hermes' })
+    await flushPromises()
+
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Hermes review')
+    expect(wrapper.find('.run-finished-mark').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('opens a notification target that arrives before the initial workspace snapshot', async () => {
+    const initialSnapshot = deferred()
+    const { wrapper, state, emitOpenGroup } = await mountApp(({ bridge }) => {
+      bridge.localWorkspace.get.mockReturnValueOnce(initialSnapshot.promise)
+    })
+    state.groups.push({
+      id: 'direct-hermes',
+      conversationType: 'direct',
+      directAgentKind: 'hermes',
+      name: 'Hermes review',
+      topic: '',
+      agentKinds: ['hermes'],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt: '2026-07-29T08:01:00Z',
+    })
+
+    emitOpenGroup({ groupId: 'direct-hermes' })
+    initialSnapshot.resolve(structuredClone(state))
+    await flushPromises()
+
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Hermes review')
+    wrapper.unmount()
+  })
+
+  it('keeps a direct completion event that arrives before the initial workspace snapshot', async () => {
+    const initialSnapshot = deferred()
+    const { wrapper, state, emitRunFinished } = await mountApp(({ bridge }) => {
+      bridge.localWorkspace.get.mockReturnValueOnce(initialSnapshot.promise)
+    })
+    state.groups.push({
+      id: 'direct-hermes',
+      conversationType: 'direct',
+      directAgentKind: 'hermes',
+      name: 'Hermes review',
+      topic: '',
+      agentKinds: ['hermes'],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt: '2026-07-29T08:01:00Z',
+    })
+
+    emitRunFinished({ groupId: 'direct-hermes', status: 'completed' })
+    initialSnapshot.resolve(structuredClone(state))
+    await flushPromises()
+
+    expect(wrapper.findAll('.run-finished-mark')).toHaveLength(1)
+    wrapper.unmount()
+  })
+
+  it('keeps multiple turn completions for one group before the initial workspace snapshot', async () => {
+    const initialSnapshot = deferred()
+    const { wrapper, state, emitRunFinished } = await mountApp(({ bridge }) => {
+      bridge.localWorkspace.get.mockReturnValueOnce(initialSnapshot.promise)
+    })
+    state.groups.push({
+      id: 'group-pending-runs',
+      conversationType: 'group',
+      name: 'Pending runs',
+      topic: '',
+      agentKinds: ['codex', 'hermes'],
+      workdir: '/tmp/roundrelay-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt: '2026-07-29T08:02:00Z',
+    })
+    state.messages.push(
+      {
+        id: 'pending-root-1',
+        groupId: 'group-pending-runs',
+        role: 'user',
+        content: 'First task',
+        createdAt: '2026-07-29T08:01:00Z',
+      },
+      {
+        id: 'pending-root-2',
+        groupId: 'group-pending-runs',
+        role: 'user',
+        content: 'Second task',
+        createdAt: '2026-07-29T08:02:00Z',
+      },
+    )
+
+    emitRunFinished({
+      groupId: 'group-pending-runs',
+      runId: 'pending-run-1',
+      threadRootId: 'pending-root-1',
+      status: 'completed',
+    })
+    emitRunFinished({
+      groupId: 'group-pending-runs',
+      runId: 'pending-run-2',
+      threadRootId: 'pending-root-2',
+      status: 'failed',
+    })
+    initialSnapshot.resolve(structuredClone(state))
+    await flushPromises()
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const turns = wrapper.findAll('.turn-rail button')
+    expect(turns).toHaveLength(2)
+    expect(turns.map(turn => turn.attributes('data-status'))).toEqual(['completed', 'failed'])
+    wrapper.unmount()
+  })
+})
