@@ -6,83 +6,86 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-# Multiple agents. One body of work.
+# AI agents are interchangeable. Your work should not be.
 
-**Meldwork gives different AI agents one persistent local workspace: context stays intact, collaboration stays visible, and you stay in control.**
+**Meldwork is a local-first desktop workspace where one task can move between direct Agent conversations, multi-Agent working groups, and independent review without losing its context or execution history.**
 
-The agent market is getting better and messier at the same time. One agent writes, another researches, another reviews. The hard part is no longer getting an answer. It is keeping the work coherent while the agents around it change.
+Start with one Agent. Bring in others when the work needs a different capability, a second opinion, or an adversarial review. Meldwork keeps the conversation, participants, permissions, outputs, and sanitized run evidence together on your computer.
 
-Meldwork brings the agents you already use into direct conversations and working groups, without turning your work into another hosted service.
+<p align="center">
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>Download the private macOS preview</strong></a>
+  · <a href="LICENSE">Noncommercial license</a>
+  · <a href="COMMERCIAL_USE.md">Commercial use</a>
+</p>
 
-[PolyForm Noncommercial 1.0.0](LICENSE) · [Commercial use](COMMERCIAL_USE.md) · [Notice](NOTICE)
+## Install the desktop client
 
-## Stop rebuilding context
+The current private preview is built for Apple silicon Macs.
 
-Most multi-agent workflows are still tab switching with extra steps:
+1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/latest).
+2. Download `Meldwork-0.1.0-arm64.dmg`.
+3. Drag Meldwork into Applications and open it.
+4. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
 
-- repeat the brief every time you change tools;
-- carry decisions and files between disconnected sessions;
-- manually decide who should answer, challenge, revise, or continue;
-- lose sight of what happened once a polished final response appears.
+The private preview is ad-hoc signed and not yet Apple-notarized. A public distribution build will require Developer ID signing and notarization.
 
-**That is not collaboration. It is context tax.**
+## One place to see the work
 
-Meldwork keeps the task, conversation, participants, permissions, and run history together, so a different agent can join the work without forcing you to reconstruct it.
+![Meldwork workspace overview](docs/assets/meldwork-workspace-overview.png)
 
-## One workspace, clear roles
+Direct conversations and working groups live in the same desktop workspace. A task can begin as a focused conversation and become a group review without turning into a trail of disconnected windows.
 
-| What you need | What Meldwork changes |
+## From a first answer to a reviewed decision
+
+| Step | What happens in Meldwork |
 | --- | --- |
-| A fast answer from one agent | Start a focused direct conversation and keep it available for later |
-| A second opinion | Bring selected agents into the same working group |
-| Real critique, not polite agreement | Run a bounded multi-agent discussion and decide how many rounds it gets |
-| Confidence in what happened | See who is queued, working, complete, or failed, with the run trace attached to the conversation |
-| Control over your environment | Keep conversations and orchestration state local, with visible workspace write permissions |
-| Freedom to use different vendors | Connect supported agents without replacing their accounts, providers, or native strengths |
+| Start | Open a direct conversation with the Agent best suited to the first step |
+| Escalate | Create a working group and select only the Agents that should participate |
+| Discuss | Run a manual handoff or a bounded automatic multi-round discussion |
+| Verify | Inspect final replies, status, source context, and sanitized execution traces before accepting the result |
 
-## What feels different
+![Multi-Agent product review in Meldwork](docs/assets/meldwork-multi-agent-review.png)
 
-### Start with one agent. Escalate only when the work deserves it.
+The conversation remains readable while Agent-specific process details stay available on demand. Group runs preserve compact evidence for later Agents and for the human making the final decision.
 
-Meldwork does not force every task through a committee. Use one agent when one is enough. Add another for a different capability, an independent attempt, or an adversarial review.
+## Why teams use Meldwork
 
-### Let agents challenge each other, with a limit.
+- **Research:** one Agent builds the evidence base while another challenges unsupported assumptions.
+- **Product and strategy:** one develops the proposal, another tests positioning, feasibility, and expensive failure modes.
+- **Software delivery:** one implements, another reviews the diff and the reasoning behind it.
+- **Writing and content:** one creates, another checks structure, factual accuracy, and tone.
+- **Operations:** specialized Agents handle different parts of the task while the full work record stays visible.
 
-Working groups can run automatic discussions across selected agents. You set the boundary, watch the run, and decide what is worth keeping.
+The goal is not to maximize Agent count. It is to use the right Agent at the right moment without fragmenting the work.
 
-### Keep the work, not just the final reply.
+## What the desktop client keeps together
 
-Persistent conversations, compatible native-session continuity, visible run state, Skills, images, and collected outputs stay connected to the task that produced them.
+- Persistent direct conversations and multi-Agent working groups.
+- Explicit Agent targeting, manual runs, and automatic multi-round discussions.
+- Compatible native-session continuity for each conversation and Agent.
+- Sanitized run traces, completion state, and compact evidence capsules.
+- Agent-specific Provider profiles and operating-system-backed credential storage where supported.
+- Skills, images, approved knowledge sources, and opt-in workspace access.
+- Local conversation and orchestration state with no Meldwork cloud account or remote conversation store.
 
-### Stay in charge of the machine.
+Model requests still follow the Agent and Provider you choose. Local-first describes Meldwork's workspace and orchestration state; it does not make third-party models offline.
 
-Meldwork is local-first. Workspace access is explicit, sensitive credentials use operating-system-backed storage where supported, and agent execution stays behind the desktop application's controlled boundary.
+## Connected Agents
 
-## Built for work that cannot rely on one answer
+Meldwork currently integrates with:
 
-- **Research:** one agent gathers evidence, another attacks the assumptions.
-- **Product and strategy:** one develops the proposal, another looks for the expensive mistake.
-- **Writing and content:** one creates, another edits for accuracy, structure, and tone.
-- **Development:** one implements, another reviews the code and the reasoning behind it.
-- **Operations:** different agents handle specialized parts while the full task remains visible in one place.
+**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code · OpenCodeReview · Custom Agents**
 
-The point is not to use more agents. The point is to use the right agent for each part of the job without breaking the job apart.
+Each Agent keeps its own capabilities, provider configuration, permission model, and session behavior. Availability depends on the installed Agent, its version, and its authentication state.
 
-## Agents you can bring in today
+## Private MVP status
 
-Meldwork currently connects to:
+This repository and its Releases are currently private while the MVP is being completed. The macOS Apple silicon client is the only release-validated target in this preview. Windows, Intel Mac, Apple notarization, and broad third-party Agent certification are not yet claimed.
 
-**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code · OpenCodeReview**
+<details>
+<summary><strong>Build from source for development</strong></summary>
 
-Each agent keeps its own capabilities, provider configuration, permission model, and session behavior. Availability depends on the installed agent, its version, and your configuration.
-
-## Local-first, without pretending the internet disappears
-
-Conversations, groups, and orchestration state stay on your computer. Model requests still follow the agent and provider you choose. Meldwork keeps the workspace local; it does not make third-party models offline.
-
-## Run Meldwork locally
-
-Current desktop target: macOS. Requires Node.js 20.19 or newer and npm.
+Requires Node.js 20.19 or newer and npm.
 
 ```bash
 npm --prefix frontend ci
@@ -90,6 +93,12 @@ npm --prefix desktop ci
 npm --prefix desktop run dev
 ```
 
+Verification commands are documented in [docs/tests.md](docs/tests.md).
+
+</details>
+
 ## License
 
-Meldwork is source-available under the [PolyForm Noncommercial 1.0.0](LICENSE). Noncommercial use is permitted under the license terms. Commercial use requires a separate written agreement; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md).
+Meldwork is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is not Apache-2.0 licensed: Apache 2.0 permits commercial use, while this project currently does not.
+
+Noncommercial use is permitted only under the license terms. Commercial use requires a separate written agreement; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md). Third-party attribution is recorded in [NOTICE](NOTICE).
