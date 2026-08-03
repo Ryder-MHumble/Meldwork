@@ -1152,14 +1152,16 @@ input.on('line', (line) => {
     workdir,
     {
       env,
-      onSessionRef: sessionRef => createdSessionRefs.push(sessionRef),
+      onSessionRef: (sessionRef, metadata) => createdSessionRefs.push({ sessionRef, metadata }),
       onEvent: event => createdEvents.push(event),
     },
   )
   assert.equal(created.text, `new|plan|cancelled|first prompt|${workdir}`)
   assert.equal(created.sessionRef, 'kimi-acp-session')
   assert.equal(created.completed, true)
-  assert.deepEqual(createdSessionRefs, ['kimi-acp-session'])
+  assert.deepEqual(createdSessionRefs, [{
+    sessionRef: 'kimi-acp-session', metadata: { transport: 'acp' },
+  }])
   assert.equal(createdEvents.some(event => event.type === 'answer_delta'), true)
   assert.equal(
     createdEvents.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
@@ -1189,12 +1191,14 @@ input.on('line', (line) => {
     {
       sessionRef: created.sessionRef,
       env,
-      onSessionRef: sessionRef => resumedSessionRefs.push(sessionRef),
+      onSessionRef: (sessionRef, metadata) => resumedSessionRefs.push({ sessionRef, metadata }),
     },
   )
   assert.equal(resumed.text, `resume|plan|cancelled|next prompt|${workdir}`)
   assert.equal(resumed.sessionRef, 'kimi-acp-session')
-  assert.deepEqual(resumedSessionRefs, ['kimi-acp-session'])
+  assert.deepEqual(resumedSessionRefs, [{
+    sessionRef: 'kimi-acp-session', metadata: { transport: 'acp' },
+  }])
 
   const cancelled = await runAgent(
     { kind: 'kimi', executable: cli, name: 'Kimi' },
@@ -1878,6 +1882,15 @@ test('OpenCode uses JSON events and resumes the requested session without auto a
     'run', '--format', 'json', '--agent', 'plan', '--session', 'opencode-session',
     '--file', first, '--file', second,
   ])
+})
+
+test('OpenCodeReview reviews the workspace diff with the user message as background', () => {
+  const spec = invocation('opencodereview', '/tmp/ocr', '/tmp/work')
+  assert.deepEqual(spec.args, [
+    'review', '--audience', 'agent', '--format', 'text', '--repo', '/tmp/work',
+    '--background',
+  ])
+  assert.equal(spec.promptArg, true)
 })
 
 test('OpenCode JSONL output returns completed text and the native session id', () => {

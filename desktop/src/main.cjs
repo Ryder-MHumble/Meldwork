@@ -14,6 +14,7 @@ const {
 } = require('./image-dimensions.cjs')
 const { detectAgents, imageAttachmentLimit, runAgent } = require('./cli-adapters.cjs')
 const { AgentInstaller } = require('./agent-installer.cjs')
+const { CustomAgentStore } = require('./custom-agent-store.cjs')
 const {
   nativeCredentialEnvironment,
   resolveNativeCredentialState,
@@ -32,6 +33,7 @@ const { ProviderStore } = require('./provider-store.cjs')
 
 const EXTERNAL_PROVIDER_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'opencodereview',
 ])
 const MEDIA_SCHEME = 'meldwork-media'
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
@@ -42,6 +44,7 @@ const RUN_FINISHED_STATUSES = new Set([
 ])
 const LOCAL_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'opencodereview',
 ])
 const LOCAL_IDENTIFIER = /^[A-Za-z0-9_-]{1,100}$/
 const LOCAL_RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
@@ -53,6 +56,7 @@ let workspaceRunEventListener = null
 let installer = null
 let localAgentRefreshQueue = Promise.resolve()
 let providerStore = null
+let customAgentStore = null
 let knowledgeBaseStore = null
 let knowledgeBaseStatusPromise = null
 const knowledgeBaseSourcesCache = new Map()
@@ -62,6 +66,7 @@ let shutdownStarted = false
 let quitAfterCleanup = false
 let quitCleanup = null
 let pendingOpenGroupId = ''
+let cachedAppIcon
 
 protocol?.registerSchemesAsPrivileged?.([{
   scheme: MEDIA_SCHEME,
@@ -87,6 +92,27 @@ function frontendPath() {
 
 function offlinePath() {
   return path.join(__dirname, 'offline.html')
+}
+
+function appIconPath() {
+  return app.isPackaged
+    ? path.join(__dirname, '../frontend/logos/meldwork-app.png')
+    : path.resolve(__dirname, '../../frontend/public/logos/meldwork-app.png')
+}
+
+function appIconImage() {
+  if (cachedAppIcon !== undefined) return cachedAppIcon
+  try {
+    const image = electron.nativeImage.createFromPath(appIconPath())
+    cachedAppIcon = image?.isEmpty?.() === false ? image : null
+  } catch {
+    cachedAppIcon = null
+  }
+  return cachedAppIcon
+}
+
+function isLocalAgentKind(kind) {
+  return LOCAL_AGENT_KINDS.has(kind) || customAgentStore?.has(kind) === true
 }
 
 function loadFrontend() {
@@ -185,7 +211,16 @@ const OFFICIAL_PROVIDER_BASE_URLS = Object.freeze({
   gemini: 'https://generativelanguage.googleapis.com/v1beta',
   opencode: '',
   qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  opencodereview: 'https://api.openai.com/v1',
 })
+
+function chatCompletionsUrl(baseUrl) {
+  const normalized = String(baseUrl || '').trim().replace(/\/+$/, '')
+  if (!normalized) return ''
+  return /\/chat\/completions$/i.test(normalized)
+    ? normalized
+    : `${normalized}/chat/completions`
+}
 
 function providerPresetFromStatus(kind, status = {}) {
   if (['official', 'openrouter', 'custom'].includes(status.activePreset)) {
@@ -286,6 +321,17 @@ function providerOptionsFor(kind, generic, context = {}, status = {}) {
       },
     }
   }
+  if (kind === 'opencodereview') {
+    return {
+      env: {
+        ...generic,
+        OCR_LLM_URL: chatCompletionsUrl(generic.OPENAI_BASE_URL),
+        OCR_LLM_TOKEN: generic.OPENAI_API_KEY,
+        OCR_LLM_MODEL: generic.OPENAI_MODEL,
+        OCR_USE_ANTHROPIC: 'false',
+      },
+    }
+  }
   if (kind === 'openclaw' && context.storageRoot && context.workdir) {
     return managedOpenClawOptions({
       storageRoot: context.storageRoot,
@@ -375,6 +421,16 @@ function discardUnreferencedAttachments(value, maxIds = MAX_ATTACHMENT_DISCARD_R
 
 function attachmentPreview(id) {
   const { metadata, bytes } = availableAttachmentStore().readWithMetadata(id)
+  const attachment = {
+    id: metadata.id,
+    name: metadata.name,
+    mimeType: metadata.mimeType,
+    size: metadata.size,
+  }
+  if (/^(?:audio|video)\//.test(metadata.mimeType)) return attachment
+  if (metadata.mimeType !== 'image/png' && metadata.mimeType !== 'image/jpeg') {
+    throw new Error('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
+  }
   inspectImageDimensions(bytes)
   const source = electron.nativeImage.createFromBuffer(bytes)
   if (source.isEmpty()) throw new Error('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
@@ -392,13 +448,7 @@ function attachmentPreview(id) {
   if (!previewDataUrl.startsWith('data:image/png;base64,') || previewDataUrl.length > 2 * 1024 * 1024) {
     throw new Error('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
   }
-  return {
-    id: metadata.id,
-    name: metadata.name,
-    mimeType: metadata.mimeType,
-    size: metadata.size,
-    previewDataUrl,
-  }
+  return { ...attachment, previewDataUrl }
 }
 
 function mediaRequestId(value) {
@@ -521,7 +571,7 @@ function normalizeRunFinished(input) {
   if (!LOCAL_IDENTIFIER.test(groupId) || !RUN_FINISHED_STATUSES.has(status)) return null
   const threadRootId = String(input.threadRootId || '')
   const kinds = value => [...new Set((Array.isArray(value) ? value : [])
-    .filter(kind => LOCAL_AGENT_KINDS.has(kind)))]
+    .filter(isLocalAgentKind))]
   return {
     groupId,
     runId: LOCAL_RUN_IDENTIFIER.test(runId) ? runId : '',
@@ -538,7 +588,7 @@ function normalizeRunFinished(input) {
 
 function normalizeRendererRunEvent(input) {
   const event = normalizeRunEvent(input)
-  if (!event || !LOCAL_AGENT_KINDS.has(event.agentKind)) return null
+  if (!event || !isLocalAgentKind(event.agentKind)) return null
   if (!LOCAL_IDENTIFIER.test(event.groupId)) return null
   if (event.threadRootId && !LOCAL_IDENTIFIER.test(event.threadRootId)) return null
   return event
@@ -592,6 +642,7 @@ function notifyRunFinished(input) {
   const notification = new Notification({
     title: 'Meldwork',
     body: locale.startsWith('zh') ? '会话运行已结束' : 'Conversation run finished',
+    icon: appIconImage() || appIconPath(),
   })
   notification.on('click', () => openRunResult(payload.groupId))
   notification.show()
@@ -627,7 +678,7 @@ async function loadKnowledgeBaseSources(kind = '') {
 async function validateKnowledgeBaseSelections(targetKinds, selections) {
   const targets = [...new Set((Array.isArray(targetKinds) ? targetKinds : [])
     .map(kind => String(kind || ''))
-    .filter(kind => LOCAL_AGENT_KINDS.has(kind)))]
+    .filter(isLocalAgentKind))]
   const requested = Array.isArray(selections) ? selections : []
   if (!requested.length) return []
   if (!targets.length) throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
@@ -655,18 +706,33 @@ async function validateKnowledgeBaseSelections(targetKinds, selections) {
 function createWorkspace() {
   return new LocalWorkspace({
     storagePath: workspaceStoragePath(),
-    detectAgents: () => installer.detectedAgents(),
+    detectAgents: async () => [
+      ...await installer.detectedAgents(),
+      ...await customAgentStore.detectAgents(),
+    ],
     resolveAttachments: attachments => availableAttachmentStore().resolve(attachments),
     captureAgentOutputs: workdir => captureAgentOutputState(workdir),
     importAgentOutputs: input => importAgentOutputs(input, availableAttachmentStore()),
     validateSkillSelections: (kind, selections) => skillCatalog.validateSelections(kind, selections),
     validateKnowledgeBaseSelections,
     imageAttachmentLimit,
-    credentialState: (kind, agent) => (
-      resolveNativeCredentialState(kind, { executable: agent?.executable })
-    ),
+    attachmentSupport: kind => customAgentStore.has(kind)
+      ? { image: 4, audio: 4, video: 4 }
+      : { image: imageAttachmentLimit(kind) },
+    credentialState: (kind, agent) => customAgentStore.has(kind)
+      ? { state: 'ready', source: 'custom-agent' }
+      : resolveNativeCredentialState(kind, { executable: agent?.executable }),
+    agentLabel: kind => customAgentStore.label(kind),
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
     runAgent: async (agent, prompt, workdir, options = {}) => {
+      if (customAgentStore.has(agent.kind)) {
+        return customAgentStore.run(agent.kind, prompt, workdir, {
+          signal: options.signal,
+          onProgress: options.onProgress,
+          onEvent: options.onEvent,
+          attachments: options.attachments,
+        })
+      }
       const injected = providerOptions(agent.kind, {
         ...options,
         workdir,
@@ -683,11 +749,14 @@ function createWorkspace() {
 }
 
 async function localAgentCatalog() {
-  const catalog = await installer.catalog()
+  const [catalog, customAgents] = await Promise.all([
+    installer.catalog(),
+    customAgentStore.catalog(),
+  ])
   const states = new Map((workspace?.snapshot().agents || []).map(agent => [agent.kind, agent]))
   return {
     ...catalog,
-    agents: catalog.agents.map((agent) => {
+    agents: [...catalog.agents, ...customAgents].map((agent) => {
       const state = states.get(agent.kind)
       return {
         ...agent,
@@ -733,6 +802,7 @@ function createWindow() {
     minWidth: 980,
     minHeight: 680,
     title: 'Meldwork',
+    icon: appIconImage() || appIconPath(),
     backgroundColor: process.platform === 'darwin' ? '#e7edef' : '#f3f6f8',
     ...(process.platform === 'darwin' ? {
       titleBarStyle: 'hiddenInset',
@@ -811,6 +881,23 @@ function registerIpc() {
     }
     return snapshot
   })
+  registerTrustedHandle('local-workspace:delete-message', (groupId, messageId) => {
+    if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
+    const normalizedGroupId = String(groupId || '')
+    const normalizedMessageId = String(messageId || '')
+    const beforeMessages = [...workspace.snapshot().messages]
+    workspace.deleteMessage(normalizedGroupId, normalizedMessageId)
+    const snapshot = workspace.snapshot()
+    if (attachmentStore) {
+      const retainedMessageIds = new Set(snapshot.messages.map(message => message.id))
+      const deletedMessages = beforeMessages.filter(message => !retainedMessageIds.has(message.id))
+      const candidates = attachmentIdsFromSnapshot({ messages: deletedMessages })
+      if (candidates.length) {
+        try { discardUnreferencedAttachments(candidates, Number.POSITIVE_INFINITY) } catch { /* startup cleanup retries */ }
+      }
+    }
+    return snapshot
+  })
   registerTrustedHandle('local-workspace:send', async (input) => {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     if (!Array.isArray(input?.targetKinds) || !input.targetKinds.length) {
@@ -835,7 +922,11 @@ function registerIpc() {
     return localAgentCatalog()
   })
   registerTrustedHandle('local-agent-installer:skills', async (kind) => {
-    return installer.skills(String(kind || ''))
+    const selectedKind = String(kind || '')
+    if (customAgentStore.has(selectedKind)) {
+      return { supported: false, skills: [], total: 0, limit: 0 }
+    }
+    return installer.skills(selectedKind)
   })
   registerTrustedHandle('local-agent-installer:state', () => {
     return installer.state()
@@ -850,12 +941,40 @@ function registerIpc() {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     return workspace.setSidebarVisibility(String(kind || ''), visible === true)
   })
-  registerTrustedHandle('local-attachments:pick-images', async (remainingCapacity) => {
+  registerTrustedHandle('local-custom-agent:create', async (input) => {
+    const locale = String(app.getLocale?.() || '').toLowerCase()
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: locale.startsWith('zh') ? '选择 Agent CLI 可执行文件' : 'Choose Agent CLI executable',
+      properties: ['openFile'],
+    })
+    if (shutdownStarted) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
+    if (result.canceled || !result.filePaths[0]) return { canceled: true }
+    const agent = customAgentStore.create({
+      label: input?.label,
+      description: input?.description,
+      args: input?.args,
+      promptMode: input?.promptMode,
+    }, result.filePaths[0])
+    await refreshLocalAgentState()
+    return { canceled: false, agent }
+  })
+  registerTrustedHandle('local-custom-agent:delete', async (kind) => {
+    const selectedKind = String(kind || '')
+    const referenced = (workspace?.snapshot().groups || []).some(group => (
+      group?.directAgentKind === selectedKind
+      || (Array.isArray(group?.agentKinds) && group.agentKinds.includes(selectedKind))
+    ))
+    if (referenced) throw new Error('CUSTOM_AGENT_IN_USE')
+    customAgentStore.remove(selectedKind)
+    await refreshLocalAgentState()
+    return { deleted: true, kind: selectedKind }
+  })
+  registerTrustedHandle('local-attachments:pick', async (remainingCapacity) => {
     availableAttachmentStore()
     const limit = normalizeAttachmentPickLimit(remainingCapacity)
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
+      filters: [{ name: 'Media', extensions: ['png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm'] }],
     })
     if (shutdownStarted) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
     if (result.canceled) return { attachments: [], truncated: false }
@@ -865,7 +984,7 @@ function registerIpc() {
       truncated: result.filePaths.length > filenames.length,
     }
   })
-  registerTrustedHandle('local-attachments:import-image', (input) => {
+  registerTrustedHandle('local-attachments:import', (input) => {
     return importAttachmentBuffer(input)
   })
   registerTrustedHandle('local-attachments:preview', (id) => {
@@ -930,6 +1049,9 @@ if (!hasSingleInstanceLock) {
 
   app.whenReady().then(async () => {
     const attachmentReferences = persistedAttachmentReferences(workspaceStoragePath())
+    customAgentStore = new CustomAgentStore({
+      storagePath: path.join(app.getPath('userData'), 'roundrelay-custom-agents.json'),
+    })
     providerStore = new ProviderStore({
       storagePath: path.join(app.getPath('userData'), 'roundrelay-provider.json'),
       safeStorage: lazySafeStorage,
@@ -973,6 +1095,10 @@ if (!hasSingleInstanceLock) {
       { role: 'viewMenu' },
       { role: 'windowMenu' },
     ]))
+    if (process.platform === 'darwin') {
+      const icon = appIconImage()
+      if (icon) app.dock?.setIcon?.(icon)
+    }
     createWindow()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()

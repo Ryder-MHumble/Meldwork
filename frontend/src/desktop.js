@@ -17,6 +17,8 @@ const RUN_EVENT_TYPES = new Set([
 const CAPSULE_EVENT_TYPES = new Set([
   'reasoning_summary',
   'plan',
+  'tool_start',
+  'tool_update',
   'tool_result_summary',
   'warning',
 ])

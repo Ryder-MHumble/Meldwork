@@ -88,7 +88,7 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   assert.equal(result.platform, 'darwin')
   assert.deepEqual(result.agents.map(agent => agent.kind), [
     'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'codex', 'claude',
-    'gemini', 'opencode', 'qwen',
+    'gemini', 'opencode', 'qwen', 'opencodereview',
   ])
   assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').installed, true)
   assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').providerCompatible, true)
@@ -102,6 +102,7 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installErrorCode, '')
   assert.equal(result.agents.find(agent => agent.kind === 'gemini').providerSupport, 'native-config')
   assert.equal(result.agents.find(agent => agent.kind === 'opencode').providerCompatible, false)
+  assert.equal(result.agents.find(agent => agent.kind === 'opencodereview').providerCompatible, true)
   assert.equal(JSON.stringify(result).includes('/tmp/codebuddy'), false)
   assert.equal(JSON.stringify(result).includes('/tmp/kimi'), false)
 })
@@ -204,6 +205,7 @@ test('recipes are fixed by Agent and platform', () => {
     gemini: '@google/gemini-cli@latest',
     opencode: 'opencode-ai@latest',
     mimo: '@mimo-ai/cli@latest',
+    opencodereview: '@alibaba-group/open-code-review@latest',
   }
   for (const platform of ['darwin', 'win32']) {
     for (const [kind, packageName] of Object.entries(npmPackages)) {

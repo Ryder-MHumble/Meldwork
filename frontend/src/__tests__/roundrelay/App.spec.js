@@ -65,6 +65,7 @@ function createBridge() {
     })),
     updateGroup: vi.fn(async (_groupId, input) => cloneInput(input)),
     deleteGroup: vi.fn(async () => snapshot()),
+    deleteMessage: vi.fn(async () => snapshot()),
     send: vi.fn(async input => {
       cloneInput(input)
       return snapshot()
@@ -111,6 +112,10 @@ function createBridge() {
     start: vi.fn(async kind => ({ taskId: 'install-1', kind, phase: 'checking', canCancel: true })),
     cancel: vi.fn(async () => true),
     onChanged: vi.fn(() => vi.fn()),
+  }
+  const customAgent = {
+    create: vi.fn(async () => ({ canceled: true })),
+    delete: vi.fn(async kind => ({ deleted: true, kind })),
   }
   const localAgentProvider = {
     status: vi.fn(async kind => ({
@@ -289,8 +294,8 @@ function createBridge() {
     ])),
   }
   const localAttachments = {
-    pickImages: vi.fn(async () => ({ attachments: [] })),
-    importImage: vi.fn(async input => ({
+    pickAttachments: vi.fn(async () => ({ attachments: [] })),
+    importAttachment: vi.fn(async input => ({
       id: 'attachment-1',
       name: input.name,
       mimeType: input.mimeType,
@@ -307,7 +312,14 @@ function createBridge() {
     discard: vi.fn(async ids => ({ discardedIds: [...ids], retainedIds: [] })),
   }
   return {
-    bridge: { localWorkspace: workspace, agentInstaller, localAgentProvider, localKnowledgeBase, localAttachments },
+    bridge: {
+      localWorkspace: workspace,
+      agentInstaller,
+      customAgent,
+      localAgentProvider,
+      localKnowledgeBase,
+      localAttachments,
+    },
     state,
     emitWorkspaceChanged(value = state) {
       workspaceChanged?.(snapshot(value))
@@ -358,7 +370,7 @@ afterEach(() => {
 })
 
 describe('RoundRelay workbench', () => {
-  it('lets first-run users browse the guide while detection gates only the final action', async () => {
+  it('enables onboarding completion as soon as Agent detection finishes on any slide', async () => {
     vi.useFakeTimers()
     localStorage.removeItem('roundrelay-onboarding-seen-v1')
     let finishDetection
@@ -379,27 +391,39 @@ describe('RoundRelay workbench', () => {
     await wrapper.findAll('.onboarding-dot')[1].trigger('click')
     expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('provider-setup-v2.png')
     expect(wrapper.findAll('.onboarding-dot')[1].attributes('aria-current')).toBe('step')
-
-    await vi.advanceTimersByTimeAsync(5_000)
-    await flushPromises()
-    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('agent-collaboration.png')
-
-    await wrapper.findAll('.onboarding-dot')[4].trigger('click')
-    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('auto-discussion-v2.png')
     expect(wrapper.get('.onboarding-primary').attributes()).toHaveProperty('disabled')
     expect(wrapper.get('.onboarding-primary').text()).toContain('Detecting local Agents')
 
     finishDetection(structuredClone(state))
     await flushPromises()
 
+    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('provider-setup-v2.png')
     expect(wrapper.get('.onboarding-primary').attributes()).not.toHaveProperty('disabled')
     expect(wrapper.get('.onboarding-primary').text()).toContain('Start using')
+
+    await vi.advanceTimersByTimeAsync(3_200)
+    await flushPromises()
+    expect(wrapper.get('.onboarding-slide img').attributes('src')).toContain('agent-collaboration.png')
 
     await wrapper.get('.onboarding-primary').trigger('click')
     expect(wrapper.find('.onboarding-dialog').exists()).toBe(false)
     expect(localStorage.getItem('roundrelay-onboarding-seen-v1')).toBe('1')
     expect(wrapper.get('.sidebar').attributes()).not.toHaveProperty('inert')
     wrapper.unmount()
+  })
+
+  it('keeps the onboarding frame stable with faster transitions and no internal dividers', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
+
+    expect(appSource).toContain('const ONBOARDING_SLIDE_MS = 3200')
+    expect(appSource).toContain('const onboardingReady = computed(() => !onboardingDetecting.value)')
+    expect(source).toMatch(/\.onboarding-dialog\s*\{[^}]*height:\s*min\(700px, calc\(100dvh - 48px\)\);/s)
+    expect(source).toMatch(/\.onboarding-slide-viewport\s*\{[^}]*position:\s*relative;[^}]*overflow:\s*hidden;/s)
+    expect(source).toMatch(/\.onboarding-slide\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*grid-template-rows:\s*minmax\(0, 1fr\) 148px;/s)
+    expect(source).toMatch(/\.onboarding-slide > img\s*\{[^}]*height:\s*100%;[^}]*border-bottom:\s*0;/s)
+    expect(source).toMatch(/\.onboarding-footer\s*\{[^}]*border-top:\s*0;/s)
+    expect(source).toMatch(/\.onboarding-slide-enter-active,[^{]+\{[^}]*transition:\s*opacity 0\.1s ease;/s)
   })
 
   it('dismisses first-run onboarding with Escape and releases the body scroll lock', async () => {
@@ -1188,6 +1212,7 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.findAll('.agent-card')).toHaveLength(AGENTS.length)
+    expect(wrapper.get('.agent-manager').text()).toContain('OpenCodeReview')
     expect(wrapper.get('.system-settings-header h1').text()).toBe('Settings')
     expect(wrapper.get('.system-settings-header p').text()).toContain('knowledge bases')
     expect(wrapper.get('.sidebar-settings-entry').attributes('aria-current')).toBe('page')
@@ -1201,6 +1226,97 @@ describe('RoundRelay workbench', () => {
     await controls[1].trigger('click')
     expect(document.documentElement.dataset.theme).toBe('dark')
     expect(wrapper.get('.brand-button img').attributes('src')).toBe('./logos/meldwork-mark-v3-dark.svg')
+    wrapper.unmount()
+  })
+
+  it('adds and removes a sanitized Custom Agent through the desktop bridge', async () => {
+    let customProfile = null
+    const { wrapper, bridge, state } = await mountApp(({ bridge: configuredBridge, state: configuredState }) => {
+      configuredBridge.agentInstaller.catalog.mockImplementation(async () => ({
+        platform: 'darwin',
+        agents: [
+          ...AGENTS.map(agent => ({
+            kind: agent.kind,
+            installed: true,
+            installSupported: true,
+          })),
+          ...(customProfile ? [customProfile] : []),
+        ],
+      }))
+      configuredBridge.customAgent.create.mockImplementation(async (input) => {
+        customProfile = {
+          kind: 'custom-0123456789abcdef',
+          label: input.label,
+          description: input.description,
+          commandName: 'review-agent',
+          promptMode: input.promptMode,
+          custom: true,
+          installed: true,
+          installSupported: false,
+          providerMode: 'custom',
+          imageAttachmentLimit: 0,
+          version: 'review-agent 1.0.0',
+        }
+        configuredState.agents.push({
+          kind: customProfile.kind,
+          label: customProfile.label,
+          description: customProfile.description,
+          commandName: customProfile.commandName,
+          promptMode: customProfile.promptMode,
+          custom: true,
+          installed: true,
+          available: true,
+          credentialState: 'ready',
+          availabilitySource: 'custom-agent',
+          showInSidebar: true,
+          version: customProfile.version,
+        })
+        return { canceled: false, agent: structuredClone(customProfile) }
+      })
+      configuredBridge.customAgent.delete.mockImplementation(async (kind) => {
+        customProfile = null
+        configuredState.agents = configuredState.agents.filter(agent => agent.kind !== kind)
+        return { deleted: true, kind }
+      })
+    })
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    expect(wrapper.findAll('.agent-catalog-category').map(category => category.get('h2').text()))
+      .toEqual(['Official Agents', 'Custom Agents'])
+    await wrapper.get('.manager-toolbar-actions button').trigger('click')
+    const form = wrapper.get('.custom-agent-form')
+    await form.get('input[type="text"], input:not([type])').setValue('Repository Reviewer')
+    const textareas = form.findAll('textarea')
+    await textareas[0].setValue('Reviews the current repository diff.')
+    await textareas[1].setValue('review\n--format=text')
+    await form.find('input[value="argument"]').setValue(true)
+    expect(form.text()).not.toContain('/private/')
+
+    await form.trigger('submit')
+    await flushPromises()
+
+    expect(bridge.customAgent.create).toHaveBeenCalledWith({
+      label: 'Repository Reviewer',
+      description: 'Reviews the current repository diff.',
+      args: ['review', '--format=text'],
+      promptMode: 'argument',
+    })
+    const customCard = wrapper.findAll('.agent-card').find(card => card.text().includes('Repository Reviewer'))
+    expect(customCard.exists()).toBe(true)
+    expect(customCard.get('img').attributes('src')).toBe('./agent-logos/custom-agent.svg')
+    expect(customCard.text()).toContain('Reviews the current repository diff.')
+
+    await customCard.get('.agent-card-main').trigger('click')
+    expect(wrapper.get('.agent-detail-modal').text()).toContain('Managed by the selected CLI')
+    expect(wrapper.get('.sidebar-visibility-control').text()).toContain('Show in sidebar')
+    const remove = wrapper.get('.agent-detail-footer .danger-button')
+    await remove.trigger('click')
+    expect(remove.text()).toContain('Confirm removal')
+    await remove.trigger('click')
+    await flushPromises()
+
+    expect(bridge.customAgent.delete).toHaveBeenCalledWith('custom-0123456789abcdef')
+    expect(wrapper.findAll('.agent-card').some(card => card.text().includes('Repository Reviewer'))).toBe(false)
     wrapper.unmount()
   })
 
@@ -1392,14 +1508,14 @@ describe('RoundRelay workbench', () => {
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
       })
-      desktopBridge.localAttachments.pickImages.mockResolvedValueOnce({
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
         attachments: [imageAttachment('preserved-draft')],
       })
     })
 
     const conversationLink = wrapper.get('.conversation-link')
     await conversationLink.trigger('click')
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('.composer-attachment').exists()).toBe(true)
 
@@ -1435,6 +1551,132 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('switches between every group from the collapsed sidebar menu', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      for (let index = 1; index <= 10; index += 1) {
+        state.groups.push({
+          id: `collapsed-group-${index}`,
+          conversationType: 'group',
+          name: `Collapsed group ${index}`,
+          topic: '',
+          agentKinds: index % 2 ? ['codex', 'hermes'] : ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: `2026-07-29T08:${String(index).padStart(2, '0')}:00Z`,
+          updatedAt: `2026-07-29T08:${String(index).padStart(2, '0')}:00Z`,
+        })
+      }
+    })
+
+    await wrapper.get('.sidebar-toggle').trigger('click')
+    const switcher = wrapper.get('.collapsed-group-switcher-button')
+    expect(switcher.attributes('aria-label')).toBe('Switch group chat')
+    expect(switcher.text()).toContain('10')
+
+    await switcher.trigger('click')
+    await flushPromises()
+    let menu = document.body.querySelector('.collapsed-group-menu')
+    expect(menu).not.toBeNull()
+    expect(menu.querySelectorAll('.collapsed-group-option')).toHaveLength(10)
+    expect(menu.textContent).toContain('Collapsed group 1')
+    expect(menu.textContent).toContain('Collapsed group 10')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.body.querySelector('.collapsed-group-menu')).toBeNull()
+    expect(document.activeElement).toBe(switcher.element)
+
+    await switcher.trigger('click')
+    await flushPromises()
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    await flushPromises()
+    expect(document.body.querySelector('.collapsed-group-menu')).toBeNull()
+
+    await switcher.trigger('click')
+    await flushPromises()
+    menu = document.body.querySelector('.collapsed-group-menu')
+    const target = [...menu.querySelectorAll('.collapsed-group-option')]
+      .find(option => option.textContent.includes('Collapsed group 7'))
+    target.click()
+    await flushPromises()
+
+    expect(document.body.querySelector('.collapsed-group-menu')).toBeNull()
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Collapsed group 7')
+    wrapper.unmount()
+  })
+
+  it('uses the Agent running bars for direct and group sessions in the sidebar', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'running-direct',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Running direct',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'running-group',
+          conversationType: 'group',
+          name: 'Running group',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:01:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+      state.runningGroupIds = ['running-direct', 'running-group']
+    })
+
+    const directBars = wrapper.get('.direct-session-row .run-mark .run-agent-bars')
+    const groupBars = wrapper.get('.group-conversation-row .run-mark .run-agent-bars')
+    expect(directBars.findAll('i')).toHaveLength(3)
+    expect(groupBars.findAll('i')).toHaveLength(3)
+    expect(wrapper.find('.conversation-nav .run-pulse').exists()).toBe(false)
+
+    await wrapper.get('.sidebar-toggle').trigger('click')
+    await wrapper.get('.collapsed-group-switcher-button').trigger('click')
+    await flushPromises()
+    const collapsedGroup = [...document.body.querySelectorAll('.collapsed-group-option')]
+      .find(option => option.textContent.includes('Running group'))
+    expect(collapsedGroup.querySelectorAll('.run-agent-bars i')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
+  it('lists core shortcuts beside conversation settings and handles sidebar toggle', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-shortcuts',
+        conversationType: 'group',
+        name: 'Shortcuts',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('[aria-label="Keyboard shortcuts"]').trigger('click')
+    expect(wrapper.get('#keyboard-shortcut-menu').attributes('role')).toBe('dialog')
+    expect(wrapper.findAll('#keyboard-shortcut-menu li')).toHaveLength(5)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true }))
+    await flushPromises()
+    expect(wrapper.get('.app-shell').classes()).toContain('sidebar-collapsed')
+    expect(wrapper.find('#keyboard-shortcut-menu').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('stacks the collapsed brand mark above the expand control without shrinking either', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
 
@@ -1461,8 +1703,8 @@ describe('RoundRelay workbench', () => {
 
     expect(appSource).toContain(':data-platform="desktopPlatform"')
     expect(appSource).toContain("const desktopPlatform = computed(() => api.value?.platform || installCatalog.value.platform || '')")
-    expect(source).toMatch(/--shell-gradient:\s*linear-gradient\(155deg,\s*#f1f7f5 0%,\s*#e5edef 40%,\s*#d4e2e4 72%,\s*#c4d6db 100%\);/)
-    expect(source).toMatch(/:root\[data-theme="dark"\]\s*\{[^}]*--shell-gradient:\s*linear-gradient\(155deg,\s*#293334 0%,\s*#22292b 38%,\s*#192125 70%,\s*#11191e 100%\);/s)
+    expect(source).toMatch(/--shell-gradient:\s*linear-gradient\(145deg,\s*#f1f8f7 0%,\s*#e2efef 48%,\s*#c9dde0 100%\);/)
+    expect(source).toMatch(/:root\[data-theme="dark"\]\s*\{[^}]*--shell-gradient:\s*linear-gradient\(145deg,\s*#2d3a3b 0%,\s*#222e32 48%,\s*#172226 100%\);/s)
     expect(source).toMatch(/--onboarding-frame-gradient:\s*linear-gradient\(145deg,\s*#dcefeb 0%,\s*#9fc2ca 48%,\s*#ddb5aa 100%\);/)
     expect(source).toMatch(/:root\[data-theme="dark"\]\s*\{[^}]*--onboarding-frame-gradient:\s*linear-gradient\(145deg,\s*#4a696b 0%,\s*#2e4751 52%,\s*#775047 100%\);/s)
     expect(source).toMatch(/\.onboarding-dialog\s*\{[^}]*border:\s*1px solid transparent;[^}]*background:\s*linear-gradient\(var\(--surface\), var\(--surface\)\) padding-box,\s*var\(--onboarding-frame-gradient\) border-box;/s)
@@ -1470,6 +1712,8 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.app-shell\[data-platform="darwin"\]::before\s*\{[^}]*-webkit-app-region:\s*drag;/s)
     expect(source).toMatch(/\.workspace-pane\s*\{[^}]*border-radius:\s*var\(--workspace-radius\);[^}]*background:\s*var\(--workspace-surface\);[^}]*box-shadow:\s*var\(--workspace-shadow\);/s)
     expect(source).toMatch(/\.sidebar\s*\{[^}]*background:\s*transparent;/s)
+    expect(source).not.toContain('--sidebar-gradient')
+    expect(source).not.toContain('--titlebar-gradient')
     expect(source).toMatch(/\.conversation-header\s*\{[^}]*border-bottom:\s*0;[^}]*background:\s*transparent;/s)
     expect(source).toMatch(/\.composer-zone\s*\{[^}]*background:\s*transparent;/s)
   })
@@ -1557,6 +1801,7 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.run-status-panel\.solo\s*\{[^}]*background:\s*transparent;[^}]*box-shadow:\s*none;/s)
     expect(source).toMatch(/\.run-status-panel\.solo \.run-progress-details\s*\{[^}]*border-top:\s*0;/s)
     expect(source).toMatch(/\.run-agent-logo\[data-status="running"\]::before\s*\{[^}]*background:\s*color-mix/s)
+    expect(source).toMatch(/\.run-status-panel\.group \.run-agent-logo::before\s*\{[^}]*content:\s*none;/s)
     expect(source).not.toContain('@keyframes run-agent-halo')
     expect(source).toMatch(/\.run-agent-logo\[data-status="queued"\] img,[^{]+\.run-agent-logo\[data-status="not-started"\] img\s*\{[^}]*opacity:\s*0\.38;/s)
     expect(source).toMatch(/\.run-trace-panel\s*\{[^}]*border-left:\s*0;/s)
@@ -2301,7 +2546,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    await wrapper.get('.conversation-header-actions .icon-button').trigger('click')
+    await wrapper.findAll('.conversation-header-actions .icon-button').at(-1).trigger('click')
     expect(wrapper.get('.modal-header p').text()).toBe('Review')
     const primaryInputs = wrapper.findAll('.settings-primary-grid input')
     expect(primaryInputs[0].element.value).toBe('Review')
@@ -2412,11 +2657,11 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('keeps the inline title editor focused without an outer accent ring', () => {
+  it('keeps the inline title editor focused without an underline or outer accent ring', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
 
-    expect(source).toMatch(/\.inline-title-form input\s*\{[^}]*border:\s*1px solid transparent;[^}]*outline:\s*none;[^}]*box-shadow:\s*inset 0 -1px 0 var\(--border-strong\);/s)
-    expect(source).toMatch(/\.inline-title-form input:focus-visible\s*\{[^}]*outline:\s*none;[^}]*box-shadow:\s*inset 0 -2px 0 var\(--accent\);/s)
+    expect(source).toMatch(/\.inline-title-form input\s*\{[^}]*border:\s*1px solid transparent;[^}]*outline:\s*none;[^}]*box-shadow:\s*none;/s)
+    expect(source).toMatch(/\.inline-title-form input:focus-visible\s*\{[^}]*outline:\s*none;[^}]*box-shadow:\s*none;/s)
     expect(source).toMatch(/\.inline-title-form input::selection\s*\{[^}]*var\(--accent\) 28%/s)
   })
 
@@ -2936,6 +3181,44 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('mentions a knowledge base to every group Agent when no Agent is specified', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-knowledge-all',
+        conversationType: 'group',
+        name: 'Knowledge review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const textarea = wrapper.get('.composer-box textarea')
+    await textarea.setValue('@ding')
+    await flushPromises()
+    expect(wrapper.get('.knowledge-base-mention-option').text()).toContain('DingTalk Docs')
+    await wrapper.get('.knowledge-base-mention-option').trigger('click')
+    await textarea.setValue('Compare the internal references')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-knowledge-all',
+      text: 'Compare the internal references',
+      targetKinds: ['codex', 'hermes'],
+      skillHints: [],
+      knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['codex', 'hermes'] }],
+      attachments: [],
+      mode: 'auto',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
   it('lists knowledge bases before skills in grouped and direct @ menus', async () => {
     const { wrapper } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -3105,7 +3388,7 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
 
-    expect(bridge.localAttachments.importImage).toHaveBeenCalledWith({
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith({
       name: 'diagram.png',
       mimeType: 'image/png',
       bytes: Uint8Array.from([1, 2, 3]),
@@ -3190,7 +3473,7 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('rejects an oversized pasted image before reading its bytes', async () => {
+  it('rejects an oversized pasted media file before reading its bytes', async () => {
     const arrayBuffer = vi.fn(async () => new ArrayBuffer(0))
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
@@ -3215,7 +3498,7 @@ describe('RoundRelay workbench', () => {
           getAsFile: () => ({
             name: 'large.png',
             type: 'image/png',
-            size: (8 * 1024 * 1024) + 1,
+            size: (128 * 1024 * 1024) + 1,
             arrayBuffer,
           }),
         }],
@@ -3224,7 +3507,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(arrayBuffer).not.toHaveBeenCalled()
-    expect(bridge.localAttachments.importImage).not.toHaveBeenCalled()
+    expect(bridge.localAttachments.importAttachment).not.toHaveBeenCalled()
     expect(wrapper.get('.toast-message').text()).toContain('too large')
     wrapper.unmount()
   })
@@ -3242,7 +3525,9 @@ describe('RoundRelay workbench', () => {
     total = 3
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.get('.manager-toolbar .secondary-button').trigger('click')
+    const refresh = wrapper.findAll('.manager-toolbar-actions button')
+      .find(button => button.text().includes('Refresh catalog'))
+    await refresh.trigger('click')
     await flushPromises()
 
     expect(bridge.agentInstaller.skills.mock.calls.map(([kind]) => kind).sort()).toEqual(['codex', 'hermes'])
@@ -3265,15 +3550,15 @@ describe('RoundRelay workbench', () => {
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
       })
-      desktopBridge.localAttachments.pickImages.mockResolvedValueOnce({
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
         attachments: [imageAttachment('remove-me')],
       })
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[aria-label="Remove image"]').trigger('click')
+    await wrapper.get('[aria-label="Remove attachment"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('.composer-attachment').exists()).toBe(false)
@@ -3296,25 +3581,25 @@ describe('RoundRelay workbench', () => {
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
       })
-      desktopBridge.localAttachments.pickImages
+      desktopBridge.localAttachments.pickAttachments
         .mockResolvedValueOnce({ attachments: firstPick, truncated: false })
         .mockResolvedValueOnce({ attachments: secondPick, truncated: true })
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.findAll('.composer-attachment')).toHaveLength(4)
-    expect(bridge.localAttachments.pickImages.mock.calls).toEqual([[4], [3]])
+    expect(bridge.localAttachments.pickAttachments.mock.calls).toEqual([[4], [3]])
     expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('up to 4 images')
+    expect(wrapper.get('.toast-message').text()).toContain('up to 4 files')
     wrapper.unmount()
   })
 
-  it('limits picked images to the selected Agents minimum capability', async () => {
+  it('limits picked media to the selected Agent capability', async () => {
     const picked = [imageAttachment('hermes-1')]
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -3328,20 +3613,20 @@ describe('RoundRelay workbench', () => {
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
       })
-      desktopBridge.localAttachments.pickImages.mockResolvedValueOnce({
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
         attachments: picked,
         truncated: true,
       })
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.findAll('.composer-attachment')).toHaveLength(1)
-    expect(bridge.localAttachments.pickImages).toHaveBeenCalledWith(1)
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(1)
     expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
-    expect(wrapper.get('[aria-label="Attach images"]').attributes()).toHaveProperty('disabled')
+    expect(wrapper.get('[aria-label="Attach media"]').attributes()).not.toHaveProperty('disabled')
 
     await wrapper.get('.composer-box textarea').trigger('paste', {
       clipboardData: {
@@ -3358,12 +3643,12 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
 
-    expect(bridge.localAttachments.importImage).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('accepts fewer images')
+    expect(bridge.localAttachments.importAttachment).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('supports fewer files')
     wrapper.unmount()
   })
 
-  it('keeps the attachment action clickable when image support is unavailable', async () => {
+  it('keeps the attachment action clickable when support is unavailable', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.agents.push({
         kind: 'workbuddy',
@@ -3391,8 +3676,8 @@ describe('RoundRelay workbench', () => {
     await attachmentButton.trigger('click')
     await flushPromises()
 
-    expect(bridge.localAttachments.pickImages).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('does not support image attachments')
+    expect(bridge.localAttachments.pickAttachments).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('does not support attachments')
     wrapper.unmount()
   })
 
@@ -3422,7 +3707,7 @@ describe('RoundRelay workbench', () => {
           updatedAt: '2026-07-29T08:01:00Z',
         },
       )
-      desktopBridge.localAttachments.pickImages.mockResolvedValueOnce({
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
         attachments: [imageAttachment('alpha-draft')],
       })
     })
@@ -3431,7 +3716,7 @@ describe('RoundRelay workbench', () => {
     const alphaLink = links.find(link => link.text().includes('Alpha review'))
     const betaLink = links.find(link => link.text().includes('Beta review'))
     await alphaLink.trigger('click')
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
     await betaLink.trigger('click')
     await flushPromises()
@@ -3530,7 +3815,7 @@ describe('RoundRelay workbench', () => {
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
       })
-      desktopBridge.localAttachments.importImage.mockReturnValueOnce(pendingImport.promise)
+      desktopBridge.localAttachments.importAttachment.mockReturnValueOnce(pendingImport.promise)
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
@@ -3590,7 +3875,7 @@ describe('RoundRelay workbench', () => {
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
       })
-      desktopBridge.localAttachments.importImage.mockReturnValueOnce(pendingImport.promise)
+      desktopBridge.localAttachments.importAttachment.mockReturnValueOnce(pendingImport.promise)
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
@@ -3626,9 +3911,9 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
 
-    expect(bridge.localAttachments.importImage).toHaveBeenCalledTimes(1)
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledTimes(1)
     expect(secondRead).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('current image import')
+    expect(wrapper.get('.toast-message').text()).toContain('current file import')
 
     pendingImport.resolve(imageAttachment('first'))
     await flushPromises()
@@ -3662,7 +3947,7 @@ describe('RoundRelay workbench', () => {
           updatedAt: '2026-07-29T08:01:00Z',
         },
       )
-      desktopBridge.localAttachments.importImage.mockReturnValueOnce(pendingImport.promise)
+      desktopBridge.localAttachments.importAttachment.mockReturnValueOnce(pendingImport.promise)
     })
 
     const links = wrapper.findAll('.conversation-link')
@@ -4000,7 +4285,7 @@ describe('RoundRelay workbench', () => {
           createdAt: '2026-07-29T08:02:00Z',
         },
       )
-      desktopBridge.localAttachments.pickImages.mockRejectedValueOnce(new Error('LOCAL_ATTACHMENT_INPUT_INVALID'))
+      desktopBridge.localAttachments.pickAttachments.mockRejectedValueOnce(new Error('LOCAL_ATTACHMENT_INPUT_INVALID'))
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
@@ -4015,13 +4300,13 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.find('#message-plan-warning').exists()).toBe(false)
     expect(wrapper.findAll('.message-dismiss-button')).toHaveLength(0)
 
-    await wrapper.get('[aria-label="Attach images"]').trigger('click')
+    await wrapper.get('[aria-label="Attach media"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('.toast-message').attributes('role')).toBe('status')
     expect(wrapper.get('.toast-dismiss-button').attributes('aria-label')).toBe('Dismiss')
     await wrapper.get('.toast-dismiss-button').trigger('click')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
-    expect(bridge.localAttachments.pickImages).toHaveBeenCalledTimes(1)
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
@@ -4246,6 +4531,7 @@ describe('RoundRelay workbench', () => {
     expect(writeText).toHaveBeenCalledWith('[Open docs](https://example.com)\n\nCopy this answer.')
     expect(wrapper.get('.message-row.agent').classes()).toContain('copied')
     expect(wrapper.get('.message-row.agent .message-copy-button').attributes('aria-label')).toBe('Copied')
+    expect(wrapper.get('.copy-toast-message').text()).toBe('Copied to clipboard')
 
     writeText.mockClear()
     await wrapper.get('.message-row.user .message-copy-button').trigger('keydown', { key: 'Enter' })
@@ -4259,6 +4545,161 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(execCommand).toHaveBeenCalledWith('copy')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('requires confirmation before persistently deleting replies and whole topics', async () => {
+    const { wrapper, state, bridge } = await mountApp(({ state: nextState, bridge: nextBridge }) => {
+      nextState.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Cleanup review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      nextState.messages.push(
+        {
+          id: 'keep-root',
+          groupId: 'group-1',
+          role: 'user',
+          content: 'Keep this topic',
+          createdAt: '2026-07-29T08:00:30Z',
+        },
+        {
+          id: 'root-1',
+          groupId: 'group-1',
+          role: 'user',
+          content: 'Delete this topic',
+          targetKinds: ['codex', 'hermes'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'reply-1',
+          groupId: 'group-1',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Delete with the topic',
+          threadRootId: 'root-1',
+          createdAt: '2026-07-29T08:02:00Z',
+          trace: {
+            runId: 'run-delete',
+            agentRunId: 'agent-run-delete',
+            status: 'completed',
+            sourceMessageIds: ['root-1'],
+            events: [{ type: 'tool_end', status: 'completed', title: 'Review complete' }],
+          },
+        },
+        {
+          id: 'reply-2',
+          groupId: 'group-1',
+          role: 'agent',
+          agentKind: 'hermes',
+          content: 'Delete only this reply first',
+          threadRootId: 'root-1',
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+      )
+      nextBridge.localWorkspace.deleteMessage.mockImplementation(async (groupId, messageId) => {
+        const target = nextState.messages.find(message => (
+          message.groupId === groupId && message.id === messageId
+        ))
+        const deletedIds = new Set([messageId])
+        if (target?.role === 'user' && !target.threadRootId) {
+          for (const message of nextState.messages) {
+            if (message.groupId === groupId && message.threadRootId === messageId) {
+              deletedIds.add(message.id)
+            }
+          }
+        }
+        nextState.messages = nextState.messages.filter(message => !deletedIds.has(message.id))
+        return structuredClone(nextState)
+      })
+    })
+    const writeText = navigator.clipboard.writeText
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-status-panel.history').exists()).toBe(true)
+
+    const rootDelete = () => wrapper.get('#message-root-1 .message-delete-button')
+    await rootDelete().trigger('click')
+    expect(bridge.localWorkspace.deleteMessage).not.toHaveBeenCalled()
+    expect(rootDelete().classes()).toContain('armed')
+    expect(rootDelete().attributes('aria-label')).toBe('Click again to delete this topic and its replies')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(rootDelete().classes()).not.toContain('armed')
+    expect(rootDelete().attributes('aria-label')).toBe('Delete topic')
+
+    await rootDelete().trigger('click')
+    const replyDelete = wrapper.get('#message-reply-2 .message-delete-button')
+    await replyDelete.trigger('click')
+    expect(rootDelete().classes()).not.toContain('armed')
+    expect(replyDelete.classes()).toContain('armed')
+
+    await replyDelete.trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.deleteMessage).toHaveBeenLastCalledWith('group-1', 'reply-2')
+    expect(wrapper.find('#message-reply-2').exists()).toBe(false)
+    expect(wrapper.find('#message-root-1').exists()).toBe(true)
+    expect(writeText).not.toHaveBeenCalled()
+
+    await rootDelete().trigger('click')
+    await rootDelete().trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.deleteMessage).toHaveBeenLastCalledWith('group-1', 'root-1')
+    expect(state.messages.map(message => message.id)).toEqual(['keep-root'])
+    expect(wrapper.find('#message-root-1').exists()).toBe(false)
+    expect(wrapper.find('#message-reply-1').exists()).toBe(false)
+    expect(wrapper.find('#message-keep-root').exists()).toBe(true)
+    expect(wrapper.find('.run-status-panel.history').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('disables message deletion while the conversation is running', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-running',
+        conversationType: 'group',
+        name: 'Running cleanup',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'running-root',
+        groupId: 'group-running',
+        role: 'user',
+        content: 'Do not delete while running',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['group-running']
+      state.runs = [{
+        groupId: 'group-running',
+        phase: 'running',
+        mode: 'manual',
+        targetKinds: ['codex'],
+        currentKind: 'codex',
+        threadRootId: 'running-root',
+        progress: [],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+    const deleteButton = wrapper.get('.message-delete-button')
+    expect(deleteButton.attributes()).toHaveProperty('disabled')
+    expect(deleteButton.attributes('aria-label')).toBe('Stop the current run before deleting messages')
+    await deleteButton.trigger('click')
+    expect(bridge.localWorkspace.deleteMessage).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

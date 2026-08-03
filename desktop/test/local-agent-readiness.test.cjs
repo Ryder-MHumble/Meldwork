@@ -54,6 +54,7 @@ test('native readiness recognizes credential files for every supported CLI', () 
     ['qwen', ['.qwen', 'oauth_creds.json'], { access_token: 'qwen-secret' }],
     ['gemini', ['.gemini', 'oauth_creds.json'], { refresh_token: 'gemini-secret' }],
     ['opencode', ['.local', 'share', 'opencode', 'auth.json'], { openai: { token: 'opencode-secret' } }],
+    ['opencodereview', ['.opencodereview', 'config.json'], { llm: { auth_token: 'ocr-secret' } }],
   ]
   try {
     for (const [, segments, value] of fixtures) {
@@ -88,6 +89,61 @@ test('Claude readiness uses the official auth status without exposing OAuth data
     assert.deepEqual(result, { state: 'ready', source: 'native-auth-status' })
     assert.deepEqual(calls[0].args, ['auth', 'status', '--json'])
     assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('OpenClaw readiness uses the official model status when auth is stored outside its config', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-readiness-'))
+  const calls = []
+  try {
+    const result = await resolveNativeCredentialState('openclaw', {
+      home,
+      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      executable: '/tmp/openclaw',
+      execFileFn: async (command, args, options) => {
+        calls.push({ command, args, env: options.env })
+        return {
+          stdout: JSON.stringify({
+            defaultModel: 'provider/model',
+            resolvedDefault: 'provider/model',
+            auth: { missingProvidersInUse: [], unusableProfiles: ['unused-expired-profile'] },
+          }),
+        }
+      },
+    })
+
+    assert.deepEqual(result, { state: 'ready', source: 'native-auth-status' })
+    assert.deepEqual(calls[0].args, ['models', 'status', '--check', '--json'])
+    assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('OpenClaw model status overrides a stale gateway token without exposing auth details', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-stale-auth-'))
+  const configPath = path.join(home, '.openclaw', 'openclaw.json')
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  fs.writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: 'gateway-only-token' } } }))
+  try {
+    const error = Object.assign(new Error('missing provider auth'), {
+      stdout: JSON.stringify({
+        defaultModel: 'provider/model',
+        resolvedDefault: 'provider/model',
+        auth: { missingProvidersInUse: ['provider'], unusableProfiles: [] },
+      }),
+    })
+    const result = await resolveNativeCredentialState('openclaw', {
+      home,
+      env: {},
+      executable: '/tmp/openclaw',
+      execFileFn: async () => { throw error },
+    })
+
+    assert.deepEqual(result, { state: 'missing', source: 'native-auth-status' })
+    assert.equal(JSON.stringify(result).includes('gateway-only-token'), false)
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

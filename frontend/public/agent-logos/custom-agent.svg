@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Custom Agent</title>
+  <rect width="64" height="64" rx="8" fill="#F4F6F7"/>
+  <path d="M18 19h28a5 5 0 0 1 5 5v20a5 5 0 0 1-5 5H18a5 5 0 0 1-5-5V24a5 5 0 0 1 5-5Z" fill="#20292C"/>
+  <path d="m21 29 6 5-6 5M31 40h11" fill="none" stroke="#F4F6F7" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="49" cy="17" r="6" fill="#EF6D52"/>
+</svg>

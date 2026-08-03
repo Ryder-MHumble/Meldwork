@@ -72,7 +72,7 @@ Meldwork 坚持本地优先。工作区访问是明确的，兼容的敏感凭�
 
 Meldwork 当前可连接：
 
-**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code**
+**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code · OpenCodeReview**
 
 每个 Agent 仍然保留自己的能力、Provider 配置、权限模型和 Session 行为。实际可用性取决于已安装的 Agent、对应版本与用户配置。
 

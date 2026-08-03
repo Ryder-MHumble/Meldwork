@@ -23,11 +23,12 @@ const OFFICIAL_PROVIDERS = Object.freeze({
   gemini: { provider: 'Google AI Studio', baseUrl: 'https://generativelanguage.googleapis.com/v1beta' },
   opencode: { provider: 'OpenCode Provider', baseUrl: '' },
   qwen: { provider: 'DashScope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1' },
+  opencodereview: { provider: 'OpenAI API', baseUrl: 'https://api.openai.com/v1' },
 })
-
 function normalizeMetadata(input) {
   const provider = String(input?.provider || '').trim()
-  const baseUrl = String(input?.baseUrl || '').trim().replace(/\/+$/, '')
+  let baseUrl = String(input?.baseUrl || '').trim().replace(/\/+$/, '')
+  baseUrl = baseUrl.replace(/\/chat\/completions$/i, '')
   const model = String(input?.model || '').trim()
   if (!provider || provider.length > 80 || !baseUrl || baseUrl.length > 300
       || !model || model.length > 160) {
@@ -291,19 +292,22 @@ class ProviderStore {
           || typeof payload.encrypted !== 'string') {
         throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
       }
-      const entry = this.normalizeEntry({
+      const rawEntry = {
         provider: payload.provider,
         baseUrl: payload.baseUrl,
         model: payload.model,
         encrypted: payload.encrypted,
-      })
-      const preset = inferStoredPreset(entry)
+      }
       return {
         version: STORE_VERSION,
-        agents: Object.fromEntries([...this.allowedKinds].map(kind => [kind, {
-          activePreset: preset,
-          profiles: { [preset]: { ...entry } },
-        }])),
+        agents: Object.fromEntries([...this.allowedKinds].map((kind) => {
+          const entry = this.normalizeEntry(rawEntry)
+          const preset = inferStoredPreset(entry)
+          return [kind, {
+            activePreset: preset,
+            profiles: { [preset]: { ...entry } },
+          }]
+        })),
       }
     }
     if (payload?.version === SINGLE_PROFILE_STORE_VERSION) {

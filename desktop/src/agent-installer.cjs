@@ -62,6 +62,10 @@ const AGENT_CATALOG = Object.freeze([
     kind: 'qwen', label: 'Qwen Code', recommended: false, providerCompatible: true,
     providerSupport: 'supported',
   },
+  {
+    kind: 'opencodereview', label: 'OpenCodeReview', recommended: false, providerCompatible: true,
+    providerSupport: 'supported',
+  },
 ])
 
 function installRecipe(kind, platform) {
@@ -106,6 +110,7 @@ function installRecipe(kind, platform) {
     gemini: '@google/gemini-cli@latest',
     opencode: 'opencode-ai@latest',
     mimo: '@mimo-ai/cli@latest',
+    opencodereview: '@alibaba-group/open-code-review@latest',
   }
   return packages[kind] ? { type: 'npm', packageName: packages[kind] } : null
 }

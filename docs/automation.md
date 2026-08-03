@@ -28,7 +28,7 @@ Meldwork embeds local Agent automation and an Agent installer. There are no webh
 
 **Executable/tool surface:**
 
-- Main may spawn only detected executables for Codex, Hermes, OpenClaw, WorkBuddy, Kimi Code, MiMo Code, Claude Code, Qwen Code, Gemini CLI, and OpenCode.
+- Main may spawn only detected executables for Codex, Hermes, OpenClaw, WorkBuddy, Kimi Code, MiMo Code, Claude Code, Qwen Code, Gemini CLI, OpenCode, and OpenCodeReview.
 - Command shapes are code-defined in `desktop/src/cli-adapters.cjs`; prompt text does not select an arbitrary executable or shell command.
 - Kimi read-only conversations use Agent Client Protocol `plan` mode. Write-authorized conversations retain Kimi's native stream-JSON prompt mode.
 - OpenClaw receives an explicit tool allow/deny configuration. Execution, process, browser, gateway, cron, messaging, session spawning, and subagent tools are denied; write/edit/apply-patch are added only when the conversation permits writes.

@@ -30,6 +30,7 @@ Meldwork detects and forwards only credential variables associated with the sele
 | Qwen Code | `DASHSCOPE_API_KEY`, `OPENAI_API_KEY` |
 | Gemini CLI | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
 | OpenCode | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` |
+| OpenCodeReview | `OCR_LLM_TOKEN`, `OPENAI_API_KEY` |
 
 These credentials are owned and rotated through the upstream CLI/provider, not Meldwork. Readiness checks report only `ready`, `missing`, or `unknown`; they do not return credential values.
 
@@ -42,6 +43,7 @@ Main derives these at invocation time; users should not set them as Meldwork con
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL` | Normalized configured Provider values for compatible Agents |
 | `HERMES_INFERENCE_MODEL` | Mirrors the configured model for Hermes |
 | `CODEBUDDY_MODEL`, `CODEBUDDY_API_KEY`, `CODEBUDDY_BASE_URL` | WorkBuddy Provider mapping |
+| `OCR_LLM_URL`, `OCR_LLM_TOKEN`, `OCR_LLM_MODEL`, `OCR_USE_ANTHROPIC` | OpenCodeReview Provider mapping |
 | `ROUNDRELAY_OPENCLAW_API_KEY` | Secret environment reference used by generated OpenClaw config |
 | `OPENCLAW_HOME`, `OPENCLAW_STATE_DIR`, `OPENCLAW_CONFIG_PATH`, `OPENCLAW_WORKSPACE_DIR` | Isolated managed OpenClaw runtime paths |
 | `HERMES_EXEC_ASK`, `HERMES_YOLO_MODE`, `OPENCODE_PERMISSION` | Runtime safety overrides |

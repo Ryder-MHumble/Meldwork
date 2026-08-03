@@ -72,7 +72,7 @@ The point is not to use more agents. The point is to use the right agent for eac
 
 Meldwork currently connects to:
 
-**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code**
+**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code · OpenCodeReview**
 
 Each agent keeps its own capabilities, provider configuration, permission model, and session behavior. Availability depends on the installed agent, its version, and your configuration.
 

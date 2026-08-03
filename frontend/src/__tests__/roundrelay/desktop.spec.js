@@ -116,7 +116,14 @@ describe('run event normalization', () => {
           seq: 99,
           detail: 'Output: 5 lines, 47 bytes',
         },
-        { evidenceId: 'E-R2-CODEX-02', type: 'raw_stdout', status: 'completed' },
+        {
+          evidenceId: 'E-R2-CODEX-02',
+          type: 'tool_start',
+          status: 'partial',
+          title: 'read_file',
+          summary: 'read: docs/architecture.md',
+        },
+        { evidenceId: 'E-R2-CODEX-03', type: 'raw_stdout', status: 'completed' },
       ],
       sourceMessageIds: ['root-1'],
       truncated: true,
@@ -132,13 +139,22 @@ describe('run event normalization', () => {
       truncated: true,
       context: { includedCount: 3, omittedCount: 7, charCount: 1200, sessionRotated: true },
     })
-    expect(trace.events).toEqual([{
-      evidenceId: 'E-R2-CODEX-01',
-      type: 'reasoning_summary',
-      status: 'completed',
-      summary: 'Compare both options',
-      detail: 'Output: 5 lines, 47 bytes',
-    }])
+    expect(trace.events).toEqual([
+      {
+        evidenceId: 'E-R2-CODEX-01',
+        type: 'reasoning_summary',
+        status: 'completed',
+        summary: 'Compare both options',
+        detail: 'Output: 5 lines, 47 bytes',
+      },
+      {
+        evidenceId: 'E-R2-CODEX-02',
+        type: 'tool_start',
+        status: 'partial',
+        title: 'read_file',
+        summary: 'read: docs/architecture.md',
+      },
+    ])
     expect(trace.context).not.toHaveProperty('ignored')
 
     const snapshot = normalizeSnapshot({

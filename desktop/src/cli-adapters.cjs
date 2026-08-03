@@ -21,6 +21,7 @@ const AGENT_PROFILES = {
   gemini: { label: 'Gemini', commands: ['gemini'] },
   opencode: { label: 'OpenCode', commands: ['opencode'] },
   qwen: { label: 'Qwen', commands: ['qwen'] },
+  opencodereview: { label: 'OpenCodeReview', commands: ['ocr'] },
 }
 const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const CODEX_SANDBOXES = new Set(['read-only', 'workspace-write'])
@@ -612,6 +613,16 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
         ...(sessionRef ? ['--session', sessionRef] : []),
         ...attachments.flatMap(filename => ['--file', filename]),
+      ],
+      promptArg: true,
+    }
+  }
+  if (kind === 'opencodereview') {
+    return {
+      command: executable,
+      args: [
+        'review', '--audience', 'agent', '--format', 'text', '--repo', workdir,
+        '--background',
       ],
       promptArg: true,
     }
@@ -2139,10 +2150,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
     const publicSessionRef = safeSessionRef.includes('[redacted]') ? '' : safeSessionRef
     await connection.setSessionMode({ sessionId: sessionRef, modeId: spec.acpMode })
     if (publicSessionRef && typeof options.onSessionRef === 'function') {
-      await options.onSessionRef(
-        publicSessionRef,
-        agent.kind === 'hermes' ? { transport: 'acp' } : undefined,
-      )
+      await options.onSessionRef(publicSessionRef, { transport: 'acp' })
     }
     replyState.bytes = 0
     replyState.collecting = true
@@ -2242,7 +2250,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   const prepared = prepareCommand(spec.command, args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
   const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
-  if (['hermes', 'openclaw', 'workbuddy'].includes(agent.kind)) {
+  if (['hermes', 'openclaw', 'workbuddy', 'opencodereview'].includes(agent.kind)) {
     runtimeEvents.emit({
       id: `${agent.kind}-connector`,
       type: 'warning',

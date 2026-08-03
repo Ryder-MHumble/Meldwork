@@ -66,7 +66,7 @@ apiKey: API Key
 
 API Key 仅通过 Electron `safeStorage` 加密保存到本机；操作系统安全存储不可用时拒绝落盘。
 Provider 不设品牌、服务地址或模型默认值，也不会从远端自动获取配置。配置后可供 Hermes、
-OpenClaw、WorkBuddy 和 Qwen 使用；其他 Agent 沿用各自的本机鉴权和 Provider 配置。
+OpenClaw、WorkBuddy、Qwen 和 OpenCodeReview 使用；其他 Agent 沿用各自的本机鉴权和 Provider 配置。
 
 ## 本地 CLI 支持矩阵
 
@@ -82,6 +82,7 @@ OpenClaw、WorkBuddy 和 Qwen 使用；其他 Agent 沿用各自的本机鉴权�
 | Gemini CLI | `gemini` | npm：`@google/gemini-cli@latest` | npm：`@google/gemini-cli@latest` | 不注入；沿用 Gemini 本机配置 |
 | OpenCode | `opencode` | npm：`opencode-ai@latest` | npm：`opencode-ai@latest` | 不注入；沿用 OpenCode 本机配置 |
 | Qwen Code | `qwen` | npm：`@qwen-code/qwen-code@latest` | npm：`@qwen-code/qwen-code@latest` | 支持 |
+| OpenCodeReview | `ocr` | npm：`@alibaba-group/open-code-review@latest` | npm：`@alibaba-group/open-code-review@latest` | 支持 |
 
 macOS 会在当前 `PATH` 之外搜索 Volta、pnpm、fnm、asdf、mise、bun、
 `~/.local/bin`、`~/.kimi-code/bin`、`~/.mimocode/bin`、Homebrew 等常见目录。Windows 会额外搜索用户 npm、

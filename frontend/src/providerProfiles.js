@@ -25,6 +25,7 @@ const OFFICIAL = Object.freeze({
   gemini: { provider: 'Google AI Studio', baseUrl: 'https://generativelanguage.googleapis.com/v1beta', model: '' },
   opencode: { provider: 'OpenCode Provider', baseUrl: '', model: '' },
   qwen: { provider: 'DashScope', baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', model: '' },
+  opencodereview: { provider: 'OpenAI API', baseUrl: 'https://api.openai.com/v1', model: '' },
 })
 
 const RUNTIME_KEYS = Object.freeze({
@@ -38,6 +39,7 @@ const RUNTIME_KEYS = Object.freeze({
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_MODEL'],
   opencode: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
   qwen: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
+  opencodereview: ['OCR_LLM_URL', 'OCR_LLM_TOKEN', 'OCR_LLM_MODEL', 'OCR_USE_ANTHROPIC'],
 })
 
 const CONFIG_FILES = Object.freeze({
@@ -51,6 +53,7 @@ const CONFIG_FILES = Object.freeze({
   gemini: '~/.gemini/settings.json',
   opencode: '~/.local/share/opencode/auth.json',
   qwen: '~/.qwen/oauth_creds.json',
+  opencodereview: '~/.opencodereview/config.json',
 })
 
 const PROFILES = Object.freeze(Object.fromEntries(Object.keys(OFFICIAL).map(kind => [kind, {

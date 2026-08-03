@@ -14,6 +14,7 @@ const PROVIDER_METADATA = Object.freeze({
 })
 const PROVIDER_AGENT_KINDS = Object.freeze([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'opencodereview',
 ])
 
 function pngHeader(width = 1, height = 1) {
@@ -32,6 +33,7 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-workspace:create-group',
   'local-workspace:update-group',
   'local-workspace:delete-group',
+  'local-workspace:delete-message',
   'local-workspace:send',
   'local-workspace:stop',
   'local-workspace:pick-directory',
@@ -42,8 +44,10 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-agent-installer:start',
   'local-agent-installer:cancel',
   'local-agent-installer:set-sidebar-visibility',
-  'local-attachments:pick-images',
-  'local-attachments:import-image',
+  'local-custom-agent:create',
+  'local-custom-agent:delete',
+  'local-attachments:pick',
+  'local-attachments:import',
   'local-attachments:preview',
   'local-attachments:discard',
   'local-agent-provider:status',
@@ -85,16 +89,20 @@ function loadMain(userData, options = {}) {
   const windows = []
   const workspaceInstances = []
   const installerInstances = []
+  const customAgentStoreInstances = []
   const providerInstances = []
   const knowledgeBaseStoreInstances = []
   const knowledgeBaseResolveCalls = []
   const attachmentInstances = []
   const skillCatalogInstances = []
   const runAgentCalls = []
+  const customAgentRunCalls = []
   const externalUrls = []
   const dialogCalls = []
   const permissionHandlers = {}
   const nativeImageCalls = []
+  const nativeImagePathCalls = []
+  const dockIconCalls = []
   const notificationInstances = []
   const protocolHandlers = new Map()
   const registeredSchemes = []
@@ -118,6 +126,7 @@ function loadMain(userData, options = {}) {
       this.maxConcurrentRefreshes = 0
       this.clearRuntimeCredentialFailuresCount = 0
       this.stopCount = 0
+      this.deleteMessageCalls = []
       workspaceInstances.push(this)
     }
 
@@ -143,6 +152,22 @@ function loadMain(userData, options = {}) {
     deleteGroup(groupId) {
       this.state.groups = this.state.groups.filter(group => group.id !== groupId)
       this.state.messages = this.state.messages.filter(message => message.groupId !== groupId)
+    }
+    deleteMessage(groupId, messageId) {
+      this.deleteMessageCalls.push([groupId, messageId])
+      const target = this.state.messages.find(message => (
+        message.groupId === groupId && message.id === messageId
+      ))
+      if (!target) throw new Error('LOCAL_MESSAGE_NOT_FOUND')
+      const deletedIds = new Set([target.id])
+      if (target.role === 'user' && !target.threadRootId) {
+        for (const message of this.state.messages) {
+          if (message.groupId === groupId && message.threadRootId === target.id) {
+            deletedIds.add(message.id)
+          }
+        }
+      }
+      this.state.messages = this.state.messages.filter(message => !deletedIds.has(message.id))
     }
     sendMessage() { return Promise.resolve(this.snapshot()) }
     startAuto() { return this.snapshot() }
@@ -183,6 +208,78 @@ function loadMain(userData, options = {}) {
     invalidateDetectionCache() { this.invalidateCount += 1 }
     async waitForIdle() {
       if (options.installerIdleGate) await options.installerIdleGate.promise
+    }
+  }
+
+  class TestCustomAgentStore {
+    constructor(input) {
+      this.input = input
+      this.created = []
+      this.removed = []
+      this.detectCount = 0
+      this.agents = structuredClone(options.customAgents || [])
+      customAgentStoreInstances.push(this)
+    }
+
+    has(kind) {
+      return this.agents.some(agent => agent.kind === kind)
+    }
+
+    label(kind) {
+      return this.agents.find(agent => agent.kind === kind)?.label || ''
+    }
+
+    async detectAgents() {
+      this.detectCount += 1
+      return this.agents.filter(agent => agent.installed !== false).map(agent => ({
+        ...agent,
+        executable: agent.executable || `/private/${agent.commandName || 'custom-agent'}`,
+      }))
+    }
+
+    async catalog() {
+      return this.agents.map(({ executable: _executable, args: _args, ...agent }) => ({
+        installed: agent.installed !== false,
+        installSupported: false,
+        providerCompatible: false,
+        providerMode: 'custom',
+        imageAttachmentLimit: 0,
+        ...agent,
+        custom: true,
+      }))
+    }
+
+    create(input, executable) {
+      this.created.push({ input, executable })
+      const agent = {
+        kind: 'custom-0123456789abcdef',
+        label: String(input?.label || ''),
+        description: String(input?.description || ''),
+        commandName: path.basename(executable),
+        promptMode: input?.promptMode,
+        custom: true,
+        installed: true,
+        installSupported: false,
+        providerCompatible: false,
+        providerMode: 'custom',
+        imageAttachmentLimit: 0,
+        version: '1.0.0',
+        executable,
+      }
+      this.agents.push(agent)
+      const { executable: _privatePath, ...profile } = agent
+      return profile
+    }
+
+    remove(kind) {
+      this.removed.push(kind)
+      this.agents = this.agents.filter(agent => agent.kind !== kind)
+      return true
+    }
+
+    run(...args) {
+      customAgentRunCalls.push(args)
+      return Promise.resolve({ text: 'custom reply', sessionRef: '' })
     }
   }
 
@@ -419,6 +516,13 @@ function loadMain(userData, options = {}) {
   }
   TestNotification.isSupported = () => options.notificationSupported !== false
 
+  const iconImage = {
+    isEmpty: () => false,
+    getSize: () => ({ width: 512, height: 512 }),
+    resize: () => iconImage,
+    toDataURL: () => 'data:image/png;base64,AQID',
+  }
+
   const electron = {
     app: {
       getPath: name => name === 'documents'
@@ -434,6 +538,9 @@ function loadMain(userData, options = {}) {
         return options.singleInstanceLock !== false
       },
       whenReady: () => ({ then: listener => { readyCallback = listener } }),
+      dock: {
+        setIcon: icon => dockIconCalls.push(icon),
+      },
     },
     BrowserWindow: TestBrowserWindow,
     Notification: TestNotification,
@@ -462,6 +569,10 @@ function loadMain(userData, options = {}) {
       },
     },
     nativeImage: {
+      createFromPath: filename => {
+        nativeImagePathCalls.push(filename)
+        return iconImage
+      },
       createFromBuffer: (bytes) => {
         nativeImageCalls.push(bytes)
         const image = {
@@ -497,6 +608,7 @@ function loadMain(userData, options = {}) {
       },
     },
     './agent-installer.cjs': { AgentInstaller: TestInstaller },
+    './custom-agent-store.cjs': { CustomAgentStore: TestCustomAgentStore },
     './attachment-store.cjs': { AttachmentStore: TestAttachmentStore },
     './local-agent-readiness.cjs': {
       nativeCredentialEnvironment: kind => options.nativeEnvironment?.(kind) || {},
@@ -560,7 +672,11 @@ function loadMain(userData, options = {}) {
         ipcHandlers,
         ipcListeners,
         installerInstances,
+        customAgentStoreInstances,
+        customAgentRunCalls,
+        dockIconCalls,
         nativeImageCalls,
+        nativeImagePathCalls,
         notificationInstances,
         knowledgeBaseResolveCalls,
         knowledgeBaseStoreInstances,
@@ -701,6 +817,8 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.equal(harness.workspaceInstances[0].refreshCount, 0)
   assert.equal(harness.providerInstances[0].input.storagePath,
     path.join(directory, 'roundrelay-provider.json'))
+  assert.equal(harness.customAgentStoreInstances[0].input.storagePath,
+    path.join(directory, 'roundrelay-custom-agents.json'))
   assert.deepEqual(
     [...harness.providerInstances[0].input.allowedKinds].sort(),
     [...PROVIDER_AGENT_KINDS].sort(),
@@ -713,12 +831,17 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     path.join(directory, 'Home'))
   await harness.workspaceInstances[0].input.detectAgents()
   assert.equal(harness.installerInstances[0].detectedCount, 1)
+  assert.equal(harness.customAgentStoreInstances[0].detectCount, 1)
   assert.equal(typeof harness.workspaceInstances[0].input.resolveAttachments, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.validateSkillSelections, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.validateKnowledgeBaseSelections, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.imageAttachmentLimit, 'function')
+  assert.equal(typeof harness.workspaceInstances[0].input.agentLabel, 'function')
   assert.deepEqual(harness.attachmentInstances[0].cleanupCalls, [[]])
   assert.equal(harness.windows.length, 1)
+  assert.equal(harness.windows[0].input.icon?.isEmpty?.(), false)
+  assert.match(harness.nativeImagePathCalls[0], /frontend[\\/]public[\\/]logos[\\/]meldwork-app\.png$/)
+  if (process.platform === 'darwin') assert.equal(harness.dockIconCalls.length, 1)
   assert.equal(
     harness.windows[0].input.backgroundColor,
     process.platform === 'darwin' ? '#e7edef' : '#f3f6f8',
@@ -738,6 +861,104 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.equal([...harness.ipcHandlers.keys()].some(name => name.includes('cloud')), false)
   assert.equal([...harness.ipcHandlers.keys()].some(name => name.includes('configure')), false)
   assert.equal(harness.ipcListeners.size, 0)
+})
+
+test('Custom Agent IPC keeps executable paths private and refreshes the local catalog', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-custom-agent-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const selectedExecutable = '/private/tools/review-agent'
+  const { harness } = loadMain(directory, {
+    dialogResult: { canceled: false, filePaths: [selectedExecutable] },
+  })
+  await harness.ready()
+
+  const result = await harness.ipcHandlers.get('local-custom-agent:create')(
+    harness.event(),
+    {
+      label: 'Review Agent',
+      description: 'Reviews repository changes.',
+      args: ['review', '--format=text'],
+      promptMode: 'stdin',
+      executable: '/renderer/must-not-control-this',
+    },
+  )
+
+  assert.equal(result.canceled, false)
+  assert.equal(result.agent.kind, 'custom-0123456789abcdef')
+  assert.equal(result.agent.commandName, 'review-agent')
+  assert.equal('executable' in result.agent, false)
+  assert.equal('args' in result.agent, false)
+  assert.doesNotMatch(JSON.stringify(result), /private\/tools|renderer\/must-not-control/)
+  assert.deepEqual(harness.customAgentStoreInstances[0].created, [{
+    input: {
+      label: 'Review Agent',
+      description: 'Reviews repository changes.',
+      args: ['review', '--format=text'],
+      promptMode: 'stdin',
+    },
+    executable: selectedExecutable,
+  }])
+  assert.equal(harness.workspaceInstances[0].refreshCount, 1)
+
+  const customReply = await harness.workspaceInstances[0].input.runAgent(
+    { kind: result.agent.kind },
+    'Review this change',
+    '/tmp/project',
+    { signal: new AbortController().signal },
+  )
+  assert.deepEqual(customReply, { text: 'custom reply', sessionRef: '' })
+  assert.equal(harness.customAgentRunCalls.length, 1)
+  assert.equal(harness.runAgentCalls.length, 0)
+
+  const catalog = await harness.ipcHandlers.get('local-agent-installer:catalog')(harness.event())
+  const custom = catalog.agents.find(agent => agent.kind === 'custom-0123456789abcdef')
+  assert.equal(custom.custom, true)
+  assert.equal(custom.commandName, 'review-agent')
+  assert.equal('executable' in custom, false)
+  assert.equal('args' in custom, false)
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-agent-installer:skills')(
+      harness.event(), 'custom-0123456789abcdef',
+    ),
+    { supported: false, skills: [], total: 0, limit: 0 },
+  )
+})
+
+test('Custom Agent deletion is blocked while a local conversation references it', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-custom-agent-delete-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const kind = 'custom-0123456789abcdef'
+  const { harness } = loadMain(directory, {
+    customAgents: [{
+      kind,
+      label: 'Review Agent',
+      description: '',
+      commandName: 'review-agent',
+      promptMode: 'stdin',
+      custom: true,
+      installed: true,
+    }],
+    workspaceSnapshot: {
+      agents: [],
+      groups: [{ id: 'group-1', agentKinds: [kind] }],
+      messages: [],
+      localOnly: true,
+    },
+  })
+  await harness.ready()
+
+  await assert.rejects(
+    harness.ipcHandlers.get('local-custom-agent:delete')(harness.event(), kind),
+    { message: 'CUSTOM_AGENT_IN_USE' },
+  )
+  assert.deepEqual(harness.customAgentStoreInstances[0].removed, [])
+
+  harness.workspaceInstances[0].state.groups = []
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-custom-agent:delete')(harness.event(), kind),
+    { deleted: true, kind },
+  )
+  assert.deepEqual(harness.customAgentStoreInstances[0].removed, [kind])
 })
 
 test('a second desktop launch restores and focuses the existing window', async (t) => {
@@ -798,10 +1019,9 @@ test('run completion uses sanitized renderer events and a localized background n
   }])
   assert.equal(harness.notificationInstances.length, 1)
   const notification = harness.notificationInstances[0]
-  assert.deepEqual(notification.input, {
-    title: 'Meldwork',
-    body: '会话运行已结束',
-  })
+  assert.equal(notification.input.title, 'Meldwork')
+  assert.equal(notification.input.body, '会话运行已结束')
+  assert.equal(notification.input.icon?.isEmpty?.(), false)
   assert.equal(notification.showCount, 1)
   assert.doesNotMatch(
     JSON.stringify(notification.input),
@@ -894,10 +1114,9 @@ test('a completion notification restores a closed window and opens its local gro
   })
 
   assert.equal(harness.notificationInstances.length, 1)
-  assert.deepEqual(harness.notificationInstances[0].input, {
-    title: 'Meldwork',
-    body: 'Conversation run finished',
-  })
+  assert.equal(harness.notificationInstances[0].input.title, 'Meldwork')
+  assert.equal(harness.notificationInstances[0].input.body, 'Conversation run finished')
+  assert.equal(harness.notificationInstances[0].input.icon?.isEmpty?.(), false)
   assert.equal(originalWindow.webContents.sent.length, 0)
 
   harness.notificationInstances[0].emit('click')
@@ -930,8 +1149,8 @@ test('attachment storage initialization failure does not block text chat startup
     ),
   )
   for (const [channel, args] of [
-    ['local-attachments:pick-images', []],
-    ['local-attachments:import-image', [{ name: 'x.png', mimeType: 'image/png', bytes: [1] }]],
+    ['local-attachments:pick', []],
+    ['local-attachments:import', [{ name: 'x.png', mimeType: 'image/png', bytes: [1] }]],
     ['local-attachments:preview', ['attachment-1']],
     ['local-attachments:discard', [['attachment-1']]],
   ]) {
@@ -1000,7 +1219,7 @@ test('startup attachment cleanup failure keeps the validated store available', a
 
   assert.deepEqual(harness.attachmentInstances[0].cleanupCalls, [[]])
   await assert.doesNotReject(
-    harness.ipcHandlers.get('local-attachments:pick-images')(harness.event(), 1),
+    harness.ipcHandlers.get('local-attachments:pick')(harness.event(), 1),
   )
 })
 
@@ -1279,7 +1498,7 @@ test('image IPC returns bounded previews and never exposes imported file paths',
   })
   await harness.ready()
 
-  const picked = await harness.ipcHandlers.get('local-attachments:pick-images')(
+  const picked = await harness.ipcHandlers.get('local-attachments:pick')(
     harness.event(), 2,
   )
   assert.equal(picked.attachments.length, 2)
@@ -1287,7 +1506,7 @@ test('image IPC returns bounded previews and never exposes imported file paths',
   assert.deepEqual(harness.attachmentInstances[0].importedFiles, [first, second])
   assert.deepEqual(harness.dialogCalls[0][1], {
     properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg'] }],
+    filters: [{ name: 'Media', extensions: ['png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm'] }],
   })
   for (const attachment of picked.attachments) {
     assert.deepEqual(Object.keys(attachment).sort(), [
@@ -1297,7 +1516,7 @@ test('image IPC returns bounded previews and never exposes imported file paths',
     assert.equal(JSON.stringify(attachment).includes(directory), false)
   }
 
-  const imported = await harness.ipcHandlers.get('local-attachments:import-image')(
+  const imported = await harness.ipcHandlers.get('local-attachments:import')(
     harness.event(),
     { name: 'paste.png', mimeType: 'image/png', bytes: [1, 2, 3] },
   )
@@ -1329,7 +1548,7 @@ test('image picker does not import files after application shutdown starts', asy
   const { harness } = loadMain(directory, { dialogResult: dialogResult.promise })
   await harness.ready()
 
-  const picking = harness.ipcHandlers.get('local-attachments:pick-images')(harness.event())
+  const picking = harness.ipcHandlers.get('local-attachments:pick')(harness.event())
   await waitFor(() => harness.dialogCalls.length === 1)
   harness.appListeners.get('before-quit')({ preventDefault: () => {} })
   dialogResult.resolve({ canceled: false, filePaths: [selected] })
@@ -1349,7 +1568,7 @@ test('image dimensions are bounded before nativeImage decoding and checked again
   await oversizedBeforeDecode.harness.ready()
 
   await assert.rejects(
-    async () => oversizedBeforeDecode.harness.ipcHandlers.get('local-attachments:import-image')(
+    async () => oversizedBeforeDecode.harness.ipcHandlers.get('local-attachments:import')(
       oversizedBeforeDecode.harness.event(),
       { name: 'large.png', mimeType: 'image/png', bytes: [1, 2, 3] },
     ),
@@ -1364,7 +1583,7 @@ test('image dimensions are bounded before nativeImage decoding and checked again
   })
   await oversizedAfterDecode.harness.ready()
   await assert.rejects(
-    async () => oversizedAfterDecode.harness.ipcHandlers.get('local-attachments:import-image')(
+    async () => oversizedAfterDecode.harness.ipcHandlers.get('local-attachments:import')(
       oversizedAfterDecode.harness.event(),
       { name: 'decoded-large.png', mimeType: 'image/png', bytes: [1, 2, 3] },
     ),
@@ -1435,6 +1654,39 @@ test('deleting a conversation removes only attachments no longer referenced else
     { groupId: 'group-two', attachments: [{ id: 'shared' }] },
   ])
   assert.deepEqual(harness.attachmentInstances[0].discarded, [['only-one']])
+})
+
+test('deleting a message normalizes identifiers and discards only newly unreferenced attachments', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-delete-message-attachments-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory, {
+    workspaceSnapshot: {
+      agents: [],
+      groups: [{ id: '42' }],
+      messages: [
+        {
+          id: '7', groupId: '42', role: 'agent',
+          attachments: [{ id: 'shared' }, { id: 'only-message' }],
+        },
+        {
+          id: '8', groupId: '42', role: 'agent',
+          attachments: [{ id: 'shared' }],
+        },
+      ],
+      localOnly: true,
+    },
+  })
+  await harness.ready()
+
+  const snapshot = await harness.ipcHandlers.get('local-workspace:delete-message')(
+    harness.event(), 42, 7,
+  )
+
+  assert.deepEqual(harness.workspaceInstances[0].deleteMessageCalls, [['42', '7']])
+  assert.deepEqual(snapshot.messages, [{
+    id: '8', groupId: '42', role: 'agent', attachments: [{ id: 'shared' }],
+  }])
+  assert.deepEqual(harness.attachmentInstances[0].discarded, [['only-message']])
 })
 
 test('configured Provider is injected only through local Agent execution options', async (t) => {

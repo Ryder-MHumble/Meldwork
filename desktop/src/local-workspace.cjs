@@ -23,7 +23,9 @@ const AGENT_LABELS = {
   qwen: 'Qwen',
   gemini: 'Gemini',
   opencode: 'OpenCode',
+  opencodereview: 'OpenCodeReview',
 }
+const CUSTOM_AGENT_KIND = /^custom-[a-f0-9]{16}$/
 const AUTO_CONSENSUS_MARKER = /\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\]/gi
 const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\][ \t]*$/i
 const DEFAULT_AUTO_RUN_TIMEOUT_MS = 30 * 60 * 1000
@@ -41,7 +43,11 @@ const STABLE_USER_TURN_TEXT_LIMIT = 700
 const RECENT_TRANSCRIPT_MESSAGE_LIMIT = 20
 const STABLE_CONTEXT_TEXT_LIMIT = 3000
 const RECENT_TRANSCRIPT_TEXT_LIMIT = 9000
-const USER_ATTACHMENT_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
+const USER_ATTACHMENT_MIME_TYPES = new Set([
+  'image/png', 'image/jpeg',
+  'audio/mpeg', 'audio/wav', 'audio/mp4',
+  'video/mp4', 'video/quicktime', 'video/webm',
+])
 const ATTACHMENT_MIME_TYPES = new Set([
   ...USER_ATTACHMENT_MIME_TYPES,
   'audio/mpeg', 'audio/wav', 'audio/mp4',
@@ -59,6 +65,14 @@ const PROGRESS_TITLES = new Set([
   'reasoning', 'process', 'read_file', 'write_file', 'search',
   'image_generation', 'audio_generation', 'video_generation', 'tool',
 ])
+
+function isSupportedAgentKind(kind) {
+  return Object.hasOwn(AGENT_LABELS, kind) || CUSTOM_AGENT_KIND.test(String(kind || ''))
+}
+
+function defaultAgentLabel(kind) {
+  return AGENT_LABELS[kind] || String(kind || 'Agent')
+}
 
 function emptyState() {
   return {
@@ -201,13 +215,26 @@ function normalizeAttachmentMetadata(input) {
   return { id, name, mimeType, size }
 }
 
+function attachmentType(mimeType) {
+  const normalized = String(mimeType || '').toLowerCase()
+  if (normalized.startsWith('image/')) return 'image'
+  if (normalized.startsWith('audio/')) return 'audio'
+  if (normalized.startsWith('video/')) return 'video'
+  return ''
+}
+
+function attachmentLimitError(type, limited = false) {
+  if (type === 'image') return limited ? 'LOCAL_AGENT_IMAGE_LIMIT' : 'LOCAL_AGENT_IMAGE_UNSUPPORTED'
+  return limited ? 'LOCAL_AGENT_MEDIA_LIMIT' : 'LOCAL_AGENT_MEDIA_UNSUPPORTED'
+}
+
 function normalizeSkillHint(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const targetKind = cleanInline(input.targetKind, 40)
   const namespace = cleanInline(input.namespace, 100)
   const slug = cleanInline(input.slug, 100)
   const name = cleanInline(input.name, 100)
-  if (!Object.hasOwn(AGENT_LABELS, targetKind) || !namespace || !slug || !name) return null
+  if (!isSupportedAgentKind(targetKind) || !namespace || !slug || !name) return null
   return { targetKind, namespace, slug, name }
 }
 
@@ -232,7 +259,7 @@ function normalizeKnowledgeBaseHint(input) {
 function normalizeTargetKinds(input) {
   return [...new Set((Array.isArray(input) ? input : [])
     .map(kind => cleanInline(kind, 40))
-    .filter(kind => Object.hasOwn(AGENT_LABELS, kind)))]
+    .filter(isSupportedAgentKind))]
 }
 
 function skillHintsPrompt(hints) {
@@ -261,7 +288,7 @@ function normalizeLoadedGroup(input, defaultAllowWrite = false) {
   const id = cleanText(input.id, 100)
   const agentKinds = [...new Set((Array.isArray(input.agentKinds) ? input.agentKinds : [])
     .map(kind => cleanInline(kind, 40))
-    .filter(kind => Object.hasOwn(AGENT_LABELS, kind)))]
+    .filter(isSupportedAgentKind))]
   if (!id || !agentKinds.length) return null
 
   const group = {
@@ -275,8 +302,9 @@ function normalizeLoadedGroup(input, defaultAllowWrite = false) {
     updatedAt: cleanText(input.updatedAt, 80),
   }
   if (input.conversationType === 'direct') {
-    const directAgentKind = Object.hasOwn(AGENT_LABELS, cleanInline(input.directAgentKind, 40))
-      ? cleanInline(input.directAgentKind, 40)
+    const requestedDirectKind = cleanInline(input.directAgentKind, 40)
+    const directAgentKind = isSupportedAgentKind(requestedDirectKind)
+      ? requestedDirectKind
       : agentKinds[0]
     group.conversationType = 'direct'
     group.directAgentKind = directAgentKind
@@ -291,7 +319,7 @@ function normalizeLoadedMessage(input) {
   const groupId = cleanText(input.groupId, 100)
   const role = ['user', 'agent', 'system'].includes(input.role) ? input.role : ''
   const requestedAgentKind = cleanInline(input.agentKind, 40)
-  const agentKind = Object.hasOwn(AGENT_LABELS, requestedAgentKind) ? requestedAgentKind : ''
+  const agentKind = isSupportedAgentKind(requestedAgentKind) ? requestedAgentKind : ''
   if (!id || !groupId || !role || (role === 'agent' && !agentKind)) return null
 
   const message = {
@@ -299,7 +327,13 @@ function normalizeLoadedMessage(input) {
     groupId,
     role,
     agentKind,
-    senderName: role === 'user' ? 'User' : (role === 'agent' ? AGENT_LABELS[agentKind] : 'System'),
+    senderName: role === 'user'
+      ? 'User'
+      : (role === 'agent'
+          ? (CUSTOM_AGENT_KIND.test(agentKind)
+              ? cleanInline(input.senderName, 60) || defaultAgentLabel(agentKind)
+              : defaultAgentLabel(agentKind))
+          : 'System'),
     content: cleanText(input.content),
     createdAt: cleanText(input.createdAt, 80),
   }
@@ -364,8 +398,12 @@ class LocalWorkspace extends EventEmitter {
     this.validateSkillSelectionsFn = options.validateSkillSelections || ((_kind, selections) => selections)
     this.validateKnowledgeBaseSelectionsFn = options.validateKnowledgeBaseSelections || ((_kinds, selections) => selections)
     this.imageAttachmentLimitFn = options.imageAttachmentLimit || (() => 0)
+    this.attachmentSupportFn = options.attachmentSupport || (kind => ({
+      image: this.imageAttachmentLimitFn(kind),
+    }))
     this.credentialStateFn = options.credentialState || (async () => ({ state: 'unknown', source: 'unverified' }))
     this.sharedProviderReadyFn = options.sharedProviderReady || (() => false)
+    this.agentLabelFn = options.agentLabel || defaultAgentLabel
     this.autoRunTimeoutMs = Number.isFinite(options.autoRunTimeoutMs)
       && options.autoRunTimeoutMs > 0
       ? options.autoRunTimeoutMs
@@ -390,6 +428,10 @@ class LocalWorkspace extends EventEmitter {
     this.activeRuns = new Map()
     this.shuttingDown = false
     this.state = this.load()
+  }
+
+  agentLabel(kind) {
+    return cleanInline(this.agentLabelFn(kind), 60) || defaultAgentLabel(kind)
   }
 
   load() {
@@ -611,9 +653,9 @@ class LocalWorkspace extends EventEmitter {
       mode: controller.mode === 'auto' ? 'auto' : 'manual',
       status: RUN_STATUSES.has(status) ? status : 'failed',
       threadRootId: cleanText(controller.threadRootId, 100),
-      targetKinds: controller.targetKinds.filter(kind => Object.hasOwn(AGENT_LABELS, kind)),
-      completedKinds: controller.completedKinds.filter(kind => Object.hasOwn(AGENT_LABELS, kind)),
-      failedKinds: controller.failedKinds.filter(kind => Object.hasOwn(AGENT_LABELS, kind)),
+      targetKinds: controller.targetKinds.filter(isSupportedAgentKind),
+      completedKinds: controller.completedKinds.filter(isSupportedAgentKind),
+      failedKinds: controller.failedKinds.filter(isSupportedAgentKind),
       startedAt: Number.isFinite(controller.startedAt) ? controller.startedAt : Date.now(),
       finishedAt: Date.now(),
     }
@@ -627,7 +669,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   recordAgentFailure(groupId, kind, error, threadRootId, reportedFailures = null) {
-    const label = AGENT_LABELS[kind] || kind
+    const label = this.agentLabel(kind)
     const reason = cleanText(error?.message || error, 2000) || 'LOCAL_AGENT_UNKNOWN_FAILURE'
     const failureKey = `${kind}:${reason}`
     if (!reportedFailures || !reportedFailures.has(failureKey)) {
@@ -751,7 +793,7 @@ class LocalWorkspace extends EventEmitter {
     const agentKinds = [...new Set(requestedKinds.filter(kind => available.has(kind)))]
     if (!agentKinds.length) throw new Error('LOCAL_GROUP_AGENT_REQUIRED')
     const name = cleanText(input.name, 60)
-      || (conversationType === 'direct' ? (AGENT_LABELS[directAgentKind] || directAgentKind) : '')
+      || (conversationType === 'direct' ? this.agentLabel(directAgentKind) : '')
     const workdir = path.resolve(cleanText(input.workdir, 1000) || process.cwd())
     const timestamp = this.now()
     const group = {
@@ -821,6 +863,43 @@ class LocalWorkspace extends EventEmitter {
     this.emitChanged()
   }
 
+  deleteMessage(groupId, messageId) {
+    const group = this.getGroup(groupId)
+    if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
+    const target = this.state.messages.find(message => (
+      message.id === messageId && message.groupId === group.id
+    ))
+    if (!target) throw new Error('LOCAL_MESSAGE_NOT_FOUND')
+
+    const deletedIds = new Set([target.id])
+    const deletesConversationTurn = target.role === 'user' && !target.threadRootId
+    if (deletesConversationTurn) {
+      for (const message of this.state.messages) {
+        if (message.groupId === group.id && message.threadRootId === target.id) {
+          deletedIds.add(message.id)
+        }
+      }
+      if (group.conversationType === 'direct') {
+        let insideTurn = false
+        for (const message of this.state.messages) {
+          if (message.groupId !== group.id) continue
+          if (message.id === target.id) {
+            insideTurn = true
+            continue
+          }
+          if (!insideTurn) continue
+          if (message.role === 'user' && !message.threadRootId) break
+          deletedIds.add(message.id)
+        }
+      }
+    }
+
+    this.state.messages = this.state.messages.filter(message => !deletedIds.has(message.id))
+    this.save()
+    this.emitChanged()
+    return { deletedMessageIds: [...deletedIds] }
+  }
+
   getGroup(groupId) {
     const group = this.state.groups.find(item => item.id === groupId)
     if (!group) throw new Error('LOCAL_GROUP_NOT_FOUND')
@@ -835,7 +914,7 @@ class LocalWorkspace extends EventEmitter {
       groupId,
       role,
       agentKind,
-      senderName: role === 'user' ? 'User' : (AGENT_LABELS[agentKind] || 'System'),
+      senderName: role === 'user' ? 'User' : (agentKind ? this.agentLabel(agentKind) : 'System'),
       content: cleanText(content),
       createdAt: this.now(),
     }
@@ -1100,7 +1179,7 @@ class LocalWorkspace extends EventEmitter {
     transcriptAfterKind = '', contextPackage = null,
  ) {
     const packed = contextPackage || this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
-   const label = AGENT_LABELS[kind] || kind
+   const label = this.agentLabel(kind)
     const instruction = mode === 'auto'
       ? [
           'Read the most recent messages, respond directly to the previous participant, and advance the discussion. Do not speak for other Agents.',
@@ -1201,6 +1280,14 @@ class LocalWorkspace extends EventEmitter {
       this.save()
     }
     let sessionTransport = sessionRef ? String(sessionMeta.transport || '') : ''
+    const shouldStartFreshAcpSession = mode === 'auto' && sessionRef && sessionTransport === 'acp'
+    if (shouldStartFreshAcpSession) {
+      delete this.state.sessions[key]
+      sessionRef = ''
+      sessionTransport = ''
+      sessionRotated = true
+      this.save()
+    }
     const hermesNeedsLegacy = kind === 'hermes' && sessionTransport === 'acp'
       && (agent.acpAvailable === false
         || (context.attachments || []).length > 0
@@ -1549,6 +1636,23 @@ class LocalWorkspace extends EventEmitter {
     })
   }
 
+  validateAttachmentSupport(targetKinds, attachments) {
+    const values = Array.isArray(attachments) ? attachments : []
+    for (const kind of targetKinds) {
+      const support = this.attachmentSupportFn(kind) || {}
+      const counts = new Map()
+      for (const attachment of values) {
+        const type = attachmentType(attachment?.mimeType)
+        if (!type) throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
+        const count = (counts.get(type) || 0) + 1
+        counts.set(type, count)
+        const limit = Math.max(0, Math.min(MAX_MESSAGE_ATTACHMENTS, Math.floor(Number(support[type]) || 0)))
+        if (!limit) throw new Error(attachmentLimitError(type))
+        if (count > limit) throw new Error(attachmentLimitError(type, true))
+      }
+    }
+  }
+
   async preflightMessage(targetKinds, input, reservation) {
     const text = cleanText(input.text)
     const attachments = await this.resolveAttachments(input.attachments || [])
@@ -1556,11 +1660,7 @@ class LocalWorkspace extends EventEmitter {
       throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     }
     if (!text && !attachments.length) throw new Error('LOCAL_MESSAGE_REQUIRED')
-    for (const kind of targetKinds) {
-      const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
-      if (attachments.length && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
-      if (attachments.length > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
-    }
+    this.validateAttachmentSupport(targetKinds, attachments)
 
     const requestedSkillHints = input.skillHints || []
     const skillHintsByKind = new Map()
@@ -1981,14 +2081,10 @@ class LocalWorkspace extends EventEmitter {
     const rootMessage = this.state.messages.find(message => (
       message.id === threadRootId && message.groupId === group.id && message.role === 'user'
     ))
-    const rootAttachmentCount = Array.isArray(rootMessage?.attachments)
-      ? rootMessage.attachments.length
-      : 0
-    for (const kind of targetKinds) {
-      const limit = Number(this.imageAttachmentLimitFn(kind)) || 0
-      if (rootAttachmentCount && !limit) throw new Error('LOCAL_AGENT_IMAGE_UNSUPPORTED')
-      if (rootAttachmentCount > limit) throw new Error('LOCAL_AGENT_IMAGE_LIMIT')
-    }
+    const rootAttachments = (Array.isArray(rootMessage?.attachments) ? rootMessage.attachments : [])
+      .map(normalizeAttachmentMetadata)
+      .filter(Boolean)
+    this.validateAttachmentSupport(targetKinds, rootAttachments)
     this.startAutoRunner(group, targetKinds, threadRootId, maxRounds, null, null, unlimitedRounds)
     return { started: true, maxRounds, ...(unlimitedRounds ? { unlimitedRounds: true } : {}) }
   }

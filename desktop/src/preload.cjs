@@ -1,13 +1,22 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
-const SUPPORTED_IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg'])
+const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
+const ATTACHMENT_LIMITS = new Map([
+  ['image/png', 8 * 1024 * 1024],
+  ['image/jpeg', 8 * 1024 * 1024],
+  ['audio/mpeg', 32 * 1024 * 1024],
+  ['audio/wav', 64 * 1024 * 1024],
+  ['audio/mp4', 64 * 1024 * 1024],
+  ['video/mp4', MAX_ATTACHMENT_BYTES],
+  ['video/quicktime', MAX_ATTACHMENT_BYTES],
+  ['video/webm', MAX_ATTACHMENT_BYTES],
+])
 
 function attachmentError(code) {
   return Object.assign(new Error(code), { code })
 }
 
-function normalizeImageImport(input) {
+function normalizeAttachmentImport(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)
       || typeof input.name !== 'string' || input.name.length > 4096
       || typeof input.mimeType !== 'string' || input.mimeType.length > 128) {
@@ -15,7 +24,8 @@ function normalizeImageImport(input) {
   }
   const declaredMimeType = input.mimeType.split(';', 1)[0].trim().toLowerCase()
   const mimeType = declaredMimeType === 'image/jpg' ? 'image/jpeg' : declaredMimeType
-  if (!SUPPORTED_IMAGE_MIME_TYPES.has(mimeType)) {
+  const limit = ATTACHMENT_LIMITS.get(mimeType)
+  if (!limit) {
     throw attachmentError('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
   }
   const bytes = input.bytes
@@ -24,7 +34,7 @@ function normalizeImageImport(input) {
       || bytes.byteLength <= 0) {
     throw attachmentError('LOCAL_ATTACHMENT_BYTES_INVALID')
   }
-  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+  if (bytes.byteLength > limit) {
     throw attachmentError('LOCAL_ATTACHMENT_TOO_LARGE')
   }
   return {
@@ -48,6 +58,7 @@ if (isLocalDocument) Object.assign(desktopApi, {
     createGroup: input => ipcRenderer.invoke('local-workspace:create-group', input),
     updateGroup: (groupId, input) => ipcRenderer.invoke('local-workspace:update-group', groupId, input),
     deleteGroup: groupId => ipcRenderer.invoke('local-workspace:delete-group', groupId),
+    deleteMessage: (groupId, messageId) => ipcRenderer.invoke('local-workspace:delete-message', groupId, messageId),
     send: input => ipcRenderer.invoke('local-workspace:send', input),
     stop: groupId => ipcRenderer.invoke('local-workspace:stop', groupId),
     pickDirectory: () => ipcRenderer.invoke('local-workspace:pick-directory'),
@@ -88,11 +99,17 @@ if (isLocalDocument) Object.assign(desktopApi, {
       return () => ipcRenderer.removeListener('local-agent-installer:changed', listener)
     },
   }),
+  customAgent: Object.freeze({
+    create: input => ipcRenderer.invoke('local-custom-agent:create', input),
+    delete: kind => ipcRenderer.invoke('local-custom-agent:delete', kind),
+  }),
   localAttachments: Object.freeze({
-    pickImages: remainingCapacity => ipcRenderer.invoke(
-      'local-attachments:pick-images', remainingCapacity,
+    pickAttachments: remainingCapacity => ipcRenderer.invoke(
+      'local-attachments:pick', remainingCapacity,
     ),
-    importImage: input => ipcRenderer.invoke('local-attachments:import-image', normalizeImageImport(input)),
+    importAttachment: input => ipcRenderer.invoke(
+      'local-attachments:import', normalizeAttachmentImport(input),
+    ),
     preview: id => ipcRenderer.invoke('local-attachments:preview', id),
     discard: ids => ipcRenderer.invoke('local-attachments:discard', ids),
   }),

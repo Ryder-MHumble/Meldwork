@@ -16,7 +16,10 @@ const DENIED_TOOLS = [
 
 function normalizeProvider(input) {
   const apiKey = String(input?.OPENAI_API_KEY || '').trim()
-  const baseUrl = String(input?.OPENAI_BASE_URL || '').trim().replace(/\/$/, '')
+  const baseUrl = String(input?.OPENAI_BASE_URL || '')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/chat\/completions$/i, '')
   const model = String(input?.OPENAI_MODEL || '').trim()
   let parsed
   try { parsed = new URL(baseUrl) } catch { throw new Error('OPENCLAW_PROVIDER_INVALID') }

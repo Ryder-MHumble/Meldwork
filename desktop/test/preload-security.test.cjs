@@ -62,13 +62,19 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.deepEqual(
     Object.keys(api.localWorkspace).sort(),
     [
-      'createGroup', 'defaultDirectory', 'deleteGroup', 'get', 'onChanged',
+      'createGroup', 'defaultDirectory', 'deleteGroup', 'deleteMessage', 'get', 'onChanged',
       'onOpenGroup', 'onRunEvent', 'onRunFinished', 'pickDirectory', 'refreshAgents', 'send',
       'stop', 'updateGroup',
     ].sort(),
   )
   assert.equal('configure' in api.localWorkspace, false)
   assert.equal('cancelConfigure' in api.localWorkspace, false)
+  await api.localWorkspace.deleteMessage('group-1', 'message-1')
+  assert.deepEqual(invocations, [{
+    channel: 'local-workspace:delete-message',
+    args: ['group-1', 'message-1'],
+  }])
+  invocations.length = 0
   assert.deepEqual(
     Object.keys(api.localAgentProvider).sort(),
     ['activate', 'delete', 'probe', 'save', 'status'],
@@ -165,28 +171,62 @@ test('local preload exposes only the narrow Agent installer methods', async () =
   ])
 })
 
+test('local preload exposes only create and delete for Custom Agents', async () => {
+  const { api, invocations } = loadPreload('file:')
+
+  assert.equal(Object.isFrozen(api.customAgent), true)
+  assert.deepEqual(Object.keys(api.customAgent).sort(), ['create', 'delete'])
+  assert.equal('list' in api.customAgent, false)
+  assert.equal('run' in api.customAgent, false)
+  assert.equal('pickExecutable' in api.customAgent, false)
+
+  await api.customAgent.create({
+    label: 'Review Agent',
+    description: 'Reviews changes.',
+    args: ['review'],
+    promptMode: 'stdin',
+  })
+  await api.customAgent.delete('custom-0123456789abcdef')
+
+  assert.deepEqual(invocations, [
+    {
+      channel: 'local-custom-agent:create',
+      args: [{
+        label: 'Review Agent',
+        description: 'Reviews changes.',
+        args: ['review'],
+        promptMode: 'stdin',
+      }],
+    },
+    {
+      channel: 'local-custom-agent:delete',
+      args: ['custom-0123456789abcdef'],
+    },
+  ])
+})
+
 test('local preload exposes image import without filesystem read or path resolution methods', async () => {
   const { api, invocations } = loadPreload('file:')
 
   assert.equal(Object.isFrozen(api.localAttachments), true)
   assert.deepEqual(
     Object.keys(api.localAttachments).sort(),
-    ['discard', 'importImage', 'pickImages', 'preview'],
+    ['discard', 'importAttachment', 'pickAttachments', 'preview'],
   )
   assert.equal('read' in api.localAttachments, false)
   assert.equal('resolve' in api.localAttachments, false)
   const bytes = Uint8Array.from([1, 2, 3])
-  await api.localAttachments.pickImages(2)
-  await api.localAttachments.importImage({
+  await api.localAttachments.pickAttachments(2)
+  await api.localAttachments.importAttachment({
     name: 'diagram.png', mimeType: 'image/png', bytes,
   })
   bytes[0] = 9
   await api.localAttachments.preview('attachment-1')
   await api.localAttachments.discard(['attachment-1'])
   assert.deepEqual(invocations, [
-    { channel: 'local-attachments:pick-images', args: [2] },
+    { channel: 'local-attachments:pick', args: [2] },
     {
-      channel: 'local-attachments:import-image',
+      channel: 'local-attachments:import',
       args: [{ name: 'diagram.png', mimeType: 'image/png', bytes: Uint8Array.from([1, 2, 3]) }],
     },
     { channel: 'local-attachments:preview', args: ['attachment-1'] },
@@ -198,25 +238,25 @@ test('local preload rejects unbounded or unsupported renderer image payloads bef
   const { api, invocations } = loadPreload('file:')
 
   assert.throws(
-    () => api.localAttachments.importImage({
+    () => api.localAttachments.importAttachment({
       name: 'array.png', mimeType: 'image/png', bytes: [1, 2, 3],
     }),
     { code: 'LOCAL_ATTACHMENT_BYTES_INVALID' },
   )
   assert.throws(
-    () => api.localAttachments.importImage({
+    () => api.localAttachments.importAttachment({
       name: 'animation.gif', mimeType: 'image/gif', bytes: Uint8Array.from([1]),
     }),
     { code: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
   )
   assert.throws(
-    () => api.localAttachments.importImage({
+    () => api.localAttachments.importAttachment({
       name: 'preview.webp', mimeType: 'image/webp', bytes: Uint8Array.from([1]),
     }),
     { code: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
   )
   assert.throws(
-    () => api.localAttachments.importImage({
+    () => api.localAttachments.importAttachment({
       name: 'large.png', mimeType: 'image/png', bytes: new Uint8Array((8 * 1024 * 1024) + 1),
     }),
     { code: 'LOCAL_ATTACHMENT_TOO_LARGE' },
@@ -233,6 +273,7 @@ test('remote preload does not expose local credentials, workspace, or installer 
   assert.equal('getAuthToken' in api, false)
   assert.equal('localWorkspace' in api, false)
   assert.equal('agentInstaller' in api, false)
+  assert.equal('customAgent' in api, false)
   assert.equal('localAttachments' in api, false)
   assert.equal('localAgentProvider' in api, false)
   assert.equal('localKnowledgeBase' in api, false)

@@ -25,6 +25,11 @@ const QWEN_OFFICIAL_PROVIDER = Object.freeze({
   baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   model: 'qwen3-coder-plus',
 })
+const OCR_OFFICIAL_PROVIDER = Object.freeze({
+  provider: 'OpenAI API',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-5',
+})
 
 function credential(apiKey = 'test-provider-key', metadata = PROVIDER, preset = 'custom') {
   return { ...metadata, apiKey, preset }
@@ -55,7 +60,7 @@ function encryptedSafeStorage(available = true) {
   }
 }
 
-function fixture(safeStorage = encryptedSafeStorage(), allowedKinds = ['hermes', 'qwen']) {
+function fixture(safeStorage = encryptedSafeStorage(), allowedKinds = ['hermes', 'qwen', 'opencodereview']) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-provider-'))
   const storagePath = path.join(directory, 'roundrelay-provider.json')
   return {
@@ -165,6 +170,10 @@ test('preset metadata must match canonical OpenRouter and Agent official Provide
     store.save('qwen', credential('official-key', QWEN_OFFICIAL_PROVIDER, 'official')),
     configuredStatus(QWEN_OFFICIAL_PROVIDER, 'official'),
   )
+  assert.deepEqual(
+    store.save('opencodereview', credential('official-key', OCR_OFFICIAL_PROVIDER, 'official')),
+    configuredStatus(OCR_OFFICIAL_PROVIDER, 'official'),
+  )
   assert.throws(
     () => store.save('hermes', credential('key', {
       ...HERMES_OFFICIAL_PROVIDER,
@@ -201,6 +210,44 @@ test('custom preset keeps accepting secure arbitrary and loopback endpoints', (t
     model: 'local-model',
   }, 'custom')))
 })
+
+for (const kind of [
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo',
+  'claude', 'gemini', 'opencode', 'qwen', 'opencodereview',
+]) {
+  test(`${kind} Provider endpoints are stored as API roots`, (t) => {
+    const { directory, store } = fixture(encryptedSafeStorage(), [kind])
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+    const status = store.save(kind, credential(`${kind}-key`, {
+      ...PROVIDER,
+      baseUrl: 'https://api.example.com/v1/chat/completions/',
+    }))
+
+    assert.equal(status.baseUrl, 'https://api.example.com/v1')
+    assert.equal(status.profiles.custom.baseUrl, 'https://api.example.com/v1')
+    assert.equal(store.envForAgent(kind).OPENAI_BASE_URL, 'https://api.example.com/v1')
+  })
+
+  test(`legacy ${kind} profiles normalize duplicated chat completion endpoints on read`, (t) => {
+    const { directory, storagePath, store } = fixture(encryptedSafeStorage(), [kind])
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+    const encrypted = encryptedSafeStorage().encryptString(`legacy-${kind}-key`).toString('base64')
+    fs.writeFileSync(storagePath, JSON.stringify({
+      version: 2,
+      agents: {
+        [kind]: {
+          ...PROVIDER,
+          baseUrl: 'https://api.example.com/v1/chat/completions',
+          encrypted,
+        },
+      },
+    }), { mode: 0o600 })
+
+    assert.equal(store.status(kind).baseUrl, 'https://api.example.com/v1')
+    assert.equal(store.envForAgent(kind).OPENAI_BASE_URL, 'https://api.example.com/v1')
+  })
+}
 
 test('envForAgent decrypts the configured Provider', (t) => {
   const { directory, store } = fixture()
@@ -349,11 +396,12 @@ test('legacy shared credentials migrate into independent Agent entries on mutati
 
   assert.equal(store.status('hermes').configured, true)
   assert.equal(store.status('qwen').configured, true)
+  assert.equal(store.status('opencodereview').configured, true)
 
   store.save('qwen', credential('new-qwen-key', { ...PROVIDER, model: 'new-qwen-model' }))
   const migrated = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
   assert.equal(migrated.version, 3)
-  assert.deepEqual(Object.keys(migrated.agents).sort(), ['hermes', 'qwen'])
+  assert.deepEqual(Object.keys(migrated.agents).sort(), ['hermes', 'opencodereview', 'qwen'])
   assert.equal(store.envForAgent('hermes').OPENAI_API_KEY, 'legacy-key')
   assert.equal(store.envForAgent('qwen').OPENAI_API_KEY, 'new-qwen-key')
 })

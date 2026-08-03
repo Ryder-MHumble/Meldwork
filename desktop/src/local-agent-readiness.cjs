@@ -20,6 +20,7 @@ const CREDENTIAL_ENV_KEYS = Object.freeze({
   qwen: ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
   opencode: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'],
+  opencodereview: ['OCR_LLM_TOKEN', 'OPENAI_API_KEY'],
 })
 
 function readCredentialFile(filename) {
@@ -88,6 +89,7 @@ function nativeCredentialState(kind, options = {}) {
     qwen: [path.join(home, '.qwen', 'oauth_creds.json')],
     gemini: [path.join(home, '.gemini', 'oauth_creds.json')],
     opencode: [path.join(home, '.local', 'share', 'opencode', 'auth.json')],
+    opencodereview: [path.join(home, '.opencodereview', 'config.json')],
   }[kind] || []
   if (jsonFiles.some(jsonContainsCredential)) {
     return { state: 'ready', source: 'native-credential' }
@@ -136,9 +138,46 @@ function claudeAuthState(output) {
   return null
 }
 
+function openClawAuthState(output) {
+  try {
+    const status = JSON.parse(String(output || '').trim())
+    const auth = status?.auth
+    const resolvedModel = String(status?.resolvedDefault || status?.defaultModel || '').trim()
+    if (!auth || !resolvedModel) return null
+    if (Array.isArray(auth.missingProvidersInUse) && auth.missingProvidersInUse.length) {
+      return { state: 'missing', source: 'native-auth-status' }
+    }
+    return { state: 'ready', source: 'native-auth-status' }
+  } catch {
+    return null
+  }
+}
+
 async function resolveNativeCredentialState(kind, options = {}) {
   if (kind === 'mimo') return { state: 'ready', source: 'native-cli' }
   const current = nativeCredentialState(kind, options)
+  if (kind === 'openclaw') {
+    if (!options.executable
+        || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current
+    const platform = options.platform || process.platform
+    const prepareCommandFn = options.prepareCommandFn || prepareCommand
+    const execFileFn = options.execFileFn || execFileAsync
+    const prepared = prepareCommandFn(
+      options.executable,
+      ['models', 'status', '--check', '--json'],
+      { platform },
+    )
+    try {
+      const result = await execFileFn(prepared.command, prepared.args, {
+        timeout: 7000,
+        windowsHide: true,
+        env: probeEnvironment(options),
+      })
+      return openClawAuthState(result.stdout) || current
+    } catch (error) {
+      return openClawAuthState(error?.stdout) || current
+    }
+  }
   if (kind !== 'claude' || !options.executable
       || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current
 

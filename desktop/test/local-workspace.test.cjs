@@ -89,6 +89,40 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(readinessAgents.find(agent => agent.kind === 'kimi').executable, '/tmp/kimi')
 })
 
+test('Custom Agent kinds keep their dynamic label across execution and reload', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const kind = 'custom-0123456789abcdef'
+  options.detectAgents = async () => [{
+    kind,
+    name: 'Repository Reviewer CLI',
+    executable: '/tmp/review-agent',
+    version: '1.0.0',
+    custom: true,
+  }]
+  options.agentLabel = selectedKind => selectedKind === kind ? 'Repository Reviewer' : ''
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    conversationType: 'direct',
+    directAgentKind: kind,
+    agentKinds: [kind],
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Review this change', targetKinds: [kind] })
+
+  assert.match(calls[0].prompt, /as Repository Reviewer\./)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.equal(reply.agentKind, kind)
+  assert.equal(reply.senderName, 'Repository Reviewer')
+
+  const reloaded = new LocalWorkspace(options)
+  assert.equal(reloaded.snapshot().groups[0].directAgentKind, kind)
+  assert.equal(reloaded.snapshot().messages.find(message => message.role === 'agent').senderName,
+    'Repository Reviewer')
+})
+
 test('native readiness remains visible while a Meldwork Provider profile is active', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -488,6 +522,124 @@ test('image-only messages persist safe metadata and pass resolved paths to suppo
 
   const restored = new LocalWorkspace(options)
   assert.deepEqual(restored.snapshot().messages[0].attachments, [attachment])
+})
+
+test('message deletion persists replies individually and removes a whole group topic from history', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Message cleanup', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const root = workspace.addMessage(group.id, 'user', 'Remove this topic', '', '', null, {
+    attachments: [{
+      id: 'attachment-root', name: 'root.png', mimeType: 'image/png', size: 10,
+    }],
+  })
+  const reply = workspace.addMessage(group.id, 'agent', 'Remove only this reply', 'codex', root.id, null, {
+    attachments: [{
+      id: 'attachment-reply', name: 'reply.png', mimeType: 'image/png', size: 10,
+    }],
+  })
+  const retainedReply = workspace.addMessage(group.id, 'agent', 'Remove with the topic', 'hermes', root.id)
+  const topicStatus = workspace.addMessage(
+    group.id,
+    'system',
+    'Topic stopped',
+    '',
+    root.id,
+    { key: 'system.autoStopped', params: {} },
+  )
+  const otherRoot = workspace.addMessage(group.id, 'user', 'Keep this topic')
+  const otherReply = workspace.addMessage(group.id, 'agent', 'Keep this reply', 'codex', otherRoot.id)
+
+  assert.deepEqual(workspace.deleteMessage(group.id, reply.id), {
+    deletedMessageIds: [reply.id],
+  })
+  let messages = workspace.snapshot().messages
+  assert.equal(messages.some(message => message.id === reply.id), false)
+  assert.equal(messages.some(message => message.id === retainedReply.id), true)
+  assert.equal(new LocalWorkspace(options).snapshot().messages.some(message => message.id === reply.id), false)
+
+  const deleted = workspace.deleteMessage(group.id, root.id)
+  assert.deepEqual(new Set(deleted.deletedMessageIds), new Set([
+    root.id, retainedReply.id, topicStatus.id,
+  ]))
+  messages = workspace.snapshot().messages
+  assert.deepEqual(messages.map(message => message.id), [otherRoot.id, otherReply.id])
+  assert.deepEqual(
+    new LocalWorkspace(options).snapshot().messages.map(message => message.id),
+    [otherRoot.id, otherReply.id],
+  )
+})
+
+test('deleting a direct-chat user turn removes its inferred replies without touching later turns', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    conversationType: 'direct', directAgentKind: 'codex', agentKinds: ['codex'], workdir: directory,
+  })
+  const firstRoot = workspace.addMessage(group.id, 'user', 'First turn')
+  const firstReply = workspace.addMessage(group.id, 'agent', 'First answer', 'codex')
+  const firstFailure = workspace.addMessage(
+    group.id,
+    'system',
+    'First failure',
+    'codex',
+    '',
+    { key: 'system.agentCallFailed', params: { agent: 'Codex', reason: 'failed' } },
+  )
+  const secondRoot = workspace.addMessage(group.id, 'user', 'Second turn')
+  const secondReply = workspace.addMessage(group.id, 'agent', 'Second answer', 'codex')
+
+  const deleted = workspace.deleteMessage(group.id, firstRoot.id)
+
+  assert.deepEqual(new Set(deleted.deletedMessageIds), new Set([
+    firstRoot.id, firstReply.id, firstFailure.id,
+  ]))
+  assert.deepEqual(workspace.snapshot().messages.map(message => message.id), [secondRoot.id, secondReply.id])
+  assert.deepEqual(
+    new LocalWorkspace(options).snapshot().messages.map(message => message.id),
+    [secondRoot.id, secondReply.id],
+  )
+})
+
+test('message deletion rejects active, unknown, and cross-conversation targets', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const firstGroup = workspace.createGroup({
+    name: 'First', agentKinds: ['codex'], workdir: directory,
+  })
+  const secondGroup = workspace.createGroup({
+    name: 'Second', agentKinds: ['codex'], workdir: directory,
+  })
+  const firstMessage = workspace.addMessage(firstGroup.id, 'user', 'First message')
+  const secondMessage = workspace.addMessage(secondGroup.id, 'user', 'Second message')
+
+  assert.throws(
+    () => workspace.deleteMessage(firstGroup.id, secondMessage.id),
+    { message: 'LOCAL_MESSAGE_NOT_FOUND' },
+  )
+  assert.throws(
+    () => workspace.deleteMessage(firstGroup.id, 'missing-message'),
+    { message: 'LOCAL_MESSAGE_NOT_FOUND' },
+  )
+
+  workspace.activeRuns.set(
+    firstGroup.id,
+    workspace.createRunController('manual', ['codex'], firstMessage.id),
+  )
+  assert.throws(
+    () => workspace.deleteMessage(firstGroup.id, firstMessage.id),
+    { message: 'LOCAL_GROUP_RUNNING' },
+  )
+  workspace.activeRuns.delete(firstGroup.id)
+  assert.equal(workspace.snapshot().messages.some(message => message.id === firstMessage.id), true)
 })
 
 test('WebP attachment metadata is rejected before a message or Agent run is recorded', async (t) => {
@@ -1791,6 +1943,52 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
   assert.equal(finished[0].status, 'completed')
   assert.equal(finished[0].mode, 'auto')
 })
+
+for (const acpKind of ['hermes', 'kimi']) {
+  test(`automatic dialogue starts a fresh ${acpKind} ACP session each round`, async (t) => {
+    const { directory, calls, options } = fixture()
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+    options.runAgent = async (agent, prompt, workdir, runOptions) => {
+      calls.push({ agent, prompt, workdir, runOptions })
+      const agentCallCount = calls.filter(call => call.agent.kind === agent.kind).length
+      if (agent.kind === acpKind) {
+        await runOptions.onSessionRef(`${acpKind}-acp-session-${agentCallCount}`, { transport: 'acp' })
+      }
+      const consensus = agentCallCount > 1 ? 'agree' : 'continue'
+      const sessionRef = agent.kind === acpKind
+        ? `${acpKind}-acp-session-${agentCallCount}`
+        : runOptions.sessionRef || `${agent.kind}-session-${agentCallCount}`
+      return {
+        text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+        sessionRef,
+      }
+    }
+    const workspace = new LocalWorkspace(options)
+    await workspace.refreshAgents()
+    const group = workspace.createGroup({
+      name: `${acpKind} ACP discussion`, agentKinds: ['codex', acpKind], workdir: directory,
+    })
+
+    const started = await workspace.sendMessage({
+      groupId: group.id,
+      text: 'Check ACP session isolation',
+      mode: 'auto',
+      maxRounds: 2,
+    })
+    assert.equal(started.started, true)
+    await workspace.activeRuns.get(group.id).promise
+
+    const acpCalls = calls.filter(call => call.agent.kind === acpKind)
+    assert.deepEqual(acpCalls.map(call => call.runOptions.sessionRef), ['', ''])
+    assert.equal(acpCalls[1].runOptions.sessionTransport, '')
+    assert.match(acpCalls[1].prompt, new RegExp(`${acpKind} continue`))
+    assert.equal(
+      workspace.state.sessions[workspace.sessionKey(group.id, acpKind)],
+      `${acpKind}-acp-session-2`,
+    )
+    assert.equal(workspace.state.sessionMeta[workspace.sessionKey(group.id, acpKind)].transport, 'acp')
+  })
+}
 
 test('automatic dialogue queues only the explicitly targeted group members', async (t) => {
   const { directory, calls, options } = fixture()

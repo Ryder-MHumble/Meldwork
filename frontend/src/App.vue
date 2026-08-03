@@ -118,7 +118,7 @@
                     <time>{{ formatNavTime(group.updatedAt || group.createdAt) }}</time>
                   </button>
                   <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
-                    <span class="run-pulse" />
+                    <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
                   </span>
                   <span v-else-if="hasFinishedDirectRun(group.id)" class="run-finished-mark" :title="t('nav.runFinished')">
                     <CheckmarkCircleOutline />
@@ -191,7 +191,7 @@
                   <span class="group-avatar"><ChatbubblesOutline /></span>
                   <span>{{ groupName(group) }}</span>
                   <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
-                    <span class="run-pulse" />
+                    <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
                   </span>
                 </button>
                 <span class="group-conversation-actions">
@@ -239,6 +239,26 @@
           </section>
         </nav>
 
+        <div v-if="sidebarCollapsed" class="collapsed-group-switcher">
+          <button
+            ref="collapsedGroupMenuButton"
+            class="icon-button collapsed-group-switcher-button"
+            :class="{ active: collapsedGroupMenuOpen }"
+            type="button"
+            :title="t('nav.switchGroup')"
+            :aria-label="t('nav.switchGroup')"
+            :aria-expanded="String(collapsedGroupMenuOpen)"
+            aria-haspopup="dialog"
+            aria-controls="collapsed-group-menu"
+            @click="toggleCollapsedGroupMenu"
+          >
+            <ChatbubblesOutline />
+            <span v-if="groupGroups.length" class="collapsed-group-count" aria-hidden="true">
+              {{ groupGroups.length > 99 ? '99+' : groupGroups.length }}
+            </span>
+          </button>
+        </div>
+
         <footer class="sidebar-footer">
           <button
             class="sidebar-settings-entry"
@@ -274,6 +294,55 @@
           </div>
         </footer>
       </aside>
+
+      <Teleport to="body">
+        <section
+          v-if="collapsedGroupMenuOpen"
+          id="collapsed-group-menu"
+          ref="collapsedGroupMenu"
+          class="collapsed-group-menu"
+          role="dialog"
+          :aria-label="t('nav.switchGroup')"
+          :style="collapsedGroupMenuStyle"
+        >
+          <header class="collapsed-group-menu-header">
+            <span class="collapsed-group-menu-icon"><PeopleOutline /></span>
+            <span>
+              <strong>{{ t('nav.groups') }}</strong>
+              <small>{{ t('nav.groupCount', { count: groupGroups.length }) }}</small>
+            </span>
+          </header>
+          <div v-if="groupGroups.length" class="collapsed-group-menu-list">
+            <button
+              v-for="group in groupGroups"
+              :key="group.id"
+              class="collapsed-group-option"
+              :class="{ active: activeView === 'conversation' && selectedGroupId === group.id }"
+              type="button"
+              :title="t('nav.openGroup', { name: groupName(group) })"
+              :aria-current="activeView === 'conversation' && selectedGroupId === group.id ? 'page' : undefined"
+              @click="selectGroup(group.id)"
+            >
+              <span class="group-avatar"><ChatbubblesOutline /></span>
+              <span class="collapsed-group-option-main">
+                <strong>{{ groupName(group) }}</strong>
+                <small>{{ groupAgentSummary(group) }}</small>
+              </span>
+              <span class="collapsed-group-option-state">
+                <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+                  <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
+                </span>
+                <CheckmarkCircleOutline
+                  v-else-if="activeView === 'conversation' && selectedGroupId === group.id"
+                  aria-hidden="true"
+                />
+                <time v-else>{{ formatNavTime(group.updatedAt || group.createdAt) }}</time>
+              </span>
+            </button>
+          </div>
+          <p v-else class="collapsed-group-menu-empty">{{ t('nav.noGroups') }}</p>
+        </section>
+      </Teleport>
 
       <Teleport to="body">
         <span
@@ -347,14 +416,32 @@
             <section v-if="systemSettingsSection === 'agents'" class="settings-panel agent-manager">
               <div class="manager-toolbar">
                 <span>{{ t('home.readyCount', { ready: readyCount, installed: installedCount }) }}</span>
-                <button class="secondary-button" type="button" :disabled="refreshing" @click="refreshAgents">
-                  <RefreshOutline :class="{ spinning: refreshing }" />
-                  {{ t('installer.refresh') }}
-                </button>
+                <div class="manager-toolbar-actions">
+                  <button class="secondary-button" type="button" :disabled="saving" @click="openCustomAgentModal">
+                    <AddOutline />
+                    {{ t('customAgent.add') }}
+                  </button>
+                  <button class="secondary-button" type="button" :disabled="refreshing" @click="refreshAgents">
+                    <RefreshOutline :class="{ spinning: refreshing }" />
+                    {{ t('installer.refresh') }}
+                  </button>
+                </div>
               </div>
-              <div class="agent-grid settings-agent-grid">
+              <section
+                v-for="category in agentCatalogGroups"
+                :key="category.id"
+                class="agent-catalog-category"
+              >
+                <header class="agent-catalog-category-header">
+                  <div>
+                    <h2>{{ t(category.titleKey) }}</h2>
+                    <p>{{ t(category.subtitleKey) }}</p>
+                  </div>
+                  <small>{{ t('systemSettings.agentCount', { count: category.agents.length }) }}</small>
+                </header>
+                <div v-if="category.agents.length" class="agent-grid settings-agent-grid">
                 <article
-                  v-for="agent in mergedCatalog"
+                  v-for="agent in category.agents"
                   :key="agent.kind"
                   class="agent-card settings-agent-card"
                   :class="{ focused: focusedAgentKind === agent.kind }"
@@ -418,7 +505,11 @@
                         {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
                       </button>
                       <span v-else-if="!agent.installed" class="manager-note">
-                        {{ agent.installErrorCode === 'INSTALL_AGENT_NODE_REQUIRED' ? t('installer.nodeRequired') : t('installer.unsupported') }}
+                        {{ agent.custom
+                          ? t('customAgent.executableUnavailable')
+                          : agent.installErrorCode === 'INSTALL_AGENT_NODE_REQUIRED'
+                            ? t('installer.nodeRequired')
+                            : t('installer.unsupported') }}
                       </span>
                       <button
                         v-if="installerState.kind === agent.kind && installerState.canCancel"
@@ -438,7 +529,15 @@
                     </div>
                   </div>
                 </article>
-              </div>
+                </div>
+                <div v-else class="custom-agent-empty">
+                  <span>{{ t('customAgent.empty') }}</span>
+                  <button class="secondary-button compact" type="button" :disabled="saving" @click="openCustomAgentModal">
+                    <AddOutline />
+                    {{ t('customAgent.add') }}
+                  </button>
+                </div>
+              </section>
             </section>
 
             <section
@@ -1014,6 +1113,34 @@
                 <FolderOpenOutline />
                 <span>{{ compactPath(activeGroup.workdir) }}</span>
               </button>
+              <div ref="shortcutMenu" class="shortcut-menu-anchor">
+                <button
+                  class="icon-button"
+                  type="button"
+                  :title="t('shortcut.title')"
+                  :aria-label="t('shortcut.title')"
+                  :aria-expanded="String(shortcutMenuOpen)"
+                  aria-controls="keyboard-shortcut-menu"
+                  @click="shortcutMenuOpen = !shortcutMenuOpen"
+                >
+                  <KeyOutline />
+                </button>
+                <section
+                  v-if="shortcutMenuOpen"
+                  id="keyboard-shortcut-menu"
+                  class="shortcut-menu"
+                  role="dialog"
+                  :aria-label="t('shortcut.title')"
+                >
+                  <header>{{ t('shortcut.title') }}</header>
+                  <ul>
+                    <li v-for="shortcut in shortcutDefinitions" :key="shortcut.labelKey">
+                      <span>{{ t(shortcut.labelKey) }}</span>
+                      <kbd>{{ shortcut.keys }}</kbd>
+                    </li>
+                  </ul>
+                </section>
+              </div>
               <button
                 class="icon-button"
                 type="button"
@@ -1186,6 +1313,23 @@
                       >
                         <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
                         <CopyOutline v-else />
+                      </button>
+                      <button
+                        v-if="!message.provisional"
+                        class="message-delete-button"
+                        :class="{
+                          armed: messageDeleteArmedId === message.id,
+                          deleting: deletingMessageId === message.id,
+                        }"
+                        type="button"
+                        :disabled="messageDeleteDisabled(message)"
+                        :title="messageDeleteTitle(message)"
+                        :aria-label="messageDeleteTitle(message)"
+                        :aria-pressed="messageDeleteArmedId === message.id ? 'true' : 'false'"
+                        @click.stop="requestMessageDelete(message)"
+                      >
+                        <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
+                        <TrashOutline v-else />
                       </button>
                     </div>
                     <template v-if="message.role === 'agent'">
@@ -1649,7 +1793,8 @@
 
                 <div v-if="composerAttachments.length" class="composer-attachment-list">
                   <article v-for="attachment in composerAttachments" :key="attachment.id" class="composer-attachment">
-                    <img :src="attachment.previewDataUrl" :alt="attachment.name" />
+                    <img v-if="isImageAttachment(attachment)" :src="attachment.previewDataUrl" :alt="attachment.name" />
+                    <span v-else class="composer-attachment-media-icon" aria-hidden="true"><AttachOutline /></span>
                     <span :title="attachment.name">{{ attachment.name }}</span>
                     <button
                       type="button"
@@ -1742,8 +1887,8 @@
                       type="button"
                       :title="attachmentActionLabel"
                       :aria-label="attachmentActionLabel"
-                      :disabled="Boolean(activeRun) || sending || importingAttachment || (composerImageLimit > 0 && composerImageLimit <= composerAttachments.length)"
-                      @click="pickImages"
+                      :disabled="Boolean(activeRun) || sending || importingAttachment || !composerAttachmentSupported"
+                      @click="pickAttachments"
                     >
                       <RefreshOutline v-if="importingAttachment" class="spinning" />
                       <AttachOutline v-else />
@@ -1816,15 +1961,17 @@
           aria-labelledby="onboarding-title"
           tabindex="-1"
         >
-          <transition name="onboarding-slide" mode="out-in">
-            <article :key="onboardingIndex" class="onboarding-slide">
-              <img :src="onboardingSlide.image" alt="" />
-              <div>
-                <h1 id="onboarding-title">{{ onboardingSlide.title }}</h1>
-                <p>{{ onboardingSlide.body }}</p>
-              </div>
-            </article>
-          </transition>
+          <div class="onboarding-slide-viewport">
+            <transition name="onboarding-slide">
+              <article :key="onboardingIndex" class="onboarding-slide">
+                <img :src="onboardingSlide.image" alt="" />
+                <div>
+                  <h1 id="onboarding-title">{{ onboardingSlide.title }}</h1>
+                  <p>{{ onboardingSlide.body }}</p>
+                </div>
+              </article>
+            </transition>
+          </div>
           <footer class="onboarding-footer">
             <div class="onboarding-dots" :aria-label="t('onboarding.progress')">
               <button
@@ -1859,7 +2006,11 @@
             <section
               ref="modalDialog"
               class="modal"
-              :class="{ medium: modal === 'new-group' || modal === 'settings', 'agent-detail-modal': modal === 'agent-detail' }"
+              :class="{
+                medium: modal === 'new-group' || modal === 'settings' || modal === 'custom-agent',
+                'agent-detail-modal': modal === 'agent-detail',
+                'unlimited-confirm-modal': modal === 'unlimited-confirm',
+              }"
               role="dialog"
               aria-modal="true"
               aria-labelledby="modal-title"
@@ -2029,6 +2180,62 @@
             </footer>
           </form>
 
+          <form v-else-if="modal === 'custom-agent'" class="modal-body form-stack custom-agent-form" @submit.prevent="createCustomAgent">
+            <label>
+              <span>{{ t('customAgent.name') }}</span>
+              <input
+                v-model.trim="customAgentForm.label"
+                :placeholder="t('customAgent.namePlaceholder')"
+                maxlength="60"
+                :disabled="saving"
+              />
+            </label>
+            <label>
+              <span>{{ t('customAgent.description') }}</span>
+              <textarea
+                v-model.trim="customAgentForm.description"
+                :placeholder="t('customAgent.descriptionPlaceholder')"
+                maxlength="240"
+                rows="3"
+                :disabled="saving"
+              />
+            </label>
+            <label>
+              <span>{{ t('customAgent.arguments') }}</span>
+              <textarea
+                v-model="customAgentForm.argumentsText"
+                :placeholder="t('customAgent.argumentsPlaceholder')"
+                rows="4"
+                :disabled="saving"
+              />
+              <small>{{ t('customAgent.argumentsHint') }}</small>
+            </label>
+            <fieldset>
+              <legend>{{ t('customAgent.promptMode') }}</legend>
+              <div class="segmented-control custom-agent-prompt-modes">
+                <label :class="{ active: customAgentForm.promptMode === 'stdin' }">
+                  <input v-model="customAgentForm.promptMode" type="radio" value="stdin" :disabled="saving" />
+                  {{ t('customAgent.promptStdin') }}
+                </label>
+                <label :class="{ active: customAgentForm.promptMode === 'argument' }">
+                  <input v-model="customAgentForm.promptMode" type="radio" value="argument" :disabled="saving" />
+                  {{ t('customAgent.promptArgument') }}
+                </label>
+              </div>
+            </fieldset>
+            <div class="custom-agent-security-notice">
+              <WarningOutline />
+              <p>{{ t('customAgent.securityNotice') }}</p>
+            </div>
+            <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
+            <footer class="modal-footer">
+              <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
+              <button class="primary-button" type="submit" :disabled="saving || !customAgentForm.label">
+                {{ saving ? t('common.saving') : t('customAgent.chooseExecutable') }}
+              </button>
+            </footer>
+          </form>
+
           <section v-else-if="modal === 'unlimited-confirm'" class="modal-body confirmation-modal-body">
             <p>{{ t('composer.unlimitedConfirm') }}</p>
             <footer class="modal-footer confirmation-modal-footer">
@@ -2066,8 +2273,22 @@
 
             <section class="agent-detail-section">
               <h3>{{ t('agentDetail.soul') }}</h3>
-              <p>{{ t(`agent.soul.${selectedAgentDetail.kind}`) }}</p>
+              <p>{{ agentSoul(selectedAgentDetail) }}</p>
             </section>
+
+            <label v-if="selectedAgentDetail.installed" class="sidebar-visibility-control switch-row">
+              <input
+                type="checkbox"
+                :checked="selectedAgentDetail.showInSidebar !== false"
+                :disabled="saving"
+                @change="setAgentSidebarVisibility(selectedAgentDetail, $event.target.checked)"
+              />
+              <span class="switch-control" />
+              <span>
+                <strong>{{ t('agentDetail.showInSidebar') }}</strong>
+                <small>{{ t('agentDetail.showInSidebarHint') }}</small>
+              </span>
+            </label>
 
             <section class="agent-detail-section">
               <h3>{{ t('agentDetail.localSkills') }}</h3>
@@ -2081,7 +2302,18 @@
               </div>
             </section>
 
+            <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
             <footer class="modal-footer agent-detail-footer">
+              <button
+                v-if="selectedAgentDetail.custom"
+                class="danger-button"
+                type="button"
+                :disabled="saving"
+                @click="deleteCustomAgent"
+              >
+                <TrashOutline />
+                {{ customAgentDeleteArmed ? t('customAgent.deleteConfirm') : t('customAgent.delete') }}
+              </button>
               <button class="secondary-button" type="button" @click="closeModal">{{ t('common.close') }}</button>
               <button
                 v-if="supportsExternalProvider(selectedAgentDetail)"
@@ -2134,6 +2366,12 @@
           </button>
         </div>
       </transition>
+      <transition name="copy-toast">
+        <div v-if="copyToastMessage" class="copy-toast-message" role="status" aria-live="polite">
+          <CheckmarkCircleOutline />
+          <span>{{ copyToastMessage }}</span>
+        </div>
+      </transition>
     </template>
   </main>
 </template>
@@ -2175,7 +2413,7 @@ import {
 import MarkdownMessage from './components/MarkdownMessage.vue'
 import RunTracePanel from './components/RunTracePanel.vue'
 import { parseAgentRoutingPrefix } from './agent-routing.js'
-import { AGENTS, agentLabel, agentLogo, publicAsset } from './catalog.js'
+import { AGENTS, agentLabel, agentLogo, publicAsset, setCustomAgentProfiles } from './catalog.js'
 import { useAttachmentPreviews } from './composables/useAttachmentPreviews.js'
 import { KNOWLEDGE_BASE_CATALOG } from './knowledgeBaseCatalog.js'
 import { desktopApi, emptySnapshot, errorCode, mergeRunEvent, normalizeSnapshot } from './desktop.js'
@@ -2187,21 +2425,29 @@ const ONBOARDING_KEY = 'roundrelay-onboarding-seen-v1'
 const MAX_SKILLS = 4
 const MAX_KNOWLEDGE_BASES = 4
 const MAX_ATTACHMENTS = 4
-const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
+const ATTACHMENT_TYPES = new Set(['image', 'audio', 'video'])
 const COMPOSER_INPUT_MIN_HEIGHT = 58
 const COMPOSER_INPUT_MAX_HEIGHT = 180
 const DIRECT_SESSION_PREVIEW_LIMIT = 5
 const GROUP_SESSION_PREVIEW_LIMIT = 8
-const ONBOARDING_SLIDE_MS = 5000
+const ONBOARDING_SLIDE_MS = 3200
 const EMPTY_SHOWCASE_COUNT = 3
 const EMPTY_SHOWCASE_SLIDE_MS = 2800
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
 const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit',
 ])
+const shortcutDefinitions = Object.freeze([
+  { labelKey: 'shortcut.toggleSidebar', keys: 'Cmd/Ctrl + B' },
+  { labelKey: 'shortcut.newGroup', keys: 'Cmd/Ctrl + G' },
+  { labelKey: 'shortcut.previousConversation', keys: 'Cmd/Ctrl + [' },
+  { labelKey: 'shortcut.nextConversation', keys: 'Cmd/Ctrl + ]' },
+  { labelKey: 'shortcut.openAgents', keys: 'Cmd/Ctrl + ,' },
+])
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini',
-  'opencode',
+  'opencode', 'opencodereview',
 ])
 const NATIVE_PROVIDER_READY_SOURCES = new Set(['native-credential', 'native-auth-status', 'native-cli', 'verified-run'])
 const COMING_SOON_KNOWLEDGE_BASE_KINDS = new Set(['notion', 'confluence', 'googledrive', 'sharepoint'])
@@ -2252,12 +2498,17 @@ const emptyShowcaseIndex = ref(0)
 const roundSettingsOpen = ref(false)
 const formError = ref('')
 const deleteArmed = ref(false)
+const customAgentDeleteArmed = ref(false)
 const sidebarDeleteGroupId = ref('')
 const sidebarDeletePopoverPoint = ref({ left: 0, top: 0 })
 const providerRemoveArmed = ref(false)
 const installConfirmKind = ref('')
 const focusedAgentKind = ref('')
 const toastMessage = ref('')
+const copyToastMessage = ref('')
+const shortcutMenuOpen = ref(false)
+const collapsedGroupMenuOpen = ref(false)
+const collapsedGroupMenuPoint = ref({ left: 0, bottom: 0 })
 const settingsIntent = ref('settings')
 const knowledgeBaseSources = ref([])
 const knowledgeBaseLoading = ref(false)
@@ -2284,6 +2535,8 @@ const inlineTitleEditing = ref(false)
 const inlineTitleDraft = ref('')
 const activeTurnId = ref('')
 const copiedMessageIds = ref(new Set())
+const messageDeleteArmedId = ref('')
+const deletingMessageId = ref('')
 const collapsedTopicIds = ref(new Set())
 const directTraceDisclosure = ref(new Map())
 const tracePanelOpen = ref(false)
@@ -2305,7 +2558,11 @@ const settingsNameInput = ref(null)
 const onboardingDialog = ref(null)
 const modalDialog = ref(null)
 const roundSettingsControl = ref(null)
+const shortcutMenu = ref(null)
+const collapsedGroupMenuButton = ref(null)
+const collapsedGroupMenu = ref(null)
 let toastTimer = null
+let copyToastTimer = null
 let onboardingPlaybackTimer = null
 let emptyShowcaseTimer = null
 const copiedMessageTimers = new Map()
@@ -2336,6 +2593,7 @@ const api = computed(() => desktopApi())
 const desktopPlatform = computed(() => api.value?.platform || installCatalog.value.platform || '')
 const workspace = computed(() => api.value?.localWorkspace || null)
 const installer = computed(() => api.value?.agentInstaller || null)
+const customAgent = computed(() => api.value?.customAgent || null)
 const provider = computed(() => api.value?.localAgentProvider || null)
 const knowledgeBase = computed(() => api.value?.localKnowledgeBase || null)
 const attachmentsApi = computed(() => api.value?.localAttachments || null)
@@ -2395,7 +2653,7 @@ const onboardingSlides = computed(() => [
 const onboardingSlide = computed(() => onboardingSlides.value[onboardingIndex.value] || onboardingSlides.value[0])
 const onboardingLastIndex = computed(() => Math.max(0, onboardingSlides.value.length - 1))
 const onboardingOnLastSlide = computed(() => onboardingIndex.value === onboardingLastIndex.value)
-const onboardingReady = computed(() => onboardingPlaybackComplete.value && !onboardingDetecting.value)
+const onboardingReady = computed(() => !onboardingDetecting.value)
 const onboardingLoadingLabel = computed(() => (
   onboardingDetecting.value ? t('onboarding.detecting') : t('onboarding.loading')
 ))
@@ -2418,6 +2676,10 @@ const sidebarDeleteGroup = computed(() => snapshot.value.groups.find(group => gr
 const sidebarDeletePopoverStyle = computed(() => ({
   left: `${sidebarDeletePopoverPoint.value.left}px`,
   top: `${sidebarDeletePopoverPoint.value.top}px`,
+}))
+const collapsedGroupMenuStyle = computed(() => ({
+  left: `${collapsedGroupMenuPoint.value.left}px`,
+  bottom: `${collapsedGroupMenuPoint.value.bottom}px`,
 }))
 const activeGroupMemberSignature = computed(() => {
   const group = activeGroup.value
@@ -2823,7 +3085,7 @@ const conversationEmptyVisible = computed(() => (
 const addressedAgentKinds = computed(() => {
   const group = activeGroup.value
   if (!group || group.conversationType === 'direct') return []
-  const natural = parseAgentRoutingPrefix(draft.value, AGENTS, group.agentKinds).targetKinds
+  const natural = parseAgentRoutingPrefix(draft.value, mergedCatalog.value, group.agentKinds).targetKinds
   const addressed = new Set([...selectedAgentKinds.value, ...natural])
   return group.agentKinds.filter(kind => addressed.has(kind))
 })
@@ -2857,7 +3119,9 @@ const knowledgeBaseSelectionTargetKinds = computed(() => {
   if (!group) return []
   return group.conversationType === 'direct'
     ? [...group.agentKinds]
-    : [...selectedAgentKinds.value]
+    : addressedAgentKinds.value.length
+      ? [...addressedAgentKinds.value]
+      : [...group.agentKinds]
 })
 const filteredAgentMentionOptions = computed(() => {
   const group = activeGroup.value
@@ -2886,7 +3150,7 @@ const filteredSkillOptions = computed(() => {
     .slice(0, 8)
 })
 const filteredKnowledgeBaseOptions = computed(() => {
-  if (!skillMenuTargetKinds.value.length || !knowledgeBaseSelectionTargetKinds.value.length) return []
+  if (!knowledgeBaseSelectionTargetKinds.value.length) return []
   const query = currentSkillTrigger.value?.query.toLocaleLowerCase() || ''
   const targets = knowledgeBaseSelectionTargetKinds.value
   const selected = new Map(selectedKnowledgeBases.value.map(source => [source.kind, source]))
@@ -2930,7 +3194,23 @@ const importingAttachment = computed(() => attachmentImportOperations.value
   .some(operation => operation.contextVersion === composerContextVersion.value))
 const blockingOverlayOpen = computed(() => Boolean(modal.value || onboardingVisible.value))
 
-const mergedCatalog = computed(() => AGENTS.map((profile) => {
+const mergedCatalog = computed(() => [
+  ...AGENTS,
+  ...(installCatalog.value.agents || [])
+    .filter(agent => agent?.custom === true)
+    .map(agent => ({
+      kind: agent.kind,
+      label: agent.label,
+      logo: agentLogo(agent.kind, theme.value),
+      providerMode: 'custom',
+      imageLimit: MAX_ATTACHMENTS,
+      attachmentTypes: ['image', 'audio', 'video'],
+      custom: true,
+      description: agent.description || '',
+      commandName: agent.commandName || '',
+      promptMode: agent.promptMode || 'stdin',
+    })),
+].map((profile) => {
   const installedProfile = installCatalog.value.agents?.find(agent => agent.kind === profile.kind) || {}
   const detected = snapshot.value.agents.find(agent => agent.kind === profile.kind) || {}
   return {
@@ -2940,11 +3220,27 @@ const mergedCatalog = computed(() => AGENTS.map((profile) => {
     label: profile.label,
     logo: agentLogo(profile.kind, theme.value),
     providerMode: profile.providerMode,
-    imageLimit: Number(detected.imageAttachmentLimit ?? installedProfile.imageAttachmentLimit ?? profile.imageLimit) || 0,
+    imageLimit: profile.custom
+      ? MAX_ATTACHMENTS
+      : Number(detected.imageAttachmentLimit ?? installedProfile.imageAttachmentLimit ?? profile.imageLimit) || 0,
     installed: Boolean(installedProfile.installed || detected.installed),
     ready: detected.available === true,
   }
 }))
+const agentCatalogGroups = computed(() => [
+  {
+    id: 'official',
+    titleKey: 'systemSettings.officialAgents',
+    subtitleKey: 'systemSettings.officialAgentsHint',
+    agents: mergedCatalog.value.filter(agent => !agent.custom),
+  },
+  {
+    id: 'custom',
+    titleKey: 'systemSettings.customAgents',
+    subtitleKey: 'systemSettings.customAgentsHint',
+    agents: mergedCatalog.value.filter(agent => agent.custom),
+  },
+])
 const readyAgents = computed(() => mergedCatalog.value.filter(agent => agent.ready))
 const readyAgentSignature = computed(() => readyAgents.value.map(agent => agent.kind).join('\u0000'))
 const sidebarAgents = computed(() => mergedCatalog.value.filter((agent) => {
@@ -2969,16 +3265,40 @@ const composerImageLimit = computed(() => {
   })
   return Math.min(MAX_ATTACHMENTS, ...limits)
 })
+function attachmentLimitFor(type) {
+  const normalizedType = String(type || '')
+  if (!ATTACHMENT_TYPES.has(normalizedType)) return 0
+  const targets = composerTargetKinds.value
+  if (!targets.length) return 0
+  const limits = targets.map((kind) => {
+    const agent = mergedCatalog.value.find(item => item.kind === kind)
+    if (Array.isArray(agent?.attachmentTypes) && agent.attachmentTypes.includes(normalizedType)) {
+      return MAX_ATTACHMENTS
+    }
+    return normalizedType === 'image'
+      ? Math.max(0, Math.floor(Number(agent?.imageLimit) || 0))
+      : 0
+  })
+  return Math.min(MAX_ATTACHMENTS, ...limits)
+}
+const composerAttachmentLimit = computed(() => Math.max(
+  ...[...ATTACHMENT_TYPES].map(type => attachmentLimitFor(type)),
+))
+const composerAttachmentSupported = computed(() => composerAttachments.value.every((attachment) => {
+  const type = attachmentKind(attachment)
+  if (!ATTACHMENT_TYPES.has(type)) return false
+  return composerAttachments.value.filter(item => attachmentKind(item) === type).length <= attachmentLimitFor(type)
+}))
 const attachmentActionLabel = computed(() => {
   if (!composerTargetKinds.value.length) return t('composer.selectTarget')
   if (!composerTargetsReady.value) return t('error.agentUnavailable')
-  return composerImageLimit.value > 0 ? t('composer.attachImages') : t('agent.noImages')
+  return composerAttachmentLimit.value > 0 ? t('composer.attachMedia') : t('composer.attachmentsUnsupported')
 })
 const canSendMessage = computed(() => (
   composerTargetsReady.value
   && (composerMode.value !== 'auto' || composerTargetKinds.value.length >= 2)
   && !importingAttachment.value
-  && composerAttachments.value.length <= composerImageLimit.value
+  && composerAttachmentSupported.value
   && Boolean(draft.value.trim() || composerAttachments.value.length)
 ))
 const readyCount = computed(() => readyAgents.value.length)
@@ -2999,6 +3319,7 @@ const agentDetailSkillItems = ref([])
 const agentDetailSkillsLoading = ref(false)
 const selectedAgentDetail = computed(() => mergedCatalog.value.find(agent => agent.kind === selectedAgentDetailKind.value) || null)
 const agentDetailSkillSummary = computed(() => {
+  if (selectedAgentDetail.value?.custom) return t('customAgent.skillsUnsupported')
   if (agentDetailSkillsLoading.value) return t('agent.skillsLoading')
   if (!agentDetailSkillItems.value.length) return t('agent.skillsUnavailable')
   return t('agent.localSkills', { count: agentDetailSkillItems.value.length })
@@ -3088,6 +3409,7 @@ const roundProgressPercent = computed(() => {
 
 const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: true })
 const settingsForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
+const customAgentForm = reactive({ label: '', description: '', argumentsText: '', promptMode: 'stdin' })
 const providerForm = reactive({ preset: 'official', provider: '', baseUrl: '', model: '', apiKey: '' })
 
 const modalTitle = computed(() => ({
@@ -3095,11 +3417,13 @@ const modalTitle = computed(() => ({
   settings: settingsIntent.value === 'rename'
     ? t(activeGroup.value?.conversationType === 'direct' ? 'settings.renameDirectTitle' : 'settings.renameGroupTitle')
     : t('settings.title'),
+  'custom-agent': t('customAgent.title'),
   'unlimited-confirm': t('composer.unlimitedConfirmTitle'),
   'agent-detail': selectedAgentDetail.value?.label || t('systemSettings.openAgentDetailDefault'),
 })[modal.value] || '')
 const modalSubtitle = computed(() => ({
   settings: groupName(activeGroup.value),
+  'custom-agent': t('customAgent.subtitle'),
   'agent-detail': agentDetailSkillSummary.value,
 })[modal.value] || '')
 
@@ -3112,6 +3436,10 @@ function sortByUpdated(a, b) {
 
 function groupName(group) {
   return group?.name || t('group.defaultName')
+}
+
+function groupAgentSummary(group) {
+  return (group?.agentKinds || []).map(kind => agentLabel(kind)).filter(Boolean).join(', ')
 }
 
 function directGroupsFor(kind) {
@@ -3187,6 +3515,36 @@ function toggleGroupSessionListExpanded() {
   groupSessionListExpanded.value = !groupSessionListExpanded.value
 }
 
+function updateCollapsedGroupMenuPosition() {
+  const rect = collapsedGroupMenuButton.value?.getBoundingClientRect()
+  if (!rect) return
+  collapsedGroupMenuPoint.value = {
+    left: Math.max(12, Math.min(rect.right + 8, window.innerWidth - 312)),
+    bottom: Math.max(12, window.innerHeight - rect.bottom),
+  }
+}
+
+function closeCollapsedGroupMenu({ restoreFocus = false } = {}) {
+  if (!collapsedGroupMenuOpen.value) return
+  collapsedGroupMenuOpen.value = false
+  if (restoreFocus) void nextTick(() => collapsedGroupMenuButton.value?.focus())
+}
+
+async function toggleCollapsedGroupMenu() {
+  if (collapsedGroupMenuOpen.value) {
+    closeCollapsedGroupMenu({ restoreFocus: true })
+    return
+  }
+  shortcutMenuOpen.value = false
+  updateCollapsedGroupMenuPosition()
+  collapsedGroupMenuOpen.value = true
+  await nextTick()
+  const activeOption = collapsedGroupMenu.value?.querySelector('[aria-current="page"]')
+  const firstOption = collapsedGroupMenu.value?.querySelector('.collapsed-group-option')
+  const focusTarget = activeOption || firstOption
+  focusTarget?.focus()
+}
+
 function handleSidebarAgentMain(agent) {
   if (!agent || isDirectCreationPending(agent.kind)) return
   if (sidebarCollapsed.value) {
@@ -3220,7 +3578,15 @@ function providerModeShortLabel(mode) {
 }
 
 function agentDescription(kind) {
+  const profile = mergedCatalog.value.find(agent => agent.kind === kind)
+  if (profile?.custom && profile.description) return profile.description
+  if (profile?.custom) return t('customAgent.defaultDescription')
   return t(`agent.description.${kind}`)
+}
+
+function agentSoul(agent) {
+  if (agent?.custom) return agent.description || t('customAgent.detailBody')
+  return t(`agent.soul.${agent?.kind}`)
 }
 
 function providerStatusFor(kind) {
@@ -3366,6 +3732,7 @@ function providerStatusIcon(kind) {
 
 function providerSummaryLabel(agent) {
   if (!agent) return ''
+  if (agent.custom) return t('customAgent.cliManaged')
   if (supportsExternalProvider(agent)) {
     const status = providerStatusFor(agent.kind)
     if (!hasProviderStatus(agent.kind)) return t('provider.checking')
@@ -3450,6 +3817,9 @@ function conversationPermissionLabel(group) {
 }
 
 function agentSkillLabel(kind) {
+  if (mergedCatalog.value.find(agent => agent.kind === kind)?.custom) {
+    return t('customAgent.skillsUnsupported')
+  }
   const state = agentSkillStats.value[kind]
   if (!state || state.loading) return t('agent.skillsLoading')
   if (!Number.isFinite(state.total)) return t('agent.skillsUnavailable')
@@ -3464,7 +3834,7 @@ function agentImageLabel(agent) {
 
 async function loadAgentSkillStats() {
   if (typeof installer.value?.skills !== 'function') return
-  const kinds = readyAgents.value.map(agent => agent.kind)
+  const kinds = readyAgents.value.filter(agent => !agent.custom).map(agent => agent.kind)
   const token = ++agentSkillStatsToken
   const next = { ...agentSkillStats.value }
   for (const kind of kinds) next[kind] = { loading: true, total: next[kind]?.total }
@@ -3533,6 +3903,10 @@ async function loadAgentDetailSkills(kind) {
   const targetKind = String(kind || '')
   const token = ++agentDetailSkillToken
   agentDetailSkillItems.value = []
+  if (mergedCatalog.value.find(agent => agent.kind === targetKind)?.custom) {
+    agentDetailSkillsLoading.value = false
+    return
+  }
   if (!targetKind || typeof installer.value?.skills !== 'function') {
     agentDetailSkillsLoading.value = false
     return
@@ -3900,6 +4274,77 @@ async function copyMessageContent(message, event, force = false) {
     return
   }
   markMessageCopied(message.id)
+  showCopyToast()
+}
+
+function messageDeletionScope(message) {
+  if (message?.role !== 'user' || message.threadRootId) return 'message'
+  return activeGroup.value?.conversationType === 'direct' ? 'turn' : 'topic'
+}
+
+function messageDeleteDisabled(message) {
+  return typeof workspace.value?.deleteMessage !== 'function'
+    || isGroupRunning(message?.groupId)
+    || Boolean(deletingMessageId.value)
+}
+
+function messageDeleteTitle(message) {
+  if (isGroupRunning(message?.groupId)) return t('conversation.deleteMessageRunning')
+  const scope = messageDeletionScope(message)
+  const confirming = messageDeleteArmedId.value === message?.id
+  if (scope === 'topic') {
+    return t(confirming ? 'conversation.confirmDeleteTopic' : 'conversation.deleteTopic')
+  }
+  if (scope === 'turn') {
+    return t(confirming ? 'conversation.confirmDeleteTurn' : 'conversation.deleteTurn')
+  }
+  return t(confirming ? 'conversation.confirmDeleteMessage' : 'conversation.deleteMessage')
+}
+
+function clearDeletedMessageUi(snapshotValue, groupId, rootId = '') {
+  const remainingIds = new Set(snapshotValue.messages.map(message => message.id))
+  copiedMessageIds.value = new Set([...copiedMessageIds.value].filter(id => remainingIds.has(id)))
+  for (const [id, timer] of copiedMessageTimers) {
+    if (remainingIds.has(id)) continue
+    clearTimeout(timer)
+    copiedMessageTimers.delete(id)
+  }
+  if (!rootId) return
+  const collapsed = new Set(collapsedTopicIds.value)
+  collapsed.delete(rootId)
+  collapsedTopicIds.value = collapsed
+  const statuses = new Map(runFinishedTurnStatuses.value)
+  statuses.delete(runFinishedTurnKey(groupId, rootId))
+  runFinishedTurnStatuses.value = statuses
+  if (activeTurnId.value === rootId) activeTurnId.value = ''
+}
+
+async function confirmMessageDelete(message) {
+  if (!message?.id || messageDeleteDisabled(message)) return
+  const groupId = String(message.groupId || activeGroup.value?.id || '')
+  const messageId = String(message.id)
+  const deletesTurn = messageDeletionScope(message) !== 'message'
+  deletingMessageId.value = messageId
+  try {
+    const result = await workspace.value.deleteMessage(groupId, messageId)
+    const nextSnapshot = normalizeSnapshot(result?.messages ? result : await workspace.value.get())
+    snapshot.value = nextSnapshot
+    clearDeletedMessageUi(nextSnapshot, groupId, deletesTurn ? messageId : '')
+    messageDeleteArmedId.value = ''
+  } catch (error) {
+    showError(error)
+  } finally {
+    deletingMessageId.value = ''
+  }
+}
+
+function requestMessageDelete(message) {
+  if (!message?.id || messageDeleteDisabled(message)) return
+  if (messageDeleteArmedId.value === message.id) {
+    void confirmMessageDelete(message)
+    return
+  }
+  messageDeleteArmedId.value = message.id
 }
 
 function isDismissibleSystemWarning(message) {
@@ -4070,7 +4515,7 @@ function messageScopedTargetKinds(message, group) {
   if (!message || !group || !Array.isArray(group.agentKinds)) return []
   const explicit = messageTargetKinds(message)
   const mentioned = Array.isArray(message?.mentionedAgentKinds) ? message.mentionedAgentKinds : []
-  const natural = parseAgentRoutingPrefix(message.content, AGENTS, group.agentKinds).targetKinds
+  const natural = parseAgentRoutingPrefix(message.content, mergedCatalog.value, group.agentKinds).targetKinds
   const requested = explicit.length ? explicit : mentioned.length ? mentioned : natural
   const selected = new Set(requested.map(kind => String(kind || '')))
   return group.agentKinds.filter(kind => selected.has(kind))
@@ -4082,8 +4527,15 @@ function normalizeAttachment(attachment) {
   const mimeType = String(attachment?.mimeType || '')
   const size = Number(attachment?.size || 0)
   const previewDataUrl = String(attachment?.previewDataUrl || '')
-  if (!id || !name || !mimeType.startsWith('image/') || !previewDataUrl) return null
-  return { id, name, mimeType, size: Number.isFinite(size) ? size : 0, previewDataUrl }
+  const kind = attachmentKind({ mimeType })
+  if (!id || !name || !ATTACHMENT_TYPES.has(kind) || (kind === 'image' && !previewDataUrl)) return null
+  return {
+    id,
+    name,
+    mimeType,
+    size: Number.isFinite(size) ? size : 0,
+    ...(previewDataUrl ? { previewDataUrl } : {}),
+  }
 }
 
 function safeAttachmentPayload(attachment) {
@@ -4133,9 +4585,9 @@ async function discardAttachments(values) {
 }
 
 function attachmentLimitMessage() {
-  if (composerImageLimit.value <= 0) return t('error.imageUnsupported')
-  return composerImageLimit.value < MAX_ATTACHMENTS
-    ? t('error.imageLimit')
+  if (composerAttachmentLimit.value <= 0) return t('composer.attachmentsUnsupported')
+  return composerAttachmentLimit.value < MAX_ATTACHMENTS
+    ? t('composer.attachmentTypeLimit')
     : t('composer.attachmentLimit')
 }
 
@@ -4144,9 +4596,22 @@ function addAttachments(values) {
   normalized.forEach(rememberAttachmentPreview)
   const existingIds = new Set(composerAttachments.value.map(attachment => attachment.id))
   const available = normalized.filter(attachment => !existingIds.has(attachment.id))
-  const room = Math.max(0, composerImageLimit.value - composerAttachments.value.length)
-  const accepted = available.slice(0, room)
-  const overflow = available.slice(room)
+  const counts = new Map([...ATTACHMENT_TYPES].map(type => [
+    type,
+    composerAttachments.value.filter(attachment => attachmentKind(attachment) === type).length,
+  ]))
+  const accepted = []
+  const overflow = []
+  for (const attachment of available) {
+    const type = attachmentKind(attachment)
+    const used = counts.get(type) || 0
+    if (used >= attachmentLimitFor(type) || accepted.length + composerAttachments.value.length >= MAX_ATTACHMENTS) {
+      overflow.push(attachment)
+      continue
+    }
+    counts.set(type, used + 1)
+    accepted.push(attachment)
+  }
   composerAttachments.value = [...composerAttachments.value, ...accepted]
   if (overflow.length) {
     notify(attachmentLimitMessage())
@@ -4311,6 +4776,7 @@ function handleRunEvent(event) {
 }
 
 function goHome() {
+  closeCollapsedGroupMenu()
   activeView.value = 'home'
   sidebarDeleteGroupId.value = ''
   pendingRequestedGroupId = ''
@@ -4318,6 +4784,7 @@ function goHome() {
 }
 
 function selectGroup(id) {
+  closeCollapsedGroupMenu()
   const group = snapshot.value.groups.find(item => item.id === id)
   if (!group) {
     selectedGroupId.value = ''
@@ -4366,6 +4833,7 @@ function supportsExternalProvider(agent) {
 
 function agentState(agent) {
   if (agent.ready) return { label: t('agent.ready'), tone: 'ready', icon: CheckmarkCircleOutline }
+  if (agent.custom) return { label: t('customAgent.executableUnavailable'), tone: 'warning', icon: WarningOutline }
   if (!agent.installed) return { label: t('agent.notInstalled'), tone: 'off', icon: DownloadOutline }
   if (agent.credentialState === 'missing') return { label: t('agent.needsLogin'), tone: 'warning', icon: WarningOutline }
   return { label: t('agent.unverified'), tone: 'neutral', icon: WarningOutline }
@@ -4446,7 +4914,7 @@ async function refreshAgents() {
       installer.value?.state?.() || installerState.value,
     ])
     snapshot.value = normalizeSnapshot(nextSnapshot)
-    installCatalog.value = nextCatalog || { platform: '', agents: [] }
+    applyInstallCatalog(nextCatalog)
     installerState.value = nextInstaller || installerState.value
     invalidateAgentSkillCatalog()
     if (readyAgentSignature.value && readyAgentSignature.value === previousReadyAgentSignature) {
@@ -4459,6 +4927,17 @@ async function refreshAgents() {
   }
 }
 
+function applyInstallCatalog(value) {
+  const catalog = value && typeof value === 'object'
+    ? value
+    : { platform: '', agents: [] }
+  installCatalog.value = {
+    ...catalog,
+    agents: Array.isArray(catalog.agents) ? catalog.agents : [],
+  }
+  setCustomAgentProfiles(installCatalog.value.agents.filter(agent => agent?.custom === true))
+}
+
 function openNewGroup() {
   if (saving.value) return
   formError.value = ''
@@ -4469,6 +4948,50 @@ function openNewGroup() {
   groupForm.allowWrite = true
   modal.value = 'new-group'
   void ensureDefaultDirectory().then(path => { if (!groupForm.workdir) groupForm.workdir = path })
+}
+
+function openCustomAgentModal() {
+  if (saving.value) return
+  formError.value = ''
+  customAgentForm.label = ''
+  customAgentForm.description = ''
+  customAgentForm.argumentsText = ''
+  customAgentForm.promptMode = 'stdin'
+  customAgentDeleteArmed.value = false
+  modal.value = 'custom-agent'
+}
+
+async function createCustomAgent() {
+  formError.value = ''
+  if (!customAgentForm.label) {
+    formError.value = t('customAgent.nameRequired')
+    return
+  }
+  if (typeof customAgent.value?.create !== 'function') {
+    formError.value = t('error.bridge')
+    return
+  }
+  const args = customAgentForm.argumentsText
+    .split(/\r?\n/)
+    .map(argument => argument.trim())
+    .filter(Boolean)
+  saving.value = true
+  try {
+    const result = await customAgent.value.create({
+      label: customAgentForm.label,
+      description: customAgentForm.description,
+      args,
+      promptMode: customAgentForm.promptMode,
+    })
+    if (result?.canceled) return
+    await refreshAgents()
+    focusedAgentKind.value = String(result?.agent?.kind || '')
+    closeModal({ force: true })
+  } catch (error) {
+    formError.value = translateError(error)
+  } finally {
+    saving.value = false
+  }
 }
 
 async function pickGroupDirectory(target) {
@@ -4888,8 +5411,9 @@ function removeAttachment(id) {
   void discardAttachments([id])
 }
 
-async function pickImages() {
-  if (typeof attachmentsApi.value?.pickImages !== 'function') {
+async function pickAttachments() {
+  const pick = attachmentsApi.value?.pickAttachments
+  if (typeof pick !== 'function') {
     notify(t('composer.attachmentsUnavailable'))
     return
   }
@@ -4901,12 +5425,13 @@ async function pickImages() {
     notify(t('error.agentUnavailable'))
     return
   }
-  if (composerImageLimit.value <= 0) {
-    notify(t('error.imageUnsupported'))
+  if (composerAttachmentLimit.value <= 0) {
+    notify(t('composer.attachmentsUnsupported'))
     return
   }
-  const remainingCapacity = Math.max(
-    0, composerImageLimit.value - composerAttachments.value.length,
+  const remainingCapacity = Math.min(
+    Math.max(0, MAX_ATTACHMENTS - composerAttachments.value.length),
+    composerAttachmentLimit.value,
   )
   if (!remainingCapacity) {
     notify(attachmentLimitMessage())
@@ -4915,7 +5440,7 @@ async function pickImages() {
   const operation = beginAttachmentImport()
   if (!operation) return
   try {
-    const result = await attachmentsApi.value.pickImages(remainingCapacity)
+    const result = await pick(remainingCapacity)
     const values = Array.isArray(result) ? result : (Array.isArray(result?.attachments) ? result.attachments : [])
     if (attachmentImportIsCurrent(operation)) {
       addAttachments(values)
@@ -4930,11 +5455,15 @@ async function pickImages() {
 }
 
 async function handleComposerPaste(event) {
-  if (typeof attachmentsApi.value?.importImage !== 'function') return
-  const files = Array.from(event.clipboardData?.items || [])
-    .filter(item => item.kind === 'file' && String(item.type || '').startsWith('image/'))
-    .map(item => item.getAsFile?.())
-    .filter(Boolean)
+  const importAttachment = attachmentsApi.value?.importAttachment
+  if (typeof importAttachment !== 'function') return
+  const files = [...new Map([
+    ...Array.from(event.clipboardData?.files || []),
+    ...Array.from(event.clipboardData?.items || [])
+      .filter(item => item.kind === 'file')
+      .map(item => item.getAsFile?.())
+      .filter(Boolean),
+  ].map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
   if (!files.length) return
   event.preventDefault()
   if (importingAttachment.value) {
@@ -4949,7 +5478,7 @@ async function handleComposerPaste(event) {
     notify(t('error.agentUnavailable'))
     return
   }
-  const room = Math.max(0, composerImageLimit.value - composerAttachments.value.length)
+  const room = Math.max(0, MAX_ATTACHMENTS - composerAttachments.value.length)
   if (!room) {
     notify(attachmentLimitMessage())
     return
@@ -4959,17 +5488,26 @@ async function handleComposerPaste(event) {
   if (!operation) return
   try {
     const imported = []
+    const attachmentCounts = new Map([...ATTACHMENT_TYPES].map(type => [
+      type,
+      composerAttachments.value.filter(attachment => attachmentKind(attachment) === type).length,
+    ]))
     for (const file of files.slice(0, room)) {
       if (!attachmentImportIsCurrent(operation)) break
       try {
+        const type = attachmentKind({ mimeType: file.type })
+        if (!ATTACHMENT_TYPES.has(type) || (attachmentCounts.get(type) || 0) >= attachmentLimitFor(type)) {
+          notify(attachmentLimitMessage())
+          continue
+        }
         if (Number(file.size) > MAX_ATTACHMENT_BYTES) {
           throw Object.assign(new Error('LOCAL_ATTACHMENT_TOO_LARGE'), {
             code: 'LOCAL_ATTACHMENT_TOO_LARGE',
           })
         }
         const bytes = new Uint8Array(await file.arrayBuffer())
-        const attachment = await attachmentsApi.value.importImage({
-          name: String(file.name || t('composer.pastedImage')),
+        const attachment = await importAttachment({
+          name: String(file.name || t('composer.pastedAttachment')),
           mimeType: String(file.type || 'application/octet-stream'),
           bytes,
         })
@@ -4978,6 +5516,7 @@ async function handleComposerPaste(event) {
           break
         }
         imported.push(attachment)
+        attachmentCounts.set(type, (attachmentCounts.get(type) || 0) + 1)
       } catch (error) {
         if (attachmentImportIsCurrent(operation)) showError(error)
       }
@@ -5048,7 +5587,7 @@ async function sendMessage() {
     notify(t('error.agentUnavailable'))
     return
   }
-  if (attachments.length > composerImageLimit.value) {
+  if (!composerAttachmentSupported.value || attachments.length > MAX_ATTACHMENTS) {
     notify(attachmentLimitMessage())
     return
   }
@@ -5170,11 +5709,47 @@ function openAgentDetail(agent) {
   focusedAgentKind.value = agent.kind
   installConfirmKind.value = ''
   formError.value = ''
+  customAgentDeleteArmed.value = false
   selectedAgentDetailKind.value = agent.kind
   agentDetailSkillItems.value = []
   agentDetailSkillsLoading.value = false
   modal.value = 'agent-detail'
   void loadAgentDetailSkills(agent.kind)
+}
+
+async function setAgentSidebarVisibility(agent, visible) {
+  if (!agent?.kind || typeof installer.value?.setSidebarVisibility !== 'function' || saving.value) return
+  saving.value = true
+  formError.value = ''
+  try {
+    snapshot.value = normalizeSnapshot(await installer.value.setSidebarVisibility(agent.kind, visible === true))
+  } catch (error) {
+    formError.value = translateError(error)
+  } finally {
+    saving.value = false
+  }
+}
+
+async function deleteCustomAgent() {
+  const agent = selectedAgentDetail.value
+  if (!agent?.custom || typeof customAgent.value?.delete !== 'function' || saving.value) return
+  if (!customAgentDeleteArmed.value) {
+    customAgentDeleteArmed.value = true
+    return
+  }
+  saving.value = true
+  formError.value = ''
+  try {
+    await customAgent.value.delete(agent.kind)
+    closeModal({ force: true })
+    focusedAgentKind.value = ''
+    await refreshAgents()
+  } catch (error) {
+    formError.value = translateError(error)
+    customAgentDeleteArmed.value = false
+  } finally {
+    saving.value = false
+  }
 }
 
 async function requestInstall(agent) {
@@ -5711,6 +6286,7 @@ function closeModal(options = {}) {
   settingsIntent.value = 'settings'
   formError.value = ''
   deleteArmed.value = false
+  customAgentDeleteArmed.value = false
   providerRemoveArmed.value = false
   installConfirmKind.value = ''
   selectedAgentDetailKind.value = ''
@@ -5724,6 +6300,12 @@ function notify(message) {
   toastMessage.value = message
   clearTimeout(toastTimer)
   toastTimer = setTimeout(() => { toastMessage.value = '' }, 3600)
+}
+
+function showCopyToast() {
+  copyToastMessage.value = t('conversation.copySuccess')
+  clearTimeout(copyToastTimer)
+  copyToastTimer = setTimeout(() => { copyToastMessage.value = '' }, 1500)
 }
 
 function dismissToast() {
@@ -5830,6 +6412,7 @@ async function scrollToLatest({ force = false } = {}) {
 
 async function boot() {
   applyTheme(theme.value)
+  setCustomAgentProfiles([])
   if (!workspace.value || !installer.value || !provider.value) {
     bridgeMissing.value = true
     booting.value = false
@@ -5898,40 +6481,104 @@ function trapOverlayFocus(event) {
   return false
 }
 
+function selectAdjacentConversation(direction) {
+  const groups = [...snapshot.value.groups].sort(sortByUpdated)
+  if (!groups.length) return
+  const activeIndex = groups.findIndex(group => group.id === selectedGroupId.value)
+  const nextIndex = activeIndex < 0
+    ? 0
+    : (activeIndex + direction + groups.length) % groups.length
+  selectGroup(groups[nextIndex].id)
+}
+
 function handleWindowKeydown(event) {
-  if (trapOverlayFocus(event) || event.key !== 'Escape') return
-  if (tracePanelOpen.value) {
-    closeTracePanel()
+  if (trapOverlayFocus(event)) return
+  if (event.key === 'Escape') {
+    if (messageDeleteArmedId.value) {
+      messageDeleteArmedId.value = ''
+      return
+    }
+    if (collapsedGroupMenuOpen.value) {
+      closeCollapsedGroupMenu({ restoreFocus: true })
+      return
+    }
+    if (shortcutMenuOpen.value) {
+      shortcutMenuOpen.value = false
+      return
+    }
+    if (tracePanelOpen.value) {
+      closeTracePanel()
+      return
+    }
+    if (sidebarDeleteGroupId.value) {
+      sidebarDeleteGroupId.value = ''
+      return
+    }
+    if (onboardingVisible.value) {
+      completeOnboarding()
+      return
+    }
+    if (modal.value === 'settings' && deleteArmed.value) {
+      deleteArmed.value = false
+      return
+    }
+    if (modal.value === 'agent-detail' && customAgentDeleteArmed.value) {
+      customAgentDeleteArmed.value = false
+      return
+    }
+    if (modal.value) {
+      closeModal()
+      return
+    }
+    if (roundSettingsOpen.value) {
+      roundSettingsOpen.value = false
+      return
+    }
+    if (skillMenuOpen.value) {
+      skillMenuOpen.value = false
+      return
+    }
     return
   }
-  if (sidebarDeleteGroupId.value) {
-    sidebarDeleteGroupId.value = ''
+  if (event.isComposing || event.altKey || (!event.metaKey && !event.ctrlKey)) return
+  const key = String(event.key || '').toLowerCase()
+  if (key === 'b') {
+    event.preventDefault()
+    closeCollapsedGroupMenu()
+    sidebarCollapsed.value = !sidebarCollapsed.value
+    shortcutMenuOpen.value = false
     return
   }
-  if (onboardingVisible.value) {
-    completeOnboarding()
+  if (key === 'g') {
+    event.preventDefault()
+    closeCollapsedGroupMenu()
+    shortcutMenuOpen.value = false
+    openNewGroup()
     return
   }
-  if (modal.value === 'settings' && deleteArmed.value) {
-    deleteArmed.value = false
+  if (key === '[' || key === ']') {
+    event.preventDefault()
+    closeCollapsedGroupMenu()
+    shortcutMenuOpen.value = false
+    selectAdjacentConversation(key === '[' ? -1 : 1)
     return
   }
-  if (modal.value) {
-    closeModal()
-    return
-  }
-  if (roundSettingsOpen.value) {
-    roundSettingsOpen.value = false
-    return
-  }
-  if (skillMenuOpen.value) {
-    skillMenuOpen.value = false
-    return
+  if (key === ',') {
+    event.preventDefault()
+    closeCollapsedGroupMenu()
+    shortcutMenuOpen.value = false
+    openSystemSettings('agents')
   }
 }
 
 function handleWindowPointerDown(event) {
   const target = event.target
+  if (
+    messageDeleteArmedId.value
+    && !(target instanceof Element && target.closest('.message-delete-button'))
+  ) {
+    messageDeleteArmedId.value = ''
+  }
   if (
     sidebarDeleteGroupId.value
     && !(target instanceof Element && target.closest('.sidebar-delete-control, .sidebar-delete-popover'))
@@ -5940,6 +6587,16 @@ function handleWindowPointerDown(event) {
   }
   if (roundSettingsOpen.value && !roundSettingsControl.value?.contains(target)) {
     roundSettingsOpen.value = false
+  }
+  if (shortcutMenuOpen.value && !shortcutMenu.value?.contains(target)) {
+    shortcutMenuOpen.value = false
+  }
+  if (
+    collapsedGroupMenuOpen.value
+    && !collapsedGroupMenuButton.value?.contains(target)
+    && !collapsedGroupMenu.value?.contains(target)
+  ) {
+    closeCollapsedGroupMenu()
   }
 }
 
@@ -5960,6 +6617,9 @@ function handlePopState() {
 }
 
 watch(theme, applyTheme)
+watch(sidebarCollapsed, (collapsed) => {
+  if (!collapsed) closeCollapsedGroupMenu()
+})
 watch(onboardingVisible, (value) => {
   if (value) {
     focusOverlay(onboardingDialog)
@@ -5969,6 +6629,7 @@ watch(onboardingVisible, (value) => {
   clearOnboardingPlayback()
 })
 watch(modal, (value, previous) => {
+  if (value) closeCollapsedGroupMenu()
   if (value && !previous) {
     const active = document.activeElement
     modalFocusReturn = active instanceof HTMLElement && active !== document.body ? active : null
@@ -6026,12 +6687,21 @@ watch(() => snapshot.value.groups.map(group => group.id).join('\u0000'), () => {
   }
   flushPendingRunFinishedEvents()
 })
-watch(() => snapshot.value.messages.map(message => message.id).join('\u0000'), flushPendingRunFinishedEvents)
+watch(() => snapshot.value.messages.map(message => message.id).join('\u0000'), () => {
+  flushPendingRunFinishedEvents()
+  if (
+    messageDeleteArmedId.value
+    && !snapshot.value.messages.some(message => message.id === messageDeleteArmedId.value)
+  ) {
+    messageDeleteArmedId.value = ''
+  }
+})
 watch(activeGroupMemberSignature, () => {
   composerContextVersion.value += 1
   const abandonedAttachments = composerAttachments.value
   const group = activeGroup.value
   cancelInlineTitleEdit({ restoreFocus: false })
+  messageDeleteArmedId.value = ''
   activeTurnId.value = ''
   discussionMode.value = group?.conversationType === 'direct' ? 'manual' : 'auto'
   roundSettingsOpen.value = false
@@ -6049,6 +6719,7 @@ watch(activeGroupMemberSignature, () => {
 })
 watch(activeRun, (value) => {
   if (!value) return
+  messageDeleteArmedId.value = ''
   roundSettingsOpen.value = false
   cancelInlineTitleEdit({ restoreFocus: false })
 })
@@ -6140,5 +6811,6 @@ onBeforeUnmount(() => {
   copiedMessageTimers.clear()
   clearEmptyShowcasePlayback()
   clearTimeout(toastTimer)
+  clearTimeout(copyToastTimer)
 })
 </script>

@@ -51,6 +51,23 @@ test('managed runtime isolates OpenClaw state and keeps the API key out of confi
   assert.equal(fs.statSync(result.env.OPENCLAW_CONFIG_PATH).mode & 0o777, 0o600)
 })
 
+test('managed runtime defensively normalizes chat completion endpoints to the API root', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const result = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    provider: {
+      ...provider(),
+      OPENAI_BASE_URL: 'https://api.example.com/v1/chat/completions/',
+    },
+  })
+  const config = JSON.parse(fs.readFileSync(result.env.OPENCLAW_CONFIG_PATH, 'utf8'))
+
+  assert.equal(config.models.providers['roundrelay-desktop'].baseUrl, 'https://api.example.com/v1')
+})
+
 test('write authorization uses an immutable config and preserves the topic state', (t) => {
   const { directory, workdir } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
