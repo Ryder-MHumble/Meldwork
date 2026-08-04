@@ -28,6 +28,7 @@ const {
   runtimeCommandSummary,
   searchPath,
 } = require('../src/cli-adapters.cjs')
+const { managedOpenClawOptions } = require('../src/openclaw-runtime.cjs')
 const {
   executable,
   readJsonWhenReady,
@@ -37,6 +38,19 @@ const {
 } = require('./cli-adapters-test-helpers.cjs')
 
 const OUTPUT_FIXTURE_DIRECTORY = path.join(__dirname, 'fixtures', 'agent-output')
+
+function signedOpenClawRuntime(storageRoot, workdir, sessionRef) {
+  return managedOpenClawOptions({
+    storageRoot,
+    workdir,
+    sessionRef,
+    provider: {
+      OPENAI_API_KEY: 'adapter-openclaw-key',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      OPENAI_MODEL: 'adapter-model',
+    },
+  })
+}
 
 test('WorkBuddy uses non-interactive output and resumes its native session', () => {
   const spec = invocation('workbuddy', '/tmp/codebuddy', '/tmp/work', 'workbuddy-session')
@@ -1269,6 +1283,9 @@ process.exit(2)
     const options = {
       sessionRef: `${kind}-stale-session`,
       home: directory,
+      ...(kind === 'openclaw'
+        ? signedOpenClawRuntime(directory, directory, `${kind}-stale-session`)
+        : {}),
       ...(kind === 'hermes'
         ? { hermesAcpAvailable: false, sessionTransport: 'legacy' }
         : {}),
@@ -1432,10 +1449,14 @@ process.stdout.write(JSON.stringify({
 
   for (const fixture of fixtures) {
     const cli = executable(directory, `${fixture.kind}-long-output.cjs`, fixture.source)
+    const options = fixture.kind === 'openclaw'
+      ? signedOpenClawRuntime(directory, directory, 'agent:main:long-output')
+      : undefined
     const result = await runAgent(
       { kind: fixture.kind, executable: cli, name: fixture.kind },
       'hello',
       directory,
+      options,
     )
     assert.deepEqual(result, fixture.expected, fixture.kind)
   }

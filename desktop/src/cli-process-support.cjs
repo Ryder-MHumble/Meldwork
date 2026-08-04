@@ -21,13 +21,6 @@ const OPENCLAW_RUNTIME_PATH_KEYS = Object.freeze([
   'OPENCLAW_CONFIG_PATH',
   'OPENCLAW_WORKSPACE_DIR',
 ])
-const OPENCLAW_GUARDED_ENV_KEYS = new Set([
-  'OPENCLAW_HOME',
-  'OPENCLAW_STATE_DIR',
-  'OPENCLAW_CONFIG_PATH',
-  'ROUNDRELAY_OPENCLAW_API_KEY',
-  'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
-])
 
 function agentExecutionError(code, diagnostic = '') {
   return agentRuntimeError(code, diagnostic)
@@ -61,11 +54,9 @@ function failedAgentProcessError(detail, options = {}) {
 function openClawChildEnvironment(workdir, options, platform) {
   const source = options.env || {}
   const guard = options.openClawRuntimeGuard
-  if (!guard && Object.keys(source).some(key => OPENCLAW_GUARDED_ENV_KEYS.has(key))) {
-    throw new Error('OPENCLAW_RUNTIME_GUARD_REQUIRED')
-  }
-  if (guard) validateOpenClawRuntimeGuard(guard, source)
-  if (guard && source.OPENCLAW_WORKSPACE_DIR !== path.resolve(workdir)) {
+  if (!guard) throw new Error('OPENCLAW_RUNTIME_GUARD_REQUIRED')
+  validateOpenClawRuntimeGuard(guard, source)
+  if (source.OPENCLAW_WORKSPACE_DIR !== path.resolve(workdir)) {
     throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
   }
 
@@ -78,22 +69,18 @@ function openClawChildEnvironment(workdir, options, platform) {
     delete env[key]
   }
 
-  if (guard) {
-    for (const key of OPENCLAW_RUNTIME_PATH_KEYS) env[key] = source[key]
-    env[guard.credentialKey] = source[guard.credentialKey]
-    const isolatedHome = source.OPENCLAW_HOME
-    env.HOME = isolatedHome
-    env.USERPROFILE = isolatedHome
-    env.XDG_CONFIG_HOME = path.join(isolatedHome, '.config')
-    env.XDG_DATA_HOME = path.join(isolatedHome, '.local', 'share')
-    env.XDG_STATE_HOME = path.join(isolatedHome, '.local', 'state')
-    env.XDG_CACHE_HOME = path.join(isolatedHome, '.cache')
-    env.XDG_RUNTIME_DIR = path.join(isolatedHome, '.runtime')
-    env.APPDATA = path.join(isolatedHome, 'AppData', 'Roaming')
-    env.LOCALAPPDATA = path.join(isolatedHome, 'AppData', 'Local')
-  } else {
-    env.OPENCLAW_WORKSPACE_DIR = path.resolve(workdir)
-  }
+  for (const key of OPENCLAW_RUNTIME_PATH_KEYS) env[key] = source[key]
+  env[guard.credentialKey] = source[guard.credentialKey]
+  const isolatedHome = source.OPENCLAW_HOME
+  env.HOME = isolatedHome
+  env.USERPROFILE = isolatedHome
+  env.XDG_CONFIG_HOME = path.join(isolatedHome, '.config')
+  env.XDG_DATA_HOME = path.join(isolatedHome, '.local', 'share')
+  env.XDG_STATE_HOME = path.join(isolatedHome, '.local', 'state')
+  env.XDG_CACHE_HOME = path.join(isolatedHome, '.cache')
+  env.XDG_RUNTIME_DIR = path.join(isolatedHome, '.runtime')
+  env.APPDATA = path.join(isolatedHome, 'AppData', 'Roaming')
+  env.LOCALAPPDATA = path.join(isolatedHome, 'AppData', 'Local')
   env.PATH = searchPath({ platform })
   return env
 }

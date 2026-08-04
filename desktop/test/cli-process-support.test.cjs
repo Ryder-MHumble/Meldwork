@@ -71,11 +71,11 @@ test('OpenClaw child environment keeps only its guarded runtime and selected cre
   assert.notEqual(env.LOCALAPPDATA, '/tmp/native-localappdata')
 })
 
-test('OpenClaw config paths require an app-owned runtime guard', () => {
+test('every OpenClaw child requires an app-owned runtime guard', () => {
   assert.throws(() => childEnvironment(
     { kind: 'openclaw' },
     '/tmp/workspace',
-    { env: { OPENCLAW_CONFIG_PATH: '/tmp/untrusted-openclaw.json' } },
+    {},
     process.platform,
   ), { message: 'OPENCLAW_RUNTIME_GUARD_REQUIRED' })
 })

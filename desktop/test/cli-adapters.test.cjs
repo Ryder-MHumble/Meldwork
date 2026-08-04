@@ -24,6 +24,7 @@ const {
   runtimeCommandSummary,
   searchPath,
 } = require('../src/cli-adapters.cjs')
+const { managedOpenClawOptions } = require('../src/openclaw-runtime.cjs')
 const {
   executable,
   readJsonWhenReady,
@@ -900,27 +901,39 @@ test('OpenClaw uses a stable session key for group isolation', () => {
   assert.deepEqual(spec.suffixArgs, ['--json'])
 })
 
-test('runAgent forces every OpenClaw invocation into the selected workspace', async (t) => {
+test('runAgent uses the app-signed OpenClaw workspace', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-workspace-'))
+  const workdir = path.join(directory, 'workspace')
+  fs.mkdirSync(workdir)
   const cli = executable(directory, 'openclaw-workspace.cjs', `
 process.stdout.write(JSON.stringify({
   payloads: [{ text: process.env.OPENCLAW_WORKSPACE_DIR }],
 }))
 `)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:adapter-workspace',
+    provider: {
+      OPENAI_API_KEY: 'adapter-openclaw-key',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      OPENAI_MODEL: 'adapter-model',
+    },
+  })
 
   const events = []
   const result = await runAgent(
     { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
     'hello',
-    directory,
+    workdir,
     {
-      env: { OPENCLAW_WORKSPACE_DIR: '/tmp/caller-supplied-workspace' },
+      ...runtime,
       onEvent: event => events.push(event),
     },
   )
 
-  assert.equal(result.text, directory)
+  assert.equal(result.text, workdir)
   assert.deepEqual(events[0], {
     id: 'openclaw-connector',
     type: 'warning',
