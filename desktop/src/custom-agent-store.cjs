@@ -312,7 +312,7 @@ class CustomAgentStore {
           status: 'completed',
           title: 'process',
         })
-        resolve({ text, sessionRef: '' })
+        resolve({ text, sessionRef: '', outcome: 'partial' })
       }))
 
       if (definition.promptMode === 'stdin') child.stdin.end(promptText)

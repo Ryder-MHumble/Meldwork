@@ -22,7 +22,7 @@ const REMOTE_JOB_FIELDS = new Set([
   'connectorId', 'jobId', 'cursor', 'recoveryOwnerId',
 ])
 const CONTEXT_FIELDS = new Set([
-  'includedCount', 'omittedCount', 'charCount', 'sessionRotated',
+  'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
 ])
 
 function clone(value) {

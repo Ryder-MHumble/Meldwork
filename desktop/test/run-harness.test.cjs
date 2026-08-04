@@ -383,7 +383,11 @@ test('finishes with the authoritative answer and persists only a compact capsule
     })
   }
   const { capsule } = harness.finishAgent('hermes', 1, 'completed', 'Authoritative final', {
-    includedCount: 5, omittedCount: 2, charCount: 9000, sessionRotated: true,
+    includedCount: 5,
+    omittedCount: 2,
+    charCount: 9000,
+    sessionRotated: true,
+    externalRunRef: `ocr+${'a'.repeat(180)}`,
   })
   assert.equal(harness.snapshot()[0].output, 'Authoritative final')
   assert.equal(harness.snapshot()[0].events.find(event => event.summary === 'Evidence 15')?.detail,
@@ -393,6 +397,7 @@ test('finishes with the authoritative answer and persists only a compact capsule
   assert.equal(capsule.summary, 'Compared the two implementations.')
   assert.deepEqual(capsule.sourceMessageIds, ['message-a', 'message-b'])
   assert.equal(capsule.context.sessionRotated, true)
+  assert.equal(capsule.context.externalRunRef, `ocr+${'a'.repeat(180)}`)
   assert.equal(capsule.events.at(-1).detail, 'Exit code: 0\nOutput: 16 lines, 160 bytes')
 })
 

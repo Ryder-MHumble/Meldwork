@@ -1,6 +1,7 @@
 const MAX_CAPSULE_EVENTS = 12
 
 const { redactSecrets } = require('./secret-redaction.cjs')
+const { normalizeExternalRunRef } = require('./agent-runtime-contract.cjs')
 
 const EVENT_TYPES = new Set([
   'status',
@@ -153,6 +154,8 @@ function normalizeContextStats(input) {
     charCount: boundedNumber(input.charCount, 0, 1000000),
   }
   if (input.sessionRotated === true) context.sessionRotated = true
+  const externalRunRef = normalizeExternalRunRef(redactSecrets(input.externalRunRef))
+  if (externalRunRef) context.externalRunRef = externalRunRef
   return context
 }
 

@@ -5,7 +5,9 @@ const os = require('node:os')
 const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const { PassThrough } = require('node:stream')
+const { AGENT_RUNTIME_CAPABILITIES } = require('../src/agent-runtime-contract.cjs')
 const {
+  ALLOWED_KINDS,
   detectAgents,
   imageAttachmentLimit,
   invocation,
@@ -15,6 +17,7 @@ const {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   prepareCommand,
   readHermesFinalResponse,
@@ -217,7 +220,7 @@ input.on('line', (line) => {
   )
   assert.equal(created.text, `new|plan|cancelled|first prompt|${workdir}`)
   assert.equal(created.sessionRef, 'kimi-acp-session')
-  assert.equal(created.completed, true)
+  assert.equal(created.outcome, 'completed')
   assert.deepEqual(createdSessionRefs, [{
     sessionRef: 'kimi-acp-session', metadata: { transport: 'acp' },
   }])
@@ -255,18 +258,21 @@ input.on('line', (line) => {
   )
   assert.equal(resumed.text, `resume|plan|cancelled|next prompt|${workdir}`)
   assert.equal(resumed.sessionRef, 'kimi-acp-session')
+  assert.equal(resumed.outcome, 'completed')
   assert.deepEqual(resumedSessionRefs, [{
     sessionRef: 'kimi-acp-session', metadata: { transport: 'acp' },
   }])
 
-  const cancelled = await runAgent(
-    { kind: 'kimi', executable: cli, name: 'Kimi' },
-    'cancelled prompt',
-    workdir,
-    { sessionRef: created.sessionRef, env },
+  await assert.rejects(
+    runAgent(
+      { kind: 'kimi', executable: cli, name: 'Kimi' },
+      'cancelled prompt',
+      workdir,
+      { sessionRef: created.sessionRef, env },
+    ),
+    (error) => error.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
+      && error.failure.category === 'cancellation',
   )
-  assert.equal(cancelled.text, `resume|plan|cancelled|cancelled prompt|${workdir}`)
-  assert.equal(cancelled.completed, false)
 
   const privateSessionRefs = []
   const privateSessionId = 'private-session-reference'
@@ -615,7 +621,7 @@ test('MiMo JSON output returns final text and session id', () => {
     text: 'MiMo reply', sessionRef: 'mimo-session', error: '',
   })
   assert.deepEqual(normalizeOutput('mimo', raw), {
-    text: 'MiMo reply', sessionRef: 'mimo-session', error: '',
+    text: 'MiMo reply', sessionRef: 'mimo-session', error: '', outcome: 'completed',
   })
 })
 
@@ -641,6 +647,7 @@ test('Claude and Qwen stream JSON output returns the final reply and session id'
     assert.deepEqual(normalizeOutput(kind, raw), {
       text: `${kind} final`,
       sessionRef: `${kind}-session`,
+      outcome: 'completed',
     })
   }
 })
@@ -836,6 +843,7 @@ send()
     assert.deepEqual(result, {
       text: 'first second',
       sessionRef: `${kind}-stream-session`,
+      outcome: 'completed',
     })
     assert.deepEqual(
       events.filter(event => event.type === 'answer_delta').map(event => event.delta),
@@ -979,13 +987,217 @@ test('OpenCode uses JSON events and resumes the requested session without auto a
   ])
 })
 
-test('OpenCodeReview reviews the workspace diff with the user message as background', () => {
+test('OpenCodeReview requests a synchronous JSON review with the user message as background', () => {
   const spec = invocation('opencodereview', '/tmp/ocr', '/tmp/work')
   assert.deepEqual(spec.args, [
-    'review', '--audience', 'agent', '--format', 'text', '--repo', '/tmp/work',
+    'review', '--audience', 'agent', '--format', 'json', '--repo', '/tmp/work',
     '--background',
   ])
   assert.equal(spec.promptArg, true)
+})
+
+test('OpenCodeReview maps current and legacy JSON terminal states without exposing thinking', () => {
+  const current = parseOpenCodeReviewOutput(JSON.stringify({
+    status: 'complete',
+    message: 'Review complete.',
+    project_summary: 'The change is scoped.',
+    session_id: 'ocr-run-1',
+    thinking: 'private chain of thought',
+    comments: [{
+      path: 'src/app.js', start_line: 4, end_line: 5,
+      category: 'correctness', severity: 'high', content: 'Handle the missing branch.',
+      thinking: 'private finding reasoning',
+    }],
+    manifest: {
+      schema_version: 'ocr.run-manifest/v1',
+      operation: 'review',
+      terminal_state: 'complete',
+    },
+  }))
+  assert.deepEqual(current, {
+    text: [
+      'Review complete.',
+      'The change is scoped.',
+      'src/app.js:4-5 [correctness / high]\nHandle the missing branch.',
+    ].join('\n\n'),
+    sessionRef: '',
+    outcome: 'completed',
+    externalRunRef: 'ocr-run-1',
+  })
+  assert.doesNotMatch(JSON.stringify(current), /private chain|private finding/)
+
+  const legacyCases = new Map([
+    ['success', 'completed'],
+    ['completed_with_warnings', 'completed'],
+    ['completed_with_errors', 'partial'],
+    ['budget_exceeded', 'partial'],
+    ['skipped', 'completed'],
+  ])
+  for (const [status, outcome] of legacyCases) {
+    assert.equal(parseOpenCodeReviewOutput(JSON.stringify({
+      status, message: `OCR ${status}`, comments: [],
+    })).outcome, outcome, status)
+  }
+})
+
+test('OpenCodeReview fails closed for failed, non-terminal, and unknown JSON states', () => {
+  const failed = parseOpenCodeReviewOutput(JSON.stringify({
+    status: 'failed', message: 'Review failed.', comments: [],
+    manifest: {
+      schema_version: 'ocr.run-manifest/v1',
+      operation: 'review',
+      terminal_state: 'failed',
+    },
+  }))
+  assert.equal(failed.outcome, 'failed')
+  assert.equal(failed.failure.code, 'LOCAL_AGENT_PROCESS_FAILED')
+
+  for (const output of [
+    { status: 'accepted', job_id: 'not-a-real-ocr-job' },
+    { status: 'running' },
+    { status: 'complete', manifest: {
+      schema_version: 'ocr.run-manifest/v2', operation: 'review', terminal_state: 'complete',
+    } },
+    { status: 'complete', manifest: {
+      schema_version: 'ocr.run-manifest/v1', operation: 'scan', terminal_state: 'complete',
+    } },
+  ]) {
+    const parsed = parseOpenCodeReviewOutput(JSON.stringify(output))
+    assert.equal(parsed.outcome, 'failed')
+    assert.equal(parsed.failure.code, 'LOCAL_AGENT_OUTCOME_INVALID')
+  }
+})
+
+test('OpenCodeReview resolves only after a verified foreground terminal result', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ocr-terminal-'))
+  const marker = path.join(directory, 'stdout-ready')
+  const cli = executable(directory, 'ocr-terminal.cjs', `
+const fs = require('node:fs')
+process.stdout.write(JSON.stringify({
+  status: 'success', message: 'Verified review result', comments: [], session_id: 'ocr-run-2',
+}))
+fs.writeFileSync(process.env.ROUNDRELAY_TEST_MARKER, 'ready')
+setTimeout(() => process.exit(0), 80)
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  let resolved = false
+  const resultPromise = runAgent(
+    { kind: 'opencodereview', executable: cli, name: 'OpenCodeReview' },
+    'Review the current diff',
+    directory,
+    { env: { ROUNDRELAY_TEST_MARKER: marker } },
+  ).then((result) => {
+    resolved = true
+    return result
+  })
+
+  await readWhenReady(marker)
+  assert.equal(resolved, false)
+  const result = await resultPromise
+  assert.deepEqual(result, {
+    text: 'Verified review result',
+    sessionRef: '',
+    outcome: 'completed',
+    externalRunRef: 'ocr-run-2',
+  })
+})
+
+test('OpenCodeReview rejects an exit-zero acknowledgement without a terminal review', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ocr-accepted-'))
+  const cli = executable(directory, 'ocr-accepted.cjs', `
+process.stdout.write(JSON.stringify({ status: 'accepted', job_id: 'not-terminal' }))
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'opencodereview', executable: cli, name: 'OpenCodeReview' },
+      'Review the current diff',
+      directory,
+    ),
+    (error) => error.message === 'LOCAL_AGENT_OUTCOME_INVALID'
+      && error.failure.category === 'protocol',
+  )
+})
+
+test('every supported built-in Agent produces an explicit completion outcome', () => {
+  const outputs = {
+    codex: [
+      JSON.stringify({ type: 'thread.started', thread_id: 'codex-session' }),
+      JSON.stringify({
+        type: 'item.completed', item: { type: 'agent_message', text: 'Codex reply' },
+      }),
+      JSON.stringify({ type: 'turn.completed' }),
+    ].join('\n'),
+    hermes: 'Hermes reply',
+    openclaw: JSON.stringify({ payloads: [{ text: 'OpenClaw reply' }] }),
+    workbuddy: JSON.stringify({
+      type: 'result', result: 'WorkBuddy reply', session_id: 'workbuddy-session',
+    }),
+    kimi: [
+      JSON.stringify({ role: 'assistant', content: 'Kimi reply' }),
+      JSON.stringify({ type: 'session.resume_hint', session_id: 'kimi-session' }),
+    ].join('\n'),
+    mimo: JSON.stringify({
+      type: 'text', sessionID: 'mimo-session', part: { type: 'text', text: 'MiMo reply' },
+    }),
+    claude: JSON.stringify({
+      type: 'result', result: 'Claude reply', session_id: 'claude-session',
+    }),
+    gemini: [
+      JSON.stringify({ type: 'init', session_id: 'gemini-session' }),
+      JSON.stringify({ type: 'message', role: 'assistant', content: 'Gemini reply' }),
+      JSON.stringify({ type: 'result', status: 'success' }),
+    ].join('\n'),
+    opencode: JSON.stringify({
+      type: 'text', sessionID: 'opencode-session',
+      part: { type: 'text', text: 'OpenCode reply' },
+    }),
+    qwen: JSON.stringify({
+      type: 'result', result: 'Qwen reply', session_id: 'qwen-session',
+    }),
+    opencodereview: JSON.stringify({
+      status: 'success', message: 'OpenCodeReview reply', comments: [],
+    }),
+  }
+
+  assert.deepEqual(Object.keys(outputs).sort(), [...ALLOWED_KINDS].sort())
+  for (const kind of ALLOWED_KINDS) {
+    const result = normalizeOutput(kind, outputs[kind])
+    assert.equal(result.outcome, 'completed', kind)
+    assert.ok(result.text, kind)
+  }
+})
+
+test('every resumable built-in adapter classifies an invalid native Session', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-invalid-sessions-'))
+  const cli = executable(directory, 'invalid-session.cjs', `
+process.stderr.write('Saved session was not found or has expired.\\n')
+process.exit(2)
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const resumableKinds = Object.entries(AGENT_RUNTIME_CAPABILITIES)
+    .filter(([, capabilities]) => capabilities.resumable)
+    .map(([kind]) => kind)
+  for (const kind of resumableKinds) {
+    const options = {
+      sessionRef: `${kind}-stale-session`,
+      home: directory,
+      ...(kind === 'hermes'
+        ? { hermesAcpAvailable: false, sessionTransport: 'legacy' }
+        : {}),
+      ...(kind === 'kimi' ? { sandbox: 'workspace-write' } : {}),
+    }
+    await assert.rejects(
+      runAgent({ kind, executable: cli, name: kind }, 'resume', directory, options),
+      (error) => error.message === 'LOCAL_AGENT_SESSION_INVALID'
+        && error.failure.sessionInvalid === true
+        && error.failure.retryable === true,
+      kind,
+    )
+  }
 })
 
 test('OpenCode JSONL output returns completed text and the native session id', () => {
@@ -1077,8 +1289,12 @@ process.stdout.write('x'.repeat(${fillerBytes}) + '\\n')
 process.stdout.write(JSON.stringify({
   type: 'item.completed', item: { type: 'agent_message', text: 'Codex final after limit' },
 }) + '\\n')
+process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n')
 `,
-    expected: { text: 'Codex final after limit', sessionRef: 'codex-long-session' },
+    expected: {
+      text: 'Codex final after limit', sessionRef: 'codex-long-session', outcome: 'completed',
+      progress: [{ id: 'turn', title: 'process', status: 'completed' }],
+    },
   }, {
     kind: 'qwen',
     source: `
@@ -1087,7 +1303,9 @@ process.stdout.write(JSON.stringify({
   type: 'result', result: 'Qwen final after limit', session_id: 'qwen-long-session',
 }) + '\\n')
 `,
-    expected: { text: 'Qwen final after limit', sessionRef: 'qwen-long-session' },
+    expected: {
+      text: 'Qwen final after limit', sessionRef: 'qwen-long-session', outcome: 'completed',
+    },
   }]
 
   for (const fixture of fixtures) {
@@ -1162,6 +1380,7 @@ process.stdout.write(JSON.stringify({
   assert.deepEqual(result, {
     text: 'callback-safe reply',
     sessionRef: 'callback-session',
+    outcome: 'completed',
   })
 })
 

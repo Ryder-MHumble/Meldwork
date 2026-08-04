@@ -1,5 +1,9 @@
 const { randomUUID } = require('node:crypto')
 const {
+  isReviewOnlyAgentKind,
+  requireTerminalAgentResult,
+} = require('./agent-runtime-contract.cjs')
+const {
   nextSessionMeta,
   normalizeSessionMeta,
   shouldRotateSession,
@@ -49,14 +53,19 @@ class LocalWorkspaceAgentInvocation {
   async invoke(group, kind, mode, signal, threadRootId = '', context = {}) {
     const agent = this.detectedAgents().find(item => item.kind === kind && item.available)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
+    const reviewOnly = isReviewOnlyAgentKind(kind)
+    if (reviewOnly && context.taskType !== 'code_review') {
+      throw new Error('LOCAL_AGENT_REVIEW_ONLY')
+    }
+    const allowWrite = group.allowWrite === true && !reviewOnly
     const key = this.sessionKey(group.id, kind)
     const state = this.state()
     const storedSessionRef = String(state.sessions[key] || '')
     const activeRun = this.activeRuns.get(group.id)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
-    let sessionRef = this.sessionRef(
-      group, kind, context.sessionThreadRootId || threadRootId,
-    )
+    let sessionRef = reviewOnly
+      ? ''
+      : this.sessionRef(group, kind, context.sessionThreadRootId || threadRootId)
     const sessionMeta = normalizeSessionMeta(state.sessionMeta[key])
     let sessionRotated = false
     if (sessionRef && shouldRotateSession(sessionMeta)) {
@@ -205,7 +214,7 @@ class LocalWorkspaceAgentInvocation {
     let outputBaseline = null
     let result
     let harnessFinished = false
-    const finishHarness = (status, finalText = '') => {
+    const finishHarness = (status, finalText = '', runtimeContext = {}) => {
       if (!harness || !harnessRun || harnessFinished) return null
       flushRuntimeEvent()
       agentCallbacksClosed = true
@@ -213,6 +222,7 @@ class LocalWorkspaceAgentInvocation {
       const finished = harness.finishAgent(kind, round, status, finalText, {
         ...packedContext.context,
         sessionRotated,
+        ...runtimeContext,
       }, harnessRun.agentRunId)
       harnessFinished = true
       this.emitRunEvent(finished.event)
@@ -221,7 +231,7 @@ class LocalWorkspaceAgentInvocation {
       return finished.capsule
     }
     try {
-      if (group.allowWrite) {
+      if (allowWrite) {
         try {
           capturePromise = Promise.resolve().then(() => this.captureAgentOutputs(
             group.workdir,
@@ -281,6 +291,7 @@ class LocalWorkspaceAgentInvocation {
           sessionRef,
           onSessionRef: (nextSessionRef, metadata = {}) => {
             if (agentCallbacksClosed || agentController.signal.aborted) return
+            if (reviewOnly) return
             this.persistSessionRef(key, nextSessionRef)
             const transport = ['legacy', 'acp'].includes(metadata?.transport)
               ? metadata.transport
@@ -298,7 +309,7 @@ class LocalWorkspaceAgentInvocation {
             return { prompt: rebuildFreshSession() }
           },
           signal: agentController.signal,
-          sandbox: group.allowWrite ? 'workspace-write' : 'read-only',
+          sandbox: allowWrite ? 'workspace-write' : 'read-only',
           onProgress,
           onEvent: emitRuntimeEvent,
           sessionTransport,
@@ -328,9 +339,10 @@ class LocalWorkspaceAgentInvocation {
       if (parentAbortPromise) pending.push(parentAbortPromise)
       result = await Promise.race(pending)
       if (agentController.signal.aborted) throw agentStoppedError()
+      result = requireTerminalAgentResult(result)
       this.markRuntimeCredential(kind, 'ready')
 
-      if (!watchdogTimedOut && !agentController.signal.aborted) {
+      if (!reviewOnly && !watchdogTimedOut && !agentController.signal.aborted) {
         this.persistSessionRef(key, result.sessionRef)
       }
       const reply = mode === 'auto'
@@ -344,7 +356,7 @@ class LocalWorkspaceAgentInvocation {
       }))
       if (activeRun) activeRun.progress = toolCalls
       let attachments = []
-      if (group.allowWrite) {
+      if (allowWrite) {
         try {
           importPromise = Promise.resolve().then(() => this.importAgentOutputs({
             workdir: group.workdir,
@@ -368,8 +380,10 @@ class LocalWorkspaceAgentInvocation {
         }
       }
       if (agentController.signal.aborted) throw agentStoppedError()
-      const finalStatus = result.completed === false ? 'partial' : 'completed'
-      const trace = finishHarness(finalStatus, reply.text)
+      const finalStatus = result.outcome
+      const trace = finishHarness(finalStatus, reply.text, {
+        externalRunRef: result.externalRunRef,
+      })
       const message = this.addMessage(
         group.id,
         'agent',
@@ -379,13 +393,15 @@ class LocalWorkspaceAgentInvocation {
         null,
         { elapsedMs: Date.now() - startedAt, toolCalls, attachments, trace },
       )
-      this.persistSessionMeta(key, nextSessionMeta(sessionMeta, {
-        promptChars: buildPrompt(transcriptAfterKind, packedContext).length,
-        replyChars: reply.text.length,
-        rotated: sessionRotated,
-        transport: sessionTransport,
-      }))
-      return { message, consensus: reply.consensus && result.completed !== false }
+      if (!reviewOnly) {
+        this.persistSessionMeta(key, nextSessionMeta(sessionMeta, {
+          promptChars: buildPrompt(transcriptAfterKind, packedContext).length,
+          replyChars: reply.text.length,
+          rotated: sessionRotated,
+          transport: sessionTransport,
+        }))
+      }
+      return { message, consensus: reply.consensus && result.outcome === 'completed' }
     } catch (caughtError) {
       const parentTimedOut = Boolean(signal?.aborted && activeRun?.stopReason === 'timeout')
       const parentStopped = Boolean(signal?.aborted || parentAbortObserved)

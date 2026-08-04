@@ -35,6 +35,97 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(readinessAgents.find(agent => agent.kind === 'kimi').executable, '/tmp/kimi')
 })
 
+test('review-only Agents cannot join ordinary direct or group conversations', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [
+    { kind: 'codex', name: 'Codex', executable: '/tmp/codex', version: '1.0.0' },
+    {
+      kind: 'opencodereview', name: 'OpenCodeReview', executable: '/tmp/ocr', version: '1.8.6',
+    },
+  ]
+  const workspace = new LocalWorkspace(options)
+  const snapshot = await workspace.refreshAgents()
+  const reviewAgent = snapshot.agents.find(agent => agent.kind === 'opencodereview')
+  assert.equal(reviewAgent.available, true)
+  assert.equal(reviewAgent.task, 'code_review')
+  assert.equal(reviewAgent.showInSidebar, false)
+
+  assert.throws(() => workspace.createGroup({
+    conversationType: 'direct', directAgentKind: 'opencodereview', workdir: directory,
+  }), { message: 'LOCAL_GROUP_AGENT_REQUIRED' })
+  assert.throws(() => workspace.createGroup({
+    name: 'General discussion', agentKinds: ['opencodereview'], workdir: directory,
+  }), { message: 'LOCAL_GROUP_AGENT_REQUIRED' })
+  const generalGroup = workspace.createGroup({
+    name: 'General discussion', agentKinds: ['codex'], workdir: directory,
+  })
+  assert.throws(
+    () => workspace.updateGroup(generalGroup.id, { agentKinds: ['opencodereview'] }),
+    { message: 'LOCAL_GROUP_AGENT_REQUIRED' },
+  )
+  await assert.rejects(
+    workspace.invokeAgent(
+      { id: 'forged-group', workdir: directory, allowWrite: false },
+      'opencodereview',
+      'manual',
+      new AbortController().signal,
+    ),
+    { message: 'LOCAL_AGENT_REVIEW_ONLY' },
+  )
+})
+
+test('an explicit internal code-review task runs once and remains read-only', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'opencodereview', name: 'OpenCodeReview', executable: '/tmp/ocr', version: '1.8.6',
+  }]
+  let captureCalls = 0
+  let importCalls = 0
+  options.captureAgentOutputs = async () => { captureCalls += 1 }
+  options.importAgentOutputs = async () => { importCalls += 1; return [] }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: 'Review completed.', sessionRef: '', outcome: 'completed',
+      externalRunRef: 'ocr-review-123',
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = {
+    id: 'code-review-task', name: 'Code review', topic: '',
+    agentKinds: ['opencodereview'], workdir: directory, allowWrite: true,
+    createdAt: '2026-07-28T00:00:00.000Z', updatedAt: '2026-07-28T00:00:00.000Z',
+  }
+  workspace.state.groups.push(group)
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['opencodereview'], '',
+  )
+  controller.currentKind = 'opencodereview'
+
+  const result = await workspace.invokeAgent(
+    group,
+    'opencodereview',
+    'manual',
+    controller.signal,
+    '',
+    { taskType: 'code_review' },
+  )
+  workspace.finishRun(group.id, controller, 'completed')
+
+  assert.equal(result.message.content, 'Review completed.')
+  assert.equal(result.message.trace.context.externalRunRef, 'ocr-review-123')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].runOptions.sandbox, 'read-only')
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(captureCalls, 0)
+  assert.equal(importCalls, 0)
+  assert.equal(Object.keys(workspace.state.sessions).length, 0)
+  assert.equal(Object.keys(workspace.state.sessionMeta).length, 0)
+})
+
 test('Custom Agent kinds keep their dynamic label across execution and reload', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

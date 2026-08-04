@@ -79,6 +79,30 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps review-only Agents in Settings but out of ordinary conversations', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'opencodereview',
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        showInSidebar: false,
+        task: 'code_review',
+        resumable: false,
+        version: '1.8.6',
+      })
+    })
+
+    expect(wrapper.findAll('.home-agent-item').map(item => item.text())).not.toContain('OpenCodeReview')
+    await wrapper.get('.new-group-button').trigger('click')
+    expect(wrapper.findAll('.agent-choice').map(choice => choice.text())).not.toContain('OpenCodeReview')
+    await wrapper.get('.modal-header .icon-button').trigger('click')
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    expect(wrapper.get('.agent-manager').text()).toContain('OpenCodeReview')
+    wrapper.unmount()
+  })
+
   it('adds and removes a sanitized Custom Agent through the desktop bridge', async () => {
     let customProfile = null
     const { wrapper, bridge, state } = await mountApp(({ bridge: configuredBridge, state: configuredState }) => {

@@ -1,3 +1,8 @@
+const {
+  agentRuntimeCapabilities,
+  isReviewOnlyAgentKind,
+} = require('./agent-runtime-contract.cjs')
+
 class LocalWorkspaceAgentCatalog {
   constructor(options) {
     this.state = options.state
@@ -47,6 +52,7 @@ class LocalWorkspaceAgentCatalog {
                   : 'unknown'
       const available = credentialState === 'ready'
       const preferred = state.agentPreferences[agent.kind]?.showInSidebar
+      const capabilities = agentRuntimeCapabilities(agent.kind)
       return {
         ...agent,
         installed: true,
@@ -63,7 +69,11 @@ class LocalWorkspaceAgentCatalog {
                   ? 'verified-run'
                   : 'unverified',
         available,
-        showInSidebar: available && (typeof preferred === 'boolean' ? preferred : true),
+        task: capabilities.task,
+        resumable: capabilities.resumable,
+        showInSidebar: capabilities.task === 'general'
+          && available
+          && (typeof preferred === 'boolean' ? preferred : true),
       }
     })
     this.setDetectedAgents(agents)
@@ -74,6 +84,7 @@ class LocalWorkspaceAgentCatalog {
   setSidebarVisibility(kind, visible) {
     const agent = this.detectedAgents().find(item => item.kind === kind)
     if (!agent) throw new Error('LOCAL_AGENT_NOT_INSTALLED')
+    if (isReviewOnlyAgentKind(agent.kind)) throw new Error('LOCAL_AGENT_REVIEW_ONLY')
     if (visible && !agent.available) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const state = this.state()
     state.agentPreferences[kind] = { showInSidebar: Boolean(visible) }
@@ -97,7 +108,9 @@ class LocalWorkspaceAgentCatalog {
         ? 'verified-run'
         : 'runtime-auth-failure'
       const preferred = state.agentPreferences[kind]?.showInSidebar
-      agent.showInSidebar = agent.available && (typeof preferred === 'boolean' ? preferred : true)
+      agent.showInSidebar = !isReviewOnlyAgentKind(agent.kind)
+        && agent.available
+        && (typeof preferred === 'boolean' ? preferred : true)
     }
     this.save()
     this.emitChanged()

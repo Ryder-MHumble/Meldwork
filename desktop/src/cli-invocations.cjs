@@ -216,7 +216,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     return {
       command: executable,
       args: [
-        'review', '--audience', 'agent', '--format', 'text', '--repo', workdir,
+        'review', '--audience', 'agent', '--format', 'json', '--repo', workdir,
         '--background',
       ],
       promptArg: true,

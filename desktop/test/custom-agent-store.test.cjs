@@ -114,6 +114,7 @@ test('runs a Custom Agent without a shell and redacts its private executable pat
   assert.equal(invocation.options.cwd, '/tmp')
   assert.equal(result.text, 'Completed with review-agent')
   assert.equal(result.sessionRef, '')
+  assert.equal(result.outcome, 'partial')
 })
 
 test('cancels the Custom Agent process through the shared AbortSignal', async (t) => {

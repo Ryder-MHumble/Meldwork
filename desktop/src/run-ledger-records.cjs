@@ -1,4 +1,5 @@
 const { redactSecrets } = require('./secret-redaction.cjs')
+const { normalizeExternalRunRef } = require('./agent-runtime-contract.cjs')
 const {
   DEFAULT_MAX_EVENTS_PER_AGENT,
   DEFAULT_MAX_OUTPUT_CHARS,
@@ -16,7 +17,7 @@ const REMOTE_JOB_FIELDS = new Set([
   'connectorId', 'jobId', 'cursor', 'recoveryOwnerId',
 ])
 const CONTEXT_FIELDS = new Set([
-  'includedCount', 'omittedCount', 'charCount', 'sessionRotated',
+  'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
 ])
 
 const RUN_STATUSES = new Set([
@@ -171,7 +172,7 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
     context: input.context,
   })
   const hasContext = isRecord(input.context) && [
-    'includedCount', 'omittedCount', 'charCount', 'sessionRotated',
+    'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
@@ -311,6 +312,11 @@ function hasValidStoredRecordShape(input) {
       if (!hasStoredBoundedInteger(agentRun.context, 'omittedCount', 0, 100000)) return false
       if (!hasStoredBoundedInteger(agentRun.context, 'charCount', 0, 1000000)) return false
       if (!hasStoredFieldTypes(agentRun.context, ['sessionRotated'], 'boolean')) return false
+      if (hasOwn(agentRun.context, 'externalRunRef') && (
+        typeof agentRun.context.externalRunRef !== 'string'
+        || normalizeExternalRunRef(redactSecrets(agentRun.context.externalRunRef))
+          !== agentRun.context.externalRunRef
+      )) return false
     }
     if (hasOwn(agentRun, 'sourceMessageIds') && (
       !Array.isArray(agentRun.sourceMessageIds)

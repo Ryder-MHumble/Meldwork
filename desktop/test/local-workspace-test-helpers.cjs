@@ -14,6 +14,14 @@ function fixture() {
     { kind: 'kimi', name: 'Kimi CLI', executable: '/tmp/kimi', version: '4' },
     { kind: 'openclaw', name: 'OpenClaw CLI', executable: '/tmp/openclaw', version: '5' },
   ]
+  let runAgentImpl = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} reply ${calls.length}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+      outcome: 'completed',
+    }
+  }
   const options = {
     storagePath: path.join(directory, 'workspace.json'),
     detectAgents: async () => agents,
@@ -31,17 +39,25 @@ function fixture() {
     imageAttachmentLimit: kind => ({ codex: 4, hermes: 1, opencode: 4 })[kind] || 0,
     captureAgentOutputs: async () => null,
     importAgentOutputs: async () => [],
-    runAgent: async (agent, prompt, workdir, runOptions) => {
-      calls.push({ agent, prompt, workdir, runOptions })
-      return {
-        text: `${agent.kind} reply ${calls.length}`,
-        sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
-      }
-    },
     now: () => '2026-07-28T00:00:00.000Z',
     createId: () => `id-${++id}`,
     createRunId: () => `run-${++runId}`,
   }
+  Object.defineProperty(options, 'runAgent', {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return async (...args) => {
+        const result = await runAgentImpl(...args)
+        return result && typeof result === 'object' && !result.outcome
+          ? { ...result, outcome: 'completed' }
+          : result
+      }
+    },
+    set(value) {
+      runAgentImpl = value
+    },
+  })
   return { directory, calls, options }
 }
 

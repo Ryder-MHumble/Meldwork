@@ -1,5 +1,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { agentRuntimeError } = require('./agent-runtime-contract.cjs')
 
 const CUSTOM_AGENT_KIND = /^custom-[a-f0-9]{16}$/
 const PROMPT_MODES = new Set(['stdin', 'argument'])
@@ -31,7 +32,7 @@ const CHILD_ENV_KEYS = Object.freeze([
 ])
 
 function customAgentError(code) {
-  return Object.assign(new Error(code), { code })
+  return agentRuntimeError(code)
 }
 
 function cleanInline(value, limit) {

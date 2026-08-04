@@ -2,6 +2,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { StringDecoder } = require('node:string_decoder')
+const { agentRuntimeFailure } = require('./agent-runtime-contract.cjs')
 const { codexProgressTitle } = require('./cli-runtime-summaries.cjs')
 
 const MAX_RUNTIME_JSON_PENDING_CHARS = 1024 * 1024
@@ -269,6 +270,188 @@ function parseOpenCodeOutput(stdout) {
   }
 }
 
+function openCodeReviewText(output) {
+  const sections = []
+  if (typeof output.message === 'string' && output.message.trim()) {
+    sections.push(output.message.trim())
+  }
+  if (typeof output.project_summary === 'string' && output.project_summary.trim()) {
+    sections.push(output.project_summary.trim())
+  }
+  for (const comment of Array.isArray(output.comments) ? output.comments : []) {
+    if (!comment || typeof comment !== 'object') continue
+    const location = typeof comment.path === 'string' && comment.path.trim()
+      ? `${comment.path.trim()}${Number.isInteger(comment.start_line)
+        ? `:${comment.start_line}${Number.isInteger(comment.end_line)
+          && comment.end_line !== comment.start_line ? `-${comment.end_line}` : ''}`
+        : ''}`
+      : ''
+    const metadata = [comment.category, comment.severity]
+      .filter(value => typeof value === 'string' && value.trim())
+      .map(value => value.trim())
+      .join(' / ')
+    const content = typeof comment.content === 'string' ? comment.content.trim() : ''
+    const suggestion = typeof comment.suggestion_code === 'string'
+      ? comment.suggestion_code.trim()
+      : ''
+    const header = [location, metadata && `[${metadata}]`].filter(Boolean).join(' ')
+    const finding = [
+      header,
+      content,
+      suggestion ? `Suggested change:\n${suggestion}` : '',
+    ].filter(Boolean).join('\n')
+    if (finding) sections.push(finding)
+  }
+  return sections.join('\n\n').trim()
+}
+
+function invalidOpenCodeReviewOutput(diagnostic) {
+  return {
+    text: '',
+    sessionRef: '',
+    outcome: 'failed',
+    failure: agentRuntimeFailure('LOCAL_AGENT_OUTCOME_INVALID'),
+    diagnostic,
+  }
+}
+
+function parseOpenCodeReviewOutput(stdout) {
+  const raw = String(stdout || '').trim()
+  if (!raw) return invalidOpenCodeReviewOutput('OpenCodeReview returned no JSON result.')
+  let output
+  try {
+    output = JSON.parse(raw)
+  } catch {
+    return invalidOpenCodeReviewOutput('OpenCodeReview returned malformed JSON.')
+  }
+  if (!output || typeof output !== 'object' || Array.isArray(output)) {
+    return invalidOpenCodeReviewOutput('OpenCodeReview returned an invalid JSON result.')
+  }
+
+  const status = String(output.status || '')
+  let outcome = ''
+  if (output.manifest != null) {
+    if (output.manifest?.schema_version !== 'ocr.run-manifest/v1') {
+      return invalidOpenCodeReviewOutput('OpenCodeReview returned an unsupported manifest schema.')
+    }
+    if (output.manifest?.operation !== 'review') {
+      return invalidOpenCodeReviewOutput('OpenCodeReview returned an unsupported manifest operation.')
+    }
+    const terminalState = String(output.manifest.terminal_state || '')
+    if (status !== terminalState) {
+      return invalidOpenCodeReviewOutput('OpenCodeReview returned inconsistent terminal states.')
+    }
+    outcome = ({
+      complete: 'completed',
+      partial: 'partial',
+      failed: 'failed',
+      skipped: 'completed',
+    })[terminalState] || ''
+  } else {
+    outcome = ({
+      success: 'completed',
+      complete: 'completed',
+      skipped: 'completed',
+      completed_with_warnings: 'completed',
+      partial: 'partial',
+      completed_with_errors: 'partial',
+      budget_exceeded: 'partial',
+      failed: 'failed',
+    })[status] || ''
+  }
+  if (!outcome) {
+    return invalidOpenCodeReviewOutput('OpenCodeReview returned an unknown terminal state.')
+  }
+
+  const text = openCodeReviewText(output)
+    || (outcome === 'completed' ? 'OpenCodeReview completed without findings.' : '')
+  const result = {
+    text,
+    sessionRef: '',
+    outcome,
+    ...(typeof output.session_id === 'string' && output.session_id
+      ? { externalRunRef: output.session_id }
+      : {}),
+  }
+  if (outcome === 'failed') {
+    result.failure = agentRuntimeFailure('LOCAL_AGENT_PROCESS_FAILED')
+    result.diagnostic = text || 'OpenCodeReview reported a failed review.'
+  }
+  return result
+}
+
+function classifyCliOutcome(kind, stdout) {
+  if (kind === 'hermes') return { outcome: 'completed' }
+  if (kind === 'opencodereview') {
+    const parsed = parseOpenCodeReviewOutput(stdout)
+    return {
+      outcome: parsed.outcome,
+      ...(parsed.failure ? { failure: parsed.failure } : {}),
+      ...(parsed.diagnostic ? { diagnostic: parsed.diagnostic } : {}),
+    }
+  }
+
+  const events = parseJsonOutputEvents(stdout)
+  const failed = events.findLast(event => (
+    event?.type === 'error'
+      || event?.status === 'failed'
+      || event?.status === 'error'
+      || event?.is_error === true
+      || String(event?.subtype || '').startsWith('error')
+  ))
+  if (failed) {
+    return {
+      outcome: 'failed',
+      failure: agentRuntimeFailure('LOCAL_AGENT_PROCESS_FAILED'),
+    }
+  }
+  if (kind === 'codex') {
+    return {
+      outcome: events.some(event => event?.type === 'turn.completed')
+        ? 'completed'
+        : 'partial',
+    }
+  }
+  if (['workbuddy', 'claude', 'qwen'].includes(kind)) {
+    return {
+      outcome: events.some(event => event?.type === 'result') ? 'completed' : 'partial',
+    }
+  }
+  if (kind === 'kimi') {
+    return {
+      outcome: events.some(event => event?.type === 'session.resume_hint')
+        ? 'completed'
+        : 'partial',
+    }
+  }
+  if (['mimo', 'opencode'].includes(kind)) {
+    const hasNativeText = events.some(event => (
+      event?.type === 'text' && event.part?.type === 'text'
+    ))
+    return { outcome: hasNativeText ? 'completed' : 'partial' }
+  }
+  if (kind === 'gemini') {
+    const result = events.findLast(event => event?.type === 'result')
+    if (!result) return { outcome: 'partial' }
+    if (result.status === 'success') return { outcome: 'completed' }
+    if (result.status === 'cancelled') return { outcome: 'cancelled' }
+    return {
+      outcome: 'failed',
+      failure: agentRuntimeFailure('LOCAL_AGENT_OUTCOME_INVALID'),
+    }
+  }
+  if (kind === 'openclaw') {
+    const raw = String(stdout || '').trim()
+    try {
+      const value = JSON.parse(raw)
+      return { outcome: value && typeof value === 'object' ? 'completed' : 'partial' }
+    } catch {
+      return { outcome: 'partial' }
+    }
+  }
+  return { outcome: 'partial' }
+}
+
 function structuredCliError(stdout) {
   const failed = parseJsonOutputEvents(stdout)
     .findLast(event => event?.is_error || event?.subtype?.startsWith('error'))
@@ -350,9 +533,11 @@ module.exports = {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   readHermesFinalResponse,
   readHermesMessageWatermark,
   stripAnsi,
   structuredCliError,
+  classifyCliOutcome,
 }

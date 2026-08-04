@@ -619,7 +619,7 @@ test('automatic dialogue does not count an incomplete Agent turn as agreement', 
     return {
       text: `${agent.kind} agrees.\n[[ROUNDRELAY_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
-      completed: calls.length !== 1,
+      outcome: calls.length !== 1 ? 'completed' : 'partial',
     }
   }
   const workspace = new LocalWorkspace(options)

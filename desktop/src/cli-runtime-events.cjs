@@ -1,4 +1,5 @@
 const {
+  classifyCliOutcome,
   codexProgressEvent,
   createJsonLineParser,
   hermesSessionRef,
@@ -10,6 +11,7 @@ const {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   readHermesFinalResponse,
   readHermesMessageWatermark,
@@ -32,6 +34,7 @@ const { runtimeCommandSummary } = require('./cli-runtime-summaries.cjs')
 
 module.exports = {
   acpRuntimeEvents,
+  classifyCliOutcome,
   claudeQwenRuntimeEvents,
   codexProgressEvent,
   codexRuntimeEvents,
@@ -49,6 +52,7 @@ module.exports = {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   readHermesFinalResponse,
   readHermesMessageWatermark,

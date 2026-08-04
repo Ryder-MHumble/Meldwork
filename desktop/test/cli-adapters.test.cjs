@@ -351,6 +351,7 @@ process.stderr.write('session_id: hermes-fallback-session\\n')
   assert.deepEqual(result, {
     text: 'Hermes legacy fallback',
     sessionRef: 'hermes-fallback-session',
+    outcome: 'completed',
   })
   assert.deepEqual(events[0], {
     id: 'hermes-acp-fallback',
@@ -413,6 +414,7 @@ if (process.argv[2] === 'acp') {
   assert.deepEqual(result, {
     text: 'rebuilt full context',
     sessionRef: 'hermes-recovered-session',
+    outcome: 'completed',
   })
   assert.deepEqual(invalidations, [{
     kind: 'hermes',
@@ -496,7 +498,7 @@ input.on('line', (line) => {
 
   assert.equal(result.text, 'current answer')
   assert.equal(result.sessionRef, 'hermes-session')
-  assert.equal(result.completed, true)
+  assert.equal(result.outcome, 'completed')
   assert.equal(fs.readFileSync(modeFile, 'utf8'), 'default')
   assert.equal(events.filter(event => event.type === 'answer_delta')
     .map(event => event.delta).join(''), 'current answer')
@@ -526,6 +528,7 @@ test('Hermes normalizes official quiet stdout as the fallback reply', () => {
   ), {
     text: 'Hermes process output',
     sessionRef: 'hermes-session-123',
+    outcome: 'completed',
   })
 })
 
@@ -656,6 +659,7 @@ process.stderr.write('diagnostic\\nsession_id: hermes-session-123\\n')
   assert.deepEqual(result, {
     text: 'Hermes reply',
     sessionRef: 'hermes-session-123',
+    outcome: 'completed',
   })
 })
 
@@ -690,6 +694,7 @@ process.stderr.write('┊ review diff\\na//tmp/report.py → b//tmp/report.py\\n
   assert.deepEqual(result, {
     text: 'Hermes authoritative final [redacted]',
     sessionRef: 'hermes-session-final',
+    outcome: 'completed',
     progress: [{ title: 'write_file', status: 'completed' }],
   })
   assert.deepEqual(progress, [{ title: 'write_file', status: 'completed' }])
@@ -867,6 +872,7 @@ process.stderr.write('session_id: hermes-session-no-watermark\\n')
   assert.deepEqual(result, {
     text: 'Hermes quiet fallback',
     sessionRef: 'hermes-session-no-watermark',
+    outcome: 'completed',
   })
   assert.equal(finalLookupCount, 0)
 })
@@ -876,6 +882,7 @@ test('OpenClaw JSON output is reduced to reply text', () => {
   assert.deepEqual(normalizeOutput('openclaw', raw, 'agent:main:desktop-roundrelay-group-openclaw'), {
     text: '第一段\n第二段',
     sessionRef: 'agent:main:desktop-roundrelay-group-openclaw',
+    outcome: 'completed',
   })
 })
 

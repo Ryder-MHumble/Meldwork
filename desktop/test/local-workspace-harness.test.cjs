@@ -507,6 +507,33 @@ test('Harness stops after one fresh-session retry when the Session remains inval
   assert.equal(failure.trace.context.sessionRotated, true)
 })
 
+test('Harness refuses to persist a non-terminal Agent acknowledgement as a result', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async () => ({
+    text: 'Accepted for later processing',
+    sessionRef: '',
+    outcome: 'accepted',
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Non-terminal result', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Do not treat acknowledgements as final', targetKinds: ['codex'],
+  })
+
+  const snapshot = workspace.snapshot()
+  assert.equal(snapshot.messages.some(message => message.role === 'agent'), false)
+  const failure = snapshot.messages.find(message => (
+    message.system?.key === 'system.agentCallFailed' && message.agentKind === 'codex'
+  ))
+  assert.equal(failure.system.params.reason, 'LOCAL_AGENT_OUTCOME_NON_TERMINAL')
+  assert.equal(failure.trace.status, 'failed')
+})
+
 test('per-Agent watchdog persists a timeout trace and continues the automatic round', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

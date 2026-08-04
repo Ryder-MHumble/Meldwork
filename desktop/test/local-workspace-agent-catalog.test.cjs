@@ -109,6 +109,19 @@ test('sidebar and runtime credential mutations preserve persistence and event or
   assert.equal(agents()[0].showInSidebar, false)
 })
 
+test('review-only Agents cannot be enabled in the conversation sidebar', () => {
+  const reviewAgent = {
+    kind: 'opencodereview', available: true, credentialState: 'ready', showInSidebar: false,
+  }
+  const { catalog, events } = fixture({ initialAgents: [reviewAgent] })
+
+  assert.throws(
+    () => catalog.setSidebarVisibility('opencodereview', true),
+    { message: 'LOCAL_AGENT_REVIEW_ONLY' },
+  )
+  assert.deepEqual(events, [])
+})
+
 test('runtime credential cleanup removes only missing entries and never emits', () => {
   const { catalog, events, state } = fixture()
   state.agentRuntime = {

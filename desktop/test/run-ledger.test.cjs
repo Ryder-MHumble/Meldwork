@@ -149,6 +149,7 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
         omittedCount: -4,
         charCount: 2000000,
         sessionRotated: true,
+        externalRunRef: 'ocr+review:123',
       },
       seenSeqs: [1, 2, 3],
     }],
@@ -170,6 +171,7 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
     omittedCount: 0,
     charCount: 1000000,
     sessionRotated: true,
+    externalRunRef: 'ocr+review:123',
   })
   assert.equal(boundedAgent.truncated, true)
   assert.equal('seenSeqs' in boundedAgent, false)

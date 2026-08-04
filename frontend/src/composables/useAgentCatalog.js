@@ -63,7 +63,9 @@ export function useAgentCatalog({
       agents: mergedCatalog.value.filter(agent => agent.custom),
     },
   ])
-  const readyAgents = computed(() => mergedCatalog.value.filter(agent => agent.ready))
+  const readyAgents = computed(() => mergedCatalog.value.filter(
+    agent => agent.ready && agent.task !== 'code_review',
+  ))
   const readyAgentSignature = computed(() => readyAgents.value.map(agent => agent.kind).join('\u0000'))
   const readyAgentKinds = computed(() => new Set(readyAgents.value.map(agent => agent.kind)))
   const readyCount = computed(() => readyAgents.value.length)

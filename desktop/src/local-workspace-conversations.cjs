@@ -1,4 +1,5 @@
 const path = require('node:path')
+const { isReviewOnlyAgentKind } = require('./agent-runtime-contract.cjs')
 const { normalizeTraceCapsule } = require('./run-harness.cjs')
 const {
   MAX_MESSAGE_ATTACHMENTS,
@@ -69,7 +70,9 @@ class LocalWorkspaceConversations {
   }
 
   createGroup(input) {
-    const available = new Set(this.detectedAgents().filter(agent => agent.available).map(agent => agent.kind))
+    const available = new Set(this.detectedAgents()
+      .filter(agent => agent.available && !isReviewOnlyAgentKind(agent.kind))
+      .map(agent => agent.kind))
     const conversationType = input.conversationType === 'direct' ? 'direct' : 'group'
     const directAgentKind = conversationType === 'direct'
       ? cleanInline(input.directAgentKind, 40)
@@ -113,7 +116,9 @@ class LocalWorkspaceConversations {
     const nextAllowWrite = input.allowWrite != null ? input.allowWrite === true : group.allowWrite
     let nextAgentKinds = group.agentKinds
     if (input.agentKinds != null) {
-      const available = new Set(this.detectedAgents().filter(agent => agent.available).map(agent => agent.kind))
+      const available = new Set(this.detectedAgents()
+        .filter(agent => agent.available && !isReviewOnlyAgentKind(agent.kind))
+        .map(agent => agent.kind))
       const kinds = [...new Set(input.agentKinds.filter(kind => available.has(kind)))]
       if (!kinds.length) throw new Error('LOCAL_GROUP_AGENT_REQUIRED')
       nextAgentKinds = kinds

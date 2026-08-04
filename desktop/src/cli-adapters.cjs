@@ -7,6 +7,7 @@ const {
   searchPath,
 } = require('./cli-discovery.cjs')
 const {
+  classifyCliOutcome,
   claudeQwenRuntimeEvents,
   codexProgressEvent,
   codexRuntimeEvents,
@@ -23,6 +24,7 @@ const {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   readHermesFinalResponse,
   readHermesMessageWatermark,
@@ -33,6 +35,10 @@ const {
 } = require('./cli-runtime-events.cjs')
 const { runAcpAgent } = require('./cli-acp-runner.cjs')
 const { imageAttachmentLimit, invocation } = require('./cli-invocations.cjs')
+const {
+  normalizeExternalRunRef,
+  requireTerminalAgentResult,
+} = require('./agent-runtime-contract.cjs')
 const {
   KILL_SETTLE_MS,
   TERMINATE_GRACE_MS,
@@ -107,34 +113,71 @@ function createBoundedOutputCapture(maxBytes) {
 function normalizeOutput(kind, stdout, sessionRef = '') {
   if (kind === 'codex') {
     const parsed = parseCodexOutput(stdout)
-    return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
+    return {
+      text: parsed.text,
+      sessionRef: parsed.sessionRef || sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
   if (kind === 'openclaw') {
-    return { text: normalizeOpenClawOutput(stdout), sessionRef }
+    return {
+      text: normalizeOpenClawOutput(stdout),
+      sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
-  if (kind === 'hermes') return { text: stripAnsi(stdout).trim(), sessionRef }
+  if (kind === 'hermes') {
+    return {
+      text: stripAnsi(stdout).trim(),
+      sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
+  }
   if (kind === 'workbuddy') {
     const parsed = parseWorkBuddyOutput(stdout)
-    return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
+    return {
+      text: parsed.text,
+      sessionRef: parsed.sessionRef || sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
   if (kind === 'kimi') {
     const parsed = parseKimiOutput(stdout)
-    return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
+    return {
+      text: parsed.text,
+      sessionRef: parsed.sessionRef || sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
-  if (kind === 'mimo') return parseMimoOutput(stdout)
+  if (kind === 'mimo') {
+    return { ...parseMimoOutput(stdout), ...classifyCliOutcome(kind, stdout) }
+  }
   if (kind === 'gemini') {
     const parsed = parseGeminiOutput(stdout)
-    return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
+    return {
+      text: parsed.text,
+      sessionRef: parsed.sessionRef || sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
   if (kind === 'opencode') {
     const parsed = parseOpenCodeOutput(stdout)
-    return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
+    return {
+      text: parsed.text,
+      sessionRef: parsed.sessionRef || sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
   if (['claude', 'qwen'].includes(kind)) {
     const parsed = parseClaudeQwenOutput(stdout)
-    return { text: parsed.text, sessionRef: parsed.sessionRef || sessionRef }
+    return {
+      text: parsed.text,
+      sessionRef: parsed.sessionRef || sessionRef,
+      ...classifyCliOutcome(kind, stdout),
+    }
   }
-  return { text: String(stdout || '').trim(), sessionRef }
+  if (kind === 'opencodereview') return parseOpenCodeReviewOutput(stdout)
+  return { text: String(stdout || '').trim(), sessionRef, outcome: 'partial' }
 }
 
 
@@ -427,11 +470,29 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         }
         if (progress.length) result.progress = progress
         const redactedText = redactChildSecrets(result.text, childEnv)
-        if (!redactedText) {
+        let output
+        try {
+          output = requireTerminalAgentResult({
+            text: redactedText,
+            sessionRef: publicSessionRef,
+            outcome: result.outcome,
+            ...(result.failure ? { failure: result.failure } : {}),
+            ...(result.diagnostic
+              ? { diagnostic: redactChildSecrets(result.diagnostic, childEnv) }
+              : {}),
+          })
+        } catch (error) {
+          reject(error)
+          return
+        }
+        if (!output.text) {
           reject(agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE'))
           return
         }
-        const output = { text: redactedText, sessionRef: publicSessionRef }
+        const externalRunRef = normalizeExternalRunRef(
+          redactChildSecrets(result.externalRunRef, childEnv),
+        )
+        if (externalRunRef) output.externalRunRef = externalRunRef
         if (result.progress?.length) output.progress = result.progress
         runtimeEvents.emitFinalAnswer(redactedText)
         resolve(output)
@@ -453,6 +514,7 @@ module.exports = {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   prepareCommand,
   readHermesFinalResponse,

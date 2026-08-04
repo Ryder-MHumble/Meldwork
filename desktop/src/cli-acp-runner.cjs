@@ -2,6 +2,10 @@ const { spawn } = require('node:child_process')
 const { Readable, Writable } = require('node:stream')
 const { AGENT_PROFILES, prepareCommand } = require('./cli-discovery.cjs')
 const {
+  outcomeForAcpStopReason,
+  requireTerminalAgentResult,
+} = require('./agent-runtime-contract.cjs')
+const {
   acpRuntimeEvents,
   createAcpRuntimeState,
   createRuntimeEventEmitter,
@@ -412,13 +416,14 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
       replyState.collecting = false
     }
     const text = redactChildSecrets(reply.join('').trim(), childEnv)
-    if (!text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
-    runtimeEvents.emitFinalAnswer(text)
-    return {
+    const result = requireTerminalAgentResult({
       text,
       sessionRef: publicSessionRef,
-      completed: promptResult?.stopReason === 'end_turn',
-    }
+      ...outcomeForAcpStopReason(promptResult?.stopReason),
+    })
+    if (!result.text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
+    runtimeEvents.emitFinalAnswer(text)
+    return result
   })().catch((error) => {
     const normalized = acpProtocolError(error, childEnv, resumedSessionRef)
     if (!promptStarted) allowAcpSetupFallback(normalized)

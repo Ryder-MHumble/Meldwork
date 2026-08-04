@@ -1,6 +1,7 @@
 const path = require('node:path')
 const { searchPath, systemChildEnvironment } = require('./cli-discovery.cjs')
 const { redactChildSecrets } = require('./cli-runtime-events.cjs')
+const { agentRuntimeError } = require('./agent-runtime-contract.cjs')
 
 const TERMINATE_GRACE_MS = 500
 const KILL_SETTLE_MS = 500
@@ -15,15 +16,7 @@ const OPENCODE_READ_ONLY_PERMISSION = JSON.stringify({
 })
 
 function agentExecutionError(code, diagnostic = '') {
-  const error = new Error(code)
-  const detail = String(diagnostic || '').trim()
-  if (detail) {
-    Object.defineProperty(error, 'diagnostic', {
-      value: detail,
-      enumerable: false,
-    })
-  }
-  return error
+  return agentRuntimeError(code, diagnostic)
 }
 
 function authConfigurationFailure(detail) {
