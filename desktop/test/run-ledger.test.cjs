@@ -93,6 +93,14 @@ function failNextPersist(ledger) {
   }
 }
 
+function journalEntries(storagePath) {
+  return fs.readFileSync(`${storagePath}.journal`, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map(line => JSON.parse(line))
+}
+
 test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   const { storagePath } = fixture(t)
   const events = Array.from({ length: 85 }, (_, index) => ({
@@ -304,10 +312,349 @@ test('writes atomically with private file and directory permissions', (t) => {
   ledger.checkpoint(runRecord('run-2', 'group-1'))
 
   assert.equal(fs.statSync(storagePath).mode & 0o777, 0o600)
+  assert.equal(fs.statSync(ledger.journalPath).mode & 0o777, 0o600)
   assert.equal(fs.statSync(path.dirname(storagePath)).mode & 0o777, 0o700)
-  assert.deepEqual(fs.readdirSync(path.dirname(storagePath)), ['run-ledger.json'])
+  assert.deepEqual(fs.readdirSync(path.dirname(storagePath)).sort(), [
+    'run-ledger.json', 'run-ledger.json.journal',
+  ])
   assert.equal(JSON.parse(fs.readFileSync(storagePath, 'utf8')).version, 1)
   assert.deepEqual(ledger.list().map(record => record.runId), ['run-2', 'run-1'])
+})
+
+test('append-only journal recovers lifecycle state from a corrupt snapshot', (t) => {
+  const { storagePath } = fixture(t)
+  let now = 1000
+  const ledger = new RunLedger({ storagePath, now: () => now })
+  ledger.checkpoint({
+    ...runRecord('run-journal', 'group-journal', 'running', [{
+      agentRunId: 'agent-journal',
+      kind: 'codex',
+      round: 1,
+      status: 'running',
+      output: 'Private in-progress output must stay out of the journal.',
+      events: [{
+        id: 'tool-1', type: 'tool_update', status: 'running', seq: 18, timestamp: 1000,
+        summary: 'Inspected local state.',
+      }],
+    }]),
+    mode: 'auto',
+    currentRound: 1,
+    maxRounds: 2,
+  })
+  now = 2000
+  ledger.checkpoint({
+    runId: 'run-journal',
+    currentRound: 1,
+    agentRuns: [{
+      agentRunId: 'agent-journal', kind: 'codex', round: 1, status: 'waiting',
+      output: 'Private in-progress output must stay out of the journal.',
+      events: [{
+        id: 'tool-1', type: 'tool_update', status: 'waiting', seq: 24, timestamp: 2000,
+        summary: 'Waiting for the tool result.',
+      }],
+    }],
+  })
+
+  const journal = fs.readFileSync(ledger.journalPath, 'utf8')
+  assert.doesNotMatch(journal, /Private in-progress output/)
+  assert.match(journal, /"eventCursor":24/)
+  fs.writeFileSync(storagePath, '{corrupt snapshot', 'utf8')
+
+  const restored = new RunLedger({ storagePath, now: () => 3000 })
+  const recovered = restored.get('run-journal')
+  assert.equal(restored.loadError, null)
+  assert.equal(restored.snapshotError instanceof Error, true)
+  assert.equal(recovered.status, 'running')
+  assert.equal(recovered.currentRound, 1)
+  assert.equal(recovered.agentRuns[0].status, 'waiting')
+  assert.equal(recovered.agentRuns[0].eventCursor, 24)
+  assert.equal(
+    recovered.agentRuns[0].outputChars,
+    'Private in-progress output must stay out of the journal.'.length,
+  )
+  assert.equal(recovered.agentRuns[0].output, '')
+})
+
+test('committed journal lifecycle wins over a valid stale snapshot', (t) => {
+  const { storagePath } = fixture(t)
+  let now = 1000
+  const ledger = new RunLedger({ storagePath, now: () => now })
+  ledger.checkpoint({
+    ...runRecord('run-stale', 'group-stale', 'running', [{
+      agentRunId: 'agent-stale',
+      kind: 'codex',
+      round: 1,
+      status: 'running',
+      output: 'Snapshot detail before the lifecycle advance.',
+      events: [{
+        type: 'tool_update', status: 'running', seq: 1, timestamp: 1000,
+        summary: 'Older snapshot detail.',
+      }],
+    }]),
+    mode: 'auto',
+    currentRound: 1,
+    maxRounds: 2,
+  })
+  const staleSnapshot = fs.readFileSync(storagePath, 'utf8')
+
+  now = 2000
+  ledger.checkpoint({
+    runId: 'run-stale',
+    status: 'waiting',
+    agentRuns: [{
+      agentRunId: 'agent-stale',
+      kind: 'codex',
+      round: 1,
+      status: 'waiting',
+      output: 'Newer snapshot detail.',
+      events: [{
+        type: 'tool_update', status: 'waiting', seq: 2, timestamp: 2000,
+        summary: 'Newer lifecycle detail.',
+      }],
+    }],
+  })
+  fs.writeFileSync(storagePath, staleSnapshot, 'utf8')
+
+  const restored = new RunLedger({ storagePath, now: () => 3000 })
+  const recovered = restored.get('run-stale')
+  assert.equal(restored.loadError, null)
+  assert.equal(restored.snapshotError, null)
+  assert.equal(recovered.status, 'waiting')
+  assert.equal(recovered.agentRuns[0].status, 'waiting')
+  assert.equal(recovered.agentRuns[0].eventCursor, 2)
+  assert.equal(recovered.agentRuns[0].output, 'Snapshot detail before the lifecycle advance.')
+  assert.equal(recovered.agentRuns[0].events[0].summary, 'Older snapshot detail.')
+})
+
+test('detail-only checkpoints do not grow the lifecycle journal', (t) => {
+  const { storagePath } = fixture(t)
+  let now = 1000
+  const ledger = new RunLedger({ storagePath, now: () => now })
+  ledger.checkpoint(runRecord('run-bounded-journal', 'group-bounded-journal', 'running', [{
+    agentRunId: 'agent-bounded-journal',
+    kind: 'codex',
+    status: 'running',
+    output: 'first detail',
+  }]))
+  const initialEntryCount = journalEntries(storagePath).length
+
+  now = 2000
+  ledger.checkpoint({
+    runId: 'run-bounded-journal',
+    agentRuns: [{
+      agentRunId: 'agent-bounded-journal',
+      kind: 'codex',
+      status: 'running',
+      output: 'second detail in the same four kilobyte bucket',
+    }],
+  })
+  assert.equal(journalEntries(storagePath).length, initialEntryCount)
+  assert.equal(
+    JSON.parse(fs.readFileSync(storagePath, 'utf8')).runs[0].agentRuns[0].output,
+    'second detail in the same four kilobyte bucket',
+  )
+
+  now = 3000
+  ledger.checkpoint({
+    runId: 'run-bounded-journal',
+    agentRuns: [{
+      agentRunId: 'agent-bounded-journal',
+      kind: 'codex',
+      status: 'running',
+      output: 'x'.repeat(4096),
+    }],
+  })
+  assert.equal(journalEntries(storagePath).length, initialEntryCount + 2)
+})
+
+test('journal retains completed attempts beyond the display snapshot limit', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const attempts = Array.from({ length: 256 }, (_, index) => ({
+    agentRunId: `agent-history-${index + 1}`,
+    kind: 'codex',
+    round: index + 1,
+    status: 'completed',
+  }))
+  ledger.checkpoint(runRecord(
+    'run-history-journal', 'group-history-journal', 'running', attempts,
+  ))
+  ledger.checkpoint(runRecord('run-history-journal', 'group-history-journal', 'running', [{
+    agentRunId: 'agent-history-257',
+    kind: 'codex',
+    round: 257,
+    status: 'completed',
+  }]))
+
+  const snapshot = JSON.parse(fs.readFileSync(storagePath, 'utf8')).runs[0]
+  const journal = fs.readFileSync(`${storagePath}.journal`, 'utf8')
+  assert.equal(snapshot.agentRuns.length, 256)
+  assert.equal(snapshot.agentRuns.some(agentRun => agentRun.agentRunId === 'agent-history-1'), false)
+  assert.match(journal, /"agentRunId":"agent-history-1"/)
+  assert.match(journal, /"agentRunId":"agent-history-257"/)
+})
+
+test('journal ignores and repairs one truncated final append', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  ledger.checkpoint(runRecord('run-before-tail', 'group-tail'))
+  fs.appendFileSync(ledger.journalPath, '{"version":1,"sequence":999')
+
+  const restored = new RunLedger({ storagePath, now: () => 2000 })
+  assert.equal(restored.loadError, null)
+  assert.equal(restored.get('run-before-tail').runId, 'run-before-tail')
+  assert.equal(fs.readFileSync(restored.journalPath, 'utf8').endsWith('\n'), true)
+  restored.checkpoint(runRecord('run-after-tail', 'group-tail'))
+  assert.deepEqual(new RunLedger({ storagePath }).list().map(record => record.runId), [
+    'run-after-tail', 'run-before-tail',
+  ])
+})
+
+test('journal failure prevents snapshot and in-memory mutation', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  ledger.checkpoint(runRecord('run-stable', 'group-stable'))
+  const beforeMemory = ledger.list()
+  const beforeDisk = fs.readFileSync(storagePath, 'utf8')
+  const append = ledger.journal.append.bind(ledger.journal)
+  let failed = false
+  ledger.journal.append = (entry) => {
+    if (!failed) {
+      failed = true
+      throw new Error('JOURNAL_APPEND_FAILED')
+    }
+    return append(entry)
+  }
+
+  assert.throws(
+    () => ledger.checkpoint(runRecord('run-blocked', 'group-blocked')),
+    { message: 'RUN_LEDGER_WRITE_FAILED' },
+  )
+  assert.deepEqual(ledger.list(), beforeMemory)
+  assert.equal(fs.readFileSync(storagePath, 'utf8'), beforeDisk)
+
+  assert.equal(ledger.checkpoint(runRecord('run-blocked', 'group-blocked')).runId, 'run-blocked')
+  assert.equal(new RunLedger({ storagePath }).get('run-blocked').status, 'running')
+})
+
+test('journal rejects raw execution data and unknown lifecycle fields', (t) => {
+  const { directory, storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  ledger.checkpoint(runRecord('run-journal-fields', 'group-journal-fields', 'running', [{
+    agentRunId: 'agent-journal-fields', kind: 'codex', status: 'running',
+  }]))
+  const baselineEntries = journalEntries(storagePath)
+  const prepareIndex = baselineEntries.findIndex(entry => (
+    entry.phase === 'prepare' && entry.change?.upserts?.[0]?.agentRuns?.length
+  ))
+  assert.notEqual(prepareIndex, -1)
+  const cases = [
+    ['output', entry => { entry.change.upserts[0].agentRuns[0].output = 'raw output' }],
+    ['events', entry => { entry.change.upserts[0].agentRuns[0].events = [] }],
+    ['command', entry => { entry.change.upserts[0].agentRuns[0].command = 'run tool' }],
+    ['unknown-agent', entry => { entry.change.upserts[0].agentRuns[0].privateState = true }],
+    ['unknown-context', entry => {
+      entry.change.upserts[0].agentRuns[0].context.privateState = true
+    }],
+  ]
+
+  for (const [index, [name, mutate]] of cases.entries()) {
+    const entries = JSON.parse(JSON.stringify(baselineEntries))
+    mutate(entries[prepareIndex])
+    const candidatePath = path.join(directory, `${name}.json`)
+    fs.copyFileSync(storagePath, candidatePath)
+    fs.writeFileSync(
+      `${candidatePath}.journal`,
+      `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`,
+      'utf8',
+    )
+
+    const restored = new RunLedger({ storagePath: candidatePath, now: () => 2000 })
+    assert.deepEqual(restored.list(), [], name)
+    assert.equal(restored.loadError instanceof Error, true, name)
+    assert.throws(
+      () => restored.checkpoint(runRecord(`run-${index}`, 'group-new')),
+      { message: 'RUN_LEDGER_LOAD_FAILED' },
+      name,
+    )
+  }
+})
+
+test('remote recovery reattaches with a durable job id and cursor', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  ledger.checkpoint({
+    ...runRecord('run-remote', 'group-remote', 'running', [{
+      agentRunId: 'agent-remote', kind: 'codex', round: 1, status: 'running',
+    }]),
+    remoteJob: {
+      connectorId: 'mock.remote',
+      jobId: 'job-123',
+      cursor: 'cursor-7',
+    },
+  })
+
+  const restarted = new RunLedger({ storagePath, now: () => 2000 })
+  const changed = restarted.recoverInterrupted({
+    remoteConnectorIds: ['mock.remote'],
+    recoveryOwnerId: 'desktop-recovery',
+  })
+  assert.equal(changed[0].status, 'reconciling')
+  assert.equal(changed[0].agentRuns[0].status, 'running')
+  const [claim] = restarted.remoteRecoveries('desktop-recovery')
+  assert.deepEqual(claim, {
+    runId: 'run-remote',
+    taskId: 'group-remote-task',
+    groupId: 'group-remote',
+    connectorId: 'mock.remote',
+    jobId: 'job-123',
+    cursor: 'cursor-7',
+  })
+
+  for (const status of ['preparing', 'queued', 'reconciling']) {
+    assert.throws(
+      () => restarted.reconcileRemote(
+        'run-remote', 'desktop-recovery', { status },
+      ),
+      { message: 'RUN_LEDGER_REMOTE_UPDATE_INVALID' },
+      status,
+    )
+  }
+
+  const mockConnector = ({ jobId, cursor, terminal = false }) => {
+    assert.equal(jobId, 'job-123')
+    return terminal
+      ? { cursor: 'cursor-9', status: 'completed' }
+      : { cursor: 'cursor-8', status: 'running' }
+  }
+  const running = restarted.reconcileRemote(
+    'run-remote', 'desktop-recovery', mockConnector(claim),
+  )
+  assert.equal(running.status, 'running')
+  assert.equal(running.remoteJob.cursor, 'cursor-8')
+  assert.equal(running.remoteJob.recoveryOwnerId, 'desktop-recovery')
+  assert.equal(
+    restarted.remoteRecoveries('desktop-recovery')[0].cursor,
+    'cursor-8',
+  )
+
+  const remoteResult = mockConnector({
+    ...claim,
+    cursor: running.remoteJob.cursor,
+    terminal: true,
+  })
+  const completed = restarted.reconcileRemote(
+    'run-remote', 'desktop-recovery', remoteResult,
+  )
+  assert.equal(completed.status, 'completed')
+  assert.equal(completed.remoteJob.cursor, 'cursor-9')
+  assert.equal(completed.remoteJob.recoveryOwnerId, '')
+  assert.equal(completed.agentRuns[0].status, 'completed')
+
+  const restored = new RunLedger({ storagePath, now: () => 3000 }).get('run-remote')
+  assert.equal(restored.status, 'completed')
+  assert.equal(restored.remoteJob.jobId, 'job-123')
+  assert.equal(restored.remoteJob.cursor, 'cursor-9')
 })
 
 test('finish preserves Agent snapshots and records a terminal reason', (t) => {
@@ -765,11 +1112,35 @@ test('rejects persisted enums and bounded numbers that normalization would chang
     ['current-overflow', record => { record.currentRound = 100001 }],
     ['max-negative', record => { record.maxRounds = -1 }],
     ['max-overflow', record => { record.maxRounds = 100001 }],
+    ['remote-job-container', record => { record.remoteJob = [] }],
+    ['remote-connector', record => {
+      record.remoteJob = { connectorId: '../remote', jobId: 'job-1' }
+    }],
+    ['remote-job-id', record => {
+      record.remoteJob = { connectorId: 'mock.remote', jobId: 'job id' }
+    }],
+    ['remote-cursor', record => {
+      record.remoteJob = { connectorId: 'mock.remote', jobId: 'job-1', cursor: 'bad cursor' }
+    }],
+    ['remote-owner', record => {
+      record.remoteJob = {
+        connectorId: 'mock.remote', jobId: 'job-1', recoveryOwnerId: '../owner',
+      }
+    }],
+    ['remote-unknown', record => {
+      record.remoteJob = { connectorId: 'mock.remote', jobId: 'job-1', secret: 'nope' }
+    }],
     ['agent-status', record => { record.agentRuns[0].status = 'bogus' }],
     ['agent-run-only-status', record => { record.agentRuns[0].status = 'round-limit' }],
     ['agent-preparing-status', record => { record.agentRuns[0].status = 'preparing' }],
     ['agent-round-negative', record => { record.agentRuns[0].round = -1 }],
     ['agent-round-overflow', record => { record.agentRuns[0].round = 100001 }],
+    ['event-cursor-negative', record => { record.agentRuns[0].eventCursor = -1 }],
+    ['event-cursor-fractional', record => { record.agentRuns[0].eventCursor = 1.5 }],
+    ['event-cursor-overflow', record => { record.agentRuns[0].eventCursor = 1000000001 }],
+    ['output-chars-negative', record => { record.agentRuns[0].outputChars = -1 }],
+    ['output-chars-fractional', record => { record.agentRuns[0].outputChars = 1.5 }],
+    ['output-chars-overflow', record => { record.agentRuns[0].outputChars = 1000001 }],
     ['event-status', record => { record.agentRuns[0].events[0].status = 'bogus' }],
     ['event-run-only-status', record => { record.agentRuns[0].events[0].status = 'round-limit' }],
     ['event-preparing-status', record => { record.agentRuns[0].events[0].status = 'preparing' }],

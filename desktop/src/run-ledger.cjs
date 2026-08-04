@@ -1,12 +1,15 @@
 const fs = require('node:fs')
 
 const { atomicWritePrivateFile } = require('./private-file.cjs')
+const { RunJournal } = require('./run-journal.cjs')
 const {
   DEFAULT_MAX_DURABLE_AGENT_RUNS,
+  RUN_STATUSES,
   TERMINAL_STATUSES,
   boundedNumber,
   cleanGroupId,
   cleanId,
+  cleanOpaqueRemoteValue,
   clone,
   hasValidStoredRecordShape,
   isRecord,
@@ -19,6 +22,7 @@ const {
 const STORE_VERSION = 1
 const DEFAULT_MAX_RUNS = 64
 const MAX_RUNS = 512
+const JOURNAL_OUTPUT_BUCKET_CHARS = 4096
 
 function mergeAgentRuns(existingRuns, incomingRuns, targetKinds) {
   const allowedKinds = new Set(targetKinds)
@@ -38,18 +42,117 @@ function mergeAgentRuns(existingRuns, incomingRuns, targetKinds) {
   return merged.slice(-DEFAULT_MAX_DURABLE_AGENT_RUNS)
 }
 
+function journalAgentRun(agentRun) {
+  const record = {
+    agentRunId: agentRun.agentRunId,
+    kind: agentRun.kind,
+    round: agentRun.round,
+    status: agentRun.status,
+    sourceMessageIds: agentRun.sourceMessageIds,
+    startedAt: agentRun.startedAt,
+    lastActivityAt: agentRun.lastActivityAt,
+    silent: agentRun.silent,
+    truncated: agentRun.truncated,
+    context: agentRun.context,
+    eventCursor: agentRun.eventCursor,
+    outputChars: agentRun.outputChars,
+  }
+  if (agentRun.reason) record.reason = agentRun.reason
+  if (agentRun.finishedAt != null) record.finishedAt = agentRun.finishedAt
+  return record
+}
+
+function journalAgentSignature(agentRun) {
+  return JSON.stringify({
+    status: agentRun.status,
+    reason: agentRun.reason || '',
+    eventCursor: agentRun.eventCursor || 0,
+    outputBucket: Math.floor((agentRun.outputChars || 0) / JOURNAL_OUTPUT_BUCKET_CHARS),
+    silent: agentRun.silent === true,
+    truncated: agentRun.truncated === true,
+    sourceMessageIds: agentRun.sourceMessageIds || [],
+    context: agentRun.context || {},
+    finishedAt: agentRun.finishedAt || 0,
+  })
+}
+
+function journalRunSignature(record) {
+  return JSON.stringify({
+    runId: record.runId,
+    taskId: record.taskId,
+    groupId: record.groupId,
+    threadRootId: record.threadRootId,
+    mode: record.mode,
+    targetKinds: record.targetKinds,
+    status: record.status,
+    createdAt: record.createdAt,
+    startedAt: record.startedAt,
+    finishedAt: record.finishedAt || 0,
+    reason: record.reason || '',
+    permissionMode: record.permissionMode,
+    currentRound: record.currentRound,
+    maxRounds: record.maxRounds,
+    unlimitedRounds: record.unlimitedRounds,
+    remoteJob: record.remoteJob || null,
+  })
+}
+
+function journalRun(record, existing = null, includeAllAgents = false) {
+  const previous = new Map((existing?.agentRuns || []).map(agentRun => [
+    agentRun.agentRunId, agentRun,
+  ]))
+  const agentRuns = record.agentRuns.filter((agentRun) => {
+    if (includeAllAgents) return true
+    const prior = previous.get(agentRun.agentRunId)
+    return !prior || journalAgentSignature(prior) !== journalAgentSignature(agentRun)
+  }).map(journalAgentRun)
+  const run = {
+    runId: record.runId,
+    taskId: record.taskId,
+    groupId: record.groupId,
+    threadRootId: record.threadRootId,
+    mode: record.mode,
+    targetKinds: record.targetKinds,
+    status: record.status,
+    createdAt: record.createdAt,
+    startedAt: record.startedAt,
+    updatedAt: record.updatedAt,
+    reason: record.reason,
+    permissionMode: record.permissionMode,
+    currentRound: record.currentRound,
+    maxRounds: record.maxRounds,
+    unlimitedRounds: record.unlimitedRounds,
+    agentRuns,
+  }
+  if (record.finishedAt != null) run.finishedAt = record.finishedAt
+  if (record.remoteJob) run.remoteJob = record.remoteJob
+  return run
+}
+
+function stableWriteError(error) {
+  if (error?.message === 'RUN_LEDGER_WRITE_FAILED') return error
+  const wrapped = new Error('RUN_LEDGER_WRITE_FAILED')
+  wrapped.cause = error
+  return wrapped
+}
+
 class RunLedger {
   constructor(options = {}) {
     this.storagePath = typeof options.storagePath === 'string'
       ? options.storagePath.trim()
       : ''
     if (!this.storagePath) throw new Error('RUN_LEDGER_STORAGE_REQUIRED')
+    this.journalPath = typeof options.journalPath === 'string' && options.journalPath.trim()
+      ? options.journalPath.trim()
+      : `${this.storagePath}.journal`
     this.now = typeof options.now === 'function' ? options.now : Date.now
     this.maxRuns = Math.max(1, Math.min(
       MAX_RUNS,
       boundedNumber(options.maxRuns, DEFAULT_MAX_RUNS, MAX_RUNS),
     ))
     this.loadError = null
+    this.snapshotError = null
+    this.journal = new RunJournal({ storagePath: this.journalPath })
     this.runs = this.load()
   }
 
@@ -57,9 +160,9 @@ class RunLedger {
     return safeTimestamp(this.now(), Date.now())
   }
 
-  load() {
+  loadSnapshot() {
     try {
-      if (!fs.existsSync(this.storagePath)) return []
+      if (!fs.existsSync(this.storagePath)) return { exists: false, runs: [] }
       const parsed = JSON.parse(fs.readFileSync(this.storagePath, 'utf8'))
       if (!isRecord(parsed) || parsed.version !== STORE_VERSION || !Array.isArray(parsed.runs)) {
         throw new Error('RUN_LEDGER_STORE_INVALID')
@@ -86,11 +189,88 @@ class RunLedger {
         const normalized = normalizeRecord(rawRecord, { now: 0 })
         byId.set(normalized.runId, normalized)
       }
-      return pruneRecords([...byId.values()], this.maxRuns)
+      return { exists: true, runs: pruneRecords([...byId.values()], this.maxRuns) }
+    } catch (error) {
+      return {
+        exists: true,
+        runs: [],
+        error: error instanceof Error ? error : new Error(String(error)),
+      }
+    }
+  }
+
+  normalizeRecoveredRuns(value) {
+    const records = []
+    const runIds = new Set()
+    const agentRunIds = new Set()
+    for (const rawRecord of Array.isArray(value) ? value : []) {
+      const normalized = normalizeRecord(rawRecord, { now: 0 })
+      if (!normalized || runIds.has(normalized.runId)) {
+        throw new Error('RUN_JOURNAL_STORE_INVALID')
+      }
+      runIds.add(normalized.runId)
+      for (const agentRun of normalized.agentRuns) {
+        if (agentRunIds.has(agentRun.agentRunId)) {
+          throw new Error('RUN_JOURNAL_STORE_INVALID')
+        }
+        agentRunIds.add(agentRun.agentRunId)
+      }
+      records.push(normalized)
+    }
+    return pruneRecords(records, this.maxRuns)
+  }
+
+  enrichRecoveredRuns(recoveredRuns, snapshotRuns) {
+    const snapshotById = new Map(snapshotRuns.map(record => [record.runId, record]))
+    return recoveredRuns.map((record) => {
+      const snapshot = snapshotById.get(record.runId)
+      if (!snapshot) return record
+      const snapshotAgents = new Map(snapshot.agentRuns.map(agentRun => [
+        agentRun.agentRunId, agentRun,
+      ]))
+      return {
+        ...record,
+        agentRuns: record.agentRuns.map((agentRun) => {
+          const details = snapshotAgents.get(agentRun.agentRunId)
+          if (!details || details.kind !== agentRun.kind) return agentRun
+          return {
+            ...agentRun,
+            output: details.output,
+            events: clone(details.events),
+          }
+        }),
+      }
+    })
+  }
+
+  load() {
+    const snapshot = this.loadSnapshot()
+    if (this.journal.loadError) {
+      this.loadError = this.journal.loadError
+      return []
+    }
+    let recovered = null
+    try {
+      recovered = this.journal.recover()
     } catch (error) {
       this.loadError = error instanceof Error ? error : new Error(String(error))
       return []
     }
+    if (recovered) {
+      try {
+        const normalized = this.normalizeRecoveredRuns(recovered)
+        if (!snapshot.error && snapshot.exists) {
+          return this.enrichRecoveredRuns(normalized, snapshot.runs)
+        }
+        this.snapshotError = snapshot.error || new Error('RUN_LEDGER_SNAPSHOT_MISSING')
+        return normalized
+      } catch (error) {
+        this.loadError = error instanceof Error ? error : new Error(String(error))
+        return []
+      }
+    }
+    if (snapshot.error) this.loadError = snapshot.error
+    return snapshot.runs
   }
 
   assertLoaded() {
@@ -104,9 +284,67 @@ class RunLedger {
     )
   }
 
-  commit(nextRuns) {
-    this.persist(nextRuns)
+  journalBaseline() {
+    return this.runs.map(record => journalRun(record, null, true))
+  }
+
+  journalChange(nextRuns, upsertRunIds = []) {
+    const previousById = new Map(this.runs.map(record => [record.runId, record]))
+    const nextById = new Map(nextRuns.map(record => [record.runId, record]))
+    const upserts = [...new Set(upsertRunIds)]
+      .map(runId => nextById.get(runId))
+      .filter(Boolean)
+      .map((record) => {
+        const existing = previousById.get(record.runId)
+        const patch = journalRun(record, existing)
+        return !existing
+          || journalRunSignature(existing) !== journalRunSignature(record)
+          || patch.agentRuns.length
+          ? patch
+          : null
+      })
+      .filter(Boolean)
+    return {
+      replace: false,
+      upserts,
+      removedRunIds: this.runs
+        .filter(record => !nextById.has(record.runId))
+        .map(record => record.runId),
+    }
+  }
+
+  commit(nextRuns, upsertRunIds = []) {
+    const timestamp = this.timestamp()
+    let change
+    let transactionId = ''
+    try {
+      this.journal.ensureBaseline(this.journalBaseline(), timestamp)
+      change = this.journalChange(nextRuns, upsertRunIds)
+      if (change.upserts.length || change.removedRunIds.length) {
+        transactionId = this.journal.prepare(change, timestamp)
+      }
+    } catch (error) {
+      throw stableWriteError(error)
+    }
+    try {
+      this.persist(nextRuns)
+    } catch (error) {
+      throw stableWriteError(error)
+    }
+    if (transactionId) {
+      try {
+        this.journal.commit(transactionId, timestamp)
+      } catch (error) {
+        try {
+          this.persist(this.runs)
+        } catch (rollbackError) {
+          if (error && typeof error === 'object') error.rollbackError = rollbackError
+        }
+        throw stableWriteError(error)
+      }
+    }
     this.runs = nextRuns
+    this.snapshotError = null
   }
 
   checkpoint(record) {
@@ -131,7 +369,7 @@ class RunLedger {
     }
     const nextRuns = this.runs.filter((_item, recordIndex) => recordIndex !== index)
     nextRuns.push(normalized)
-    this.commit(pruneRecords(nextRuns, this.maxRuns))
+    this.commit(pruneRecords(nextRuns, this.maxRuns), [normalized.runId])
     return clone(normalized)
   }
 
@@ -155,32 +393,50 @@ class RunLedger {
     })
     const nextRuns = this.runs.filter((_record, recordIndex) => recordIndex !== index)
     nextRuns.push(normalized)
-    this.commit(nextRuns)
+    this.commit(nextRuns, [normalized.runId])
     return clone(normalized)
   }
 
-  recoverInterrupted() {
+  recoverInterrupted(options = {}) {
     this.assertLoaded()
     const now = this.timestamp()
+    const recoveryOwnerId = cleanId(options.recoveryOwnerId)
+    const remoteConnectorIds = new Set((Array.isArray(options.remoteConnectorIds)
+      ? options.remoteConnectorIds
+      : []).map(cleanId).filter(Boolean))
     const nextRuns = clone(this.runs)
     const changed = []
     for (let index = 0; index < nextRuns.length; index += 1) {
       const record = nextRuns[index]
       let recordChanged = false
       if (!TERMINAL_STATUSES.has(record.status)) {
-        record.status = 'interrupted'
-        record.reason = 'app_restart'
-        record.finishedAt = now
+        const canReconcileRemote = Boolean(
+          recoveryOwnerId
+          && record.remoteJob?.jobId
+          && remoteConnectorIds.has(record.remoteJob.connectorId),
+        )
+        if (canReconcileRemote) {
+          record.status = 'reconciling'
+          record.reason = 'app_restart'
+          delete record.finishedAt
+          record.remoteJob.recoveryOwnerId = recoveryOwnerId
+        } else {
+          record.status = 'interrupted'
+          record.reason = 'app_restart'
+          record.finishedAt = now
+        }
         recordChanged = true
       }
-      for (const agentRun of record.agentRuns) {
-        if (TERMINAL_STATUSES.has(agentRun.status)) continue
-        agentRun.status = 'interrupted'
-        agentRun.reason = 'app_restart'
-        agentRun.lastActivityAt = now
-        agentRun.finishedAt = now
-        agentRun.silent = false
-        recordChanged = true
+      if (record.status !== 'reconciling') {
+        for (const agentRun of record.agentRuns) {
+          if (TERMINAL_STATUSES.has(agentRun.status)) continue
+          agentRun.status = 'interrupted'
+          agentRun.reason = 'app_restart'
+          agentRun.lastActivityAt = now
+          agentRun.finishedAt = now
+          agentRun.silent = false
+          recordChanged = true
+        }
       }
       if (!recordChanged) continue
       record.updatedAt = now
@@ -188,8 +444,69 @@ class RunLedger {
       nextRuns[index] = normalized
       changed.push(normalized)
     }
-    if (changed.length) this.commit(nextRuns)
+    if (changed.length) this.commit(nextRuns, changed.map(record => record.runId))
     return clone(newestFirst(changed))
+  }
+
+  remoteRecoveries(recoveryOwnerId) {
+    const ownerId = cleanId(recoveryOwnerId)
+    if (!ownerId) return []
+    return newestFirst(this.runs.filter(record => (
+      !TERMINAL_STATUSES.has(record.status)
+      && record.remoteJob?.recoveryOwnerId === ownerId
+    ))).map(record => ({
+      runId: record.runId,
+      taskId: record.taskId,
+      groupId: record.groupId,
+      connectorId: record.remoteJob.connectorId,
+      jobId: record.remoteJob.jobId,
+      cursor: record.remoteJob.cursor,
+    }))
+  }
+
+  reconcileRemote(runId, recoveryOwnerId, update = {}) {
+    this.assertLoaded()
+    const id = cleanId(runId)
+    const ownerId = cleanId(recoveryOwnerId)
+    const index = this.runs.findIndex(record => record.runId === id)
+    const existing = index >= 0 ? this.runs[index] : null
+    if (!existing?.remoteJob || TERMINAL_STATUSES.has(existing.status)
+        || !ownerId || existing.remoteJob.recoveryOwnerId !== ownerId) {
+      throw new Error('RUN_LEDGER_RECOVERY_OWNER_INVALID')
+    }
+    const requestedStatus = String(update.status || 'running').toLowerCase()
+    if (!RUN_STATUSES.has(requestedStatus)
+        || ['preparing', 'queued', 'reconciling'].includes(requestedStatus)) {
+      throw new Error('RUN_LEDGER_REMOTE_UPDATE_INVALID')
+    }
+    const requestedCursor = update.cursor == null
+      ? existing.remoteJob.cursor
+      : cleanOpaqueRemoteValue(update.cursor)
+    if (update.cursor != null && !requestedCursor) {
+      throw new Error('RUN_LEDGER_REMOTE_UPDATE_INVALID')
+    }
+    const agentRuns = clone(existing.agentRuns)
+    if (TERMINAL_STATUSES.has(requestedStatus)) {
+      for (const agentRun of agentRuns) {
+        if (TERMINAL_STATUSES.has(agentRun.status)) continue
+        agentRun.status = requestedStatus === 'round-limit' ? 'partial' : requestedStatus
+        agentRun.lastActivityAt = this.timestamp()
+        agentRun.finishedAt = agentRun.lastActivityAt
+        agentRun.silent = false
+      }
+    }
+    return this.checkpoint({
+      runId: id,
+      status: requestedStatus,
+      reason: String(update.reason || ''),
+      ...(TERMINAL_STATUSES.has(requestedStatus) ? { finishedAt: this.timestamp() } : {}),
+      remoteJob: {
+        ...existing.remoteJob,
+        cursor: requestedCursor,
+        recoveryOwnerId: TERMINAL_STATUSES.has(requestedStatus) ? '' : ownerId,
+      },
+      agentRuns,
+    })
   }
 
   list(groupId = '') {

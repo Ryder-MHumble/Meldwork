@@ -11,9 +11,16 @@ const MAX_TARGET_KINDS = 32
 const MAX_REASON_CHARS = 240
 const PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const PUBLIC_GROUP_ID = /^[^\u0000-\u001f\u007f]{1,100}$/u
+const OPAQUE_REMOTE_VALUE = /^[A-Za-z0-9._:+/=\-]{1,240}$/
+const REMOTE_JOB_FIELDS = new Set([
+  'connectorId', 'jobId', 'cursor', 'recoveryOwnerId',
+])
+const CONTEXT_FIELDS = new Set([
+  'includedCount', 'omittedCount', 'charCount', 'sessionRotated',
+])
 
 const RUN_STATUSES = new Set([
-  'preparing', 'queued', 'running', 'waiting',
+  'preparing', 'queued', 'running', 'waiting', 'reconciling',
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
 ])
 const AGENT_STATUSES = new Set([
@@ -46,6 +53,11 @@ function cleanId(value) {
 function cleanGroupId(value) {
   const id = String(value || '')
   return PUBLIC_GROUP_ID.test(id) ? id : ''
+}
+
+function cleanOpaqueRemoteValue(value) {
+  const text = String(value || '')
+  return OPAQUE_REMOTE_VALUE.test(text) ? text : ''
 }
 
 function boundedNumber(value, fallback = 0, max = Number.MAX_SAFE_INTEGER) {
@@ -163,6 +175,14 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
+  const eventCursor = boundedNumber(
+    input.eventCursor,
+    rawEvents.reduce((highest, event) => Math.max(highest, boundedNumber(
+      event?.seq, 0, 1000000000,
+    )), 0),
+    1000000000,
+  )
+  const outputChars = boundedNumber(input.outputChars, outputSource.length, 1000000)
   const agentRun = {
     agentRunId,
     kind,
@@ -181,6 +201,8 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
       || rawEvents.length > DEFAULT_MAX_EVENTS_PER_AGENT
       || rawSourceIds.length > 32,
     context: hasContext ? (capsule?.context || {}) : {},
+    eventCursor,
+    outputChars,
   }
   const reason = cleanText(input.reason, MAX_REASON_CHARS, { inline: true })
   if (reason) agentRun.reason = reason
@@ -226,6 +248,21 @@ function hasValidStoredRecordShape(input) {
   if (!hasStoredBoundedInteger(input, 'currentRound', 0, 100000)) return false
   if (!hasStoredBoundedInteger(input, 'maxRounds', 0, 100000)) return false
   if (!hasStoredFieldTypes(input, ['unlimitedRounds'], 'boolean')) return false
+  if (hasOwn(input, 'remoteJob')) {
+    if (!isRecord(input.remoteJob)
+        || Object.keys(input.remoteJob).some(field => !REMOTE_JOB_FIELDS.has(field))
+        || !hasStoredFieldTypes(input.remoteJob, [
+          'connectorId', 'jobId', 'cursor', 'recoveryOwnerId',
+        ], 'string')
+        || !cleanId(input.remoteJob.connectorId)
+        || !cleanOpaqueRemoteValue(input.remoteJob.jobId)
+        || (hasOwn(input.remoteJob, 'cursor')
+          && input.remoteJob.cursor && !cleanOpaqueRemoteValue(input.remoteJob.cursor))
+        || (hasOwn(input.remoteJob, 'recoveryOwnerId')
+          && input.remoteJob.recoveryOwnerId && !cleanId(input.remoteJob.recoveryOwnerId))) {
+      return false
+    }
+  }
   if (!hasStoredTimestamps(input, [
     'createdAt', 'startedAt', 'updatedAt', 'finishedAt',
   ])) return false
@@ -261,12 +298,15 @@ function hasValidStoredRecordShape(input) {
     ], 'string')) return false
     if (!hasStoredEnum(agentRun, 'status', AGENT_STATUSES)) return false
     if (!hasStoredBoundedInteger(agentRun, 'round', 0, 100000)) return false
+    if (!hasStoredBoundedInteger(agentRun, 'eventCursor', 0, 1000000000)) return false
+    if (!hasStoredBoundedInteger(agentRun, 'outputChars', 0, 1000000)) return false
     if (!hasStoredFieldTypes(agentRun, ['silent', 'truncated'], 'boolean')) return false
     if (!hasStoredTimestamps(agentRun, [
       'startedAt', 'lastActivityAt', 'finishedAt',
     ])) return false
     if (hasOwn(agentRun, 'context')) {
       if (!isRecord(agentRun.context)) return false
+      if (Object.keys(agentRun.context).some(field => !CONTEXT_FIELDS.has(field))) return false
       if (!hasStoredBoundedInteger(agentRun.context, 'includedCount', 0, 1000)) return false
       if (!hasStoredBoundedInteger(agentRun.context, 'omittedCount', 0, 100000)) return false
       if (!hasStoredBoundedInteger(agentRun.context, 'charCount', 0, 1000000)) return false
@@ -310,6 +350,26 @@ function selectedValue(input, existing, key) {
   return hasOwn(input, key) ? input[key] : existing?.[key]
 }
 
+function normalizeRemoteJob(input, existing) {
+  if (!isRecord(input) && !isRecord(existing)) return null
+  const current = isRecord(input) ? input : {}
+  const previous = isRecord(existing) ? existing : {}
+  const connectorId = cleanId(hasOwn(current, 'connectorId')
+    ? current.connectorId
+    : previous.connectorId)
+  const jobId = cleanOpaqueRemoteValue(hasOwn(current, 'jobId')
+    ? current.jobId
+    : previous.jobId)
+  if (!connectorId || !jobId) return null
+  const cursor = cleanOpaqueRemoteValue(hasOwn(current, 'cursor')
+    ? current.cursor
+    : previous.cursor)
+  const recoveryOwnerId = cleanId(hasOwn(current, 'recoveryOwnerId')
+    ? current.recoveryOwnerId
+    : previous.recoveryOwnerId)
+  return { connectorId, jobId, cursor, recoveryOwnerId }
+}
+
 function normalizeRecord(input, options = {}) {
   if (!isRecord(input)) return null
   const existing = options.existing || null
@@ -325,6 +385,10 @@ function normalizeRecord(input, options = {}) {
   const targetKinds = normalizeKinds(selectedValue(input, existing, 'targetKinds'))
   const taskId = cleanId(selectedValue(input, existing, 'taskId'))
   const threadRootId = cleanId(selectedValue(input, existing, 'threadRootId'))
+  const remoteJob = normalizeRemoteJob(
+    selectedValue(input, null, 'remoteJob'),
+    existing?.remoteJob,
+  )
   const permissionValue = String(
     selectedValue(input, existing, 'permissionMode') || '',
   ).toLowerCase()
@@ -376,6 +440,7 @@ function normalizeRecord(input, options = {}) {
     unlimitedRounds,
     agentRuns,
   }
+  if (remoteJob) record.remoteJob = remoteJob
   if (TERMINAL_STATUSES.has(status)) {
     record.finishedAt = safeTimestamp(
       selectedValue(input, existing, 'finishedAt'),
@@ -429,10 +494,12 @@ function newestFirst(records) {
 
 module.exports = {
   DEFAULT_MAX_DURABLE_AGENT_RUNS,
+  RUN_STATUSES,
   TERMINAL_STATUSES,
   boundedNumber,
   cleanGroupId,
   cleanId,
+  cleanOpaqueRemoteValue,
   clone,
   hasValidStoredRecordShape,
   isRecord,
