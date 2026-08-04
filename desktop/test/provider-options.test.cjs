@@ -127,6 +127,39 @@ test('OpenClaw Provider options remain scoped to its managed local runtime', (t)
   assert.equal(config.tools.allow.includes('write'), true)
 })
 
+test('OpenClaw native auth also receives an app-owned isolated runtime', (t) => {
+  const storageRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-native-openclaw-options-'))
+  const workdir = path.join(storageRoot, 'workspace')
+  fs.mkdirSync(workdir)
+  t.after(() => fs.rmSync(storageRoot, { recursive: true, force: true }))
+
+  const options = providerOptionsFor('openclaw', {}, {
+    storageRoot,
+    workdir,
+    sessionRef: 'agent:main:native-provider-options',
+    sandbox: 'read-only',
+    nativeRuntime: {
+      model: 'native/model',
+      provider: {
+        id: 'native',
+        baseUrl: 'https://native.example.com/v1',
+        api: 'openai-completions',
+        apiKey: 'native-provider-key',
+        model: { id: 'model', name: 'Native Model', input: ['text'] },
+      },
+    },
+  })
+  const config = JSON.parse(fs.readFileSync(options.env.OPENCLAW_CONFIG_PATH, 'utf8'))
+
+  assert.equal(config.models.mode, 'replace')
+  assert.equal(config.agents.defaults.model.primary, 'native/model')
+  assert.equal(Object.hasOwn(config.agents, 'list'), false)
+  assert.equal(config.tools.allow.includes('write'), false)
+  assert.equal(config.tools.deny.includes('exec'), true)
+  assert.equal(options.env.ROUNDRELAY_OPENCLAW_NATIVE_API_KEY, 'native-provider-key')
+  assert.equal(Object.hasOwn(options.env, 'ROUNDRELAY_OPENCLAW_API_KEY'), false)
+})
+
 test('unknown Provider kinds do not create execution options', () => {
   assert.deepEqual(providerOptionsFor('unknown', GENERIC), {})
 })

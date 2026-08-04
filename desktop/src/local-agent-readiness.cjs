@@ -8,6 +8,21 @@ const { prepareCommand, searchPath } = require('./cli-adapters.cjs')
 const execFileAsync = promisify(execFile)
 
 const CREDENTIAL_FIELD = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|credential)$/i
+const OPENCLAW_MODEL_REF = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,239}$/
+const OPENCLAW_PROVIDER_ID = /^[a-z][a-z0-9_-]{0,63}$/
+const OPENCLAW_PROVIDER_APIS = new Set([
+  'openai-completions',
+  'openai-responses',
+  'openai-chatgpt-responses',
+  'anthropic-messages',
+  'google-generative-ai',
+  'google-vertex',
+  'github-copilot',
+  'bedrock-converse-stream',
+  'ollama',
+  'azure-openai-responses',
+])
+const OPENCLAW_MODEL_INPUTS = new Set(['text', 'image', 'audio', 'video'])
 const MAX_CREDENTIAL_FILE_BYTES = 2 * 1024 * 1024
 const CREDENTIAL_ENV_KEYS = Object.freeze({
   codex: ['OPENAI_API_KEY'],
@@ -138,45 +153,183 @@ function claudeAuthState(output) {
   return null
 }
 
-function openClawAuthState(output) {
+function pathInside(parent, child) {
+  const relative = path.relative(parent, child)
+  return Boolean(relative) && relative !== '..'
+    && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
+}
+
+function parseOpenClawStatus(output, options = {}) {
   try {
     const status = JSON.parse(String(output || '').trim())
     const auth = status?.auth
     const resolvedModel = String(status?.resolvedDefault || status?.defaultModel || '').trim()
-    if (!auth || !resolvedModel) return null
+    if (!auth || !OPENCLAW_MODEL_REF.test(resolvedModel)) return null
     if (Array.isArray(auth.missingProvidersInUse) && auth.missingProvidersInUse.length) {
-      return { state: 'missing', source: 'native-auth-status' }
+      return { credentialState: { state: 'missing', source: 'native-auth-status' } }
     }
-    return { state: 'ready', source: 'native-auth-status' }
+    const requestedAgentDir = String(status?.agentDir || '').trim()
+    if (!path.isAbsolute(requestedAgentDir)) {
+      return { credentialState: { state: 'ready', source: 'native-auth-status' } }
+    }
+    const nativeRoot = fs.realpathSync(path.join(options.home || os.homedir(), '.openclaw'))
+    const agentDir = fs.realpathSync(requestedAgentDir)
+    if (!fs.statSync(agentDir).isDirectory() || !pathInside(nativeRoot, agentDir)) {
+      return { credentialState: { state: 'ready', source: 'native-auth-status' } }
+    }
+    return {
+      credentialState: { state: 'ready', source: 'native-auth-status' },
+      runtime: { model: resolvedModel, agentDir: path.normalize(agentDir) },
+    }
   } catch {
     return null
   }
+}
+
+function openClawModelParts(modelRef) {
+  const separator = modelRef.indexOf('/')
+  if (separator <= 0 || separator === modelRef.length - 1) return null
+  const providerId = modelRef.slice(0, separator)
+  const modelId = modelRef.slice(separator + 1)
+  if (!OPENCLAW_PROVIDER_ID.test(providerId) || !OPENCLAW_MODEL_REF.test(modelId)) return null
+  return { providerId, modelId }
+}
+
+function openClawBaseUrl(value) {
+  const baseUrl = String(value || '').trim().replace(/\/+$/, '')
+  let parsed
+  try { parsed = new URL(baseUrl) } catch { return '' }
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
+  if ((parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback))
+      || parsed.username || parsed.password || parsed.search || parsed.hash) return ''
+  return baseUrl
+}
+
+function boundedPositiveNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 1_000_000_000
+    ? value
+    : null
+}
+
+function sanitizedOpenClawModel(input, modelId) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)
+      || String(input.id || '').trim() !== modelId) return null
+  const requestedName = String(input.name || '').trim()
+  if (requestedName.length > 240) return null
+  const model = { id: modelId, name: requestedName || modelId }
+  if (Array.isArray(input.input)) {
+    const values = [...new Set(input.input.map(value => String(value || '').trim()))]
+    if (!values.length || values.some(value => !OPENCLAW_MODEL_INPUTS.has(value))) return null
+    model.input = values
+  } else {
+    model.input = ['text']
+  }
+  for (const key of ['contextWindow', 'contextTokens', 'maxTokens']) {
+    const value = boundedPositiveNumber(input[key])
+    if (value !== null) model[key] = value
+  }
+  if (typeof input.reasoning === 'boolean') model.reasoning = input.reasoning
+  if (input.cost && typeof input.cost === 'object' && !Array.isArray(input.cost)) {
+    const cost = {}
+    for (const key of ['input', 'output', 'cacheRead', 'cacheWrite']) {
+      const value = input.cost[key]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1_000_000_000) {
+        cost[key] = value
+      }
+    }
+    if (Object.keys(cost).length) model.cost = cost
+  }
+  return model
+}
+
+function openClawApiKey(input) {
+  if (typeof input !== 'string') return ''
+  const value = input.trim()
+  return value && value.length <= 8192 ? value : ''
+}
+
+function parseOpenClawModelsFile(output, modelRef) {
+  try {
+    const parts = openClawModelParts(modelRef)
+    const catalog = JSON.parse(String(output || '').trim())
+    const provider = catalog?.providers?.[parts?.providerId]
+    if (!parts || !provider || typeof provider !== 'object' || Array.isArray(provider)) return null
+    const baseUrl = openClawBaseUrl(provider.baseUrl)
+    const api = String(provider.api || '').trim()
+    const apiKey = openClawApiKey(provider.apiKey)
+    const model = Array.isArray(provider.models)
+      ? provider.models.map(candidate => sanitizedOpenClawModel(candidate, parts.modelId)).find(Boolean)
+      : null
+    if (!baseUrl || !OPENCLAW_PROVIDER_APIS.has(api) || !apiKey || !model) return null
+    return {
+      model: modelRef,
+      provider: { id: parts.providerId, baseUrl, api, apiKey, model },
+    }
+  } catch {
+    return null
+  }
+}
+
+function readOpenClawModelsFile(agentDir) {
+  const modelsPath = path.join(agentDir, 'models.json')
+  const entry = fs.lstatSync(modelsPath)
+  if (!entry.isFile() || entry.isSymbolicLink()) return ''
+  const noFollow = fs.constants.O_NOFOLLOW || 0
+  const descriptor = fs.openSync(modelsPath, fs.constants.O_RDONLY | noFollow)
+  try {
+    const stat = fs.fstatSync(descriptor)
+    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_CREDENTIAL_FILE_BYTES) return ''
+    return fs.readFileSync(descriptor, 'utf8')
+  } finally {
+    fs.closeSync(descriptor)
+  }
+}
+
+async function queryOpenClawStatus(options = {}) {
+  if (!options.executable) return null
+  const platform = options.platform || process.platform
+  const prepareCommandFn = options.prepareCommandFn || prepareCommand
+  const execFileFn = options.execFileFn || execFileAsync
+  const prepared = prepareCommandFn(
+    options.executable,
+    ['models', 'status', '--check', '--json'],
+    { platform },
+  )
+  try {
+    const result = await execFileFn(prepared.command, prepared.args, {
+      timeout: 7000,
+      windowsHide: true,
+      env: probeEnvironment(options),
+    })
+    return parseOpenClawStatus(result.stdout, options)
+  } catch (error) {
+    return parseOpenClawStatus(error?.stdout, options)
+  }
+}
+
+async function resolveNativeOpenClawRuntime(options = {}) {
+  const status = await queryOpenClawStatus(options)
+  if (!status?.runtime || status.credentialState?.state !== 'ready') {
+    throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
+  }
+  const parts = openClawModelParts(status.runtime.model)
+  if (!parts) throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
+  try {
+    const runtime = parseOpenClawModelsFile(
+      readOpenClawModelsFile(status.runtime.agentDir),
+      status.runtime.model,
+    )
+    if (runtime) return runtime
+  } catch { /* fail closed below */ }
+  throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
 }
 
 async function resolveNativeCredentialState(kind, options = {}) {
   if (kind === 'mimo') return { state: 'ready', source: 'native-cli' }
   const current = nativeCredentialState(kind, options)
   if (kind === 'openclaw') {
-    if (!options.executable
-        || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current
-    const platform = options.platform || process.platform
-    const prepareCommandFn = options.prepareCommandFn || prepareCommand
-    const execFileFn = options.execFileFn || execFileAsync
-    const prepared = prepareCommandFn(
-      options.executable,
-      ['models', 'status', '--check', '--json'],
-      { platform },
-    )
-    try {
-      const result = await execFileFn(prepared.command, prepared.args, {
-        timeout: 7000,
-        windowsHide: true,
-        env: probeEnvironment(options),
-      })
-      return openClawAuthState(result.stdout) || current
-    } catch (error) {
-      return openClawAuthState(error?.stdout) || current
-    }
+    const status = await queryOpenClawStatus(options)
+    return status?.credentialState || current
   }
   if (kind !== 'claude' || !options.executable
       || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current
@@ -200,5 +353,6 @@ async function resolveNativeCredentialState(kind, options = {}) {
 module.exports = {
   nativeCredentialEnvironment,
   nativeCredentialState,
+  resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
 }

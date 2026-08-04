@@ -1,4 +1,4 @@
-const { managedOpenClawOptions } = require('./openclaw-runtime.cjs')
+const { managedOpenClawOptions, nativeOpenClawOptions } = require('./openclaw-runtime.cjs')
 
 const EXTERNAL_PROVIDER_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
@@ -138,6 +138,15 @@ function providerOptionsFor(kind, generic, context = {}, status = {}) {
     }
   }
   if (kind === 'openclaw' && context.storageRoot && context.workdir) {
+    if (!generic?.OPENAI_API_KEY) {
+      return nativeOpenClawOptions({
+        storageRoot: context.storageRoot,
+        workdir: context.workdir,
+        sessionRef: context.sessionRef,
+        allowWrite: context.sandbox === 'workspace-write',
+        runtime: context.nativeRuntime,
+      })
+    }
     return managedOpenClawOptions({
       storageRoot: context.storageRoot,
       workdir: context.workdir,

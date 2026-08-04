@@ -623,12 +623,23 @@ function loadMain(userData, options = {}) {
     './attachment-store.cjs': { AttachmentStore: TestAttachmentStore },
     './local-agent-readiness.cjs': {
       nativeCredentialEnvironment: kind => options.nativeEnvironment?.(kind) || {},
+      resolveNativeOpenClawRuntime: async input => options.nativeOpenClawRuntime?.(input) || ({
+        model: 'native/model',
+        provider: {
+          id: 'native',
+          baseUrl: 'https://native.example.com/v1',
+          api: 'openai-completions',
+          apiKey: 'native-openclaw-key',
+          model: { id: 'model', name: 'Native Model', input: ['text'] },
+        },
+      }),
       resolveNativeCredentialState: async () => ({ state: 'ready', source: 'native-credential' }),
     },
     './local-workspace.cjs': { LocalWorkspace: TestWorkspace },
     './local-skill-catalog.cjs': { LocalSkillCatalog: TestLocalSkillCatalog },
     './openclaw-runtime.cjs': {
       managedOpenClawOptions: input => ({ env: { MANAGED_OPENCLAW: JSON.stringify(input) } }),
+      nativeOpenClawOptions: input => ({ env: { NATIVE_OPENCLAW: JSON.stringify(input) } }),
     },
     './provider-store.cjs': { ProviderStore: TestProviderStore },
     './knowledge-base-store.cjs': { KnowledgeBaseStore: TestKnowledgeBaseStore },

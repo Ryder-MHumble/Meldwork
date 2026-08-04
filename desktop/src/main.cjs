@@ -17,6 +17,7 @@ const { AgentInstaller } = require('./agent-installer.cjs')
 const { CustomAgentStore } = require('./custom-agent-store.cjs')
 const {
   nativeCredentialEnvironment,
+  resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
 } = require('./local-agent-readiness.cjs')
 const { LocalWorkspace } = require('./local-workspace.cjs')
@@ -162,10 +163,10 @@ function openExternalUrl(value) {
 function providerOptions(kind, context = {}) {
   if (!EXTERNAL_PROVIDER_KINDS.has(kind)) return {}
   const status = providerStore?.status(kind) || {}
-  if (!status.configured) return {}
+  if (!status.configured && !(kind === 'openclaw' && context.nativeRuntime)) return {}
   return providerOptionsFor(
     kind,
-    providerStore.envForAgent(kind),
+    status.configured ? providerStore.envForAgent(kind) : {},
     context,
     status,
   )
@@ -270,12 +271,19 @@ function createWorkspace() {
           attachments: options.attachments,
         })
       }
+      const status = providerStore.status(agent.kind)
+      const nativeRuntime = agent.kind === 'openclaw' && !status.configured
+        ? await resolveNativeOpenClawRuntime({ executable: agent.executable })
+        : null
       const injected = providerOptions(agent.kind, {
         ...options,
         workdir,
         storageRoot: app.getPath('userData'),
+        nativeRuntime,
       })
-      const nativeEnv = nativeCredentialEnvironment(agent.kind)
+      const nativeEnv = agent.kind === 'openclaw'
+        ? {}
+        : nativeCredentialEnvironment(agent.kind)
       return runAgent(agent, prompt, workdir, {
         ...options,
         ...injected,

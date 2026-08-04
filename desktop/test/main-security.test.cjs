@@ -1052,7 +1052,7 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.CURRENT_RUN, '1')
 })
 
-test('OpenClaw keeps native readiness and execution when no Meldwork Provider profile is active', async (t) => {
+test('OpenClaw native auth is routed through the app-owned isolated runtime', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-native-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const credentialChecks = []
@@ -1060,8 +1060,22 @@ test('OpenClaw keeps native readiness and execution when no Meldwork Provider pr
     moduleMocks: {
       './local-agent-readiness.cjs': {
         nativeCredentialEnvironment: kind => kind === 'openclaw'
-          ? { OPENCLAW_NATIVE_CONFIG: 'available' }
+          ? {
+            OPENCLAW_NATIVE_CONFIG: 'available',
+            OPENAI_API_KEY: 'unrelated-openai-key',
+            OPENROUTER_API_KEY: 'unrelated-openrouter-key',
+          }
           : {},
+        resolveNativeOpenClawRuntime: async () => ({
+          model: 'native/model',
+          provider: {
+            id: 'native',
+            baseUrl: 'https://native.example.com/v1',
+            api: 'openai-completions',
+            apiKey: 'native-openclaw-key',
+            model: { id: 'model', name: 'Native Model', input: ['text'] },
+          },
+        }),
         resolveNativeCredentialState: async (kind, input) => {
           credentialChecks.push({ kind, input })
           return { state: 'ready', source: 'native-credential' }
@@ -1086,8 +1100,24 @@ test('OpenClaw keeps native readiness and execution when no Meldwork Provider pr
     'hello', directory, { sessionRef: 'agent:main:desktop-native-openclaw' },
   )
   const options = harness.runAgentCalls[0][3]
-  assert.equal(options.env.OPENCLAW_NATIVE_CONFIG, 'available')
+  assert.equal(Object.hasOwn(options.env, 'OPENCLAW_NATIVE_CONFIG'), false)
+  assert.equal(Object.hasOwn(options.env, 'OPENAI_API_KEY'), false)
+  assert.equal(Object.hasOwn(options.env, 'OPENROUTER_API_KEY'), false)
   assert.equal(Object.hasOwn(options.env, 'MANAGED_OPENCLAW'), false)
+  const isolated = JSON.parse(options.env.NATIVE_OPENCLAW)
+  assert.equal(isolated.workdir, directory)
+  assert.equal(isolated.sessionRef, 'agent:main:desktop-native-openclaw')
+  assert.equal(isolated.allowWrite, false)
+  assert.deepEqual(isolated.runtime, {
+    model: 'native/model',
+    provider: {
+      id: 'native',
+      baseUrl: 'https://native.example.com/v1',
+      api: 'openai-completions',
+      apiKey: 'native-openclaw-key',
+      model: { id: 'model', name: 'Native Model', input: ['text'] },
+    },
+  })
 })
 
 test('manual Agent refreshes remain serialized', async (t) => {

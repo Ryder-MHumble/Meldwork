@@ -7,6 +7,7 @@ const test = require('node:test')
 const {
   nativeCredentialEnvironment,
   nativeCredentialState,
+  resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
 } = require('../src/local-agent-readiness.cjs')
 
@@ -96,6 +97,8 @@ test('Claude readiness uses the official auth status without exposing OAuth data
 
 test('OpenClaw readiness uses the official model status when auth is stored outside its config', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-readiness-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
   const calls = []
   try {
     const result = await resolveNativeCredentialState('openclaw', {
@@ -108,6 +111,7 @@ test('OpenClaw readiness uses the official model status when auth is stored outs
           stdout: JSON.stringify({
             defaultModel: 'provider/model',
             resolvedDefault: 'provider/model',
+            agentDir,
             auth: { missingProvidersInUse: [], unusableProfiles: ['unused-expired-profile'] },
           }),
         }
@@ -119,6 +123,175 @@ test('OpenClaw readiness uses the official model status when auth is stored outs
     assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('OpenClaw native runtime extracts only the current validated Provider', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-status-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const secret = 'native-openclaw-secret'
+  const calls = []
+  fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
+    providers: {
+      provider: {
+        baseUrl: 'https://provider.example/v1/',
+        api: 'openai-completions',
+        apiKey: secret,
+        headers: { Authorization: 'must-not-copy' },
+        tools: { allow: ['exec'] },
+        models: [
+          { id: 'other', name: 'Other' },
+          {
+            id: 'model-v1',
+            name: 'Model V1',
+            input: ['text'],
+            contextWindow: 128000,
+            maxTokens: 4096,
+            reasoning: false,
+            cost: { input: 0, output: 0, unsafe: 1 },
+            params: { unsafe: true },
+          },
+        ],
+      },
+    },
+  }))
+
+  const runtime = await resolveNativeOpenClawRuntime({
+    home,
+    env: {},
+    executable: '/tmp/openclaw',
+    execFileFn: async (_command, args, options) => {
+      calls.push({ args, env: options.env })
+      return { stdout: JSON.stringify({
+        resolvedDefault: 'provider/model-v1',
+        agentDir,
+        auth: { missingProvidersInUse: [], profiles: [{ token: 'ignored' }] },
+      }) }
+    },
+  })
+
+  assert.deepEqual(runtime, {
+    model: 'provider/model-v1',
+    provider: {
+      id: 'provider',
+      baseUrl: 'https://provider.example/v1',
+      api: 'openai-completions',
+      apiKey: secret,
+      model: {
+        id: 'model-v1',
+        name: 'Model V1',
+        input: ['text'],
+        contextWindow: 128000,
+        maxTokens: 4096,
+        reasoning: false,
+        cost: { input: 0, output: 0 },
+      },
+    },
+  })
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].args, ['models', 'status', '--check', '--json'])
+  assert.equal(Object.hasOwn(runtime, 'auth'), false)
+  assert.equal(Object.hasOwn(runtime, 'agentDir'), false)
+  assert.equal(Object.hasOwn(runtime.provider, 'headers'), false)
+  assert.equal(Object.hasOwn(runtime.provider.model, 'params'), false)
+})
+
+test('OpenClaw native runtime rejects Env SecretRefs without reading unrelated process secrets', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-env-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
+    providers: {
+      provider: {
+        baseUrl: 'https://attacker.example/v1',
+        api: 'openai-responses',
+        apiKey: { source: 'env', provider: 'default', id: 'GITHUB_TOKEN' },
+        models: [{ id: 'model', name: 'Model', input: ['text'] }],
+      },
+    },
+  }))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const calls = []
+  await assert.rejects(resolveNativeOpenClawRuntime({
+    home,
+    env: { PATH: '/usr/bin', GITHUB_TOKEN: 'must-not-leave-process' },
+    executable: '/tmp/openclaw',
+    execFileFn: async (_command, args, options) => {
+      calls.push({ args, env: options.env })
+      return { stdout: JSON.stringify({
+        resolvedDefault: 'provider/model', agentDir,
+        auth: { missingProvidersInUse: [] },
+      }) }
+    },
+  }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
+
+  assert.equal(calls[0].env.GITHUB_TOKEN, undefined)
+})
+
+test('OpenClaw native runtime rejects unsafe status and Provider descriptors', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-invalid-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const validStatus = {
+    resolvedDefault: 'provider/model', agentDir,
+    auth: { missingProvidersInUse: [] },
+  }
+  const validProvider = {
+    baseUrl: 'https://provider.example/v1',
+    api: 'openai-completions',
+    apiKey: 'secret',
+    models: [{ id: 'model', name: 'Model', input: ['text'] }],
+  }
+  const outsideAgentDir = path.join(home, 'outside-agent')
+  fs.mkdirSync(outsideAgentDir)
+  fs.writeFileSync(path.join(outsideAgentDir, 'models.json'), JSON.stringify({
+    providers: { provider: validProvider },
+  }))
+  const invalid = [
+    [{ resolvedDefault: 'provider/model', auth: { missingProvidersInUse: [] } }, validProvider],
+    [{ ...validStatus, agentDir: 'relative' }, validProvider],
+    [{ ...validStatus, resolvedDefault: 'provider.id/model' }, validProvider],
+    [{ ...validStatus, agentDir: path.join(home, 'missing') }, validProvider],
+    [{ ...validStatus, agentDir: outsideAgentDir }, validProvider],
+    [validStatus, { ...validProvider, baseUrl: 'http://provider.example/v1' }],
+    [validStatus, { ...validProvider, api: 'unknown-api' }],
+    [validStatus, { ...validProvider, apiKey: '' }],
+    [validStatus, { ...validProvider, models: [{ id: 'other', name: 'Other', input: ['text'] }] }],
+    [validStatus, {
+      ...validProvider,
+      apiKey: { source: 'file', provider: 'default', id: '/tmp/secret' },
+    }],
+  ]
+
+  for (const [status, provider] of invalid) {
+    fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
+      providers: { provider },
+    }))
+    await assert.rejects(
+      resolveNativeOpenClawRuntime({
+        home,
+        env: {},
+        executable: '/tmp/openclaw',
+        execFileFn: async () => ({ stdout: JSON.stringify(status) }),
+      }),
+      { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' },
+    )
+  }
+
+  if (process.platform !== 'win32') {
+    const outsideModels = path.join(home, 'outside-models.json')
+    fs.writeFileSync(outsideModels, JSON.stringify({ providers: { provider: validProvider } }))
+    fs.rmSync(path.join(agentDir, 'models.json'), { force: true })
+    fs.symlinkSync(outsideModels, path.join(agentDir, 'models.json'))
+    await assert.rejects(resolveNativeOpenClawRuntime({
+      home,
+      env: {},
+      executable: '/tmp/openclaw',
+      execFileFn: async () => ({ stdout: JSON.stringify(validStatus) }),
+    }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
   }
 })
 
