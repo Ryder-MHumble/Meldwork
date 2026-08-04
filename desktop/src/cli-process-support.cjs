@@ -31,12 +31,22 @@ function authConfigurationFailure(detail) {
     .test(String(detail || ''))
 }
 
-function failedAgentProcessError(detail) {
+function invalidSessionFailure(detail) {
+  const text = String(detail || '').trim()
+  if (!text || authConfigurationFailure(text)
+      || /\b(?:api|access|refresh|auth|session)[ _-]?token\b/i.test(text)) return false
+  return /\b(?:no|unknown|invalid|expired|missing|stale)\s+(?:saved\s+)?(?:session|conversation|thread)\b|\b(?:session|conversation|thread)(?:\s+(?:id|key|reference))?\b[^\n]{0,100}\b(?:not found|does not exist|no longer exists|invalid|unknown|expired|has expired|was deleted|cannot be resumed)\b/i
+    .test(text)
+}
+
+function failedAgentProcessError(detail, options = {}) {
   if (!detail) return agentExecutionError('LOCAL_AGENT_EXITED')
   return agentExecutionError(
-    authConfigurationFailure(detail)
-      ? 'LOCAL_AGENT_AUTH_REQUIRED'
-      : 'LOCAL_AGENT_PROCESS_FAILED',
+    options.sessionRef && invalidSessionFailure(detail)
+      ? 'LOCAL_AGENT_SESSION_INVALID'
+      : authConfigurationFailure(detail)
+        ? 'LOCAL_AGENT_AUTH_REQUIRED'
+        : 'LOCAL_AGENT_PROCESS_FAILED',
     detail,
   )
 }
@@ -70,4 +80,5 @@ module.exports = {
   agentExecutionError,
   childEnvironment,
   failedAgentProcessError,
+  invalidSessionFailure,
 }

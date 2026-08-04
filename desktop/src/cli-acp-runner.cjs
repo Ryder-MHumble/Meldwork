@@ -254,11 +254,11 @@ async function closeAcpChild(child, platform, spawnFn) {
   destroyChildPipes(child)
 }
 
-function acpProtocolError(error, childEnv) {
+function acpProtocolError(error, childEnv, sessionRef = '') {
   if (/^LOCAL_AGENT_[A-Z_]+$/.test(String(error?.message || ''))) return error
   const detail = redactChildSecrets(error?.diagnostic || error?.message || error, childEnv).trim()
   return detail
-    ? failedAgentProcessError(detail)
+    ? failedAgentProcessError(detail, { sessionRef })
     : agentExecutionError('LOCAL_AGENT_PROCESS_FAILED')
 }
 
@@ -307,6 +307,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
   let stderrBytes = 0
   let connection
   let sessionRef = String(options.sessionRef || '')
+  const resumedSessionRef = sessionRef
   let ending = false
   let abortRequested = false
   let cancelPromise = Promise.resolve()
@@ -349,7 +350,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
         return
       }
       const detail = redactChildSecrets(Buffer.concat(stderr).toString('utf8').trim(), childEnv)
-      reject(failedAgentProcessError(detail))
+      reject(failedAgentProcessError(detail, { sessionRef: resumedSessionRef }))
     })
   })
   child.stderr.on('data', (chunk) => {
@@ -419,7 +420,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
       completed: promptResult?.stopReason === 'end_turn',
     }
   })().catch((error) => {
-    const normalized = acpProtocolError(error, childEnv)
+    const normalized = acpProtocolError(error, childEnv, resumedSessionRef)
     if (!promptStarted) allowAcpSetupFallback(normalized)
     throw normalized
   })

@@ -373,6 +373,42 @@ input.on('line', (line) => {
   assert.deepEqual(processExitSessionRefs, ['kimi-process-exit-session'])
 })
 
+test('Kimi ACP classifies an explicitly missing resumed session', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-missing-session-'))
+  const cli = executable(directory, 'kimi-acp-missing-session.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/resume') {
+    send({
+      jsonrpc: '2.0', id: message.id,
+      error: { code: -32001, message: 'Session was not found or has expired.' },
+    })
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'kimi', executable: cli, name: 'Kimi' },
+      'resume safely',
+      directory,
+      { sessionRef: 'kimi-stale-session' },
+    ),
+    (error) => {
+      assert.equal(error.message, 'LOCAL_AGENT_SESSION_INVALID')
+      assert.match(error.diagnostic, /Session was not found or has expired/)
+      assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
+      return true
+    },
+  )
+})
+
 test('Kimi ACP rejects unsafe protocol input without logging secret-bearing messages', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-invalid-'))
   const secret = 'private-kimi-transport-secret'
@@ -1267,7 +1303,7 @@ process.exit(1)
       { kind: 'qwen', executable: cli, name: 'Qwen' },
       'hello',
       directory,
-      { env: { OPENAI_API_KEY: secret } },
+      { env: { OPENAI_API_KEY: secret }, sessionRef: 'qwen-existing-session' },
     ),
     (error) => {
       assert.equal(error.message, 'LOCAL_AGENT_AUTH_REQUIRED')
@@ -1275,6 +1311,30 @@ process.exit(1)
       assert.equal(error.diagnostic.includes(secret), false)
       assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
       assert.doesNotMatch(error.message, /Provider|redacted/)
+      return true
+    },
+  )
+})
+
+test('legacy adapters classify an explicitly missing resumed session', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-missing-session-'))
+  const cli = executable(directory, 'missing-session.cjs', `
+process.stderr.write('No conversation found with session ID qwen-stale-session')
+process.exit(1)
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'qwen', executable: cli, name: 'Qwen' },
+      'resume safely',
+      directory,
+      { sessionRef: 'qwen-stale-session' },
+    ),
+    (error) => {
+      assert.equal(error.message, 'LOCAL_AGENT_SESSION_INVALID')
+      assert.match(error.diagnostic, /No conversation found with session ID/)
+      assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
       return true
     },
   )

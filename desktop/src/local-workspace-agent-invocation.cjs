@@ -246,8 +246,34 @@ class LocalWorkspaceAgentInvocation {
         runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
       ].filter(Boolean).join('\n')
       let prompt = buildPrompt(transcriptAfterKind, packedContext)
-      if (agentController.signal.aborted) throw agentStoppedError()
-      runPromise = Promise.resolve().then(() => this.runAgent(
+      const rebuildFreshSession = () => {
+        delete state.sessions[key]
+        delete state.sessionMeta[key]
+        if (kind === 'openclaw') {
+          const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
+          sessionRef = this.openClawSessionRef(group, generation)
+          state.sessions[key] = sessionRef
+        } else {
+          sessionRef = ''
+        }
+        sessionTransport = ''
+        transcriptAfterKind = ''
+        sessionRotated = true
+        packedContext = this.packedPromptContext(group.id, '', threadRootId)
+        const liveHarnessRun = harness?.current(
+          kind, round, harnessRun?.agentRunId || '',
+        )
+        if (liveHarnessRun) {
+          liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
+          liveHarnessRun.context = { ...packedContext.context, sessionRotated }
+        }
+        prompt = buildPrompt('', packedContext)
+        this.save()
+        this.scheduleRunCheckpoint(group.id, activeRun)
+        this.emitChanged()
+        return prompt
+      }
+      const runCurrentSession = () => this.runAgent(
         agent,
         prompt,
         group.workdir,
@@ -269,25 +295,7 @@ class LocalWorkspaceAgentInvocation {
           },
           onSessionInvalidated: () => {
             if (kind !== 'hermes') return null
-            delete state.sessions[key]
-            delete state.sessionMeta[key]
-            sessionRef = ''
-            sessionTransport = ''
-            transcriptAfterKind = ''
-            sessionRotated = true
-            packedContext = this.packedPromptContext(group.id, '', threadRootId)
-            const liveHarnessRun = harness?.current(
-              kind, round, harnessRun?.agentRunId || '',
-            )
-            if (liveHarnessRun) {
-              liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
-              liveHarnessRun.context = { ...packedContext.context, sessionRotated }
-            }
-            prompt = buildPrompt('', packedContext)
-            this.save()
-            this.scheduleRunCheckpoint(group.id, activeRun)
-            this.emitChanged()
-            return { prompt }
+            return { prompt: rebuildFreshSession() }
           },
           signal: agentController.signal,
           sandbox: group.allowWrite ? 'workspace-write' : undefined,
@@ -302,7 +310,19 @@ class LocalWorkspaceAgentInvocation {
               }
             : {}),
         },
-      ))
+      )
+      if (agentController.signal.aborted) throw agentStoppedError()
+      runPromise = Promise.resolve().then(async () => {
+        const reusedSessionRef = sessionRef
+        try {
+          return await runCurrentSession()
+        } catch (error) {
+          if (agentController.signal.aborted || !reusedSessionRef
+              || error?.message !== 'LOCAL_AGENT_SESSION_INVALID') throw error
+          rebuildFreshSession()
+          return await runCurrentSession()
+        }
+      })
       runPromise.catch(() => {})
       const pending = [runPromise, watchdogPromise]
       if (parentAbortPromise) pending.push(parentAbortPromise)

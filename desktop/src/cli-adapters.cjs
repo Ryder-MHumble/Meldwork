@@ -383,7 +383,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
             [rawStderr, structuredDetail].filter(Boolean).join('\n'),
             childEnv,
           )
-          reject(failedAgentProcessError(detail))
+          reject(failedAgentProcessError(detail, { sessionRef }))
           return
         }
         const rawStderr = stderr.text()
@@ -396,7 +396,10 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           nextSessionRef,
         )
         if (result.error) {
-          reject(failedAgentProcessError(redactChildSecrets(result.error, childEnv)))
+          reject(failedAgentProcessError(
+            redactChildSecrets(result.error, childEnv),
+            { sessionRef },
+          ))
           return
         }
         const redactedSessionRef = redactChildSecrets(result.sessionRef, childEnv)

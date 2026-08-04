@@ -393,6 +393,120 @@ test('legacy sessions resume once and initialize bounded session metadata', asyn
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > 0, true)
 })
 
+test('Harness rebuilds compressed context once when a reused legacy session is invalid', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length === 1) throw new Error('LOCAL_AGENT_SESSION_INVALID')
+    await runOptions.onSessionRef('codex-fresh-session', { transport: 'legacy' })
+    return { text: 'Recovered legacy conclusion', sessionRef: 'codex-fresh-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Legacy session recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const oldUser = workspace.addMessage(group.id, 'user', 'Keep the original requirement')
+  const previousAgent = workspace.addMessage(
+    group.id, 'agent', 'Previous Codex conclusion', 'codex', oldUser.id,
+  )
+  const key = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[key] = 'codex-stale-session'
+  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'legacy' }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Continue after session recovery', targetKinds: ['codex'],
+  })
+
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['codex-stale-session', ''])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionTransport), ['legacy', ''])
+  assert.doesNotMatch(calls[0].prompt, /Previous Codex conclusion/)
+  assert.match(calls[1].prompt, /Previous Codex conclusion/)
+  assert.match(calls[1].prompt, /Continue after session recovery/)
+  assert.equal(workspace.state.sessions[key], 'codex-fresh-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  const trace = workspace.snapshot().messages.at(-1).trace
+  assert.equal(trace.status, 'completed')
+  assert.equal(trace.context.sessionRotated, true)
+  assert.deepEqual(trace.sourceMessageIds, [
+    oldUser.id,
+    workspace.snapshot().messages.find(message => (
+      message.role === 'user' && message.content === 'Continue after session recovery'
+    )).id,
+    previousAgent.id,
+  ])
+})
+
+test('Harness retries a reused ACP session once with a fresh session', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'kimi', name: 'Kimi CLI', executable: '/tmp/kimi', version: '1',
+  }]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length === 1) throw new Error('LOCAL_AGENT_SESSION_INVALID')
+    await runOptions.onSessionRef('kimi-fresh-session', { transport: 'acp' })
+    return { text: 'Recovered ACP conclusion', sessionRef: 'kimi-fresh-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'ACP session recovery', agentKinds: ['kimi'], workdir: directory,
+  })
+  const key = workspace.sessionKey(group.id, 'kimi')
+  workspace.state.sessions[key] = 'kimi-stale-session'
+  workspace.state.sessionMeta[key] = { turns: 3, estimatedChars: 1800, transport: 'acp' }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Recover the ACP session', targetKinds: ['kimi'],
+  })
+
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['kimi-stale-session', ''])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionTransport), ['acp', ''])
+  assert.equal(workspace.state.sessions[key], 'kimi-fresh-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  assert.equal(workspace.snapshot().messages.at(-1).trace.context.sessionRotated, true)
+})
+
+test('Harness stops after one fresh-session retry when the Session remains invalid', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    throw new Error('LOCAL_AGENT_SESSION_INVALID')
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Bounded session recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const key = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[key] = 'codex-stale-session'
+  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'legacy' }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Do not loop recovery', targetKinds: ['codex'],
+  })
+
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['codex-stale-session', ''])
+  assert.equal(Object.hasOwn(workspace.state.sessions, key), false)
+  assert.equal(Object.hasOwn(workspace.state.sessionMeta, key), false)
+  const failure = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentCallFailed' && message.agentKind === 'codex'
+  ))
+  assert.equal(failure.system.params.reason, 'LOCAL_AGENT_SESSION_INVALID')
+  assert.equal(failure.trace.status, 'failed')
+  assert.equal(failure.trace.context.sessionRotated, true)
+})
+
 test('per-Agent watchdog persists a timeout trace and continues the automatic round', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
