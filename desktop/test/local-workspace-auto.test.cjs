@@ -1194,7 +1194,7 @@ test('automatic dialogue keeps its stable diagnostic and emits a failed terminal
   let emitCount = 0
   workspace.emitChanged = () => {
     emitCount += 1
-    if (emitCount === 2) throw new Error(`/private/workspace/${group.id}`)
+    if (emitCount === 3) throw new Error(`/private/workspace/${group.id}`)
     emitChanged()
   }
 

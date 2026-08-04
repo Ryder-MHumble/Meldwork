@@ -7,6 +7,8 @@ const {
   isSupportedAgentKind,
 } = require('./local-workspace-inputs.cjs')
 
+const TASK_ID = /^[A-Za-z0-9._:-]{1,120}$/
+
 class LocalWorkspaceRunCoordinator {
   constructor(options) {
     this.preparingRuns = options.preparingRuns
@@ -20,6 +22,9 @@ class LocalWorkspaceRunCoordinator {
     this.isShuttingDown = options.isShuttingDown
     this.setShuttingDown = options.setShuttingDown
     this.checkpointRun = options.checkpointRun
+    this.hasRunLedger = typeof options.hasRunLedger === 'function'
+      ? options.hasRunLedger
+      : () => false
     this.finishRunCheckpoint = options.finishRunCheckpoint
     this.scheduleRunCheckpoint = options.scheduleRunCheckpoint
     this.emitChanged = options.emitChanged
@@ -38,6 +43,7 @@ class LocalWorkspaceRunCoordinator {
     }
     controller.mode = mode
     controller.runId = String(this.createRunId() || '')
+    controller.taskId = TASK_ID.test(String(threadRootId || '')) ? String(threadRootId) : ''
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
     controller.failedKinds = []
@@ -57,6 +63,14 @@ class LocalWorkspaceRunCoordinator {
     return controller
   }
 
+  checkpointRequired(groupId, controller, status) {
+    const persisted = this.checkpointRun(groupId, controller, status)
+    if (this.hasRunLedger() && persisted !== true) {
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    }
+    return persisted
+  }
+
   isGroupBusy(groupId) {
     return this.preparingRuns.has(groupId) || this.activeRuns.has(groupId)
   }
@@ -71,8 +85,8 @@ class LocalWorkspaceRunCoordinator {
     )
     controller.groupId = groupId
     this.preparingRuns.set(groupId, controller)
-    this.checkpointRun(groupId, controller, 'preparing')
     try {
+      this.checkpointRequired(groupId, controller, 'preparing')
       this.emitChanged()
     } catch (error) {
       if (this.preparingRuns.get(groupId) === controller) this.preparingRuns.delete(groupId)
@@ -81,6 +95,30 @@ class LocalWorkspaceRunCoordinator {
       throw error
     }
     return controller
+  }
+
+  bindTask(groupId, controller, taskId, threadRootId = '') {
+    if (this.preparingRuns.get(groupId) !== controller || controller.signal.aborted) {
+      throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+    }
+    const nextTaskId = String(taskId || '')
+    const nextThreadRootId = String(threadRootId || '')
+    if (!TASK_ID.test(nextTaskId)
+        || (nextThreadRootId && !TASK_ID.test(nextThreadRootId))) {
+      throw new Error('LOCAL_RUN_TASK_INVALID')
+    }
+    const previousTaskId = controller.taskId
+    const previousThreadRootId = controller.threadRootId
+    controller.taskId = nextTaskId
+    controller.threadRootId = nextThreadRootId
+    try {
+      this.checkpointRequired(groupId, controller, 'preparing')
+    } catch (error) {
+      controller.taskId = previousTaskId
+      controller.threadRootId = previousThreadRootId
+      throw error
+    }
+    return true
   }
 
   releasePreparation(groupId, controller) {
@@ -107,12 +145,12 @@ class LocalWorkspaceRunCoordinator {
   ) {
     if (this.isShuttingDown()) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     let controller = reservation
+    const reserved = Boolean(controller)
     if (controller) {
       if (this.preparingRuns.get(groupId) !== controller || controller.signal.aborted) {
         throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
       }
       if (this.activeRuns.has(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-      this.preparingRuns.delete(groupId)
     } else {
       if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
       controller = this.createController(
@@ -121,6 +159,9 @@ class LocalWorkspaceRunCoordinator {
     }
     controller.mode = mode
     controller.groupId = groupId
+    controller.taskId = TASK_ID.test(String(controller.taskId || ''))
+      ? controller.taskId
+      : (TASK_ID.test(String(threadRootId || '')) ? String(threadRootId) : '')
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
     controller.failedKinds = []
@@ -136,13 +177,17 @@ class LocalWorkspaceRunCoordinator {
     controller.startedAt = Date.now()
     controller.stopReason = ''
     this.activeRuns.set(groupId, controller)
-    this.checkpointRun(groupId, controller, 'running')
     try {
+      this.checkpointRequired(groupId, controller, 'running')
+      if (reserved) this.preparingRuns.delete(groupId)
       this.emitChanged()
     } catch (error) {
       if (this.activeRuns.get(groupId) === controller) this.activeRuns.delete(groupId)
-      controller.abort()
-      controller.resolveDone()
+      if (reserved) this.preparingRuns.set(groupId, controller)
+      else {
+        controller.abort()
+        controller.resolveDone()
+      }
       throw error
     }
     return controller
@@ -159,6 +204,7 @@ class LocalWorkspaceRunCoordinator {
     const payload = {
       groupId: cleanText(groupId, 100),
       runId: cleanText(controller.runId, 120),
+      taskId: cleanText(controller.taskId, 120),
       mode: controller.mode === 'auto' ? 'auto' : 'manual',
       status: finalStatus,
       threadRootId: cleanText(controller.threadRootId, 100),

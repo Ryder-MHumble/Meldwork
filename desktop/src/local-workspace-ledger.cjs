@@ -130,6 +130,7 @@ class LocalWorkspaceRunLedger {
     })
     return {
       runId: controller.runId,
+      taskId: controller.taskId,
       groupId,
       threadRootId: controller.threadRootId,
       mode: controller.mode === 'auto' ? 'auto' : 'manual',

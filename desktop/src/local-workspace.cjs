@@ -110,6 +110,7 @@ class LocalWorkspace extends EventEmitter {
       isShuttingDown: () => this.shuttingDown,
       setShuttingDown: value => { this.shuttingDown = value },
       checkpointRun: (...args) => this.checkpointRun(...args),
+      hasRunLedger: () => Boolean(this.runLedger),
       finishRunCheckpoint: (...args) => this.finishRunCheckpoint(...args),
       scheduleRunCheckpoint: (...args) => this.scheduleRunCheckpoint(...args),
       emitChanged: () => this.emitChanged(),
@@ -188,6 +189,7 @@ class LocalWorkspace extends EventEmitter {
       getGroup: (...args) => this.getGroup(...args),
       isGroupBusy: (...args) => this.isGroupBusy(...args),
       reserveRun: (...args) => this.reserveRun(...args),
+      bindRunTask: (...args) => this.bindRunTask(...args),
       releasePreparation: (...args) => this.releasePreparation(...args),
       addMessage: (...args) => this.addMessage(...args),
       rollbackAddedMessage: (...args) => this.conversations.rollbackAddedMessage(...args),
@@ -259,6 +261,10 @@ class LocalWorkspace extends EventEmitter {
     return this.runCoordinator.reserve(
       groupId, mode, targetKinds, threadRootId, maxRounds, unlimitedRounds,
     )
+  }
+
+  bindRunTask(groupId, controller, taskId, threadRootId = '') {
+    return this.runCoordinator.bindTask(groupId, controller, taskId, threadRootId)
   }
 
   releasePreparation(groupId, controller) {

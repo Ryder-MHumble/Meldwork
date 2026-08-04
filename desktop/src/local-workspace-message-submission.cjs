@@ -27,6 +27,7 @@ class LocalWorkspaceMessageSubmission {
     this.getGroup = options.getGroup
     this.isGroupBusy = options.isGroupBusy
     this.reserveRun = options.reserveRun
+    this.bindRunTask = options.bindRunTask
     this.releasePreparation = options.releasePreparation
     this.addMessage = options.addMessage
     this.rollbackAddedMessage = options.rollbackAddedMessage
@@ -231,6 +232,7 @@ class LocalWorkspaceMessageSubmission {
             },
           )
           try {
+            this.bindRunTask(group.id, reservation, userMessage.id, userMessage.id)
             controller = this.startAutoRunner(
               group, targetKinds, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
             )
@@ -251,8 +253,7 @@ class LocalWorkspaceMessageSubmission {
           }
         }
 
-        controller = this.beginRun(group.id, 'manual', targetKinds, '', reservation)
-        if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+        const previousUpdatedAt = group.updatedAt
         const userMessage = this.addMessage(
           group.id,
           'user',
@@ -268,7 +269,20 @@ class LocalWorkspaceMessageSubmission {
           },
         )
         const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
-        controller.threadRootId = threadRootId
+        try {
+          this.bindRunTask(group.id, reservation, userMessage.id, threadRootId)
+          controller = this.beginRun(
+            group.id, 'manual', targetKinds, threadRootId, reservation,
+          )
+        } catch (error) {
+          try {
+            this.rollbackAddedMessage(group.id, userMessage.id, previousUpdatedAt)
+          } catch (rollbackError) {
+            if (error && typeof error === 'object') error.rollbackError = rollbackError
+          }
+          throw error
+        }
+        if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
         for (const kind of targetKinds) {
           if (controller.signal.aborted) break
           controller.currentKind = kind
@@ -357,7 +371,17 @@ class LocalWorkspaceMessageSubmission {
       .map(normalizeAttachmentMetadata)
       .filter(Boolean)
     this.validateAttachmentSupport(targetKinds, rootAttachments)
-    this.startAutoRunner(group, targetKinds, threadRootId, maxRounds, null, null, unlimitedRounds)
+    const reservation = this.reserveRun(
+      group.id, 'auto', targetKinds, threadRootId, maxRounds, unlimitedRounds,
+    )
+    try {
+      this.startAutoRunner(
+        group, targetKinds, threadRootId, maxRounds, reservation, null, unlimitedRounds,
+      )
+    } catch (error) {
+      this.releasePreparation(group.id, reservation)
+      throw error
+    }
     return { started: true, maxRounds, ...(unlimitedRounds ? { unlimitedRounds: true } : {}) }
   }
 }

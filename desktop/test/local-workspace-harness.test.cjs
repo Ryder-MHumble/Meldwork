@@ -866,6 +866,11 @@ test('Run Ledger checkpoints bounded trace state and is cleared with its convers
   assert.equal(checkpoints.some(record => record.status === 'preparing'), true)
   assert.equal(checkpoints.some(record => record.status === 'running'), true)
   const terminal = checkpoints.findLast(record => record.status === 'completed')
+  const task = workspace.snapshot().messages.find(message => (
+    message.role === 'user' && message.content === 'Trace this run'
+  ))
+  assert.equal(terminal.taskId, task.id)
+  assert.equal(terminal.threadRootId, task.id)
   assert.equal(terminal.agentRuns[0].status, 'completed')
   assert.equal(terminal.agentRuns[0].events.some(event => event.type === 'plan'), true)
   assert.equal(terminal.agentRuns[0].context.includedCount, 1)
@@ -873,6 +878,170 @@ test('Run Ledger checkpoints bounded trace state and is cleared with its convers
 
   workspace.deleteGroup(group.id)
   assert.deepEqual(deletedGroups, [group.id])
+})
+
+test('durable Task acceptance fails closed at every pre-execution Ledger checkpoint', async (t) => {
+  for (const failureAttempt of [1, 2, 3]) {
+    await t.test(`checkpoint ${failureAttempt}`, async (subtest) => {
+      const { directory, calls, options } = fixture()
+      subtest.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      let checkpointAttempts = 0
+      options.runLedger = {
+        recoverInterrupted: () => [],
+        list: () => [],
+        checkpoint: () => {
+          checkpointAttempts += 1
+          if (checkpointAttempts === failureAttempt) throw new Error('RUN_LEDGER_WRITE_FAILED')
+        },
+        finish: () => {},
+      }
+      const workspace = new LocalWorkspace(options)
+      await workspace.refreshAgents()
+      const group = workspace.createGroup({
+        name: `Ledger gate ${failureAttempt}`, agentKinds: ['codex'], workdir: directory,
+      })
+      const previousUpdatedAt = group.updatedAt
+
+      await assert.rejects(
+        workspace.sendMessage({
+          groupId: group.id,
+          text: `Do not execute after checkpoint ${failureAttempt}`,
+          targetKinds: ['codex'],
+        }),
+        { message: 'LOCAL_RUN_PERSIST_FAILED' },
+      )
+
+      assert.equal(calls.length, 0)
+      assert.equal(workspace.snapshot().messages.length, 0)
+      assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+      assert.equal(workspace.getGroup(group.id).updatedAt, previousUpdatedAt)
+    })
+  }
+})
+
+test('the durable Task link exists before the Agent process starts', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  let workspace
+  let group
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    const userTask = workspace.state.messages.findLast(message => message.role === 'user')
+    const active = workspace.activeRuns.get(group.id)
+    const durable = ledger.get(active.runId)
+    assert.equal(durable.status, 'running')
+    assert.equal(durable.taskId, userTask.id)
+    assert.equal(durable.threadRootId, userTask.id)
+    return { text: 'Durably linked result', sessionRef: runOptions.sessionRef || 'codex-session' }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'Durable Task link', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Persist this Task before execution', targetKinds: ['codex'],
+  })
+
+  const task = workspace.snapshot().messages.find(message => message.role === 'user')
+  const run = ledger.list(group.id)[0]
+  assert.equal(run.taskId, task.id)
+  assert.equal(run.status, 'completed')
+})
+
+test('direct Tasks persist without inventing a group thread root', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Durable direct Task',
+    agentKinds: ['codex'],
+    conversationType: 'direct',
+    directAgentKind: 'codex',
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Persist this direct Task', targetKinds: ['codex'],
+  })
+
+  const task = workspace.snapshot().messages.find(message => message.role === 'user')
+  const run = ledger.list(group.id)[0]
+  assert.equal(run.taskId, task.id)
+  assert.equal(run.threadRootId, '')
+  assert.equal(run.status, 'completed')
+})
+
+test('resuming automatic discussion checkpoints its existing Task before execution', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  let workspace
+  let group
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    calls.push({ agent, runOptions })
+    const active = workspace.activeRuns.get(group.id)
+    const durable = ledger.get(active.runId)
+    assert.equal(durable.status, 'running')
+    assert.equal(durable.taskId, active.threadRootId)
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'Durable resumed discussion',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Resume this durable Task')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  await workspace.activeRuns.get(group.id).promise
+
+  const run = ledger.list(group.id)[0]
+  assert.equal(calls.length, 2)
+  assert.equal(run.taskId, task.id)
+  assert.equal(run.threadRootId, task.id)
+  assert.equal(run.status, 'completed')
+})
+
+test('resuming automatic discussion fails closed when its running checkpoint is not durable', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let checkpointAttempts = 0
+  options.runLedger = {
+    recoverInterrupted: () => [],
+    list: () => [],
+    checkpoint: () => {
+      checkpointAttempts += 1
+      if (checkpointAttempts === 2) throw new Error('RUN_LEDGER_WRITE_FAILED')
+    },
+    finish: () => {},
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Durable resume gate', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Do not resume without durable state')
+
+  assert.throws(
+    () => workspace.startAuto({ groupId: group.id, maxRounds: 1 }),
+    { message: 'LOCAL_RUN_PERSIST_FAILED' },
+  )
+
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.some(message => message.id === task.id), true)
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [])
 })
 
 test('Run Ledger finalization retries the full terminal snapshot before finish', async (t) => {

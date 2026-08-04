@@ -218,7 +218,7 @@ function hasStoredTimestamps(input, fields) {
 function hasValidStoredRecordShape(input) {
   if (!isRecord(input)) return false
   if (!hasStoredFieldTypes(input, [
-    'runId', 'groupId', 'threadRootId', 'reason',
+    'runId', 'taskId', 'groupId', 'threadRootId', 'reason',
   ], 'string')) return false
   if (!hasStoredEnum(input, 'mode', MODES)) return false
   if (!hasStoredEnum(input, 'status', RUN_STATUSES)) return false
@@ -323,6 +323,7 @@ function normalizeRecord(input, options = {}) {
   const fallbackStatus = existing?.status || 'preparing'
   const status = cleanStatus(selectedValue(input, existing, 'status'), fallbackStatus)
   const targetKinds = normalizeKinds(selectedValue(input, existing, 'targetKinds'))
+  const taskId = cleanId(selectedValue(input, existing, 'taskId'))
   const threadRootId = cleanId(selectedValue(input, existing, 'threadRootId'))
   const permissionValue = String(
     selectedValue(input, existing, 'permissionMode') || '',
@@ -359,6 +360,7 @@ function normalizeRecord(input, options = {}) {
 
   const record = {
     runId,
+    taskId,
     groupId,
     threadRootId,
     mode,

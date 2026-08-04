@@ -22,6 +22,7 @@ function fixture(t) {
 function runRecord(runId, groupId, status = 'running', agentRuns = []) {
   return {
     runId,
+    taskId: `${groupId}-task`,
     groupId,
     threadRootId: `${groupId}-root`,
     mode: 'manual',
@@ -113,6 +114,7 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   const ledger = new RunLedger({ storagePath, now: () => 2000 })
   const saved = ledger.checkpoint({
     runId: 'run-1',
+    taskId: 'task-1',
     groupId: 'group-1',
     threadRootId: 'root-1',
     mode: 'auto',
@@ -145,6 +147,7 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   })
 
   assert.deepEqual(saved.targetKinds, ['codex', 'hermes'])
+  assert.equal(saved.taskId, 'task-1')
   assert.equal(saved.currentRound, 8)
   assert.equal(saved.startedAt, 1000)
   assert.equal('arbitrary' in saved, false)
@@ -684,7 +687,7 @@ test('rejects coercible persisted scalar containers at every nested level', (t) 
     reason: 'done',
   }
   const scalarPaths = [
-    ['runId'], ['groupId'], ['threadRootId'], ['mode'], ['status'], ['reason'],
+    ['runId'], ['taskId'], ['groupId'], ['threadRootId'], ['mode'], ['status'], ['reason'],
     ['permissionMode'], ['createdAt'], ['startedAt'], ['updatedAt'], ['finishedAt'],
     ['currentRound'], ['maxRounds'], ['unlimitedRounds'],
     ['agentRuns', 0, 'agentRunId'], ['agentRuns', 0, 'kind'],
@@ -950,6 +953,7 @@ test('loads legacy records with omitted nested arrays and remains writable', (t)
   const ledger = new RunLedger({ storagePath, now: () => 1000 })
 
   assert.equal(ledger.loadError, null)
+  assert.equal(ledger.get('run-legacy').taskId, '')
   assert.deepEqual(ledger.get('run-legacy').targetKinds, [])
   assert.deepEqual(ledger.get('run-legacy').agentRuns, [])
   assert.deepEqual(ledger.get('run-legacy-agent').agentRuns[0].events, [])

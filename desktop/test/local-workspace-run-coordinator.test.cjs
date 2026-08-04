@@ -26,7 +26,11 @@ function fixture(overrides = {}) {
       shuttingDown = value
       calls.push(['shutdown', value])
     },
-    checkpointRun: (...args) => calls.push(['checkpoint', ...args]),
+    checkpointRun: overrides.checkpointRun || ((...args) => {
+      calls.push(['checkpoint', ...args])
+      return true
+    }),
+    hasRunLedger: () => overrides.hasRunLedger === true,
     finishRunCheckpoint: (...args) => calls.push(['ledger-finish', ...args]),
     scheduleRunCheckpoint: (...args) => calls.push(['schedule', ...args]),
     emitChanged: overrides.emitChanged || (() => calls.push(['changed'])),
@@ -45,7 +49,8 @@ function fixture(overrides = {}) {
 test('run coordinator exposes one class and LocalWorkspace keeps its public lifecycle methods', () => {
   assert.deepEqual(Object.keys(coordinatorApi), ['LocalWorkspaceRunCoordinator'])
   const methods = [
-    'createRunController', 'isGroupBusy', 'reserveRun', 'releasePreparation', 'beginRun',
+    'createRunController', 'isGroupBusy', 'reserveRun', 'bindRunTask',
+    'releasePreparation', 'beginRun',
     'finishRun', 'ensureRunHarness', 'emitRunEvent', 'clearAgentSilence',
     'armAgentSilence', 'clearRunSilence', 'stop', 'stopAll',
   ]
@@ -72,6 +77,7 @@ test('controller construction copies targets and keeps its completion state idem
   targets.push('kimi')
 
   assert.equal(controller.runId, 'run-1')
+  assert.equal(controller.taskId, 'root-1')
   assert.deepEqual(controller.targetKinds, ['codex', 'hermes'])
   assert.equal(controller.maxRounds, 10)
   assert.equal(controller.unlimitedRounds, false)
@@ -97,6 +103,13 @@ test('reservation migrates the same controller into active state and preserves l
   assert.equal(calls[0][3], 'preparing')
 
   calls.length = 0
+  assert.equal(coordinator.bindTask('group-1', reservation, 'task-1', 'root-1'), true)
+  assert.equal(reservation.taskId, 'task-1')
+  assert.equal(reservation.threadRootId, 'root-1')
+  assert.deepEqual(calls.map(call => call[0]), ['checkpoint'])
+  assert.equal(calls[0][3], 'preparing')
+
+  calls.length = 0
   const started = coordinator.begin(
     'group-1', 'auto', ['codex'], 'root-1', reservation, 3,
   )
@@ -114,6 +127,29 @@ test('reservation migrates the same controller into active state and preserves l
   assert.equal(calls[0][3], 'completed')
   assert.equal(calls[2][1], 'run-finished')
   assert.equal(calls[2][2].status, 'completed')
+  assert.equal(calls[2][2].taskId, 'task-1')
+})
+
+test('durable lifecycle checkpoints fail closed and release the reserved controller', async () => {
+  const calls = []
+  const { activeRuns, coordinator, preparingRuns } = fixture({
+    hasRunLedger: true,
+    checkpointRun: (...args) => {
+      calls.push(args)
+      return false
+    },
+  })
+
+  let controller
+  assert.throws(() => {
+    controller = coordinator.reserve('group-1', 'manual', ['codex'])
+  }, { message: 'LOCAL_RUN_PERSIST_FAILED' })
+
+  controller = calls[0][1]
+  assert.equal(controller.signal.aborted, true)
+  assert.equal(preparingRuns.size, 0)
+  assert.equal(activeRuns.size, 0)
+  await controller.done
 })
 
 test('changed failures abort and release newly reserved or active controllers', async () => {

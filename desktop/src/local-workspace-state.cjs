@@ -87,6 +87,7 @@ function workspaceSnapshot({ detectedAgents, state, preparingRuns, activeRuns })
       return {
         groupId,
         runId: run.runId || '',
+        taskId: run.taskId || '',
         phase,
         mode,
         targetKinds: run.targetKinds || [],
