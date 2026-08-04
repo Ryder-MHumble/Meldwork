@@ -1,4 +1,5 @@
 const { execFile } = require('node:child_process')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const { promisify } = require('node:util')
@@ -6,12 +7,90 @@ const { searchPath } = require('./cli-adapters.cjs')
 
 const execFileAsync = promisify(execFile)
 const DETECTION_CACHE_TTL_MS = 3000
+const MAX_SCRIPT_BYTES = 4 * 1024 * 1024
+const NPM_REGISTRY = 'https://registry.npmjs.org/'
+const NPM_INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/
+const RELEASE_VERSION = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?$/
+const SHA256 = /^[a-f0-9]{64}$/
+const VERSION_LINE = /\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?)\b/
 const SENSITIVE_INSTALL_ENV_KEY = /api[_-]?key|token|secret|password|passwd|credential|authorization|cookie|prompt/i
-const ALLOWED_SCRIPT_HOSTS = new Set([
-  'hermes-agent.nousresearch.com',
-  'code.kimi.com',
-  'cdn.kimi.com',
-])
+const HERMES_COMMIT = '3c27eb6234bf91b8ceee9e9071591b31e9b148cb'
+const HERMES_SCRIPT_BASE = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${HERMES_COMMIT}/scripts`
+const HERMES_RECIPES = Object.freeze({
+  darwin: Object.freeze({
+    type: 'script',
+    version: '0.20.0',
+    url: `${HERMES_SCRIPT_BASE}/install.sh`,
+    sha256: '45f589461248c7a6ec3aecd7522a69dd49c5c8dbf4798ba1296af5c0c5e7ccd3',
+    interpreter: '/bin/bash',
+    args: ['$SCRIPT', '--non-interactive', '--skip-setup', '--commit', HERMES_COMMIT],
+  }),
+  win32: Object.freeze({
+    type: 'script',
+    version: '0.20.0',
+    url: `${HERMES_SCRIPT_BASE}/install.ps1`,
+    sha256: '4dcbf2b665750cb578f69a6efa40770659e21821a463746f86da68af0d2bb31c',
+    interpreter: 'powershell.exe',
+    args: [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '$SCRIPT',
+      '-NonInteractive', '-SkipSetup', '-Commit', HERMES_COMMIT,
+    ],
+  }),
+})
+const NPM_RELEASES = Object.freeze({
+  codex: Object.freeze({
+    packageName: '@openai/codex',
+    version: '0.146.0',
+    integrity: 'sha512-yG3sPWNda/2YAIQIDq9MrrjoCTIQ7rxYM5IasrG3VBcuhCLTkgeg/JzqmJq1V98RE4MJ5jCxDXXQlOjrditFRw==',
+  }),
+  claude: Object.freeze({
+    packageName: '@anthropic-ai/claude-code',
+    version: '2.1.221',
+    integrity: 'sha512-hcrvYceETHpQepXBkwR0zHShxFbkh9C1o3DyFoJOehMxFWDuiCXONF1X3MDxY7M+p2m3DSpn9DvSA67mNhGQcw==',
+  }),
+  openclaw: Object.freeze({
+    packageName: 'openclaw',
+    version: '2026.7.1-2',
+    integrity: 'sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==',
+  }),
+  qwen: Object.freeze({
+    packageName: '@qwen-code/qwen-code',
+    version: '0.21.5',
+    integrity: 'sha512-m3cKT8i+bcEjtzWWImgv4oReMSMuxPecvoKGkg5ciS4xlKGuJOHNAROA68Di5mSwMOorACqTjb8jJVaQusudhg==',
+  }),
+  workbuddy: Object.freeze({
+    packageName: '@tencent-ai/codebuddy-code',
+    version: '2.132.0',
+    integrity: 'sha512-JFa1q0ZXK+TUmqW3X7zgg9RLCHb5dAInLKrTZtEdtAjfhIDwQeBXjYlyPNDLYJg6Y2Ic3p4SGhbXaE+slnjP1Q==',
+  }),
+  gemini: Object.freeze({
+    packageName: '@google/gemini-cli',
+    version: '0.53.1',
+    integrity: 'sha512-xBGdD/tl05gsTpD2oV1Bq0NCb4BBeTnjSbKxHtwOB7nt1QMaqWYJ9WsOEsQQhQ2P1v0UJth1F17SAXvdZ5mASw==',
+  }),
+  opencode: Object.freeze({
+    packageName: 'opencode-ai',
+    version: '1.18.12',
+    integrity: 'sha512-3pDzNXO9aHzHUzdLySLWPoYmL6hoUUqWtn+HurG9KTWPqerRegsU7GgCtUH5cpaUikgTyzpEtbfE8F0/dToSEg==',
+  }),
+  kimi: Object.freeze({
+    packageName: '@moonshot-ai/kimi-code',
+    version: '0.32.0',
+    integrity: 'sha512-iCCj7i4S4o1zzd/OpdVbihAHfBbd6V2ml3YW6zAy/xUJxQ1WiBnnvZByIz2NWg3xxcd3Nkklw1WxkYkRo5ahXA==',
+  }),
+  mimo: Object.freeze({
+    packageName: '@mimo-ai/cli',
+    version: '0.1.9',
+    detectedVersion: '0.1.0',
+    integrity: 'sha512-YFqiotp1sHDmj2BOiw2AbgCY2zm+c7Z36lh5JNL6KACEvYgerB5kqqldqcy/xI4Erry501DsTN1YPxo2mw6fAQ==',
+  }),
+  opencodereview: Object.freeze({
+    packageName: '@alibaba-group/open-code-review',
+    version: '1.8.6',
+    integrity: 'sha512-m2uMzkuA9NRev2Ds7cCrL9fTYs93RSbzLKIQAEjNVjIFG0aDQqbyuqNTD/rQcUYhS7K7ufpVZ/+EBTD0ZcoDtA==',
+  }),
+})
+const ALLOWED_SCRIPT_URLS = new Set(Object.values(HERMES_RECIPES).map(recipe => recipe.url))
 
 const AGENT_CATALOG = Object.freeze([
   {
@@ -62,49 +141,9 @@ const AGENT_CATALOG = Object.freeze([
 
 function installRecipe(kind, platform) {
   if (!['darwin', 'win32'].includes(platform)) return null
-  if (kind === 'hermes') {
-    return platform === 'win32'
-      ? {
-          type: 'script',
-          url: 'https://hermes-agent.nousresearch.com/install.ps1',
-          interpreter: 'powershell.exe',
-          args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '$SCRIPT',
-            '-NonInteractive', '-SkipSetup'],
-        }
-      : {
-          type: 'script',
-          url: 'https://hermes-agent.nousresearch.com/install.sh',
-          interpreter: '/bin/bash',
-          args: ['$SCRIPT', '--non-interactive', '--skip-setup'],
-        }
-  }
-  if (kind === 'kimi') {
-    return platform === 'win32'
-      ? {
-          type: 'script',
-          url: 'https://code.kimi.com/kimi-code/install.ps1',
-          interpreter: 'powershell.exe',
-          args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '$SCRIPT'],
-        }
-      : {
-          type: 'script',
-          url: 'https://code.kimi.com/kimi-code/install.sh',
-          interpreter: '/bin/bash',
-          args: ['$SCRIPT'],
-        }
-  }
-  const packages = {
-    codex: '@openai/codex@latest',
-    claude: '@anthropic-ai/claude-code@latest',
-    openclaw: 'openclaw@latest',
-    qwen: '@qwen-code/qwen-code@latest',
-    workbuddy: '@tencent-ai/codebuddy-code@2.115.0',
-    gemini: '@google/gemini-cli@latest',
-    opencode: 'opencode-ai@latest',
-    mimo: '@mimo-ai/cli@latest',
-    opencodereview: '@alibaba-group/open-code-review@latest',
-  }
-  return packages[kind] ? { type: 'npm', packageName: packages[kind] } : null
+  if (kind === 'hermes') return { ...HERMES_RECIPES[platform], args: [...HERMES_RECIPES[platform].args] }
+  const release = NPM_RELEASES[kind]
+  return release ? { type: 'npm', ...release } : null
 }
 
 function publicState(state) {
@@ -156,10 +195,92 @@ function validateScriptUrl(url) {
     || parsed.username
     || parsed.password
     || parsed.port
-    || !ALLOWED_SCRIPT_HOSTS.has(parsed.hostname)) {
+    || !ALLOWED_SCRIPT_URLS.has(parsed.toString())) {
     throw installerError('INSTALL_AGENT_DOWNLOAD_BLOCKED')
   }
   return parsed
+}
+
+function npmPackageSpec(recipe) {
+  const packageName = String(recipe?.packageName || '')
+  const version = String(recipe?.version || '')
+  if (recipe?.type !== 'npm'
+    || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/i.test(packageName)
+    || !RELEASE_VERSION.test(version)
+    || !NPM_INTEGRITY.test(String(recipe.integrity || ''))) {
+    throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+  }
+  return `${packageName}@${version}`
+}
+
+async function defaultVerifyNpmIntegrity(command, recipe, options = {}) {
+  const platform = options.platform || process.platform
+  const signal = options.signal
+  if (signal?.aborted) throw abortError()
+  validateInstallCommand(command, recipe, platform)
+  const packageSpec = npmPackageSpec(recipe)
+  const args = [
+    'view', packageSpec, 'dist.integrity', '--json',
+    '--registry', NPM_REGISTRY,
+  ]
+  const prepared = prepareInstallCommand(command, args, {
+    platform,
+    readFileFn: options.readFileFn,
+    existsFn: options.existsFn,
+  })
+  const execFileFn = options.execFileFn || execFileAsync
+  try {
+    const { stdout } = await execFileFn(prepared.command, prepared.args, {
+      timeout: 15000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+      shell: false,
+      signal,
+      env: installEnvironment(platform, options.env || process.env, options.home),
+    })
+    const raw = String(stdout || '').trim()
+    let actual
+    try {
+      actual = JSON.parse(raw)
+    } catch {
+      actual = raw
+    }
+    if (typeof actual !== 'string'
+      || !NPM_INTEGRITY.test(actual)
+      || actual !== recipe.integrity) {
+      throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+    }
+    return actual
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw abortError()
+    if (error?.code === 'INSTALL_AGENT_INTEGRITY_FAILED') throw error
+    throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+  }
+}
+
+async function defaultVerifyScriptIntegrity(filename, recipe, options = {}) {
+  const signal = options.signal
+  if (signal?.aborted) throw abortError()
+  const expected = String(recipe?.sha256 || '')
+  if (recipe?.type !== 'script' || !SHA256.test(expected)) {
+    throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+  }
+  try {
+    const lstatFn = options.lstatFn || fs.promises.lstat
+    const readFileFn = options.readFileFn || fs.promises.readFile
+    const stat = await lstatFn(filename)
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > MAX_SCRIPT_BYTES) {
+      throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+    }
+    const bytes = await readFileFn(filename, { signal })
+    const actual = createHash('sha256').update(bytes).digest('hex')
+    if (actual !== expected) throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+    return actual
+  } catch (error) {
+    if (signal?.aborted || error?.name === 'AbortError') throw abortError()
+    if (error?.code === 'INSTALL_AGENT_INTEGRITY_FAILED') throw error
+    throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+  }
 }
 
 function validateInstallCommand(command, recipe, platform) {
@@ -238,18 +359,28 @@ function verifiedAgent(agent) {
   return Boolean(agent?.kind && String(agent.version || '').trim())
 }
 
+function verifiedRecipeAgent(agent, recipe) {
+  if (!verifiedAgent(agent) || !RELEASE_VERSION.test(String(recipe?.version || ''))) return false
+  const match = String(agent.version || '').match(VERSION_LINE)
+  return match?.[1] === (recipe.detectedVersion || recipe.version)
+}
+
 module.exports = {
   AGENT_CATALOG,
   DETECTION_CACHE_TTL_MS,
   abortError,
   abortable,
+  defaultVerifyNpmIntegrity,
+  defaultVerifyScriptIntegrity,
   defaultFindCommand,
   installEnvironment,
   installRecipe,
   installerError,
+  npmPackageSpec,
   prepareInstallCommand,
   publicState,
   validateInstallCommand,
   validateScriptUrl,
   verifiedAgent,
+  verifiedRecipeAgent,
 }

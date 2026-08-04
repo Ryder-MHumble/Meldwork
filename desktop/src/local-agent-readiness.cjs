@@ -153,6 +153,26 @@ function claudeAuthState(output) {
   return null
 }
 
+function mimoAuthState(output) {
+  const lines = String(output || '')
+    .replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+    .split(/\r?\n/)
+    .map(line => line.replace(/^[^A-Za-z0-9]+/, '').trim())
+    .filter(Boolean)
+  if (lines.some(line => (
+    /^Not logged in(?:\.|$)/i.test(line) && /\bmimo auth login\b/i.test(line)
+  ))) {
+    return { state: 'missing', source: 'native-auth-status' }
+  }
+  const providerReady = lines.some(line => /^Provider\s*:\s*MiMo\s*$/i.test(line))
+  const identityReady = lines.some(line => (
+    /^(?:User ID|Type)\s*:\s*[A-Za-z0-9]/i.test(line)
+  ))
+  return providerReady && identityReady
+    ? { state: 'ready', source: 'native-auth-status' }
+    : null
+}
+
 function pathInside(parent, child) {
   const relative = path.relative(parent, child)
   return Boolean(relative) && relative !== '..'
@@ -324,8 +344,28 @@ async function resolveNativeOpenClawRuntime(options = {}) {
   throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
 }
 
+async function queryMimoAuthState(options = {}) {
+  if (!options.executable) return null
+  const platform = options.platform || process.platform
+  const prepareCommandFn = options.prepareCommandFn || prepareCommand
+  const execFileFn = options.execFileFn || execFileAsync
+  const prepared = prepareCommandFn(options.executable, ['providers', 'whoami'], { platform })
+  try {
+    const result = await execFileFn(prepared.command, prepared.args, {
+      timeout: 5000,
+      windowsHide: true,
+      env: probeEnvironment(options),
+    })
+    return mimoAuthState(result.stdout)
+  } catch (error) {
+    return mimoAuthState(error?.stdout)
+  }
+}
+
 async function resolveNativeCredentialState(kind, options = {}) {
-  if (kind === 'mimo') return { state: 'ready', source: 'native-cli' }
+  if (kind === 'mimo') {
+    return await queryMimoAuthState(options) || { state: 'unknown', source: 'unverified' }
+  }
   const current = nativeCredentialState(kind, options)
   if (kind === 'openclaw') {
     const status = await queryOpenClawStatus(options)

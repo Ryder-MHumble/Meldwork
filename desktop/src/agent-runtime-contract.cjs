@@ -47,7 +47,9 @@ function failureCategory(code) {
   if (value === 'LOCAL_AGENT_TIMEOUT') return 'timeout'
   if (value === 'LOCAL_AGENT_EXECUTION_STOPPED') return 'cancellation'
   if (value === 'LOCAL_AGENT_REFUSED') return 'refusal'
-  if (/SPAWN|EXITED|PROCESS|OUTCOME|PROTOCOL|EMPTY_RESPONSE/.test(value)) return 'protocol'
+  if (/SPAWN|EXITED|PROCESS|OUTCOME|PROTOCOL|OUTPUT_LIMIT|EMPTY_RESPONSE/.test(value)) {
+    return 'protocol'
+  }
   return 'execution'
 }
 

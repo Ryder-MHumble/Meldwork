@@ -8,19 +8,69 @@ const {
   abortError,
   abortable,
   defaultFindCommand,
+  defaultVerifyNpmIntegrity,
+  defaultVerifyScriptIntegrity,
   installRecipe,
   installerError,
+  npmPackageSpec,
   prepareInstallCommand,
   publicState,
   validateInstallCommand,
   validateScriptUrl,
   verifiedAgent,
+  verifiedRecipeAgent,
 } = require('./agent-installer-contract.cjs')
 const {
   defaultDownloadScript,
   defaultRemoveDownload,
   defaultRunProcess,
 } = require('./agent-installer-runtime.cjs')
+
+const NPM_REGISTRY = 'https://registry.npmjs.org/'
+const COMPATIBILITY_REASONS = new Set([
+  'LOCAL_AGENT_VERSION_UNSUPPORTED',
+  'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING',
+  'LOCAL_AGENT_PROTOCOL_UNAVAILABLE',
+])
+
+function publicCompatibility(agent) {
+  if (!agent) {
+    return {
+      resolvedVersion: '',
+      supportedVersionRange: '',
+      compatibilityState: 'unknown',
+      incompatibilityReason: '',
+      incompatibilityProbe: '',
+    }
+  }
+  const compatibilityState = agent.compatibilityState === 'compatible'
+    ? 'compatible'
+    : 'incompatible'
+  const resolvedVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+    .test(String(agent.resolvedVersion || ''))
+    ? agent.resolvedVersion
+    : ''
+  const supportedVersionRange = /^[0-9A-Za-z.+-]{1,161}$/
+    .test(String(agent.supportedVersionRange || ''))
+    ? agent.supportedVersionRange
+    : ''
+  const incompatibilityReason = compatibilityState === 'incompatible'
+    ? (COMPATIBILITY_REASONS.has(agent.incompatibilityReason)
+        ? agent.incompatibilityReason
+        : 'LOCAL_AGENT_VERSION_UNSUPPORTED')
+    : ''
+  const incompatibilityProbe = compatibilityState === 'incompatible'
+    && /^[a-z0-9-]{1,80}$/.test(String(agent.incompatibilityProbe || ''))
+    ? agent.incompatibilityProbe
+    : ''
+  return {
+    resolvedVersion,
+    supportedVersionRange,
+    compatibilityState,
+    incompatibilityReason,
+    incompatibilityProbe,
+  }
+}
 
 class AgentInstaller extends EventEmitter {
   constructor({
@@ -30,6 +80,8 @@ class AgentInstaller extends EventEmitter {
     downloadScript = defaultDownloadScript,
     removeDownload = defaultRemoveDownload,
     runProcess = defaultRunProcess,
+    verifyNpmIntegrity = defaultVerifyNpmIntegrity,
+    verifyScriptIntegrity = defaultVerifyScriptIntegrity,
     readCommandFile = filename => fs.readFileSync(filename, 'utf8'),
     commandPathExists = fs.existsSync,
     listSkills = listLocalAgentSkills,
@@ -43,6 +95,8 @@ class AgentInstaller extends EventEmitter {
     this.downloadScript = downloadScript
     this.removeDownload = removeDownload
     this.runProcess = runProcess
+    this.verifyNpmIntegrity = verifyNpmIntegrity
+    this.verifyScriptIntegrity = verifyScriptIntegrity
     this.readCommandFile = readCommandFile
     this.commandPathExists = commandPathExists
     this.listSkills = listSkills
@@ -95,7 +149,7 @@ class AgentInstaller extends EventEmitter {
 
   async catalog() {
     const installed = new Map((await this.detectedAgents())
-      .filter(verifiedAgent).map(agent => [agent.kind, agent]))
+      .filter(agent => agent?.kind).map(agent => [agent.kind, agent]))
     const npm = await this.findCommand(this.platform === 'win32' ? 'npm.cmd' : 'npm')
     return {
       platform: this.platform,
@@ -115,6 +169,7 @@ class AgentInstaller extends EventEmitter {
           ...profile,
           installed: Boolean(agent),
           version: agent?.version || '',
+          ...publicCompatibility(agent),
           installSupported,
           installErrorCode,
         }
@@ -124,7 +179,11 @@ class AgentInstaller extends EventEmitter {
 
   async skills(kind) {
     const installed = await this.detectedAgents()
-    if (!installed.some(agent => agent.kind === kind && verifiedAgent(agent))) {
+    if (!installed.some(agent => (
+      agent.kind === kind
+      && agent.compatibilityState === 'compatible'
+      && verifiedAgent(agent)
+    ))) {
       return { supported: false, skills: [], total: 0, limit: DISPLAY_LIMIT }
     }
     return this.listSkills(kind)
@@ -163,7 +222,7 @@ class AgentInstaller extends EventEmitter {
     this.invalidateDetectionCache()
     const installed = await abortable(this.detectedAgents(), signal)
     if (signal.aborted) throw abortError()
-    if (installed.some(agent => agent.kind === profile.kind && verifiedAgent(agent))) {
+    if (installed.some(agent => agent.kind === profile.kind)) {
       throw installerError('INSTALL_AGENT_ALREADY_INSTALLED')
     }
     let command = recipe.interpreter || ''
@@ -200,9 +259,37 @@ class AgentInstaller extends EventEmitter {
             .includes(error?.code)) throw error
           throw installerError('INSTALL_AGENT_DOWNLOAD_FAILED')
         }
+        try {
+          await abortable(
+            this.verifyScriptIntegrity(downloaded, recipe, { signal }),
+            signal,
+          )
+        } catch (error) {
+          if (signal.aborted || error?.name === 'AbortError') throw error
+          if (error?.code === 'INSTALL_AGENT_INTEGRITY_FAILED') throw error
+          throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+        }
         args = recipe.args.map(value => value === '$SCRIPT' ? downloaded : value)
       } else {
-        args = ['install', '--global', recipe.packageName]
+        try {
+          await abortable(
+            this.verifyNpmIntegrity(command, recipe, {
+              signal,
+              platform: this.platform,
+              readFileFn: this.readCommandFile,
+              existsFn: this.commandPathExists,
+            }),
+            signal,
+          )
+        } catch (error) {
+          if (signal.aborted || error?.name === 'AbortError') throw error
+          if (error?.code === 'INSTALL_AGENT_INTEGRITY_FAILED') throw error
+          throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
+        }
+        args = [
+          'install', '--global', npmPackageSpec(recipe),
+          '--registry', NPM_REGISTRY,
+        ]
       }
       const prepared = recipe.type === 'npm'
         ? prepareInstallCommand(command, args, {
@@ -216,7 +303,11 @@ class AgentInstaller extends EventEmitter {
       this.setState({ phase: 'verifying', canCancel: false })
       this.invalidateDetectionCache()
       const installed = await this.detectedAgents()
-      if (!installed.some(agent => agent.kind === profile.kind && verifiedAgent(agent))) {
+      if (!installed.some(agent => (
+        agent.kind === profile.kind
+        && agent.compatibilityState === 'compatible'
+        && verifiedRecipeAgent(agent, recipe)
+      ))) {
         throw installerError('INSTALL_AGENT_VERIFY_FAILED')
       }
       this.setState({ phase: 'completed', canCancel: false })

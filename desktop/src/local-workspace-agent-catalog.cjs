@@ -18,17 +18,31 @@ class LocalWorkspaceAgentCatalog {
   }
 
   async refresh() {
+    const runtimeAtRefreshStart = new Map(Object.entries(this.state().agentRuntime))
     const detected = await this.detectAgents()
     const nativeStates = await Promise.all(detected.map(
       agent => this.credentialState(agent.kind, agent),
     ))
     const state = this.state()
+    let recoveredRuntimeCredential = false
     const agents = detected.map((agent, index) => {
       const native = nativeStates[index]
-      const runtime = state.agentRuntime[agent.kind]
+      let runtime = state.agentRuntime[agent.kind]
       const sharedProviderReady = Boolean(this.sharedProviderReady(agent.kind))
       const nativeState = ['ready', 'missing'].includes(native?.state) ? native.state : 'unknown'
+      const authoritativeNativeState = native?.source === 'native-auth-status'
       const sharedProviderRequired = native?.source === 'shared-provider-required'
+      // A probe that started before a newer runtime failure cannot clear that failure.
+      if (authoritativeNativeState && nativeState === 'ready'
+          && ['missing', 'unknown'].includes(runtime?.credentialState)
+          && runtime === runtimeAtRefreshStart.get(agent.kind)) {
+        runtime = {
+          credentialState: 'ready',
+          checkedAt: this.now(),
+        }
+        state.agentRuntime[agent.kind] = runtime
+        recoveredRuntimeCredential = true
+      }
       const runtimeMissing = runtime?.credentialState === 'missing'
       const verifiedReady = runtime?.credentialState === 'ready'
         || state.messages.some(message => (
@@ -37,37 +51,29 @@ class LocalWorkspaceAgentCatalog {
       const nativeReadySource = nativeState === 'ready'
         ? (native.source || 'native-credential')
         : ''
-      const credentialState = sharedProviderReady
-        ? 'ready'
-        : sharedProviderRequired
-          ? 'missing'
-          : runtimeMissing
-            ? 'missing'
-            : nativeState === 'missing'
-              ? 'missing'
-              : nativeState === 'ready'
-                ? 'ready'
-                : verifiedReady
-                  ? 'ready'
-                  : 'unknown'
-      const available = credentialState === 'ready'
+      let credentialState = 'unknown'
+      if (runtimeMissing || sharedProviderRequired || nativeState === 'missing') {
+        credentialState = 'missing'
+      }
+      if (!runtimeMissing && sharedProviderReady) credentialState = 'ready'
+      else if (!runtimeMissing && nativeState === 'ready') credentialState = 'ready'
+      else if (!runtimeMissing && verifiedReady && nativeState !== 'missing') credentialState = 'ready'
+      const compatible = agent.custom === true || agent.compatibilityState !== 'incompatible'
+      const available = compatible && credentialState === 'ready'
       const preferred = state.agentPreferences[agent.kind]?.showInSidebar
       const capabilities = agentRuntimeCapabilities(agent.kind)
+      let availabilitySource = 'unverified'
+      if (!compatible) availabilitySource = 'incompatible'
+      else if (runtimeMissing) availabilitySource = 'runtime-auth-failure'
+      else if (sharedProviderReady) availabilitySource = nativeReadySource || 'shared-provider'
+      else if (nativeState === 'missing') availabilitySource = native.source || 'none'
+      else if (nativeReadySource) availabilitySource = nativeReadySource
+      else if (verifiedReady) availabilitySource = 'verified-run'
       return {
         ...agent,
         installed: true,
         credentialState,
-        availabilitySource: sharedProviderReady
-          ? (!runtimeMissing && nativeReadySource ? nativeReadySource : 'shared-provider')
-          : runtimeMissing
-              ? 'runtime-auth-failure'
-            : nativeState === 'missing'
-              ? (native.source || 'none')
-              : nativeReadySource
-                ? nativeReadySource
-                : verifiedReady
-                  ? 'verified-run'
-                  : 'unverified',
+        availabilitySource,
         available,
         task: capabilities.task,
         resumable: capabilities.resumable,
@@ -77,6 +83,7 @@ class LocalWorkspaceAgentCatalog {
       }
     })
     this.setDetectedAgents(agents)
+    if (recoveredRuntimeCredential) this.save()
     this.emitChanged()
     return this.snapshot()
   }
@@ -103,10 +110,15 @@ class LocalWorkspaceAgentCatalog {
     const agent = this.detectedAgents().find(item => item.kind === kind)
     if (agent) {
       agent.credentialState = credentialState
-      agent.available = credentialState !== 'missing'
-      agent.availabilitySource = credentialState === 'ready'
-        ? 'verified-run'
-        : 'runtime-auth-failure'
+      const compatible = agent.custom === true || agent.compatibilityState !== 'incompatible'
+      agent.available = compatible && credentialState === 'ready'
+      agent.availabilitySource = !compatible
+        ? 'incompatible'
+        : credentialState === 'ready'
+          ? 'verified-run'
+          : credentialState === 'missing'
+            ? 'runtime-auth-failure'
+            : 'unverified'
       const preferred = state.agentPreferences[kind]?.showInSidebar
       agent.showInSidebar = !isReviewOnlyAgentKind(agent.kind)
         && agent.available

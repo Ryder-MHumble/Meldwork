@@ -105,6 +105,14 @@ export function useAgentCatalog({
     if (agent.ready) return { label: t('agent.ready'), tone: 'ready', icon: CheckmarkCircleOutline }
     if (agent.custom) return { label: t('customAgent.executableUnavailable'), tone: 'warning', icon: WarningOutline }
     if (!agent.installed) return { label: t('agent.notInstalled'), tone: 'off', icon: DownloadOutline }
+    if (agent.compatibilityState === 'incompatible') {
+      const reasonKey = ({
+        LOCAL_AGENT_VERSION_UNSUPPORTED: 'agent.incompatibleVersion',
+        LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING: 'agent.incompatibleCapability',
+        LOCAL_AGENT_PROTOCOL_UNAVAILABLE: 'agent.incompatibleProtocol',
+      })[agent.incompatibilityReason] || 'agent.incompatible'
+      return { label: t(reasonKey), tone: 'warning', icon: WarningOutline }
+    }
     if (agent.credentialState === 'missing') return { label: t('agent.needsLogin'), tone: 'warning', icon: WarningOutline }
     return { label: t('agent.unverified'), tone: 'neutral', icon: WarningOutline }
   }

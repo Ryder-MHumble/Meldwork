@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.23.0",
+    "@streamparser/json": "0.0.22",
     "zod": "4.4.3"
   },
   "devDependencies": {

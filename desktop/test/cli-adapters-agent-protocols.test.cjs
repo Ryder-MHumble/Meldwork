@@ -6,6 +6,7 @@ const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const { PassThrough } = require('node:stream')
 const { AGENT_RUNTIME_CAPABILITIES } = require('../src/agent-runtime-contract.cjs')
+const { createStructuredOutputAccumulator } = require('../src/cli-output-parsers.cjs')
 const {
   ALLOWED_KINDS,
   detectAgents,
@@ -34,6 +35,8 @@ const {
   waitForExit,
   within,
 } = require('./cli-adapters-test-helpers.cjs')
+
+const OUTPUT_FIXTURE_DIRECTORY = path.join(__dirname, 'fixtures', 'agent-output')
 
 test('WorkBuddy uses non-interactive output and resumes its native session', () => {
   const spec = invocation('workbuddy', '/tmp/codebuddy', '/tmp/work', 'workbuddy-session')
@@ -616,6 +619,10 @@ test('MiMo JSON output returns final text and session id', () => {
       type: 'text', sessionID: 'mimo-session',
       part: { type: 'text', text: 'MiMo reply' },
     }),
+    JSON.stringify({
+      type: 'step_finish', sessionID: 'mimo-session',
+      part: { type: 'step-finish', reason: 'stop' },
+    }),
   ].join('\n')
   assert.deepEqual(parseMimoOutput(raw), {
     text: 'MiMo reply', sessionRef: 'mimo-session', error: '',
@@ -1131,7 +1138,10 @@ test('every supported built-in Agent produces an explicit completion outcome', (
       JSON.stringify({ type: 'turn.completed' }),
     ].join('\n'),
     hermes: 'Hermes reply',
-    openclaw: JSON.stringify({ payloads: [{ text: 'OpenClaw reply' }] }),
+    openclaw: JSON.stringify({
+      payloads: [{ text: 'OpenClaw reply' }],
+      meta: { aborted: false, completion: { stopReason: 'stop' } },
+    }),
     workbuddy: JSON.stringify({
       type: 'result', result: 'WorkBuddy reply', session_id: 'workbuddy-session',
     }),
@@ -1139,9 +1149,15 @@ test('every supported built-in Agent produces an explicit completion outcome', (
       JSON.stringify({ role: 'assistant', content: 'Kimi reply' }),
       JSON.stringify({ type: 'session.resume_hint', session_id: 'kimi-session' }),
     ].join('\n'),
-    mimo: JSON.stringify({
-      type: 'text', sessionID: 'mimo-session', part: { type: 'text', text: 'MiMo reply' },
-    }),
+    mimo: [
+      JSON.stringify({
+        type: 'text', sessionID: 'mimo-session', part: { type: 'text', text: 'MiMo reply' },
+      }),
+      JSON.stringify({
+        type: 'step_finish', sessionID: 'mimo-session',
+        part: { type: 'step-finish', reason: 'stop' },
+      }),
+    ].join('\n'),
     claude: JSON.stringify({
       type: 'result', result: 'Claude reply', session_id: 'claude-session',
     }),
@@ -1150,10 +1166,16 @@ test('every supported built-in Agent produces an explicit completion outcome', (
       JSON.stringify({ type: 'message', role: 'assistant', content: 'Gemini reply' }),
       JSON.stringify({ type: 'result', status: 'success' }),
     ].join('\n'),
-    opencode: JSON.stringify({
-      type: 'text', sessionID: 'opencode-session',
-      part: { type: 'text', text: 'OpenCode reply' },
-    }),
+    opencode: [
+      JSON.stringify({
+        type: 'text', sessionID: 'opencode-session',
+        part: { type: 'text', text: 'OpenCode reply' },
+      }),
+      JSON.stringify({
+        type: 'step_finish', sessionID: 'opencode-session',
+        part: { type: 'step-finish', reason: 'stop' },
+      }),
+    ].join('\n'),
     qwen: JSON.stringify({
       type: 'result', result: 'Qwen reply', session_id: 'qwen-session',
     }),
@@ -1168,6 +1190,68 @@ test('every supported built-in Agent produces an explicit completion outcome', (
     assert.equal(result.outcome, 'completed', kind)
     assert.ok(result.text, kind)
   }
+})
+
+test('recorded fixtures cover every supported built-in output schema', () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(OUTPUT_FIXTURE_DIRECTORY, 'manifest.json'),
+    'utf8',
+  ))
+  assert.equal(manifest.schemaVersion, 1)
+  assert.deepEqual(
+    manifest.fixtures.map(fixture => fixture.kind).sort(),
+    [...ALLOWED_KINDS].sort(),
+  )
+  const expectedText = {
+    codex: 'Codex fixture reply',
+    hermes: 'Hermes fixture reply',
+    openclaw: 'OpenClaw fixture reply',
+    workbuddy: 'WorkBuddy fixture reply',
+    kimi: 'Kimi fixture reply',
+    mimo: 'MiMo fixture reply',
+    claude: 'Claude fixture reply',
+    gemini: 'Gemini fixture reply',
+    opencode: 'OpenCode fixture reply',
+    qwen: 'Qwen fixture reply',
+    opencodereview: 'OpenCodeReview fixture reply',
+  }
+  for (const fixture of manifest.fixtures) {
+    assert.match(fixture.version, /\d/, fixture.kind)
+    const raw = fs.readFileSync(path.join(OUTPUT_FIXTURE_DIRECTORY, fixture.file), 'utf8')
+    const result = normalizeOutput(fixture.kind, raw)
+    assert.equal(result.text, expectedText[fixture.kind], fixture.kind)
+    assert.equal(result.outcome, 'completed', fixture.kind)
+    if (!['hermes', 'openclaw', 'opencodereview'].includes(fixture.kind)) {
+      assert.equal(result.sessionRef, `${fixture.kind}-fixture-session`, fixture.kind)
+    }
+    if (fixture.kind === 'opencodereview') {
+      assert.equal(result.externalRunRef, 'ocr-fixture-session')
+    }
+  }
+})
+
+test('OpenCode and MiMo require an explicit step finish before declaring completion', () => {
+  for (const kind of ['opencode', 'mimo']) {
+    const result = normalizeOutput(kind, JSON.stringify({
+      type: 'text', sessionID: `${kind}-session`,
+      part: { type: 'text', text: `${kind} reply` },
+    }))
+    assert.equal(result.outcome, 'partial', kind)
+  }
+})
+
+test('structured JSON documents fail closed when malformed or over the safe limit', () => {
+  const malformed = createStructuredOutputAccumulator('openclaw')
+  malformed.write(Buffer.from('{"payloads":['))
+  const malformedResult = malformed.end()
+  assert.equal(malformedResult.outcome, 'failed')
+  assert.equal(malformedResult.failure.code, 'LOCAL_AGENT_OUTCOME_INVALID')
+
+  const oversized = createStructuredOutputAccumulator('opencodereview')
+  oversized.write(Buffer.alloc((64 * 1024 * 1024) + 1))
+  const oversizedResult = oversized.end()
+  assert.equal(oversizedResult.outcome, 'failed')
+  assert.equal(oversizedResult.failure.code, 'LOCAL_AGENT_OUTPUT_LIMIT')
 })
 
 test('every resumable built-in adapter classifies an invalid native Session', async (t) => {
@@ -1305,6 +1389,44 @@ process.stdout.write(JSON.stringify({
 `,
     expected: {
       text: 'Qwen final after limit', sessionRef: 'qwen-long-session', outcome: 'completed',
+    },
+  }, {
+    kind: 'workbuddy',
+    source: `
+process.stdout.write('x'.repeat(${Math.ceil(fillerBytes / 2)}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'result', result: 'WorkBuddy final after limit', session_id: 'workbuddy-long-session',
+}) + '\\n')
+process.stdout.write('x'.repeat(${Math.ceil(fillerBytes / 2)}) + '\\n')
+`,
+    expected: {
+      text: 'WorkBuddy final after limit',
+      sessionRef: 'workbuddy-long-session',
+      outcome: 'completed',
+    },
+  }, {
+    kind: 'openclaw',
+    source: `
+process.stdout.write('{"payloads":[{"text":"OpenClaw final after limit"}],"meta":{"noise":"')
+process.stdout.write('x'.repeat(${fillerBytes}))
+process.stdout.write('","aborted":false,"completion":{"stopReason":"stop"}}}')
+`,
+    expected: {
+      text: 'OpenClaw final after limit', sessionRef: '', outcome: 'completed',
+    },
+  }, {
+    kind: 'opencodereview',
+    source: `
+process.stdout.write('{"status":"complete","message":"OCR final after limit","noise":"')
+process.stdout.write('x'.repeat(${fillerBytes}))
+process.stdout.write('","comments":[],"session_id":"ocr-long-session","manifest":')
+process.stdout.write(JSON.stringify({
+  schema_version: 'ocr.run-manifest/v1', operation: 'review', terminal_state: 'complete',
+}) + '}')
+`,
+    expected: {
+      text: 'OCR final after limit', sessionRef: '', outcome: 'completed',
+      externalRunRef: 'ocr-long-session',
     },
   }]
 

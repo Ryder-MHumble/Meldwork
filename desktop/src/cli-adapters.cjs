@@ -14,6 +14,7 @@ const {
   createClaudeQwenRuntimeState,
   createJsonLineParser,
   createRuntimeEventEmitter,
+  createStructuredOutputAccumulator,
   hermesSessionRef,
   jsonCliRuntimeEvents,
   normalizeOpenClawOutput,
@@ -280,6 +281,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     }
     const stdout = createBoundedOutputCapture(MAX_STDOUT_CAPTURE_BYTES)
     const stderr = createBoundedOutputCapture(MAX_STDERR_CAPTURE_BYTES)
+    const structuredOutput = createStructuredOutputAccumulator(agent.kind, sessionRef)
     let settled = false
     let stopRequested = false
     let timeout
@@ -324,10 +326,9 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       }
     }
     const claudeQwenRuntimeState = createClaudeQwenRuntimeState()
-    const runtimeStreamParser = [
-      'codex', 'kimi', 'mimo', 'claude', 'qwen', 'gemini', 'opencode',
-    ].includes(agent.kind)
+    const runtimeStreamParser = structuredOutput?.format === 'jsonl'
       ? createJsonLineParser((event) => {
+          structuredOutput.ingest(event)
           if (agent.kind === 'codex') {
             const progressEvent = codexProgressEvent(event)
             if (progressEvent) emitProgress(progressEvent)
@@ -394,6 +395,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     else options.signal?.addEventListener('abort', abort, { once: true })
     child.stdout.on('data', (chunk) => {
       stdout.push(chunk)
+      if (structuredOutput?.format === 'document') structuredOutput.write(chunk)
       runtimeStreamParser?.write(chunk)
       emitHermesProgress('stdout', chunk)
     })
@@ -414,6 +416,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         emitHermesProgress('stdout', null, true)
         emitHermesProgress('stderr', null, true)
         runtimeStreamParser?.end()
+        const structuredResult = structuredOutput?.end()
         if (stopRequested || options.signal?.aborted) {
           reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
           return
@@ -433,10 +436,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         const nextSessionRef = agent.kind === 'hermes'
           ? hermesSessionRef(rawStderr) || sessionRef
           : sessionRef
-        const result = normalizeOutput(
-          agent.kind,
-          stdout.text(),
-          nextSessionRef,
+        const result = structuredResult || normalizeOutput(
+          agent.kind, stdout.text(), nextSessionRef,
         )
         if (result.error) {
           reject(failedAgentProcessError(

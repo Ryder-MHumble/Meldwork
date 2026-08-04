@@ -57,6 +57,7 @@ export const DESKTOP_ERROR_MESSAGE_KEYS = Object.freeze({
   INSTALL_AGENT_UNSUPPORTED: 'error.installUnsupported',
   INSTALL_AGENT_DOWNLOAD_BLOCKED: 'error.installDownloadBlocked',
   INSTALL_AGENT_DOWNLOAD_FAILED: 'error.installDownloadFailed',
+  INSTALL_AGENT_INTEGRITY_FAILED: 'error.installIntegrity',
   INSTALL_AGENT_COMMAND_BLOCKED: 'error.installCommandBlocked',
   INSTALL_AGENT_PROCESS_FAILED: 'error.installProcessFailed',
   INSTALL_AGENT_ALREADY_INSTALLED: 'error.installAlreadyInstalled',

@@ -171,6 +171,7 @@ class LocalWorkspace extends EventEmitter {
       invokeAgent: (...args) => this.invokeAgent(...args),
       resetAgentSession: (...args) => this.resetAgentSession(...args),
       removeAgentFromGroup: (...args) => this.removeAgentFromGroup(...args),
+      markRuntimeCredential: (...args) => this.markRuntimeCredential(...args),
       agentLabel: kind => this.agentLabel(kind),
       recordAgentFailure: (...args) => this.recordAgentFailure(...args),
       recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),

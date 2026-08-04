@@ -2,10 +2,17 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { StringDecoder } = require('node:string_decoder')
+const { JSONParser } = require('@streamparser/json')
 const { agentRuntimeFailure } = require('./agent-runtime-contract.cjs')
 const { codexProgressTitle } = require('./cli-runtime-summaries.cjs')
 
 const MAX_RUNTIME_JSON_PENDING_CHARS = 1024 * 1024
+const MAX_STRUCTURED_JSON_BYTES = 64 * 1024 * 1024
+const MAX_STRUCTURED_TEXT_CHARS = 1024 * 1024
+const STRUCTURED_JSONL_KINDS = new Set([
+  'codex', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+])
+const STRUCTURED_DOCUMENT_KINDS = new Set(['openclaw', 'opencodereview'])
 function parseCodexOutput(stdout) {
   let sessionRef = ''
   const texts = []
@@ -71,6 +78,340 @@ function createJsonLineParser(onEvent) {
     end() {
       pending += decoder.end()
       consume(true)
+    },
+  }
+}
+
+function appendStructuredText(state, value, separator = '\n') {
+  const text = String(value || '')
+  if (!text || state.text.length >= MAX_STRUCTURED_TEXT_CHARS) return
+  const prefix = state.text && separator ? separator : ''
+  const remaining = MAX_STRUCTURED_TEXT_CHARS - state.text.length
+  state.text += `${prefix}${text}`.slice(0, remaining)
+}
+
+function markStructuredFailure(state, code = 'LOCAL_AGENT_PROCESS_FAILED', diagnostic = '') {
+  state.outcome = 'failed'
+  state.failure = agentRuntimeFailure(code)
+  if (diagnostic) state.diagnostic = diagnostic
+}
+
+function structuredEventFailed(event) {
+  return event?.type === 'error'
+    || event?.status === 'failed'
+    || event?.status === 'error'
+    || event?.is_error === true
+    || String(event?.subtype || '').startsWith('error')
+}
+
+function stepFinishOutcome(reason) {
+  const value = String(reason || '').toLowerCase()
+  if (['stop', 'end_turn'].includes(value)) return 'completed'
+  if (['length', 'max_tokens', 'max_turn_requests'].includes(value)) return 'partial'
+  if (['cancelled', 'canceled', 'aborted'].includes(value)) return 'cancelled'
+  if (['error', 'refusal'].includes(value)) return 'failed'
+  return 'partial'
+}
+
+function ingestStructuredEvent(state, event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) return
+  state.seen = true
+  if (structuredEventFailed(event)) {
+    markStructuredFailure(state)
+    return
+  }
+
+  if (state.kind === 'codex') {
+    if (event.type === 'thread.started' && typeof event.thread_id === 'string') {
+      state.sessionRef = event.thread_id
+    }
+    if (event.type === 'item.completed' && event.item?.type === 'agent_message'
+        && typeof event.item.text === 'string') {
+      appendStructuredText(state, event.item.text)
+    }
+    if (event.type === 'turn.completed') state.outcome = 'completed'
+    return
+  }
+
+  if (['workbuddy', 'claude', 'qwen'].includes(state.kind)) {
+    if (typeof event.session_id === 'string') state.sessionRef = event.session_id
+    if (event.type === 'result' && typeof event.result === 'string') {
+      state.text = ''
+      appendStructuredText(state, event.result, '')
+      state.outcome = 'completed'
+    }
+    return
+  }
+
+  if (state.kind === 'kimi') {
+    if (event.role === 'assistant' && typeof event.content === 'string') {
+      appendStructuredText(state, event.content)
+    }
+    if (event.type === 'session.resume_hint' && typeof event.session_id === 'string') {
+      state.sessionRef = event.session_id
+      state.outcome = 'completed'
+    }
+    return
+  }
+
+  if (['mimo', 'opencode'].includes(state.kind)) {
+    if (typeof event.sessionID === 'string') state.sessionRef = event.sessionID
+    if (event.type === 'text' && event.part?.type === 'text'
+        && typeof event.part.text === 'string') {
+      appendStructuredText(state, event.part.text)
+    }
+    if (event.type === 'step_finish' || event.part?.type === 'step-finish') {
+      state.outcome = stepFinishOutcome(event.part?.reason || event.reason)
+      if (state.outcome === 'failed') markStructuredFailure(state)
+    }
+    return
+  }
+
+  if (state.kind === 'gemini') {
+    if (event.type === 'init' && typeof event.session_id === 'string') {
+      state.sessionRef = event.session_id
+    }
+    if (event.type === 'message' && event.role === 'assistant'
+        && typeof event.content === 'string') {
+      appendStructuredText(state, event.content, '')
+    }
+    if (event.type === 'result') {
+      if (event.status === 'success') state.outcome = 'completed'
+      else if (event.status === 'cancelled') state.outcome = 'cancelled'
+      else markStructuredFailure(state, 'LOCAL_AGENT_OUTCOME_INVALID')
+    }
+  }
+}
+
+function openClawDocumentValue(state, input) {
+  const stack = input.stack.map(item => item.key).filter(value => value != null)
+  const parentKey = stack.at(-1)
+  if (['text', 'content'].includes(input.key)
+      && ['payloads', 'messages', 'result', 'response'].includes(stack[0])) {
+    appendStructuredText(state, input.value)
+  }
+  if (input.key === 'stopReason' || input.key === 'finishReason') {
+    state.stopReason = String(input.value || '')
+  }
+  if (input.key === 'aborted' && parentKey === 'meta') state.aborted = input.value === true
+}
+
+function openCodeReviewCommentText(comment) {
+  if (!comment || typeof comment !== 'object') return ''
+  const location = typeof comment.path === 'string' && comment.path.trim()
+    ? `${comment.path.trim()}${Number.isInteger(comment.start_line)
+      ? `:${comment.start_line}${Number.isInteger(comment.end_line)
+        && comment.end_line !== comment.start_line ? `-${comment.end_line}` : ''}`
+      : ''}`
+    : ''
+  const metadata = [comment.category, comment.severity]
+    .filter(value => typeof value === 'string' && value.trim())
+    .map(value => value.trim())
+    .join(' / ')
+  const content = typeof comment.content === 'string' ? comment.content.trim() : ''
+  const suggestion = typeof comment.suggestion_code === 'string'
+    ? comment.suggestion_code.trim()
+    : ''
+  const header = [location, metadata && `[${metadata}]`].filter(Boolean).join(' ')
+  return [
+    header,
+    content,
+    suggestion ? `Suggested change:\n${suggestion}` : '',
+  ].filter(Boolean).join('\n')
+}
+
+function openCodeReviewDocumentValue(state, input) {
+  const stack = input.stack.map(item => item.key).filter(value => value != null)
+  if (input.key === 'manifest' && stack.length === 0) state.manifestSeen = true
+  if (input.key === 'message' && stack.length === 0) appendStructuredText(state, input.value)
+  if (input.key === 'project_summary' && stack.length === 0) {
+    appendStructuredText(state, input.value)
+  }
+  if (input.key === 'session_id' && stack.length === 0) {
+    state.externalRunRef = String(input.value || '')
+  }
+  if (input.key === 'status' && stack.length === 0) state.reviewStatus = String(input.value || '')
+  if (stack[0] === 'manifest') {
+    if (input.key === 'schema_version') state.manifest.schema_version = input.value
+    if (input.key === 'operation') state.manifest.operation = input.value
+    if (input.key === 'terminal_state') state.manifest.terminal_state = input.value
+  }
+  if (stack[0] === 'comments' && Number.isInteger(input.key)) {
+    appendStructuredText(state, openCodeReviewCommentText(input.value))
+  }
+}
+
+function openCodeReviewTerminal(status, manifest, manifestPresent = manifest != null) {
+  if (manifestPresent) {
+    if (manifest.schema_version !== 'ocr.run-manifest/v1') {
+      return { diagnostic: 'OpenCodeReview returned an unsupported manifest schema.' }
+    }
+    if (manifest.operation !== 'review') {
+      return { diagnostic: 'OpenCodeReview returned an unsupported manifest operation.' }
+    }
+    const terminalState = String(manifest.terminal_state || '')
+    if (status !== terminalState) {
+      return { diagnostic: 'OpenCodeReview returned inconsistent terminal states.' }
+    }
+    return {
+      outcome: ({
+        complete: 'completed', partial: 'partial', failed: 'failed', skipped: 'completed',
+      })[terminalState] || '',
+    }
+  }
+  return {
+    outcome: ({
+      success: 'completed',
+      complete: 'completed',
+      skipped: 'completed',
+      completed_with_warnings: 'completed',
+      partial: 'partial',
+      completed_with_errors: 'partial',
+      budget_exceeded: 'partial',
+      failed: 'failed',
+    })[status] || '',
+  }
+}
+
+function finalizeStructuredState(state) {
+  if (state.parseError) {
+    return {
+      text: '',
+      sessionRef: state.sessionRef,
+      outcome: 'failed',
+      failure: agentRuntimeFailure(state.parseError.code),
+      diagnostic: state.parseError.diagnostic,
+    }
+  }
+
+  if (state.kind === 'openclaw') {
+    state.outcome = state.aborted ? 'cancelled' : stepFinishOutcome(state.stopReason)
+  }
+  if (state.kind === 'opencodereview') {
+    const terminal = openCodeReviewTerminal(
+      state.reviewStatus, state.manifest, state.manifestSeen,
+    )
+    if (terminal.diagnostic || !terminal.outcome) {
+      markStructuredFailure(
+        state,
+        'LOCAL_AGENT_OUTCOME_INVALID',
+        terminal.diagnostic || 'OpenCodeReview returned an unknown terminal state.',
+      )
+    } else {
+      state.outcome = terminal.outcome
+      if (state.outcome === 'failed') {
+        markStructuredFailure(
+          state,
+          'LOCAL_AGENT_PROCESS_FAILED',
+          state.text || 'OpenCodeReview reported a failed review.',
+        )
+      }
+      if (state.outcome === 'completed' && !state.text) {
+        state.text = 'OpenCodeReview completed without findings.'
+      }
+    }
+  }
+
+  if (!state.seen && !state.text && !state.outcome) return null
+  const outcome = state.outcome || (state.text ? 'partial' : 'failed')
+  const result = {
+    text: state.text.trim(),
+    sessionRef: state.sessionRef,
+    outcome,
+  }
+  if (state.failure) result.failure = state.failure
+  if (state.diagnostic) result.diagnostic = state.diagnostic
+  if (state.externalRunRef) result.externalRunRef = state.externalRunRef
+  return result
+}
+
+function createStructuredOutputAccumulator(kind, sessionRef = '') {
+  if (!STRUCTURED_JSONL_KINDS.has(kind) && !STRUCTURED_DOCUMENT_KINDS.has(kind)) return null
+  const state = {
+    kind,
+    sessionRef: String(sessionRef || ''),
+    text: '',
+    outcome: '',
+    failure: null,
+    diagnostic: '',
+    externalRunRef: '',
+    seen: false,
+    bytes: 0,
+    parseError: null,
+    stopReason: '',
+    aborted: false,
+    reviewStatus: '',
+    manifest: {},
+    manifestSeen: false,
+  }
+  if (STRUCTURED_JSONL_KINDS.has(kind)) {
+    return {
+      format: 'jsonl',
+      ingest: event => ingestStructuredEvent(state, event),
+      end: () => finalizeStructuredState(state),
+    }
+  }
+
+  const paths = kind === 'openclaw'
+    ? [
+        '$.payloads.*.text', '$.payloads.*.content',
+        '$.messages.*.text', '$.messages.*.content',
+        '$.result.text', '$.result.content',
+        '$.response.text', '$.response.content',
+        '$.meta.aborted', '$.meta.stopReason',
+        '$.meta.completion.stopReason', '$.meta.completion.finishReason',
+      ]
+    : [
+        '$.status', '$.message', '$.project_summary', '$.session_id',
+        '$.comments.*', '$.manifest', '$.manifest.schema_version', '$.manifest.operation',
+        '$.manifest.terminal_state',
+      ]
+  const parser = new JSONParser({ paths, keepStack: false, stringBufferSize: 64 * 1024 })
+  parser.onValue = input => {
+    state.seen = true
+    if (kind === 'openclaw') openClawDocumentValue(state, input)
+    else openCodeReviewDocumentValue(state, input)
+  }
+  parser.onError = (error) => {
+    state.parseError ||= {
+      code: 'LOCAL_AGENT_OUTCOME_INVALID',
+      diagnostic: String(error?.message || error),
+    }
+  }
+  return {
+    format: 'document',
+    write(chunk) {
+      if (state.parseError) return
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      state.bytes += bytes.length
+      if (state.bytes > MAX_STRUCTURED_JSON_BYTES) {
+        state.parseError = {
+          code: 'LOCAL_AGENT_OUTPUT_LIMIT',
+          diagnostic: 'Structured Agent output exceeded the safe limit.',
+        }
+        return
+      }
+      try {
+        parser.write(bytes)
+      } catch (error) {
+        state.parseError = {
+          code: 'LOCAL_AGENT_OUTCOME_INVALID',
+          diagnostic: String(error?.message || error),
+        }
+      }
+    },
+    end() {
+      if (!state.parseError && !parser.isEnded) {
+        try {
+          parser.end()
+        } catch (error) {
+          state.parseError = {
+            code: 'LOCAL_AGENT_OUTCOME_INVALID',
+            diagnostic: String(error?.message || error),
+          }
+        }
+      }
+      return finalizeStructuredState(state)
     },
   }
 }
@@ -279,27 +620,7 @@ function openCodeReviewText(output) {
     sections.push(output.project_summary.trim())
   }
   for (const comment of Array.isArray(output.comments) ? output.comments : []) {
-    if (!comment || typeof comment !== 'object') continue
-    const location = typeof comment.path === 'string' && comment.path.trim()
-      ? `${comment.path.trim()}${Number.isInteger(comment.start_line)
-        ? `:${comment.start_line}${Number.isInteger(comment.end_line)
-          && comment.end_line !== comment.start_line ? `-${comment.end_line}` : ''}`
-        : ''}`
-      : ''
-    const metadata = [comment.category, comment.severity]
-      .filter(value => typeof value === 'string' && value.trim())
-      .map(value => value.trim())
-      .join(' / ')
-    const content = typeof comment.content === 'string' ? comment.content.trim() : ''
-    const suggestion = typeof comment.suggestion_code === 'string'
-      ? comment.suggestion_code.trim()
-      : ''
-    const header = [location, metadata && `[${metadata}]`].filter(Boolean).join(' ')
-    const finding = [
-      header,
-      content,
-      suggestion ? `Suggested change:\n${suggestion}` : '',
-    ].filter(Boolean).join('\n')
+    const finding = openCodeReviewCommentText(comment)
     if (finding) sections.push(finding)
   }
   return sections.join('\n\n').trim()
@@ -329,36 +650,9 @@ function parseOpenCodeReviewOutput(stdout) {
   }
 
   const status = String(output.status || '')
-  let outcome = ''
-  if (output.manifest != null) {
-    if (output.manifest?.schema_version !== 'ocr.run-manifest/v1') {
-      return invalidOpenCodeReviewOutput('OpenCodeReview returned an unsupported manifest schema.')
-    }
-    if (output.manifest?.operation !== 'review') {
-      return invalidOpenCodeReviewOutput('OpenCodeReview returned an unsupported manifest operation.')
-    }
-    const terminalState = String(output.manifest.terminal_state || '')
-    if (status !== terminalState) {
-      return invalidOpenCodeReviewOutput('OpenCodeReview returned inconsistent terminal states.')
-    }
-    outcome = ({
-      complete: 'completed',
-      partial: 'partial',
-      failed: 'failed',
-      skipped: 'completed',
-    })[terminalState] || ''
-  } else {
-    outcome = ({
-      success: 'completed',
-      complete: 'completed',
-      skipped: 'completed',
-      completed_with_warnings: 'completed',
-      partial: 'partial',
-      completed_with_errors: 'partial',
-      budget_exceeded: 'partial',
-      failed: 'failed',
-    })[status] || ''
-  }
+  const terminal = openCodeReviewTerminal(status, output.manifest, output.manifest != null)
+  if (terminal.diagnostic) return invalidOpenCodeReviewOutput(terminal.diagnostic)
+  const outcome = terminal.outcome
   if (!outcome) {
     return invalidOpenCodeReviewOutput('OpenCodeReview returned an unknown terminal state.')
   }
@@ -425,10 +719,10 @@ function classifyCliOutcome(kind, stdout) {
     }
   }
   if (['mimo', 'opencode'].includes(kind)) {
-    const hasNativeText = events.some(event => (
-      event?.type === 'text' && event.part?.type === 'text'
+    const finish = events.findLast(event => (
+      event?.type === 'step_finish' || event?.part?.type === 'step-finish'
     ))
-    return { outcome: hasNativeText ? 'completed' : 'partial' }
+    return { outcome: finish ? stepFinishOutcome(finish.part?.reason || finish.reason) : 'partial' }
   }
   if (kind === 'gemini') {
     const result = events.findLast(event => event?.type === 'result')
@@ -444,7 +738,12 @@ function classifyCliOutcome(kind, stdout) {
     const raw = String(stdout || '').trim()
     try {
       const value = JSON.parse(raw)
-      return { outcome: value && typeof value === 'object' ? 'completed' : 'partial' }
+      const stopReason = value?.meta?.completion?.stopReason
+        || value?.meta?.completion?.finishReason
+        || value?.meta?.stopReason
+      return {
+        outcome: value?.meta?.aborted === true ? 'cancelled' : stepFinishOutcome(stopReason),
+      }
     } catch {
       return { outcome: 'partial' }
     }
@@ -524,6 +823,7 @@ function readHermesFinalResponse(sessionRef, options = {}) {
 module.exports = {
   codexProgressEvent,
   createJsonLineParser,
+  createStructuredOutputAccumulator,
   hermesSessionRef,
   normalizeOpenClawOutput,
   parseClaudeQwenOutput,

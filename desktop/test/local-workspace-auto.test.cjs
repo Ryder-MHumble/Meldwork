@@ -853,6 +853,10 @@ test('automatic dialogue removes an Agent after post-repair 401 verification fai
   ])
   assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'workbuddy'])
   assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'hermes')], undefined)
+  assert.equal(
+    workspace.snapshot().agents.find(agent => agent.kind === 'hermes').credentialState,
+    'missing',
+  )
   const failure = workspace.snapshot().messages.find(message => (
     message.agentKind === 'hermes' && message.system?.key === 'system.agentCallFailed'
   ))
@@ -861,6 +865,46 @@ test('automatic dialogue removes an Agent after post-repair 401 verification fai
   assert.equal(finished[0].status, 'partial')
   assert.equal(finished[0].failedKinds.includes('hermes'), true)
   assert.equal(finished[0].completedKinds.includes('hermes'), true)
+})
+
+test('automatic dialogue treats HTTP 403 as authoritative and removes the Agent after recovery', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes') {
+      throw Object.assign(new Error('Provider rejected the request'), { statusCode: 403 })
+    }
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '403 removal', agentKinds: ['hermes', 'codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Handle forbidden credentials')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'hermes', 'hermes', 'hermes', 'hermes',
+    'codex',
+    'hermes', 'hermes', 'hermes',
+  ])
+  assert.match(calls[4].prompt, /Hermes returned HTTP 403 Forbidden/)
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex'])
+  assert.equal(
+    workspace.snapshot().agents.find(agent => agent.kind === 'hermes').credentialState,
+    'missing',
+  )
+  const failure = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'hermes' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(failure.system.params.reason, 'HTTP 403; removed after recovery failed')
 })
 
 test('automatic dialogue isolates duplicate failures and retries every Agent next round', async (t) => {

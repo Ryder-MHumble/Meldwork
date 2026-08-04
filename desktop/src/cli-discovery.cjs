@@ -3,6 +3,11 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { promisify } = require('node:util')
+const {
+  assessAgentVersion,
+  capabilityProbes,
+  extractAgentVersion,
+} = require('./agent-compatibility.cjs')
 
 const execFileAsync = promisify(execFile)
 const AGENT_PROFILES = {
@@ -20,7 +25,6 @@ const AGENT_PROFILES = {
 }
 const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const DEFAULT_WINDOWS_PATHEXT = ['.COM', '.EXE', '.BAT', '.CMD']
-const VERSION_LINE = /\bv?\d+\.\d+\.\d+(?:[-+][0-9A-Za-z][0-9A-Za-z.-]*)?\b/
 const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
   'HOME', 'USER', 'LOGNAME', 'SHELL',
   'TMPDIR', 'TMP', 'TEMP',
@@ -303,6 +307,48 @@ function prepareCommand(command, args, options = {}) {
   }
 }
 
+async function probeAgentCapabilities(kind, executable, options = {}) {
+  const runtime = runtimeOptions(options)
+  const { env, execFileFn, platform } = runtime
+  const prepareCommandFn = options.prepareCommandFn || prepareCommand
+  const childEnv = options.childEnv || {
+    ...systemChildEnvironment(env, platform),
+    PATH: searchPath(options),
+  }
+  for (const probe of capabilityProbes(kind)) {
+    let output = ''
+    try {
+      const command = prepareCommandFn(executable, probe.args, options)
+      const result = await execFileFn(command.command, command.args, {
+        timeout: 8000,
+        windowsHide: true,
+        env: childEnv,
+      })
+      output = `${result.stdout || ''}\n${result.stderr || ''}`
+    } catch {
+      return {
+        compatibilityState: 'incompatible',
+        incompatibilityReason: probe.id.endsWith('-acp')
+          ? 'LOCAL_AGENT_PROTOCOL_UNAVAILABLE'
+          : 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING',
+        incompatibilityProbe: probe.id,
+      }
+    }
+    if (probe.requiredText.some(value => !output.includes(value))) {
+      return {
+        compatibilityState: 'incompatible',
+        incompatibilityReason: 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING',
+        incompatibilityProbe: probe.id,
+      }
+    }
+  }
+  return {
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
+    incompatibilityProbe: '',
+  }
+}
+
 async function detectAgents(options = {}) {
   const runtime = runtimeOptions(options)
   const { env, execFileFn, platform } = runtime
@@ -318,6 +364,7 @@ async function detectAgents(options = {}) {
     const executable = await resolveExecutableFn(kind)
     if (!executable) continue
     let version = ''
+    let versionCommandSucceeded = false
     try {
       const versionCommand = prepareCommandFn(executable, ['--version'], options)
       const result = await execFileFn(versionCommand.command, versionCommand.args, {
@@ -325,15 +372,28 @@ async function detectAgents(options = {}) {
         windowsHide: true,
         env: childEnv,
       })
+      versionCommandSucceeded = true
       const lines = [result.stdout, result.stderr]
         .flatMap(output => String(output || '').split(/\r?\n/))
         .map(line => line.trim())
         .filter(Boolean)
-      version = lines.find(line => VERSION_LINE.test(line)) || ''
+      version = lines.find(line => extractAgentVersion(line)) || ''
     } catch { /* a broken shim is not a usable CLI */ }
-    if (!version) continue
+    if (!versionCommandSucceeded) continue
+    const versionCompatibility = assessAgentVersion(kind, version)
+    const capabilityCompatibility = versionCompatibility.compatibilityState === 'compatible'
+      ? await (options.probeAgentCapabilitiesFn || probeAgentCapabilities)(
+          kind,
+          executable,
+          { ...options, childEnv },
+        )
+      : {
+          compatibilityState: 'incompatible',
+          incompatibilityReason: versionCompatibility.incompatibilityReason,
+          incompatibilityProbe: '',
+        }
     let acpAvailable
-    if (kind === 'hermes') {
+    if (kind === 'hermes' && versionCompatibility.compatibilityState === 'compatible') {
       try {
         const checkCommand = prepareCommandFn(executable, ['acp', '--check'], options)
         await execFileFn(checkCommand.command, checkCommand.args, {
@@ -345,12 +405,16 @@ async function detectAgents(options = {}) {
       } catch {
         acpAvailable = false
       }
+    } else if (kind === 'hermes') {
+      acpAvailable = false
     }
     found.push({
       kind,
       name: `${AGENT_PROFILES[kind].label} CLI`,
       executable,
       version,
+      ...versionCompatibility,
+      ...capabilityCompatibility,
       ...(kind === 'hermes' ? { acpAvailable } : {}),
     })
   }
@@ -362,6 +426,7 @@ module.exports = {
   ALLOWED_KINDS,
   detectAgents,
   prepareCommand,
+  probeAgentCapabilities,
   resolveExecutable,
   searchPath,
   systemChildEnvironment,

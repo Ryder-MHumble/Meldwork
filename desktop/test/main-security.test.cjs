@@ -657,6 +657,9 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   assert.deepEqual(harness.providerInstances[0].saved, [{ kind: 'hermes', input }])
   assert.equal(saved.configured, true)
   assert.equal(harness.workspaceInstances[0].refreshCount, 1)
+  assert.deepEqual(harness.workspaceInstances[0].runtimeCredentialMarks, [
+    { kind: 'hermes', credentialState: 'unknown' },
+  ])
 
   const activated = await harness.ipcHandlers.get('local-agent-provider:activate')(
     harness.event(), 'hermes', 'custom',
@@ -664,6 +667,10 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   assert.deepEqual(harness.providerInstances[0].activated, [{ kind: 'hermes', preset: 'custom' }])
   assert.equal(activated.activePreset, 'custom')
   assert.equal(harness.workspaceInstances[0].refreshCount, 2)
+  assert.deepEqual(harness.workspaceInstances[0].runtimeCredentialMarks, [
+    { kind: 'hermes', credentialState: 'unknown' },
+    { kind: 'hermes', credentialState: 'unknown' },
+  ])
 
   await assert.rejects(
     async () => harness.ipcHandlers.get('local-agent-provider:status')(harness.event(), 'not-an-agent'),
@@ -676,6 +683,11 @@ test('Provider IPC accepts the complete user payload and supports local deletion
   assert.deepEqual(harness.providerInstances[0].deleted, [{ kind: 'hermes', preset: 'custom' }])
   assert.equal(deleted.configured, false)
   assert.equal(harness.workspaceInstances[0].refreshCount, 3)
+  assert.deepEqual(harness.workspaceInstances[0].runtimeCredentialMarks, [
+    { kind: 'hermes', credentialState: 'unknown' },
+    { kind: 'hermes', credentialState: 'unknown' },
+    { kind: 'hermes', credentialState: 'unknown' },
+  ])
 })
 
 test('Knowledge base IPC exposes status, safe guides, and a local Obsidian directory picker', async (t) => {
@@ -1144,7 +1156,7 @@ test('manual Agent refreshes remain serialized', async (t) => {
   assert.equal(harness.workspaceInstances[0].maxConcurrentRefreshes, 1)
   secondGate.resolve()
   await Promise.all([first, second])
-  assert.equal(harness.workspaceInstances[0].clearRuntimeCredentialFailuresCount, 2)
+  assert.equal(harness.workspaceInstances[0].clearRuntimeCredentialFailuresCount, 0)
   assert.equal(harness.installerInstances[0].invalidateCount, 2)
   assert.equal(harness.skillCatalogInstances[0].invalidateCalls, 2)
 })

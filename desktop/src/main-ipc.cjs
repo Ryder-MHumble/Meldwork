@@ -33,7 +33,6 @@ function registerDesktopIpc(options) {
   registerTrustedHandle('local-workspace:refresh-agents', async () => {
     const workspace = getWorkspace()
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
-    workspace.clearRuntimeCredentialFailures()
     installer.invalidateDetectionCache()
     skillCatalog?.invalidate()
     return refreshLocalAgentState()
@@ -171,23 +170,29 @@ function registerDesktopIpc(options) {
     providerStore.status(providerAgentKind(kind), { probeEncryption: true })
   ))
   registerTrustedHandle('local-agent-provider:save', async (kind, input) => {
-    const result = providerStore.save(providerAgentKind(kind), {
+    const selectedKind = providerAgentKind(kind)
+    const result = providerStore.save(selectedKind, {
       apiKey: input?.apiKey,
       provider: input?.provider,
       baseUrl: input?.baseUrl,
       model: input?.model,
       preset: input?.preset,
     })
+    getWorkspace()?.markRuntimeCredential(selectedKind, 'unknown')
     await refreshLocalAgentState()
     return result
   })
   registerTrustedHandle('local-agent-provider:activate', async (kind, preset) => {
-    const result = providerStore.activate(providerAgentKind(kind), preset)
+    const selectedKind = providerAgentKind(kind)
+    const result = providerStore.activate(selectedKind, preset)
+    getWorkspace()?.markRuntimeCredential(selectedKind, 'unknown')
     await refreshLocalAgentState()
     return result
   })
   registerTrustedHandle('local-agent-provider:delete', async (kind, preset) => {
-    const result = providerStore.delete(providerAgentKind(kind), preset)
+    const selectedKind = providerAgentKind(kind)
+    const result = providerStore.delete(selectedKind, preset)
+    getWorkspace()?.markRuntimeCredential(selectedKind, 'unknown')
     await refreshLocalAgentState()
     return result
   })

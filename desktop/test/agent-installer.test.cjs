@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const https = require('node:https')
@@ -6,6 +7,11 @@ const os = require('node:os')
 const path = require('node:path')
 const { test } = require('node:test')
 
+const {
+  defaultVerifyNpmIntegrity,
+  defaultVerifyScriptIntegrity,
+  npmPackageSpec,
+} = require('../src/agent-installer-contract.cjs')
 const {
   AgentInstaller,
   defaultDownloadScript,
@@ -71,16 +77,45 @@ function installer(overrides = {}) {
     downloadScript: async () => '/tmp/roundrelay-installer/install.sh',
     removeDownload: async () => {},
     runProcess: async () => {},
+    verifyNpmIntegrity: async () => {},
+    verifyScriptIntegrity: async () => {},
     createId: () => 'task-1',
     ...overrides,
   })
 }
 
+function detectedRelease(kind, platform = 'darwin', executable = `/tmp/${kind}`) {
+  const recipe = installRecipe(kind, platform)
+  return {
+    kind,
+    executable,
+    version: recipe.detectedVersion || recipe.version,
+    compatibilityState: 'compatible',
+  }
+}
+
 test('catalog reports installed, recommended and provider-compatible Agents', async () => {
   const service = installer({
     detectAgents: async () => [
-      { kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' },
-      { kind: 'kimi', version: '0.19.2', executable: '/tmp/kimi' },
+      {
+        kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy',
+        resolvedVersion: '2.115.0', supportedVersionRange: '2.115.0..2.132.0',
+        compatibilityState: 'compatible', incompatibilityReason: '', incompatibilityProbe: '',
+      },
+      {
+        kind: 'kimi', version: '0.19.2', executable: '/tmp/kimi',
+        resolvedVersion: '0.19.2', supportedVersionRange: '0.19.2..0.32.0',
+        compatibilityState: 'compatible', incompatibilityReason: '', incompatibilityProbe: '',
+      },
+      {
+        kind: 'gemini', version: '', executable: '/tmp/gemini',
+        compatibilityState: 'incompatible',
+        incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+        incompatibilityProbe: '',
+        resolvedVersion: '',
+        supportedVersionRange: '0.53.1',
+        privateMetadata: 'must-not-cross-ipc',
+      },
     ],
   })
 
@@ -98,6 +133,36 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
     'supported')
   assert.equal(result.agents.find(agent => agent.kind === 'kimi').providerCompatible, false)
   assert.equal(result.agents.find(agent => agent.kind === 'kimi').providerSupport, 'native-config')
+  assert.equal(result.agents.find(agent => agent.kind === 'gemini').installed, true)
+  assert.equal(result.agents.find(agent => agent.kind === 'gemini').version, '')
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(result.agents.find(agent => agent.kind === 'gemini'))
+      .filter(([key]) => [
+        'resolvedVersion', 'supportedVersionRange', 'compatibilityState',
+        'incompatibilityReason', 'incompatibilityProbe',
+      ].includes(key))),
+    {
+      resolvedVersion: '',
+      supportedVersionRange: '0.53.1',
+      compatibilityState: 'incompatible',
+      incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+      incompatibilityProbe: '',
+    },
+  )
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(result.agents.find(agent => agent.kind === 'claude'))
+      .filter(([key]) => [
+        'resolvedVersion', 'supportedVersionRange', 'compatibilityState',
+        'incompatibilityReason', 'incompatibilityProbe',
+      ].includes(key))),
+    {
+      resolvedVersion: '',
+      supportedVersionRange: '',
+      compatibilityState: 'unknown',
+      incompatibilityReason: '',
+      incompatibilityProbe: '',
+    },
+  )
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installSupported, true)
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installErrorCode, '')
   assert.equal(result.agents.find(agent => agent.kind === 'gemini').providerSupport, 'native-config')
@@ -105,13 +170,21 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   assert.equal(result.agents.find(agent => agent.kind === 'opencodereview').providerCompatible, true)
   assert.equal(JSON.stringify(result).includes('/tmp/codebuddy'), false)
   assert.equal(JSON.stringify(result).includes('/tmp/kimi'), false)
+  assert.equal(JSON.stringify(result).includes('must-not-cross-ipc'), false)
 })
 
 test('skills are listed only for a verified installed Agent', async () => {
   const listCalls = []
   const service = installer({
     detectAgents: async () => [
-      { kind: 'codex', version: '1.0.0', executable: '/tmp/codex' },
+      {
+        kind: 'codex', version: '0.137.0', executable: '/tmp/codex',
+        compatibilityState: 'compatible',
+      },
+      {
+        kind: 'hermes', version: '0.18.0', executable: '/tmp/hermes',
+        compatibilityState: 'incompatible',
+      },
     ],
     listSkills: kind => {
       listCalls.push(kind)
@@ -196,49 +269,38 @@ test('cache invalidation does not let an older in-flight detection overwrite fre
 })
 
 test('recipes are fixed by Agent and platform', () => {
-  const npmPackages = {
-    codex: '@openai/codex@latest',
-    claude: '@anthropic-ai/claude-code@latest',
-    openclaw: 'openclaw@latest',
-    qwen: '@qwen-code/qwen-code@latest',
-    workbuddy: '@tencent-ai/codebuddy-code@2.115.0',
-    gemini: '@google/gemini-cli@latest',
-    opencode: 'opencode-ai@latest',
-    mimo: '@mimo-ai/cli@latest',
-    opencodereview: '@alibaba-group/open-code-review@latest',
-  }
+  const npmKinds = [
+    'codex', 'claude', 'openclaw', 'qwen', 'workbuddy', 'gemini',
+    'opencode', 'kimi', 'mimo', 'opencodereview',
+  ]
   for (const platform of ['darwin', 'win32']) {
-    for (const [kind, packageName] of Object.entries(npmPackages)) {
-      assert.deepEqual(installRecipe(kind, platform), { type: 'npm', packageName })
+    for (const kind of npmKinds) {
+      const recipe = installRecipe(kind, platform)
+      if (!recipe) continue
+      assert.equal(recipe.type, 'npm', kind)
+      assert.equal(npmPackageSpec(recipe), `${recipe.packageName}@${recipe.version}`, kind)
+      assert.match(recipe.version, /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/, kind)
+      assert.match(recipe.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/, kind)
+      assert.equal(npmPackageSpec(recipe).includes('@latest'), false, kind)
     }
   }
-  assert.deepEqual(installRecipe('hermes', 'darwin'), {
-    type: 'script',
-    url: 'https://hermes-agent.nousresearch.com/install.sh',
-    interpreter: '/bin/bash',
-    args: ['$SCRIPT', '--non-interactive', '--skip-setup'],
-  })
-  assert.deepEqual(installRecipe('hermes', 'win32'), {
-    type: 'script',
-    url: 'https://hermes-agent.nousresearch.com/install.ps1',
-    interpreter: 'powershell.exe',
-    args: [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '$SCRIPT',
-      '-NonInteractive', '-SkipSetup',
-    ],
-  })
-  assert.deepEqual(installRecipe('kimi', 'darwin'), {
-    type: 'script',
-    url: 'https://code.kimi.com/kimi-code/install.sh',
-    interpreter: '/bin/bash',
-    args: ['$SCRIPT'],
-  })
-  assert.deepEqual(installRecipe('kimi', 'win32'), {
-    type: 'script',
-    url: 'https://code.kimi.com/kimi-code/install.ps1',
-    interpreter: 'powershell.exe',
-    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', '$SCRIPT'],
-  })
+  const darwinHermes = installRecipe('hermes', 'darwin')
+  const windowsHermes = installRecipe('hermes', 'win32')
+  assert.equal(darwinHermes.type, 'script')
+  assert.equal(darwinHermes.interpreter, '/bin/bash')
+  assert.match(darwinHermes.url, /^https:\/\/raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/[a-f0-9]{40}\/scripts\/install\.sh$/)
+  assert.match(darwinHermes.sha256, /^[a-f0-9]{64}$/)
+  assert.deepEqual(darwinHermes.args.slice(0, 3), [
+    '$SCRIPT', '--non-interactive', '--skip-setup',
+  ])
+  assert.equal(darwinHermes.args.at(-2), '--commit')
+  assert.equal(darwinHermes.url.includes(darwinHermes.args.at(-1)), true)
+  assert.equal(windowsHermes.type, 'script')
+  assert.equal(windowsHermes.interpreter, 'powershell.exe')
+  assert.match(windowsHermes.url, /^https:\/\/raw\.githubusercontent\.com\/NousResearch\/hermes-agent\/[a-f0-9]{40}\/scripts\/install\.ps1$/)
+  assert.match(windowsHermes.sha256, /^[a-f0-9]{64}$/)
+  assert.equal(windowsHermes.args.at(-2), '-Commit')
+  assert.equal(windowsHermes.url.includes(windowsHermes.args.at(-1)), true)
   assert.equal(installRecipe('hermes', 'linux'), null)
 })
 
@@ -318,37 +380,120 @@ test('installer processes inherit the same enhanced Finder-safe search path', as
   assert.equal(calls[0].options.shell, false)
 })
 
+test('npm integrity verification queries the exact release without a shell or sensitive env', async () => {
+  const recipe = installRecipe('workbuddy', 'darwin')
+  const calls = []
+
+  const actual = await defaultVerifyNpmIntegrity('/usr/local/bin/npm', recipe, {
+    platform: 'darwin',
+    home: '/Users/Ryder',
+    env: {
+      PATH: '/usr/bin:/bin',
+      OPENAI_API_KEY: 'test-provider-key',
+      ROUNDRELAY_SESSION_SECRET: 'test-private-value',
+      USER_PROMPT: 'test-private-prompt',
+    },
+    execFileFn: async (command, args, options) => {
+      calls.push({ command, args, options })
+      return { stdout: `${JSON.stringify(recipe.integrity)}\n`, stderr: '' }
+    },
+  })
+
+  assert.equal(actual, recipe.integrity)
+  assert.equal(calls[0].command, '/usr/local/bin/npm')
+  assert.deepEqual(calls[0].args, [
+    'view', npmPackageSpec(recipe), 'dist.integrity', '--json',
+    '--registry', 'https://registry.npmjs.org/',
+  ])
+  assert.equal(calls[0].options.shell, false)
+  assert.equal('OPENAI_API_KEY' in calls[0].options.env, false)
+  assert.equal('ROUNDRELAY_SESSION_SECRET' in calls[0].options.env, false)
+  assert.equal('USER_PROMPT' in calls[0].options.env, false)
+})
+
+test('npm integrity verification fails closed on registry mismatch or malformed metadata', async () => {
+  const recipe = installRecipe('workbuddy', 'darwin')
+  for (const stdout of ['"sha512-ZmFrZQ=="', '{"integrity":"unexpected"}']) {
+    await assert.rejects(defaultVerifyNpmIntegrity('/usr/local/bin/npm', recipe, {
+      platform: 'darwin',
+      env: { PATH: '/usr/bin:/bin' },
+      execFileFn: async () => ({ stdout, stderr: '' }),
+    }), { message: 'INSTALL_AGENT_INTEGRITY_FAILED' })
+  }
+})
+
+test('script integrity verification hashes only bounded regular files', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-installer-integrity-'))
+  const filename = path.join(directory, 'install.sh')
+  const source = '#!/bin/bash\necho verified\n'
+  fs.writeFileSync(filename, source)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const recipe = {
+    type: 'script',
+    sha256: createHash('sha256').update(source).digest('hex'),
+  }
+
+  assert.equal(await defaultVerifyScriptIntegrity(filename, recipe), recipe.sha256)
+  await assert.rejects(defaultVerifyScriptIntegrity(filename, {
+    ...recipe,
+    sha256: '0'.repeat(64),
+  }), { message: 'INSTALL_AGENT_INTEGRITY_FAILED' })
+
+  for (const stat of [
+    { isFile: () => true, isSymbolicLink: () => true, size: source.length },
+    { isFile: () => true, isSymbolicLink: () => false, size: (4 * 1024 * 1024) + 1 },
+  ]) {
+    let read = false
+    await assert.rejects(defaultVerifyScriptIntegrity(filename, recipe, {
+      lstatFn: async () => stat,
+      readFileFn: async () => { read = true; return Buffer.from(source) },
+    }), { message: 'INSTALL_AGENT_INTEGRITY_FAILED' })
+    assert.equal(read, false)
+  }
+})
+
 test('rejects non-allowlisted script URLs before any download', () => {
-  assert.equal(
-    validateScriptUrl('https://hermes-agent.nousresearch.com/install.sh').hostname,
-    'hermes-agent.nousresearch.com',
-  )
-  assert.equal(
-    validateScriptUrl('https://cdn.kimi.com/kimi-code/install.sh').hostname,
-    'cdn.kimi.com',
-  )
+  const recipe = installRecipe('hermes', 'darwin')
+  assert.equal(validateScriptUrl(recipe.url).hostname, 'raw.githubusercontent.com')
   assert.throws(
     () => validateScriptUrl('https://example.invalid/install.sh'),
     /INSTALL_AGENT_DOWNLOAD_BLOCKED/,
   )
   assert.throws(
-    () => validateScriptUrl('http://hermes-agent.nousresearch.com/install.sh'),
+    () => validateScriptUrl(recipe.url.replace('https:', 'http:')),
+    /INSTALL_AGENT_DOWNLOAD_BLOCKED/,
+  )
+  assert.throws(
+    () => validateScriptUrl(`${recipe.url}?mutable=1`),
+    /INSTALL_AGENT_DOWNLOAD_BLOCKED/,
+  )
+  assert.throws(
+    () => validateScriptUrl('https://hermes-agent.nousresearch.com/install.sh'),
     /INSTALL_AGENT_DOWNLOAD_BLOCKED/,
   )
 })
 
-test('npm installation uses an allowlisted package then verifies detection', async () => {
+test('npm installation verifies integrity before installing the exact compatible release', async () => {
+  const recipe = installRecipe('workbuddy', 'darwin')
   const calls = []
+  const order = []
   let detectCount = 0
   const phases = []
   const service = installer({
     detectAgents: async () => {
       detectCount += 1
       return detectCount > 1
-        ? [{ kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' }]
+        ? [detectedRelease('workbuddy', 'darwin', '/tmp/codebuddy')]
         : []
     },
-    runProcess: async (...args) => { calls.push(args) },
+    verifyNpmIntegrity: async (command, selectedRecipe, options) => {
+      order.push('integrity')
+      assert.equal(command, '/usr/local/bin/npm')
+      assert.deepEqual(selectedRecipe, recipe)
+      assert.equal(options.platform, 'darwin')
+      assert.equal(options.signal.aborted, false)
+    },
+    runProcess: async (...args) => { order.push('install'); calls.push(args) },
   })
   service.on('changed', state => phases.push(state.phase))
 
@@ -359,10 +504,14 @@ test('npm installation uses an allowlisted package then verifies detection', asy
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0].slice(0, 2), [
     '/usr/local/bin/npm',
-    ['install', '--global', '@tencent-ai/codebuddy-code@2.115.0'],
+    [
+      'install', '--global', npmPackageSpec(recipe),
+      '--registry', 'https://registry.npmjs.org/',
+    ],
   ])
   assert.equal(calls[0][2].platform, 'darwin')
   assert.equal(calls[0][2].signal.aborted, false)
+  assert.deepEqual(order, ['integrity', 'install'])
   assert.deepEqual(phases, ['checking', 'installing', 'verifying', 'completed'])
   assert.deepEqual(service.state(), {
     taskId: 'task-1',
@@ -373,6 +522,58 @@ test('npm installation uses an allowlisted package then verifies detection', asy
   })
 })
 
+test('npm integrity failure is reported before the installer can mutate the machine', async () => {
+  const order = []
+  const service = installer({
+    verifyNpmIntegrity: async () => {
+      order.push('integrity')
+      throw new Error('registry metadata mismatch')
+    },
+    runProcess: async () => { order.push('install') },
+  })
+
+  await service.start('codex')
+  await service.waitForIdle()
+
+  assert.deepEqual(order, ['integrity'])
+  assert.deepEqual(service.state(), {
+    taskId: 'task-1',
+    kind: 'codex',
+    phase: 'failed',
+    canCancel: false,
+    errorCode: 'INSTALL_AGENT_INTEGRITY_FAILED',
+  })
+})
+
+test('npm integrity verification remains cancellable before process launch', async () => {
+  let releaseVerification
+  let verificationStarted
+  let observedSignal
+  let processStarted = false
+  const pendingVerification = new Promise(resolve => { releaseVerification = resolve })
+  const started = new Promise(resolve => { verificationStarted = resolve })
+  const service = installer({
+    verifyNpmIntegrity: async (_command, _recipe, options) => {
+      observedSignal = options.signal
+      verificationStarted()
+      return pendingVerification
+    },
+    runProcess: async () => { processStarted = true },
+  })
+
+  const start = service.start('codex')
+  await started
+  assert.equal(service.cancel('task-1'), true)
+  assert.equal(observedSignal.aborted, true)
+  await start
+  await within(service.waitForIdle())
+
+  assert.equal(processStarted, false)
+  assert.equal(service.state().phase, 'cancelled')
+  releaseVerification()
+  await new Promise(resolve => setImmediate(resolve))
+})
+
 test('installation refreshes cached detection before and after mutating the machine', async () => {
   let installed = false
   let detectCount = 0
@@ -380,7 +581,7 @@ test('installation refreshes cached detection before and after mutating the mach
     detectAgents: async () => {
       detectCount += 1
       return installed
-        ? [{ kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' }]
+        ? [detectedRelease('workbuddy', 'darwin', '/tmp/codebuddy')]
         : []
     },
     runProcess: async () => { installed = true },
@@ -407,7 +608,7 @@ test('installation rejects a concurrently starting request before either can lau
       detectCount += 1
       if (detectCount === 1) await firstDetection
       return installed
-        ? [{ kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' }]
+        ? [detectedRelease('workbuddy', 'darwin', '/tmp/codebuddy')]
         : []
     },
     runProcess: async () => {
@@ -503,7 +704,7 @@ test('npm lookup remains visibly cancellable before the installer process launch
   await new Promise(resolve => setImmediate(resolve))
 })
 
-test('installation refuses to overwrite an Agent that appeared after a cached catalog read', async () => {
+test('installation refuses to overwrite an incompatible Agent that appeared after a cached read', async () => {
   let installed = false
   let detectCount = 0
   let runCount = 0
@@ -511,7 +712,10 @@ test('installation refuses to overwrite an Agent that appeared after a cached ca
     detectAgents: async () => {
       detectCount += 1
       return installed
-        ? [{ kind: 'workbuddy', version: '2.115.0', executable: '/tmp/codebuddy' }]
+        ? [{
+            kind: 'workbuddy', version: '', executable: '/tmp/codebuddy',
+            compatibilityState: 'incompatible',
+          }]
         : []
     },
     runProcess: async () => { runCount += 1 },
@@ -529,6 +733,7 @@ test('installation refuses to overwrite an Agent that appeared after a cached ca
 })
 
 test('Windows npm installation launches node.exe and npm-cli.js without a shell', async () => {
+  const recipe = installRecipe('qwen', 'win32')
   const npmCommand = 'C:\\Program Files\\nodejs\\npm.cmd'
   const nodeCommand = 'C:\\Program Files\\nodejs\\node.exe'
   const npmCli = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js'
@@ -545,7 +750,7 @@ test('Windows npm installation launches node.exe and npm-cli.js without a shell'
     detectAgents: async () => {
       detectCount += 1
       return detectCount > 1
-        ? [{ kind: 'qwen', version: '0.10.0', executable: 'C:\\npm\\qwen.cmd' }]
+        ? [detectedRelease('qwen', 'win32', 'C:\\npm\\qwen.cmd')]
         : []
     },
     findCommand: async command => command === 'npm.cmd' ? npmCommand : '',
@@ -562,16 +767,23 @@ test('Windows npm installation launches node.exe and npm-cli.js without a shell'
 
   assert.deepEqual(calls[0].slice(0, 2), [
     nodeCommand,
-    [npmCli, 'install', '--global', '@qwen-code/qwen-code@latest'],
+    [
+      npmCli, 'install', '--global', npmPackageSpec(recipe),
+      '--registry', 'https://registry.npmjs.org/',
+    ],
   ])
   assert.equal(calls[0][2].platform, 'win32')
   assert.equal(service.state().phase, 'completed')
 })
 
 test('Windows npm parsing rejects wrappers that do not target npm-cli.js', () => {
+  const recipe = installRecipe('qwen', 'win32')
   assert.throws(() => prepareInstallCommand(
     'C:\\Program Files\\nodejs\\npm.cmd',
-    ['install', '--global', '@qwen-code/qwen-code@latest'],
+    [
+      'install', '--global', npmPackageSpec(recipe),
+      '--registry', 'https://registry.npmjs.org/',
+    ],
     {
       platform: 'win32',
       readFileFn: () => '"node.exe" "%~dp0\\download-and-run.js" %*',
@@ -580,32 +792,67 @@ test('Windows npm parsing rejects wrappers that do not target npm-cli.js', () =>
   ), /INSTALL_AGENT_COMMAND_BLOCKED/)
 })
 
-test('script installation downloads a fixed official URL instead of piping remote code', async () => {
+test('script installation verifies the immutable download before process launch', async () => {
+  const recipe = installRecipe('hermes', 'darwin')
   const downloads = []
   const calls = []
+  const order = []
   let detectCount = 0
   const service = installer({
     detectAgents: async () => {
       detectCount += 1
       return detectCount > 1
-        ? [{ kind: 'hermes', version: '0.18.0', executable: '/tmp/hermes' }]
+        ? [detectedRelease('hermes')]
         : []
     },
     downloadScript: async (...args) => {
+      order.push('download')
       downloads.push(args)
       return '/tmp/roundrelay-installer/install.sh'
     },
-    runProcess: async (...args) => { calls.push(args) },
+    verifyScriptIntegrity: async (filename, selectedRecipe, options) => {
+      order.push('integrity')
+      assert.equal(filename, '/tmp/roundrelay-installer/install.sh')
+      assert.deepEqual(selectedRecipe, recipe)
+      assert.equal(options.signal.aborted, false)
+    },
+    runProcess: async (...args) => { order.push('install'); calls.push(args) },
   })
 
   await service.start('hermes')
   await service.waitForIdle()
 
-  assert.equal(downloads[0][0], 'https://hermes-agent.nousresearch.com/install.sh')
+  assert.equal(downloads[0][0], recipe.url)
   assert.deepEqual(calls[0].slice(0, 2), [
-    '/bin/bash',
-    ['/tmp/roundrelay-installer/install.sh', '--non-interactive', '--skip-setup'],
+    recipe.interpreter,
+    recipe.args.map(value => value === '$SCRIPT'
+      ? '/tmp/roundrelay-installer/install.sh'
+      : value),
   ])
+  assert.deepEqual(order, ['download', 'integrity', 'install'])
+})
+
+test('script integrity failure cleans up the download without launching it', async () => {
+  const order = []
+  const service = installer({
+    downloadScript: async () => {
+      order.push('download')
+      return '/tmp/roundrelay-installer/install.sh'
+    },
+    verifyScriptIntegrity: async () => {
+      order.push('integrity')
+      throw new Error('hash mismatch')
+    },
+    runProcess: async () => { order.push('install') },
+    removeDownload: async () => { order.push('cleanup') },
+  })
+
+  await service.start('hermes')
+  await service.waitForIdle()
+
+  assert.deepEqual(order, ['download', 'integrity', 'cleanup'])
+  assert.equal(service.state().phase, 'failed')
+  assert.equal(service.state().errorCode, 'INSTALL_AGENT_INTEGRITY_FAILED')
 })
 
 test('rejects unknown, verified installed, unsupported and missing-prerequisite installs', async () => {
@@ -640,6 +887,35 @@ test('installation verification rejects a detected command without a working ver
 
   assert.equal(service.state().phase, 'failed')
   assert.equal(service.state().errorCode, 'INSTALL_AGENT_VERIFY_FAILED')
+})
+
+test('installation verification requires the exact compatible release', async () => {
+  const recipe = installRecipe('workbuddy', 'darwin')
+  for (const detected of [
+    {
+      kind: 'workbuddy', executable: '/tmp/codebuddy', version: '0.0.0',
+      compatibilityState: 'compatible',
+    },
+    {
+      kind: 'workbuddy', executable: '/tmp/codebuddy',
+      version: recipe.detectedVersion || recipe.version,
+      compatibilityState: 'incompatible',
+    },
+  ]) {
+    let detectCount = 0
+    const service = installer({
+      detectAgents: async () => {
+        detectCount += 1
+        return detectCount > 1 ? [detected] : []
+      },
+    })
+
+    await service.start('workbuddy')
+    await service.waitForIdle()
+
+    assert.equal(service.state().phase, 'failed')
+    assert.equal(service.state().errorCode, 'INSTALL_AGENT_VERIFY_FAILED')
+  }
 })
 
 test('rejects a non-allowlisted executable before starting a process', async () => {
@@ -693,7 +969,7 @@ test('download cancellation aborts the request before response headers arrive', 
   const controller = new AbortController()
 
   const download = defaultDownloadScript(
-    'https://hermes-agent.nousresearch.com/install.sh',
+    installRecipe('hermes', 'darwin').url,
     controller.signal,
   )
   while (!request) await new Promise(resolve => setImmediate(resolve))

@@ -1,0 +1,15 @@
+{
+  "payloads": [
+    {
+      "text": "OpenClaw fixture reply",
+      "mediaUrl": null
+    }
+  ],
+  "meta": {
+    "aborted": false,
+    "completion": {
+      "stopReason": "stop",
+      "finishReason": "stop"
+    }
+  }
+}

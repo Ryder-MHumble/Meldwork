@@ -52,8 +52,8 @@ test('refresh starts credential checks concurrently and reads current runtime st
   const started = []
   const { agents, catalog, events, state } = fixture({
     detectAgents: async () => [
-      { kind: 'codex', executable: '/tmp/codex' },
-      { kind: 'hermes', executable: '/tmp/hermes' },
+      { kind: 'codex', executable: '/tmp/codex', compatibilityState: 'compatible' },
+      { kind: 'hermes', executable: '/tmp/hermes', compatibilityState: 'compatible' },
     ],
     credentialState: (kind) => {
       started.push(kind)
@@ -73,6 +73,71 @@ test('refresh starts credential checks concurrently and reads current runtime st
   assert.deepEqual(snapshot.agents.map(agent => agent.credentialState), ['missing', 'ready'])
   assert.equal(snapshot.agents[0].availabilitySource, 'runtime-auth-failure')
   assert.deepEqual(events, ['emit', 'snapshot'])
+})
+
+test('incompatible Agents remain installed but unavailable with ready credentials', async () => {
+  const { agents, catalog, events } = fixture({
+    detectAgents: async () => [{
+      kind: 'codex',
+      executable: '/tmp/codex',
+      compatibilityState: 'incompatible',
+      incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+    }],
+    credentialState: async () => ({ state: 'ready', source: 'native-auth-status' }),
+    sharedProviderReady: () => true,
+  })
+
+  await catalog.refresh()
+
+  assert.equal(agents()[0].installed, true)
+  assert.equal(agents()[0].credentialState, 'ready')
+  assert.equal(agents()[0].available, false)
+  assert.equal(agents()[0].showInSidebar, false)
+  assert.equal(agents()[0].availabilitySource, 'incompatible')
+  assert.equal(agents()[0].incompatibilityReason, 'LOCAL_AGENT_VERSION_UNSUPPORTED')
+  assert.throws(
+    () => catalog.setSidebarVisibility('codex', true),
+    { message: 'LOCAL_AGENT_UNAVAILABLE' },
+  )
+  assert.deepEqual(events, ['emit', 'snapshot'])
+})
+
+test('shared Provider readiness cannot override a recorded runtime auth failure', async () => {
+  const { agents, catalog, events, state } = fixture({
+    detectAgents: async () => [{
+      kind: 'codex', executable: '/tmp/codex', compatibilityState: 'compatible',
+    }],
+    credentialState: async () => ({ state: 'ready', source: 'native-credential' }),
+    sharedProviderReady: () => true,
+  })
+  state.agentRuntime.codex = { credentialState: 'missing' }
+
+  await catalog.refresh()
+
+  assert.equal(agents()[0].credentialState, 'missing')
+  assert.equal(agents()[0].available, false)
+  assert.equal(agents()[0].availabilitySource, 'runtime-auth-failure')
+  assert.deepEqual(events, ['emit', 'snapshot'])
+})
+
+test('authoritative native validation persists recovery from a runtime auth failure', async () => {
+  const { agents, catalog, events, state } = fixture({
+    detectAgents: async () => [{
+      kind: 'mimo', executable: '/tmp/mimo', compatibilityState: 'compatible',
+    }],
+    credentialState: async () => ({ state: 'ready', source: 'native-auth-status' }),
+  })
+  state.agentRuntime.mimo = { credentialState: 'missing' }
+
+  await catalog.refresh()
+
+  assert.deepEqual(state.agentRuntime.mimo, {
+    credentialState: 'ready', checkedAt: '2026-08-03T00:00:00.000Z',
+  })
+  assert.equal(agents()[0].credentialState, 'ready')
+  assert.equal(agents()[0].available, true)
+  assert.equal(agents()[0].availabilitySource, 'native-auth-status')
+  assert.deepEqual(events, ['save', 'emit', 'snapshot'])
 })
 
 test('failed refresh preserves the previous Agent list without emitting changes', async () => {
@@ -107,6 +172,16 @@ test('sidebar and runtime credential mutations preserve persistence and event or
   assert.equal(agents()[0].available, false)
   assert.equal(agents()[0].availabilitySource, 'runtime-auth-failure')
   assert.equal(agents()[0].showInSidebar, false)
+
+  events.length = 0
+  state.agentRuntime.hermes = { credentialState: 'missing' }
+  catalog.markRuntimeCredential('codex', 'unknown')
+  assert.deepEqual(events, ['save', 'emit'])
+  assert.equal(state.agentRuntime.codex.credentialState, 'unknown')
+  assert.equal(state.agentRuntime.hermes.credentialState, 'missing')
+  assert.equal(agents()[0].credentialState, 'unknown')
+  assert.equal(agents()[0].available, false)
+  assert.equal(agents()[0].availabilitySource, 'unverified')
 })
 
 test('review-only Agents cannot be enabled in the conversation sidebar', () => {

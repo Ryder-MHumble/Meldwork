@@ -122,6 +122,7 @@ function loadMain(userData, options = {}) {
       this.concurrentRefreshes = 0
       this.maxConcurrentRefreshes = 0
       this.clearRuntimeCredentialFailuresCount = 0
+      this.runtimeCredentialMarks = []
       this.stopCount = 0
       this.deleteMessageCalls = []
       this.stopCalls = []
@@ -145,6 +146,9 @@ function loadMain(userData, options = {}) {
 
     snapshot() { return this.state }
     clearRuntimeCredentialFailures() { this.clearRuntimeCredentialFailuresCount += 1 }
+    markRuntimeCredential(kind, credentialState) {
+      this.runtimeCredentialMarks.push({ kind, credentialState })
+    }
     createGroup() { return this.snapshot() }
     updateGroup() { return this.snapshot() }
     deleteGroup(groupId) {

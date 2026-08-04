@@ -878,7 +878,10 @@ process.stderr.write('session_id: hermes-session-no-watermark\\n')
 })
 
 test('OpenClaw JSON output is reduced to reply text', () => {
-  const raw = JSON.stringify({ payloads: [{ text: '第一段' }, { text: '第二段' }] })
+  const raw = JSON.stringify({
+    payloads: [{ text: '第一段' }, { text: '第二段' }],
+    meta: { aborted: false, completion: { stopReason: 'stop' } },
+  })
   assert.deepEqual(normalizeOutput('openclaw', raw, 'agent:main:desktop-roundrelay-group-openclaw'), {
     text: '第一段\n第二段',
     sessionRef: 'agent:main:desktop-roundrelay-group-openclaw',

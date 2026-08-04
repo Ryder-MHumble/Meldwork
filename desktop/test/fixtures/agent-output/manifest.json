@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "fixtures": [
+    { "kind": "codex", "version": "0.137.0", "file": "codex.jsonl" },
+    { "kind": "hermes", "version": "0.19.1", "file": "hermes.txt" },
+    { "kind": "openclaw", "version": "2026.7.1-2", "file": "openclaw.json" },
+    { "kind": "workbuddy", "version": "2.115.0", "file": "workbuddy.jsonl" },
+    { "kind": "kimi", "version": "0.19.2", "file": "kimi.jsonl" },
+    { "kind": "mimo", "version": "0.1.0", "file": "mimo.jsonl" },
+    { "kind": "claude", "version": "2.1.165", "file": "claude.jsonl" },
+    { "kind": "gemini", "version": "0.53.1", "file": "gemini.jsonl" },
+    { "kind": "opencode", "version": "1.18.9", "file": "opencode.jsonl" },
+    { "kind": "qwen", "version": "0.10.0", "file": "qwen.jsonl" },
+    { "kind": "opencodereview", "version": "1.8.6", "file": "opencodereview.json" }
+  ]
+}

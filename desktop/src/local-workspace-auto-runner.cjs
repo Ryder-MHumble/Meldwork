@@ -8,13 +8,23 @@ const POST_RECOVERY_VERIFY_COUNT = 3
 
 function unauthorizedFailure(error) {
   const status = Number(error?.statusCode || error?.status || error?.response?.status)
-  if (status === 401) return true
-  return /(?:\bHTTP\s*)?\b401\b|unauthori[sz]ed|invalid token/i
+  if ([401, 403].includes(status)) return true
+  return /(?:\bHTTP\s*)?\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid token/i
     .test(String(error?.message || error || ''))
 }
 
+function authenticationFailureStatus(error) {
+  const status = Number(error?.statusCode || error?.status || error?.response?.status)
+  if ([401, 403].includes(status)) return status
+  const message = String(error?.message || error || '')
+  if (/(?:\bHTTP\s*)?\b403\b|forbidden/i.test(message)) return 403
+  return 401
+}
+
 function sanitizedUnauthorizedError(error) {
-  const sanitized = new Error('HTTP 401; removed after recovery failed')
+  const sanitized = new Error(
+    `HTTP ${authenticationFailureStatus(error)}; removed after recovery failed`,
+  )
   if (error?.runTrace) {
     Object.defineProperty(sanitized, 'runTrace', {
       value: error.runTrace,
@@ -35,6 +45,7 @@ class LocalWorkspaceAutoRunner {
     this.invokeAgent = options.invokeAgent
     this.resetAgentSession = options.resetAgentSession
     this.removeAgentFromGroup = options.removeAgentFromGroup
+    this.markRuntimeCredential = options.markRuntimeCredential
     this.agentLabel = options.agentLabel
     this.recordAgentFailure = options.recordAgentFailure
     this.recordAgentInterruption = options.recordAgentInterruption
@@ -59,10 +70,12 @@ class LocalWorkspaceAutoRunner {
     return ''
   }
 
-  recoveryInstruction(failedKind) {
+  recoveryInstruction(failedKind, error) {
     const label = this.agentLabel(failedKind)
+    const status = authenticationFailureStatus(error)
+    const statusLabel = status === 403 ? 'Forbidden' : 'Unauthorized'
     return [
-      `This is an infrastructure recovery turn. ${label} returned HTTP 401 Unauthorized after the original call and ${UNAUTHORIZED_RETRY_COUNT} automatic retries.`,
+      `This is an infrastructure recovery turn. ${label} returned HTTP ${status} ${statusLabel} after the original call and ${UNAUTHORIZED_RETRY_COUNT} automatic retries.`,
       'Do not answer the original group topic during this turn.',
       'Inspect the local Agent, Provider, transport, and session configuration available to you and attempt a concrete repair.',
       'Never print, quote, or expose credential values. Report only the checks performed, changes made, and whether the failing Agent is ready to retry.',
@@ -104,8 +117,8 @@ class LocalWorkspaceAutoRunner {
           attachments: [],
           skillHints: [],
           knowledgeBaseHints: [],
-          runtimeInstruction: this.recoveryInstruction(kind),
-          deferCredentialFailure: true,
+          runtimeInstruction: this.recoveryInstruction(kind, lastUnauthorized),
+          deferCredentialFailure: false,
         })
       } catch (error) {
         if (controller.signal.aborted) throw error
@@ -125,6 +138,7 @@ class LocalWorkspaceAutoRunner {
     }
 
     const terminalError = sanitizedUnauthorizedError(lastUnauthorized)
+    this.markRuntimeCredential(kind, 'missing')
     this.recordAgentFailure(group.id, kind, terminalError, threadRootId, reportedFailures)
     const removed = this.removeAgentFromGroup(group.id, kind)
     this.resetAgentSession(group, kind, false)

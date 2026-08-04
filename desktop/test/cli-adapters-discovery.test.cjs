@@ -346,16 +346,32 @@ test('Windows Agent detection reads versions through the portable command launch
     prepareCommandFn: (command, args) => ({ command: 'node.exe', args: ['claude.js', ...args] }),
     execFileFn: async (command, args) => {
       calls.push({ command, args })
-      return { stdout: '2.1.0\r\nbuild metadata\r\n', stderr: '' }
+      return args.includes('--version')
+        ? { stdout: '2.1.165\r\nbuild metadata\r\n', stderr: '' }
+        : {
+            stdout: [
+              '--print', '--output-format', '--include-partial-messages', '--verbose',
+              '--permission-mode', '--resume', 'stream-json', 'plan', 'acceptEdits',
+            ].join(' '),
+            stderr: '',
+          }
     },
   })
 
-  assert.deepEqual(calls, [{ command: 'node.exe', args: ['claude.js', '--version'] }])
+  assert.deepEqual(calls, [
+    { command: 'node.exe', args: ['claude.js', '--version'] },
+    { command: 'node.exe', args: ['claude.js', '--help'] },
+  ])
   assert.deepEqual(found, [{
     kind: 'claude',
     name: 'Claude CLI',
     executable,
-    version: '2.1.0',
+    version: '2.1.165',
+    resolvedVersion: '2.1.165',
+    supportedVersionRange: '2.1.165..2.1.221',
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
+    incompatibilityProbe: '',
   }])
 })
 
@@ -367,18 +383,32 @@ test('Hermes detection records ACP availability when the capability check succee
     resolveExecutableFn: async kind => kind === 'hermes' ? '/tmp/hermes' : null,
     execFileFn: async (_command, args) => {
       calls.push(args)
-      if (args[0] === '--version') return { stdout: 'Hermes 1.2.3\n', stderr: '' }
+      if (args[0] === '--version') return { stdout: 'Hermes 0.19.1\n', stderr: '' }
+      if (args[0] === 'chat') {
+        return {
+          stdout: [
+            '--quiet', '--query', '--provider', '--model', '--skills', '--resume',
+            '--image', '--yolo',
+          ].join(' '),
+          stderr: '',
+        }
+      }
       assert.deepEqual(args, ['acp', '--check'])
       return { stdout: '', stderr: '' }
     },
   })
 
-  assert.deepEqual(calls, [['--version'], ['acp', '--check']])
+  assert.deepEqual(calls, [['--version'], ['chat', '--help'], ['acp', '--check']])
   assert.deepEqual(found, [{
     kind: 'hermes',
     name: 'Hermes CLI',
     executable: '/tmp/hermes',
-    version: 'Hermes 1.2.3',
+    version: 'Hermes 0.19.1',
+    resolvedVersion: '0.19.1',
+    supportedVersionRange: '0.19.1..0.20.0',
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
+    incompatibilityProbe: '',
     acpAvailable: true,
   }])
 })
@@ -391,18 +421,32 @@ test('Hermes detection records unavailable ACP when the capability check fails',
     resolveExecutableFn: async kind => kind === 'hermes' ? '/tmp/hermes' : null,
     execFileFn: async (_command, args) => {
       calls.push(args)
-      if (args[0] === '--version') return { stdout: 'Hermes 1.2.3\n', stderr: '' }
+      if (args[0] === '--version') return { stdout: 'Hermes 0.19.1\n', stderr: '' }
+      if (args[0] === 'chat') {
+        return {
+          stdout: [
+            '--quiet', '--query', '--provider', '--model', '--skills', '--resume',
+            '--image', '--yolo',
+          ].join(' '),
+          stderr: '',
+        }
+      }
       assert.deepEqual(args, ['acp', '--check'])
       throw new Error('ACP unavailable')
     },
   })
 
-  assert.deepEqual(calls, [['--version'], ['acp', '--check']])
+  assert.deepEqual(calls, [['--version'], ['chat', '--help'], ['acp', '--check']])
   assert.deepEqual(found, [{
     kind: 'hermes',
     name: 'Hermes CLI',
     executable: '/tmp/hermes',
-    version: 'Hermes 1.2.3',
+    version: 'Hermes 0.19.1',
+    resolvedVersion: '0.19.1',
+    supportedVersionRange: '0.19.1..0.20.0',
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
+    incompatibilityProbe: '',
     acpAvailable: false,
   }])
 })
@@ -412,6 +456,11 @@ test('Agent detection ignores blank output and startup warnings before the versi
     platform: 'darwin',
     env: {},
     resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
+    probeAgentCapabilitiesFn: async () => ({
+      compatibilityState: 'compatible',
+      incompatibilityReason: '',
+      incompatibilityProbe: '',
+    }),
     execFileFn: async () => ({
       stdout: '  \n',
       stderr: 'experimental startup warning\nKimi Code 0.19.2\n',
@@ -423,10 +472,74 @@ test('Agent detection ignores blank output and startup warnings before the versi
     name: 'Kimi CLI',
     executable: '/tmp/kimi',
     version: 'Kimi Code 0.19.2',
+    resolvedVersion: '0.19.2',
+    supportedVersionRange: '0.19.2..0.32.0',
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
+    incompatibilityProbe: '',
   }])
 })
 
-test('Agent detection rejects login prompts and other non-version output', async () => {
+test('Agent detection keeps unsupported versions installed but incompatible', async () => {
+  let calls = 0
+  const found = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'codex' ? '/tmp/codex' : null,
+    execFileFn: async () => {
+      calls += 1
+      return { stdout: 'codex-cli 0.147.0\n', stderr: '' }
+    },
+  })
+
+  assert.equal(calls, 1)
+  assert.deepEqual(found, [{
+    kind: 'codex',
+    name: 'Codex CLI',
+    executable: '/tmp/codex',
+    version: 'codex-cli 0.147.0',
+    resolvedVersion: '0.147.0',
+    supportedVersionRange: '0.137.0..0.146.0',
+    compatibilityState: 'incompatible',
+    incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+    incompatibilityProbe: '',
+  }])
+})
+
+test('Agent detection records the required capability or protocol that is unavailable', async () => {
+  const codex = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'codex' ? '/tmp/codex' : null,
+    execFileFn: async (_command, args) => args[0] === '--version'
+      ? { stdout: '0.137.0\n', stderr: '' }
+      : { stdout: '--json --sandbox --skip-git-repo-check', stderr: '' },
+  })
+  assert.equal(codex[0].compatibilityState, 'incompatible')
+  assert.equal(codex[0].incompatibilityReason, 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING')
+  assert.equal(codex[0].incompatibilityProbe, 'codex-exec')
+
+  const kimi = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
+    execFileFn: async (_command, args) => {
+      if (args[0] === '--version') return { stdout: '0.19.2\n', stderr: '' }
+      if (args[0] === '--help') {
+        return {
+          stdout: '--output-format --auto --session --prompt stream-json',
+          stderr: '',
+        }
+      }
+      throw new Error('ACP unavailable')
+    },
+  })
+  assert.equal(kimi[0].compatibilityState, 'incompatible')
+  assert.equal(kimi[0].incompatibilityReason, 'LOCAL_AGENT_PROTOCOL_UNAVAILABLE')
+  assert.equal(kimi[0].incompatibilityProbe, 'kimi-acp')
+})
+
+test('Agent detection retains installed CLIs with unrecognized version output as incompatible', async () => {
   const found = await detectAgents({
     platform: 'darwin',
     env: {},
@@ -434,7 +547,17 @@ test('Agent detection rejects login prompts and other non-version output', async
     execFileFn: async () => ({ stdout: 'Please log in first\n', stderr: '' }),
   })
 
-  assert.deepEqual(found, [])
+  assert.deepEqual(found, [{
+    kind: 'kimi',
+    name: 'Kimi CLI',
+    executable: '/tmp/kimi',
+    version: '',
+    resolvedVersion: '',
+    supportedVersionRange: '0.19.2..0.32.0',
+    compatibilityState: 'incompatible',
+    incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+    incompatibilityProbe: '',
+  }])
 })
 
 test('Agent detection passes only allowlisted system environment to version commands', async () => {
@@ -450,19 +573,28 @@ test('Agent detection passes only allowlisted system environment to version comm
       OPENAI_API_KEY: 'provider-secret',
     },
     resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
-    execFileFn: async (_command, _args, options) => {
+    execFileFn: async (_command, args, options) => {
       calls.push(options.env)
-      return { stdout: '0.19.2\n', stderr: '' }
+      if (args[0] === '--version') return { stdout: '0.19.2\n', stderr: '' }
+      if (args[0] === '--help') {
+        return {
+          stdout: '--output-format --auto --session --prompt stream-json',
+          stderr: '',
+        }
+      }
+      return { stdout: 'Kimi ACP', stderr: '' }
     },
   })
 
   assert.equal(found.length, 1)
-  assert.equal(calls.length, 1)
-  assert.equal(calls[0].HOME, '/Users/Ryder')
-  assert.equal(calls[0].LANG, 'zh_CN.UTF-8')
-  assert.match(calls[0].PATH, /\/custom\/bin/)
-  assert.equal(calls[0].ROUNDRELAY_PRIVATE_VALUE, undefined)
-  assert.equal(calls[0].OPENAI_API_KEY, undefined)
+  assert.equal(calls.length, 3)
+  for (const env of calls) {
+    assert.equal(env.HOME, '/Users/Ryder')
+    assert.equal(env.LANG, 'zh_CN.UTF-8')
+    assert.match(env.PATH, /\/custom\/bin/)
+    assert.equal(env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+    assert.equal(env.OPENAI_API_KEY, undefined)
+  }
 })
 
 test('Agent detection excludes executable shims that cannot report a version', async () => {

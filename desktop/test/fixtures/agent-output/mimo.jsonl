@@ -1,0 +1,3 @@
+{"type":"step_start","sessionID":"mimo-fixture-session","part":{"type":"step-start"}}
+{"type":"text","sessionID":"mimo-fixture-session","part":{"type":"text","text":"MiMo fixture reply"}}
+{"type":"step_finish","sessionID":"mimo-fixture-session","part":{"type":"step-finish","reason":"stop"}}

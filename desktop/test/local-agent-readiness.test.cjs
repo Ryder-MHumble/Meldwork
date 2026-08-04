@@ -322,10 +322,61 @@ test('OpenClaw model status overrides a stale gateway token without exposing aut
   }
 })
 
-test('MiMo readiness relies on the installed CLI and does not inspect private auth storage', async () => {
-  assert.deepEqual(await resolveNativeCredentialState('mimo', {}), {
-    state: 'ready', source: 'native-cli',
+test('MiMo readiness uses the installed CLI identity without forwarding private values', async () => {
+  const calls = []
+  for (const stdout of [
+    '\u001b[32mProvider: MiMo\u001b[0m\nUser ID: user-123',
+    'Provider: MiMo\nType: OAuth',
+  ]) {
+    const result = await resolveNativeCredentialState('mimo', {
+      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      executable: '/tmp/mimo',
+      execFileFn: async (command, args, options) => {
+        calls.push({ command, args, env: options.env })
+        return { stdout }
+      },
+    })
+
+    assert.deepEqual(result, { state: 'ready', source: 'native-auth-status' })
+  }
+  assert.deepEqual(calls.map(call => call.args), [
+    ['providers', 'whoami'],
+    ['providers', 'whoami'],
+  ])
+  assert.equal(calls.every(call => call.env.ROUNDRELAY_PRIVATE_VALUE === undefined), true)
+})
+
+test('MiMo readiness recognizes ANSI-colored logged-out output even when the CLI exits zero', async () => {
+  const result = await resolveNativeCredentialState('mimo', {
+    env: {},
+    executable: '/tmp/mimo',
+    execFileFn: async () => ({
+      stdout: '\u001b[0m\n\u001b[31mNot logged in. Run `mimo auth login` to log in.\u001b[0m',
+    }),
   })
+
+  assert.deepEqual(result, { state: 'missing', source: 'native-auth-status' })
+})
+
+test('MiMo readiness remains unknown for missing or malformed identity output', async () => {
+  assert.deepEqual(await resolveNativeCredentialState('mimo', {}), {
+    state: 'unknown', source: 'unverified',
+  })
+
+  for (const stdout of [
+    '',
+    'Provider: MiMo\nUser ID:',
+    'Provider: Other\nUser ID: user-123',
+    'User ID: user-123',
+    'Authentication status unavailable',
+  ]) {
+    const result = await resolveNativeCredentialState('mimo', {
+      env: {},
+      executable: '/tmp/mimo',
+      execFileFn: async () => ({ stdout }),
+    })
+    assert.deepEqual(result, { state: 'unknown', source: 'unverified' })
+  }
 })
 
 test('Claude auth status overrides a stale credential file', async () => {
