@@ -20,7 +20,7 @@ function loadWorkspaceState(storagePath) {
       return emptyState()
     }
     const groups = parsed.groups
-      .map(group => normalizeLoadedGroup(group, parsed.version === 1))
+      .map(normalizeLoadedGroup)
       .filter(Boolean)
     const groupIds = new Set(groups.map(group => group.id))
     const messages = parsed.messages

@@ -933,6 +933,8 @@ test('the durable Task link exists before the Agent process starts', async (t) =
     assert.equal(durable.status, 'running')
     assert.equal(durable.taskId, userTask.id)
     assert.equal(durable.threadRootId, userTask.id)
+    assert.equal(durable.permissionMode, 'read-only')
+    assert.equal(runOptions.sandbox, 'read-only')
     return { text: 'Durably linked result', sessionRef: runOptions.sessionRef || 'codex-session' }
   }
   workspace = new LocalWorkspace(options)
@@ -949,6 +951,29 @@ test('the durable Task link exists before the Agent process starts', async (t) =
   const run = ledger.list(group.id)[0]
   assert.equal(run.taskId, task.id)
   assert.equal(run.status, 'completed')
+  assert.equal(run.permissionMode, 'read-only')
+})
+
+test('explicit workspace write authorization is recorded and passed to the Agent', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    assert.equal(runOptions.sandbox, 'workspace-write')
+    return { text: 'Authorized result', sessionRef: 'codex-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Authorized Task', agentKinds: ['codex'], workdir: directory, allowWrite: true,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Use the approved workspace permission', targetKinds: ['codex'],
+  })
+
+  assert.equal(ledger.list(group.id)[0].permissionMode, 'workspace-write')
 })
 
 test('direct Tasks persist without inventing a group thread root', async (t) => {
@@ -1637,7 +1662,7 @@ test('stopping during output capture prevents the Agent from launching', async (
   workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Stop during capture', agentKinds: ['codex'], workdir: directory,
+    name: 'Stop during capture', agentKinds: ['codex'], workdir: directory, allowWrite: true,
   })
 
   const send = workspace.sendMessage({ groupId: group.id, text: 'Generate a file' })
@@ -1677,7 +1702,7 @@ test('stopping during output import never persists the late completed reply', as
   workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Stop during import', agentKinds: ['codex'], workdir: directory,
+    name: 'Stop during import', agentKinds: ['codex'], workdir: directory, allowWrite: true,
   })
 
   const send = workspace.sendMessage({ groupId: group.id, text: 'Generate a file' })
@@ -1787,7 +1812,7 @@ test('a stopped run keeps the group lock until output import cleanup settles', a
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Import cleanup lock', agentKinds: ['codex'], workdir: directory,
+    name: 'Import cleanup lock', agentKinds: ['codex'], workdir: directory, allowWrite: true,
   })
 
   const firstSend = workspace.sendMessage({ groupId: group.id, text: 'First import' })
@@ -1822,7 +1847,7 @@ test('the Agent watchdog covers output capture and import phases', async (t) => 
       workspace.on('run-finished', result => finished.push(result))
       await workspace.refreshAgents()
       const group = workspace.createGroup({
-        name: `Watchdog ${phase}`, agentKinds: ['codex'], workdir: directory,
+        name: `Watchdog ${phase}`, agentKinds: ['codex'], workdir: directory, allowWrite: true,
       })
 
       await workspace.sendMessage({ groupId: group.id, text: 'Do not hang' })

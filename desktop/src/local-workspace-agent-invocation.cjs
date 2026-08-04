@@ -298,7 +298,7 @@ class LocalWorkspaceAgentInvocation {
             return { prompt: rebuildFreshSession() }
           },
           signal: agentController.signal,
-          sandbox: group.allowWrite ? 'workspace-write' : undefined,
+          sandbox: group.allowWrite ? 'workspace-write' : 'read-only',
           onProgress,
           onEvent: emitRuntimeEvent,
           sessionTransport,

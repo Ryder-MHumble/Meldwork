@@ -46,7 +46,7 @@ export function useConversationActions({
   const settingsIntent = ref('settings')
   const inlineTitleEditing = ref(false)
   const inlineTitleDraft = ref('')
-  const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: true })
+  const groupForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
   const settingsForm = reactive({ name: '', topic: '', agentKinds: [], workdir: '', allowWrite: false })
 
   async function ensureDefaultDirectory() {
@@ -94,7 +94,7 @@ export function useConversationActions({
           : t('conversation.directDefaultName', { agent: agent.label, count: sessionCount }),
         agentKinds: [kind],
         workdir: await ensureDefaultDirectory(),
-        allowWrite: true,
+        allowWrite: false,
       })
       snapshot.value = normalizeSnapshot(await workspace.value.get())
       void preloadAgentSkills(group.agentKinds)
@@ -115,7 +115,7 @@ export function useConversationActions({
     groupForm.topic = ''
     groupForm.agentKinds = readyAgents.value.slice(0, 2).map(agent => agent.kind)
     groupForm.workdir = defaultDirectory.value
-    groupForm.allowWrite = true
+    groupForm.allowWrite = false
     modal.value = 'new-group'
     void ensureDefaultDirectory().then(path => { if (!groupForm.workdir) groupForm.workdir = path })
   }

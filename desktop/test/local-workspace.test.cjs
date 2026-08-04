@@ -270,26 +270,30 @@ test('groups and messages persist without exposing executable paths', async (t) 
   assert.equal('executable' in workspace.snapshot().agents[0], false)
 })
 
-test('version 1 conversations migrate from the former read-only default to workspace write', (t) => {
+test('all supported workspace versions preserve stored or omitted read-only permission', (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  fs.writeFileSync(options.storagePath, `${JSON.stringify({
-    version: 1,
-    groups: [{
-      id: 'legacy-group',
-      name: 'Legacy group',
-      agentKinds: ['codex'],
-      workdir: directory,
-      allowWrite: false,
-    }],
-    messages: [],
-    sessions: {},
-  })}\n`)
+  for (const version of [1, 2, 3]) {
+    for (const storedPermission of [false, undefined]) {
+      const group = {
+        id: `workspace-v${version}-${storedPermission === false ? 'false' : 'omitted'}`,
+        name: 'Stored group',
+        agentKinds: ['codex'],
+        workdir: directory,
+      }
+      if (storedPermission !== undefined) group.allowWrite = storedPermission
+      fs.writeFileSync(options.storagePath, `${JSON.stringify({
+        version,
+        groups: [group],
+        messages: [],
+        sessions: {},
+      })}\n`)
 
-  const restored = new LocalWorkspace(options)
-
-  assert.equal(restored.state.version, 3)
-  assert.equal(restored.snapshot().groups[0].allowWrite, true)
+      const restored = new LocalWorkspace(options)
+      assert.equal(restored.state.version, 3)
+      assert.equal(restored.snapshot().groups[0].allowWrite, false)
+    }
+  }
 })
 
 test('Skills are validated and injected only into their selected target Agent', async (t) => {
@@ -1341,7 +1345,7 @@ test('Kimi and OpenClaw keep stable group-scoped native sessions', async (t) => 
   assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
 })
 
-test('group write authorization defaults on, can be disabled, and is passed to local CLIs', async (t) => {
+test('group write authorization defaults off and is passed to local CLIs only after opt-in', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1350,15 +1354,35 @@ test('group write authorization defaults on, can be disabled, and is passed to l
     name: '写入授权', agentKinds: ['codex', 'kimi'], workdir: directory,
   })
 
-  await workspace.sendMessage({ groupId: group.id, text: '默认写入', targetKinds: ['codex'] })
-  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
-  assert.match(calls[0].prompt, /execute the work instead of returning only a plan/i)
-  workspace.updateGroup(group.id, { allowWrite: false })
-  await workspace.sendMessage({ groupId: group.id, text: '切换只读', targetKinds: ['kimi'] })
+  await workspace.sendMessage({ groupId: group.id, text: '默认只读', targetKinds: ['codex'] })
+  assert.equal(calls[0].runOptions.sandbox, 'read-only')
+  assert.match(calls[0].prompt, /read-only/i)
+  workspace.updateGroup(group.id, { allowWrite: true })
+  await workspace.sendMessage({ groupId: group.id, text: '显式授权', targetKinds: ['kimi'] })
 
-  assert.equal(calls[1].runOptions.sandbox, undefined)
+  assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
+  assert.match(calls[1].prompt, /execute the work instead of returning only a plan/i)
   const restored = new LocalWorkspace(options)
-  assert.equal(restored.snapshot().groups[0].allowWrite, false)
+  assert.equal(restored.snapshot().groups[0].allowWrite, true)
+})
+
+test('direct conversations also default to read-only', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const direct = workspace.createGroup({
+    conversationType: 'direct',
+    directAgentKind: 'codex',
+    name: 'Codex',
+    agentKinds: ['codex'],
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: direct.id, text: '只读私聊' })
+
+  assert.equal(direct.allowWrite, false)
+  assert.equal(calls[0].runOptions.sandbox, 'read-only')
 })
 
 test('group settings cannot change execution context during an active run', async (t) => {
@@ -1373,7 +1397,7 @@ test('group settings cannot change execution context during an active run', asyn
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: '运行中配置', agentKinds: ['codex'], workdir: directory,
+    name: '运行中配置', agentKinds: ['codex'], workdir: directory, allowWrite: true,
   })
 
   const send = workspace.sendMessage({ groupId: group.id, text: '开始', targetKinds: ['codex'] })

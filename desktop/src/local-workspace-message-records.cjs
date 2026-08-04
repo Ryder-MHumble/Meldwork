@@ -139,7 +139,7 @@ function knowledgeBaseHintsPrompt(hints) {
   ].join('\n')
 }
 
-function normalizeLoadedGroup(input, defaultAllowWrite = false) {
+function normalizeLoadedGroup(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const id = cleanText(input.id, 100)
   const agentKinds = [...new Set((Array.isArray(input.agentKinds) ? input.agentKinds : [])
@@ -153,7 +153,7 @@ function normalizeLoadedGroup(input, defaultAllowWrite = false) {
     topic: cleanText(input.topic, 200),
     agentKinds,
     workdir: path.resolve(cleanText(input.workdir, 1000) || process.cwd()),
-    allowWrite: defaultAllowWrite || input.allowWrite === true,
+    allowWrite: input.allowWrite === true,
     createdAt: cleanText(input.createdAt, 80),
     updatedAt: cleanText(input.updatedAt, 80),
   }

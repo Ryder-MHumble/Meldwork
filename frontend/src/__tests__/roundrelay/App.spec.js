@@ -1296,7 +1296,7 @@ describe('RoundRelay workbench', () => {
       name: 'Codex',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: true,
+      allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
     }
@@ -1323,9 +1323,9 @@ describe('RoundRelay workbench', () => {
       name: 'Codex',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: true,
+      allowWrite: false,
     })
-    expect(wrapper.get('.conversation-capabilities').text()).toContain('Write enabled')
+    expect(wrapper.get('.conversation-capabilities').text()).toContain('Read only')
 
     await wrapper.get('.new-group-button').trigger('click')
     await flushPromises()
@@ -1343,7 +1343,7 @@ describe('RoundRelay workbench', () => {
       topic: 'Review the implementation',
       agentKinds: ['codex', 'hermes'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: true,
+      allowWrite: false,
     }))
     expect(() => structuredClone(bridge.localWorkspace.createGroup.mock.calls.at(-1)[0])).not.toThrow()
     wrapper.unmount()
