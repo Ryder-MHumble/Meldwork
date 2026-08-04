@@ -22,7 +22,6 @@ const {
   stableUserMessages,
 } = require('./local-workspace-context.cjs')
 const {
-  DEFAULT_AUTO_RUN_TIMEOUT_MS,
   DEFAULT_RUN_ABORT_GRACE_MS,
   DEFAULT_RUN_AGENT_TIMEOUT_MS,
   DEFAULT_RUN_SILENCE_WARNING_MS,
@@ -59,10 +58,6 @@ class LocalWorkspace extends EventEmitter {
     this.credentialStateFn = options.credentialState || (async () => ({ state: 'unknown', source: 'unverified' }))
     this.sharedProviderReadyFn = options.sharedProviderReady || (() => false)
     this.agentLabelFn = options.agentLabel || defaultAgentLabel
-    this.autoRunTimeoutMs = Number.isFinite(options.autoRunTimeoutMs)
-      && options.autoRunTimeoutMs > 0
-      ? options.autoRunTimeoutMs
-      : DEFAULT_AUTO_RUN_TIMEOUT_MS
     this.runSilenceWarningMs = Number.isFinite(options.runSilenceWarningMs)
       && options.runSilenceWarningMs > 0
       ? options.runSilenceWarningMs
@@ -168,12 +163,14 @@ class LocalWorkspace extends EventEmitter {
     })
     this.autoRunner = new LocalWorkspaceAutoRunner({
       state: () => this.state,
-      autoRunTimeoutMs: this.autoRunTimeoutMs,
       beginRun: (...args) => this.beginRun(...args),
       resolveAttachments: (...args) => this.resolveAttachments(...args),
       validateSkillSelections: (...args) => this.validateSkillSelectionsFn(...args),
       validateKnowledgeBaseSelections: (...args) => this.validateKnowledgeBaseSelectionsFn(...args),
       invokeAgent: (...args) => this.invokeAgent(...args),
+      resetAgentSession: (...args) => this.resetAgentSession(...args),
+      removeAgentFromGroup: (...args) => this.removeAgentFromGroup(...args),
+      agentLabel: kind => this.agentLabel(kind),
       recordAgentFailure: (...args) => this.recordAgentFailure(...args),
       recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),
       addMessage: (...args) => this.addMessage(...args),
@@ -323,6 +320,10 @@ class LocalWorkspace extends EventEmitter {
     return this.conversations.updateGroup(groupId, input)
   }
 
+  removeAgentFromGroup(groupId, kind) {
+    return this.conversations.removeAgent(groupId, kind)
+  }
+
   deleteGroup(groupId) {
     return this.conversations.deleteGroup(groupId)
   }
@@ -451,6 +452,10 @@ class LocalWorkspace extends EventEmitter {
 
   async invokeAgent(group, kind, mode, signal, threadRootId = '', context = {}) {
     return this.agentInvocation.invoke(group, kind, mode, signal, threadRootId, context)
+  }
+
+  resetAgentSession(group, kind, rotateOpenClaw = true) {
+    return this.agentInvocation.resetSession(group, kind, rotateOpenClaw)
   }
 
   async resolveAttachments(attachmentRefs) {

@@ -9,6 +9,7 @@ const {
   MAX_MESSAGE_ATTACHMENTS,
   abortableOperation,
   agentStoppedError,
+  cleanText,
   cleanProgressSteps,
   credentialFailure,
   normalizeAttachmentMetadata,
@@ -236,10 +237,15 @@ class LocalWorkspaceAgentInvocation {
           /* output capture is best effort */
         }
       }
-      let prompt = this.promptFor(
-        group, kind, mode, threadRootId, context.skillHints || [],
-        context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
-      )
+      const runtimeInstruction = cleanText(context.runtimeInstruction, 3000)
+      const buildPrompt = (afterKind, contextPackage) => [
+        this.promptFor(
+          group, kind, mode, threadRootId, context.skillHints || [],
+          context.knowledgeBaseHints || [], afterKind, contextPackage,
+        ),
+        runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
+      ].filter(Boolean).join('\n')
+      let prompt = buildPrompt(transcriptAfterKind, packedContext)
       if (agentController.signal.aborted) throw agentStoppedError()
       runPromise = Promise.resolve().then(() => this.runAgent(
         agent,
@@ -277,10 +283,7 @@ class LocalWorkspaceAgentInvocation {
               liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
               liveHarnessRun.context = { ...packedContext.context, sessionRotated }
             }
-            prompt = this.promptFor(
-              group, kind, mode, threadRootId, context.skillHints || [],
-              context.knowledgeBaseHints || [], '', packedContext,
-            )
+            prompt = buildPrompt('', packedContext)
             this.save()
             this.scheduleRunCheckpoint(group.id, activeRun)
             this.emitChanged()
@@ -357,10 +360,7 @@ class LocalWorkspaceAgentInvocation {
         { elapsedMs: Date.now() - startedAt, toolCalls, attachments, trace },
       )
       this.persistSessionMeta(key, nextSessionMeta(sessionMeta, {
-        promptChars: this.promptFor(
-          group, kind, mode, threadRootId, context.skillHints || [],
-          context.knowledgeBaseHints || [], transcriptAfterKind, packedContext,
-        ).length,
+        promptChars: buildPrompt(transcriptAfterKind, packedContext).length,
         replyChars: reply.text.length,
         rotated: sessionRotated,
         transport: sessionTransport,
@@ -385,7 +385,9 @@ class LocalWorkspaceAgentInvocation {
           : watchdogTimedOut
             ? (watchdogError || new Error('LOCAL_AGENT_TIMEOUT'))
             : caughtError
-      if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
+      if (credentialFailure(error) && context.deferCredentialFailure !== true) {
+        this.markRuntimeCredential(kind, 'missing')
+      }
       const status = parentTimedOut
         ? 'timeout'
         : parentInterrupted
@@ -412,6 +414,30 @@ class LocalWorkspaceAgentInvocation {
         signal.removeEventListener('abort', parentAbortHandler)
       }
     }
+  }
+
+  resetSession(group, kind, rotateOpenClaw = true) {
+    const state = this.state()
+    const key = this.sessionKey(group.id, kind)
+    const legacyPrefix = `${group.id}:${kind}:thread:`
+    let changed = false
+    for (const candidate of Object.keys(state.sessions)) {
+      if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
+      delete state.sessions[candidate]
+      changed = true
+    }
+    for (const candidate of Object.keys(state.sessionMeta)) {
+      if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
+      delete state.sessionMeta[candidate]
+      changed = true
+    }
+    if (kind === 'openclaw' && rotateOpenClaw) {
+      const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
+      state.sessions[key] = this.openClawSessionRef(group, generation)
+      changed = true
+    }
+    if (changed) this.save()
+    return changed
   }
 }
 

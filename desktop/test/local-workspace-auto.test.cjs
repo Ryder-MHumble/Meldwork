@@ -659,6 +659,175 @@ test('stopping automatic dialogue cancels the active round without a limit messa
   assert.equal(finished[0].status, 'stopped')
 })
 
+test('stopping during a 401 retry cancels recovery without removing the Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const retryStarted = deferred()
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind !== 'hermes') {
+      return {
+        text: 'codex agrees\n[[ROUNDRELAY_CONSENSUS:agree]]',
+        sessionRef: runOptions.sessionRef || 'codex-session',
+      }
+    }
+    if (calls.length === 1) throw new Error('HTTP 401: Invalid token')
+    retryStarted.resolve()
+    await new Promise((resolve, reject) => {
+      if (runOptions.signal.aborted) {
+        reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        return
+      }
+      runOptions.signal.addEventListener(
+        'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
+      )
+    })
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '401 retry stop', agentKinds: ['hermes', 'codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Stop cleanly during auth recovery')
+
+  workspace.startAuto({ groupId: group.id, unlimitedRounds: true })
+  const active = workspace.activeRuns.get(group.id)
+  await retryStarted.promise
+  assert.equal(workspace.stop(group.id, active.runId), true)
+  await active.promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['hermes', 'hermes'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes', 'codex'])
+  assert.equal(calls.some(call => call.prompt.includes('Harness recovery task')), false)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.autoTimeout'
+  )), false)
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'stopped')
+})
+
+test('automatic dialogue retries an HTTP 401 three times before continuing', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let hermesAttempts = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes' && ++hermesAttempts < 4) {
+      throw new Error('HTTP 401: Invalid token')
+    }
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '401 retry recovery', agentKinds: ['hermes', 'codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Retry transient unauthorized failures')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'hermes', 'hermes', 'hermes', 'hermes', 'codex',
+  ])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes', 'codex'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.agentCallFailed'
+  )), false)
+  assert.equal(finished[0].status, 'completed')
+})
+
+test('automatic dialogue hands exhausted 401 recovery to the next Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let hermesAttempts = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes') {
+      hermesAttempts += 1
+      if (hermesAttempts === 1) await runOptions.onSessionRef('stale-hermes-session')
+      if (hermesAttempts <= 4) throw new Error('HTTP 401: Invalid token')
+    }
+    return {
+      text: `${agent.kind} ${prompt.includes('Harness recovery task') ? 'repaired auth' : 'agrees'}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '401 Agent handoff', agentKinds: ['hermes', 'codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Repair the failing Agent and continue')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'hermes', 'hermes', 'hermes', 'hermes', 'codex', 'hermes', 'codex',
+  ])
+  const recoveryCall = calls[4]
+  assert.match(recoveryCall.prompt, /Harness recovery task/)
+  assert.match(recoveryCall.prompt, /Hermes returned HTTP 401 Unauthorized/)
+  assert.doesNotMatch(recoveryCall.prompt, /Invalid token/)
+  assert.equal(calls[5].runOptions.sessionRef, '')
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes', 'codex'])
+  assert.equal(finished[0].status, 'completed')
+})
+
+test('automatic dialogue removes an Agent after post-repair 401 verification fails', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'hermes') {
+      await runOptions.onSessionRef('unusable-hermes-session')
+      throw new Error('HTTP 401: Invalid token')
+    }
+    return {
+      text: `${agent.kind} ${prompt.includes('Harness recovery task') ? 'checked auth' : 'agrees'}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '401 removal', agentKinds: ['hermes', 'codex', 'workbuddy'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Remove unrecoverable participants and continue')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'hermes', 'hermes', 'hermes', 'hermes',
+    'codex',
+    'hermes', 'hermes', 'hermes',
+    'codex', 'workbuddy',
+  ])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'workbuddy'])
+  assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'hermes')], undefined)
+  const failure = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'hermes' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(failure.system.params.reason, 'HTTP 401; removed after recovery failed')
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'partial')
+  assert.equal(finished[0].failedKinds.includes('hermes'), true)
+  assert.equal(finished[0].completedKinds.includes('hermes'), true)
+})
+
 test('automatic dialogue isolates duplicate failures and retries every Agent next round', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -942,51 +1111,36 @@ test('automatic dialogue caps both round parameters at ten', async (t) => {
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
 })
 
-test('automatic dialogue aborts the active Agent at the total runtime limit', async (t) => {
+test('automatic dialogue has no total runtime limit', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  options.autoRunTimeoutMs = 20
-  let activeSignal
+  options.autoRunTimeoutMs = 5
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
-    activeSignal = runOptions.signal
-    await new Promise((resolve, reject) => {
-      if (runOptions.signal.aborted) {
-        reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
-        return
-      }
-      runOptions.signal.addEventListener(
-        'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
-      )
-    })
+    if (calls.length === 1) await new Promise(resolve => setTimeout(resolve, 20))
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
   }
   const workspace = new LocalWorkspace(options)
   const finished = []
   workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: '运行时限', agentKinds: ['codex', 'hermes'], workdir: directory,
+    name: '无整体时限', agentKinds: ['codex', 'hermes'], workdir: directory,
   })
-  const root = workspace.addMessage(group.id, 'user', '讨论不能无限占用本地进程')
+  const root = workspace.addMessage(group.id, 'user', '只限制单个 Agent 的运行时间')
 
-  workspace.startAuto({ groupId: group.id, maxRounds: 8 })
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
   await workspace.activeRuns.get(group.id).promise
 
-  assert.equal(activeSignal.aborted, true)
-  assert.deepEqual(calls.map(call => call.agent.kind), ['codex'])
-  const interruptedAgent = workspace.snapshot().messages.find(message => (
-    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
-  ))
-  assert.equal(interruptedAgent.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
-  assert.equal(interruptedAgent.trace.status, 'timeout')
-  assert.equal(interruptedAgent.trace.context.includedCount, 1)
-  const timeout = workspace.snapshot().messages.find(message => (
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
+  assert.equal(workspace.snapshot().messages.some(message => (
     message.system?.key === 'system.autoTimeout'
-  ))
-  assert.equal(timeout.threadRootId, root.id)
-  assert.deepEqual(timeout.system.params, {})
+  )), false)
   assert.equal(finished.length, 1)
-  assert.equal(finished[0].status, 'timeout')
+  assert.equal(finished[0].status, 'completed')
   assert.equal(finished[0].threadRootId, root.id)
 })
 

@@ -131,6 +131,16 @@ class LocalWorkspaceConversations {
     })
   }
 
+  removeAgent(groupId, kind) {
+    const group = this.getGroup(groupId)
+    if (group.conversationType === 'direct' || !group.agentKinds.includes(kind)) return false
+    return this.commit(() => {
+      group.agentKinds = group.agentKinds.filter(agentKind => agentKind !== kind)
+      group.updatedAt = this.now()
+      return true
+    })
+  }
+
   deleteGroup(groupId) {
     if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
     const state = this.state()
