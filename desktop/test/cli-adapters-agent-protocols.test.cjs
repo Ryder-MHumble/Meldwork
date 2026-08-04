@@ -1029,6 +1029,42 @@ test('supported local CLIs run in the selected workdir and return native session
   }
 })
 
+test('runAgent retains final structured output after stdout exceeds its capture limit', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-long-output-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const fillerBytes = 10 * 1024 * 1024 + 64 * 1024
+  const fixtures = [{
+    kind: 'codex',
+    source: `
+process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'codex-long-session' }) + '\\n')
+process.stdout.write('x'.repeat(${fillerBytes}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'item.completed', item: { type: 'agent_message', text: 'Codex final after limit' },
+}) + '\\n')
+`,
+    expected: { text: 'Codex final after limit', sessionRef: 'codex-long-session' },
+  }, {
+    kind: 'qwen',
+    source: `
+process.stdout.write('x'.repeat(${fillerBytes}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'result', result: 'Qwen final after limit', session_id: 'qwen-long-session',
+}) + '\\n')
+`,
+    expected: { text: 'Qwen final after limit', sessionRef: 'qwen-long-session' },
+  }]
+
+  for (const fixture of fixtures) {
+    const cli = executable(directory, `${fixture.kind}-long-output.cjs`, fixture.source)
+    const result = await runAgent(
+      { kind: fixture.kind, executable: cli, name: fixture.kind },
+      'hello',
+      directory,
+    )
+    assert.deepEqual(result, fixture.expected, fixture.kind)
+  }
+})
+
 test('final JSON agents emit one sanitized fallback answer event', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-final-events-'))
   const cli = executable(directory, 'final-events.cjs', `

@@ -43,6 +43,65 @@ const {
 
 const MAX_PROGRESS_STEPS = 8
 const MAX_HERMES_PROGRESS_PENDING_CHARS = 64 * 1024
+const MAX_STDOUT_CAPTURE_BYTES = 10 * 1024 * 1024
+const MAX_STDERR_CAPTURE_BYTES = 1024 * 1024
+const OUTPUT_TRUNCATION_MARKER = Buffer.from('\n[output truncated]\n')
+
+function createBoundedOutputCapture(maxBytes) {
+  const headLimit = Math.floor(maxBytes / 2)
+  const tailLimit = maxBytes - headLimit
+  const head = []
+  const tail = []
+  let headBytes = 0
+  let tailBytes = 0
+  let totalBytes = 0
+
+  return {
+    push(chunk) {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      if (!bytes.length) return
+      totalBytes = Math.min(maxBytes + 1, totalBytes + bytes.length)
+      const headRemaining = headLimit - headBytes
+      const headLength = Math.min(headRemaining, bytes.length)
+      if (headLength > 0) {
+        head.push(Buffer.from(bytes.subarray(0, headLength)))
+        headBytes += headLength
+      }
+      if (headLength >= bytes.length) return
+      const remainder = bytes.subarray(headLength)
+      if (remainder.length >= tailLimit) {
+        tail.length = 0
+        tail.push(Buffer.from(remainder.subarray(remainder.length - tailLimit)))
+        tailBytes = tailLimit
+        return
+      }
+      tail.push(Buffer.from(remainder))
+      tailBytes += remainder.length
+      while (tailBytes > tailLimit) {
+        const overflow = tailBytes - tailLimit
+        if (tail[0].length <= overflow) {
+          tailBytes -= tail.shift().length
+        } else {
+          tail[0] = Buffer.from(tail[0].subarray(overflow))
+          tailBytes -= overflow
+        }
+      }
+    },
+    text() {
+      const headBuffer = Buffer.concat(head, headBytes)
+      const tailBuffer = Buffer.concat(tail, tailBytes)
+      if (totalBytes <= maxBytes) {
+        return Buffer.concat([headBuffer, tailBuffer], totalBytes).toString('utf8')
+      }
+      const markerOffset = Math.min(OUTPUT_TRUNCATION_MARKER.length, tailBuffer.length)
+      return Buffer.concat([
+        headBuffer,
+        OUTPUT_TRUNCATION_MARKER,
+        tailBuffer.subarray(markerOffset),
+      ], maxBytes).toString('utf8')
+    },
+  }
+}
 
 
 function normalizeOutput(kind, stdout, sessionRef = '') {
@@ -176,10 +235,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       ))
       return
     }
-    const stdout = []
-    const stderr = []
-    let stdoutBytes = 0
-    let stderrBytes = 0
+    const stdout = createBoundedOutputCapture(MAX_STDOUT_CAPTURE_BYTES)
+    const stderr = createBoundedOutputCapture(MAX_STDERR_CAPTURE_BYTES)
     let settled = false
     let stopRequested = false
     let timeout
@@ -293,14 +350,12 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     if (options.signal?.aborted) abort()
     else options.signal?.addEventListener('abort', abort, { once: true })
     child.stdout.on('data', (chunk) => {
-      stdoutBytes += chunk.length
-      if (stdoutBytes <= 10 * 1024 * 1024) stdout.push(chunk)
+      stdout.push(chunk)
       runtimeStreamParser?.write(chunk)
       emitHermesProgress('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
-      stderrBytes += chunk.length
-      if (stderrBytes <= 1024 * 1024) stderr.push(chunk)
+      stderr.push(chunk)
       emitHermesProgress('stderr', chunk)
     })
     child.on('error', error => finish(() => reject(
@@ -321,8 +376,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           return
         }
         if (code !== 0) {
-          const rawStdout = Buffer.concat(stdout).toString('utf8')
-          const rawStderr = Buffer.concat(stderr).toString('utf8').trim()
+          const rawStdout = stdout.text()
+          const rawStderr = stderr.text().trim()
           const structuredDetail = structuredCliError(rawStdout)
           const detail = redactChildSecrets(
             [rawStderr, structuredDetail].filter(Boolean).join('\n'),
@@ -331,13 +386,13 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           reject(failedAgentProcessError(detail))
           return
         }
-        const rawStderr = Buffer.concat(stderr).toString('utf8')
+        const rawStderr = stderr.text()
         const nextSessionRef = agent.kind === 'hermes'
           ? hermesSessionRef(rawStderr) || sessionRef
           : sessionRef
         const result = normalizeOutput(
           agent.kind,
-          Buffer.concat(stdout).toString('utf8'),
+          stdout.text(),
           nextSessionRef,
         )
         if (result.error) {
