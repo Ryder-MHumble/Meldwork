@@ -1109,12 +1109,20 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
 
   await workspace.input.runAgent(
     { kind: 'openclaw', executable: '/tmp/openclaw' },
-    'hello', directory, { sessionRef: 'agent:main:desktop-native-openclaw' },
+    'hello', directory, {
+      sessionRef: 'agent:main:desktop-native-openclaw',
+      env: {
+        GITHUB_TOKEN: 'caller-secret',
+        OPENAI_API_KEY: 'caller-openai-secret',
+        OPENROUTER_API_KEY: 'caller-openrouter-secret',
+      },
+    },
   )
   const options = harness.runAgentCalls[0][3]
   assert.equal(Object.hasOwn(options.env, 'OPENCLAW_NATIVE_CONFIG'), false)
   assert.equal(Object.hasOwn(options.env, 'OPENAI_API_KEY'), false)
   assert.equal(Object.hasOwn(options.env, 'OPENROUTER_API_KEY'), false)
+  assert.equal(Object.hasOwn(options.env, 'GITHUB_TOKEN'), false)
   assert.equal(Object.hasOwn(options.env, 'MANAGED_OPENCLAW'), false)
   const isolated = JSON.parse(options.env.NATIVE_OPENCLAW)
   assert.equal(isolated.workdir, directory)

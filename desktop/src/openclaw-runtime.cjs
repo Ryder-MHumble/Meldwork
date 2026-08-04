@@ -29,9 +29,136 @@ const OPENCLAW_PROVIDER_APIS = new Set([
   'ollama',
   'azure-openai-responses',
 ])
+const OPENCLAW_RUNTIME_PATH_ENV_KEYS = Object.freeze([
+  'OPENCLAW_HOME',
+  'OPENCLAW_STATE_DIR',
+  'OPENCLAW_CONFIG_PATH',
+  'OPENCLAW_WORKSPACE_DIR',
+])
+const OPENCLAW_RUNTIME_CREDENTIAL_KEYS = new Set([
+  'ROUNDRELAY_OPENCLAW_API_KEY',
+  'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
+])
+const issuedOpenClawRuntimeGuards = new WeakSet()
+const openClawRuntimeCredentialDigests = new WeakMap()
+const OPENCLAW_ENV_SECRET_NAME = /^[A-Z][A-Z0-9_]{0,127}$/
+const OPENCLAW_SECRET_MARKERS = new Set([
+  'secretref-managed',
+  'minimax-oauth',
+  'ollama-local',
+  'custom-local',
+  'codex-app-server',
+  'gcp-vertex-credentials',
+])
+
+function isOpenClawSecretReference(input) {
+  if (input && typeof input === 'object') return true
+  if (typeof input !== 'string') return false
+  const value = input.trim()
+  if (!value) return false
+  if (OPENCLAW_ENV_SECRET_NAME.test(value)) return true
+  if (/^\$(?:[A-Z][A-Z0-9_]{0,127}|\{[A-Z][A-Z0-9_]{0,127}\})$/.test(value)) return true
+  if (/^(?:secretref-env:|__env__:)[A-Z][A-Z0-9_]{0,127}$/.test(value)) return true
+  return value.startsWith('oauth:') || OPENCLAW_SECRET_MARKERS.has(value)
+}
+
+function identityValue(value) {
+  return typeof value === 'bigint' ? value.toString() : String(value)
+}
+
+function sameFilesystemIdentity(stat, expected) {
+  return identityValue(stat.dev) === expected.dev
+    && identityValue(stat.ino) === expected.ino
+    && (expected.birthtime === undefined
+      || identityValue(stat.birthtimeMs) === expected.birthtime)
+}
+
+function directoryIdentity(filename) {
+  const resolved = path.resolve(filename)
+  const stat = fs.lstatSync(resolved)
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(resolved) !== resolved) {
+    throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  }
+  return Object.freeze({
+    path: resolved,
+    dev: identityValue(stat.dev),
+    ino: identityValue(stat.ino),
+    birthtime: identityValue(stat.birthtimeMs),
+    mode: stat.mode,
+  })
+}
+
+function fileIdentity(filename) {
+  const resolved = path.resolve(filename)
+  const entry = fs.lstatSync(resolved)
+  if (!entry.isFile() || entry.isSymbolicLink() || fs.realpathSync(resolved) !== resolved) {
+    throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  }
+  const noFollow = fs.constants.O_NOFOLLOW || 0
+  const descriptor = fs.openSync(resolved, fs.constants.O_RDONLY | noFollow)
+  try {
+    const before = fs.fstatSync(descriptor)
+    if (!before.isFile() || !sameFilesystemIdentity(before, {
+      dev: identityValue(entry.dev),
+      ino: identityValue(entry.ino),
+      birthtime: identityValue(entry.birthtimeMs),
+    })) {
+      throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+    }
+    const contents = fs.readFileSync(descriptor)
+    const after = fs.fstatSync(descriptor)
+    const current = fs.lstatSync(resolved)
+    if (!sameFilesystemIdentity(after, {
+      dev: identityValue(before.dev),
+      ino: identityValue(before.ino),
+      birthtime: identityValue(before.birthtimeMs),
+    }) || current.isSymbolicLink() || !current.isFile()
+        || !sameFilesystemIdentity(current, {
+          dev: identityValue(before.dev),
+          ino: identityValue(before.ino),
+          birthtime: identityValue(before.birthtimeMs),
+        }) || fs.realpathSync(resolved) !== resolved) {
+      throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+    }
+    return Object.freeze({
+      path: resolved,
+      dev: identityValue(before.dev),
+      ino: identityValue(before.ino),
+      birthtime: identityValue(before.birthtimeMs),
+      mode: before.mode,
+      size: contents.length,
+      digest: crypto.createHash('sha256').update(contents).digest('hex'),
+    })
+  } finally {
+    fs.closeSync(descriptor)
+  }
+}
+
+function validateDirectoryIdentities(identities) {
+  for (const expected of identities) {
+    const current = directoryIdentity(expected.path)
+    if (current.dev !== expected.dev || current.ino !== expected.ino) {
+      throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+    }
+    if (current.birthtime !== expected.birthtime
+        || (process.platform !== 'win32' && (current.mode & 0o777) !== 0o700)) {
+      throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+    }
+  }
+}
+
+function validateFileIdentity(expected) {
+  const current = fileIdentity(expected.path)
+  if (current.dev !== expected.dev || current.ino !== expected.ino
+      || current.birthtime !== expected.birthtime
+      || (process.platform !== 'win32' && (current.mode & 0o777) !== 0o600)
+      || current.size !== expected.size || current.digest !== expected.digest) {
+    throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  }
+}
 
 function normalizeProvider(input) {
-  const apiKey = String(input?.OPENAI_API_KEY || '').trim()
+  const apiKey = typeof input?.OPENAI_API_KEY === 'string' ? input.OPENAI_API_KEY.trim() : ''
   const baseUrl = String(input?.OPENAI_BASE_URL || '')
     .trim()
     .replace(/\/+$/, '')
@@ -40,7 +167,8 @@ function normalizeProvider(input) {
   let parsed
   try { parsed = new URL(baseUrl) } catch { throw new Error('OPENCLAW_PROVIDER_INVALID') }
   const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
-  if (!apiKey || apiKey.length > 8192 || !model || model.length > 120
+  if (!apiKey || apiKey.length > 8192 || isOpenClawSecretReference(apiKey)
+      || !model || model.length > 120
       || (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && loopback))
       || parsed.username || parsed.password || parsed.search || parsed.hash) {
     throw new Error('OPENCLAW_PROVIDER_INVALID')
@@ -68,27 +196,34 @@ function runtimePaths({ storageRoot, workdir, sessionRef, configName }) {
   const home = path.join(runtimeRoot, 'home')
   const state = path.join(runtimeRoot, 'state')
   const configPath = path.join(runtimeRoot, configName)
-  for (const directory of [
+  const directories = [
     path.join(resolvedStorageRoot, 'openclaw-managed'),
     runtimeRoot,
     home,
+    path.join(home, '.config'),
+    path.join(home, '.local'),
+    path.join(home, '.local', 'share'),
+    path.join(home, '.local', 'state'),
+    path.join(home, '.cache'),
+    path.join(home, '.runtime'),
+    path.join(home, 'AppData'),
+    path.join(home, 'AppData', 'Roaming'),
+    path.join(home, 'AppData', 'Local'),
     state,
-  ]) {
+  ]
+  for (const directory of directories) {
     try {
       fs.mkdirSync(directory, { mode: 0o700 })
     } catch (error) {
       if (error?.code !== 'EEXIST') throw error
     }
-    const stat = fs.lstatSync(directory)
-    if (!stat.isDirectory() || stat.isSymbolicLink()
-        || fs.realpathSync(directory) !== directory) {
-      throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
-    }
+    const stat = directoryIdentity(directory)
     if (process.platform !== 'win32' && (stat.mode & 0o777) !== 0o700) {
       fs.chmodSync(directory, 0o700)
     }
   }
-  return { resolvedWorkdir, home, state, configPath }
+  const directoryIdentities = Object.freeze(directories.map(directoryIdentity))
+  return { resolvedWorkdir, home, state, configPath, directoryIdentities }
 }
 
 function toolPolicy(allowWrite) {
@@ -104,9 +239,55 @@ function toolPolicy(allowWrite) {
   }
 }
 
-function writeRuntimeConfig(configPath, config) {
+function writeRuntimeConfig(runtime, config, credentialKey, credentialValue) {
   const contents = `${JSON.stringify(config, null, 2)}\n`
-  atomicWritePrivateFile(configPath, contents)
+  validateDirectoryIdentities(runtime.directoryIdentities)
+  atomicWritePrivateFile(runtime.configPath, contents)
+  validateDirectoryIdentities(runtime.directoryIdentities)
+  const configIdentity = fileIdentity(runtime.configPath)
+  const guard = Object.freeze({
+    directories: runtime.directoryIdentities,
+    config: configIdentity,
+    paths: Object.freeze({
+      OPENCLAW_HOME: runtime.home,
+      OPENCLAW_STATE_DIR: runtime.state,
+      OPENCLAW_CONFIG_PATH: runtime.configPath,
+      OPENCLAW_WORKSPACE_DIR: runtime.resolvedWorkdir,
+    }),
+    credentialKey,
+  })
+  issuedOpenClawRuntimeGuards.add(guard)
+  openClawRuntimeCredentialDigests.set(
+    guard,
+    crypto.createHash('sha256').update(credentialValue).digest('hex'),
+  )
+  return guard
+}
+
+function validateOpenClawRuntimeGuard(guard, env = {}) {
+  const credentialDigest = guard && typeof guard === 'object'
+    ? openClawRuntimeCredentialDigests.get(guard)
+    : undefined
+  if (!guard || typeof guard !== 'object' || !issuedOpenClawRuntimeGuards.has(guard)
+      || !Array.isArray(guard.directories)
+      || !guard.config || !guard.paths
+      || !OPENCLAW_RUNTIME_CREDENTIAL_KEYS.has(guard.credentialKey)
+      || typeof credentialDigest !== 'string') {
+    throw new Error('OPENCLAW_RUNTIME_GUARD_REQUIRED')
+  }
+  for (const key of OPENCLAW_RUNTIME_PATH_ENV_KEYS) {
+    if (env[key] !== guard.paths[key]) throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  }
+  if (typeof env[guard.credentialKey] !== 'string' || !env[guard.credentialKey]) {
+    throw new Error('OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID')
+  }
+  if (crypto.createHash('sha256').update(env[guard.credentialKey]).digest('hex')
+      !== credentialDigest) {
+    throw new Error('OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID')
+  }
+  validateDirectoryIdentities(guard.directories)
+  validateFileIdentity(guard.config)
+  return true
 }
 
 function normalizedNativeModel(input) {
@@ -145,9 +326,10 @@ function managedOpenClawOptions({
   const configName = allowWrite
     ? 'openclaw.provider.workspace-write.json'
     : 'openclaw.provider.read-only.json'
-  const { resolvedWorkdir, home, state, configPath } = runtimePaths({
+  const runtime = runtimePaths({
     storageRoot, workdir, sessionRef, configName,
   })
+  const { resolvedWorkdir, home, state, configPath } = runtime
 
   const modelRef = `${MANAGED_OPENCLAW_PROVIDER_ID}/${normalized.model}`
   const config = {
@@ -173,15 +355,17 @@ function managedOpenClawOptions({
     },
     tools: toolPolicy(allowWrite),
   }
-  writeRuntimeConfig(configPath, config)
+  const credentialKey = 'ROUNDRELAY_OPENCLAW_API_KEY'
+  const openClawRuntimeGuard = writeRuntimeConfig(runtime, config, credentialKey, normalized.apiKey)
 
   return {
+    openClawRuntimeGuard,
     env: {
       OPENCLAW_HOME: home,
       OPENCLAW_STATE_DIR: state,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: resolvedWorkdir,
-      ROUNDRELAY_OPENCLAW_API_KEY: normalized.apiKey,
+      [credentialKey]: normalized.apiKey,
     },
   }
 }
@@ -192,13 +376,13 @@ function nativeOpenClawOptions({
   const modelRef = String(runtime?.model || '').trim()
   const provider = runtime?.provider
   const providerId = String(provider?.id || '').trim()
-  const apiKey = String(provider?.apiKey || '').trim()
+  const apiKey = typeof provider?.apiKey === 'string' ? provider.apiKey.trim() : ''
   const baseUrl = String(provider?.baseUrl || '').trim()
   const api = String(provider?.api || '').trim()
   const model = normalizedNativeModel(provider?.model)
   if (!OPENCLAW_MODEL_REF.test(modelRef)
       || !NATIVE_OPENCLAW_PROVIDER_ID.test(providerId)
-      || !apiKey || apiKey.length > 8192
+      || !apiKey || apiKey.length > 8192 || isOpenClawSecretReference(apiKey)
       || !OPENCLAW_PROVIDER_APIS.has(api)
       || !model || typeof model !== 'object' || Array.isArray(model)
       || String(model.id || '').trim() === ''
@@ -218,9 +402,10 @@ function nativeOpenClawOptions({
   const configName = allowWrite
     ? 'openclaw.native.workspace-write.json'
     : 'openclaw.native.read-only.json'
-  const { resolvedWorkdir, home, state, configPath } = runtimePaths({
+  const runtimePathsResult = runtimePaths({
     storageRoot, workdir, sessionRef, configName,
   })
+  const { resolvedWorkdir, home, state, configPath } = runtimePathsResult
   const modelConfig = { primary: modelRef }
   const config = {
     agents: {
@@ -245,16 +430,25 @@ function nativeOpenClawOptions({
     },
     tools: toolPolicy(allowWrite),
   }
-  writeRuntimeConfig(configPath, config)
+  const credentialKey = 'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY'
+  const openClawRuntimeGuard = writeRuntimeConfig(
+    runtimePathsResult, config, credentialKey, apiKey,
+  )
   return {
+    openClawRuntimeGuard,
     env: {
       OPENCLAW_HOME: home,
       OPENCLAW_STATE_DIR: state,
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: resolvedWorkdir,
-      ROUNDRELAY_OPENCLAW_NATIVE_API_KEY: apiKey,
+      [credentialKey]: apiKey,
     },
   }
 }
 
-module.exports = { managedOpenClawOptions, nativeOpenClawOptions }
+module.exports = {
+  isOpenClawSecretReference,
+  managedOpenClawOptions,
+  nativeOpenClawOptions,
+  validateOpenClawRuntimeGuard,
+}

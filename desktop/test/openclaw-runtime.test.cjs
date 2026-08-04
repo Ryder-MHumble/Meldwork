@@ -5,7 +5,11 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { managedOpenClawOptions, nativeOpenClawOptions } = require('../src/openclaw-runtime.cjs')
+const {
+  managedOpenClawOptions,
+  nativeOpenClawOptions,
+  validateOpenClawRuntimeGuard,
+} = require('../src/openclaw-runtime.cjs')
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-'))
@@ -190,6 +194,13 @@ test('native runtime descriptors fail closed before a config is written', (t) =>
     { ...nativeRuntime(), model: 'invalid model' },
     { ...nativeRuntime(), provider: { ...nativeRuntime().provider, id: 'native.id' } },
     { ...nativeRuntime(), provider: { ...nativeRuntime().provider, apiKey: '' } },
+    {
+      ...nativeRuntime(),
+      provider: {
+        ...nativeRuntime().provider,
+        apiKey: { source: 'env', provider: 'default', id: 'GITHUB_TOKEN' },
+      },
+    },
     { ...nativeRuntime(), provider: { ...nativeRuntime().provider, api: 'invalid' } },
     { ...nativeRuntime(), provider: { ...nativeRuntime().provider, baseUrl: 'http://native.example/v1' } },
     {
@@ -202,6 +213,43 @@ test('native runtime descriptors fail closed before a config is written', (t) =>
   ]) {
     assert.throws(() => nativeOpenClawOptions({
       storageRoot: directory, workdir, runtime,
+    }), { message: 'OPENCLAW_NATIVE_RUNTIME_INVALID' })
+  }
+})
+
+test('managed and native runtime boundaries reject every SecretRef form', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const references = [
+    { source: 'env', provider: 'default', id: 'GITHUB_TOKEN' },
+    { source: 'file', provider: 'default', id: '/tmp/secret' },
+    { source: 'exec', provider: 'default', id: 'secret-command' },
+    { source: 'env', id: 'GITHUB_TOKEN' },
+    '$GITHUB_TOKEN',
+    '${GITHUB_TOKEN}',
+    'secretref-env:GITHUB_TOKEN',
+    '__env__:GITHUB_TOKEN',
+    'secretref-managed',
+    'GITHUB_TOKEN',
+    'AWS_PROFILE',
+    'oauth:github',
+    'custom-local',
+    'gcp-vertex-credentials',
+  ]
+
+  for (const apiKey of references) {
+    assert.throws(() => managedOpenClawOptions({
+      storageRoot: directory,
+      workdir,
+      provider: provider(apiKey),
+    }), { message: 'OPENCLAW_PROVIDER_INVALID' })
+    assert.throws(() => nativeOpenClawOptions({
+      storageRoot: directory,
+      workdir,
+      runtime: {
+        ...nativeRuntime(),
+        provider: { ...nativeRuntime().provider, apiKey },
+      },
     }), { message: 'OPENCLAW_NATIVE_RUNTIME_INVALID' })
   }
 })
@@ -291,6 +339,147 @@ test('runtime config atomically replaces a matching-content symlink before execu
   const config = JSON.parse(fs.readFileSync(repaired.env.OPENCLAW_CONFIG_PATH, 'utf8'))
   assert.equal(config.tools.allow.includes('exec'), false)
   assert.equal(config.tools.deny.includes('exec'), true)
+})
+
+test('runtime config creation revalidates parent identities before writing', {
+  skip: process.platform === 'win32',
+}, (t) => {
+  const { directory, workdir } = fixture()
+  const external = path.join(directory, 'external-runtime')
+  fs.mkdirSync(external)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const originalRealpath = fs.realpathSync
+  let redirected = false
+  fs.realpathSync = function guardedRealpath(filename, ...args) {
+    const resolved = originalRealpath.call(this, filename, ...args)
+    if (!redirected && path.basename(String(filename)) === 'state') {
+      redirected = true
+      const runtimeRoot = path.dirname(String(filename))
+      fs.renameSync(runtimeRoot, `${runtimeRoot}.original`)
+      fs.symlinkSync(external, runtimeRoot, 'dir')
+    }
+    return resolved
+  }
+
+  try {
+    assert.throws(() => managedOpenClawOptions({
+      storageRoot: directory,
+      workdir,
+      sessionRef: 'agent:main:runtime-parent-change',
+      provider: provider(),
+    }), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+  } finally {
+    fs.realpathSync = originalRealpath
+  }
+  assert.deepEqual(fs.readdirSync(external), [])
+})
+
+test('runtime guard rejects directory and config identity changes before execution', {
+  skip: process.platform === 'win32',
+}, (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const directoryOptions = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:runtime-directory-guard',
+    provider: provider(),
+  })
+  const runtimeRoot = path.dirname(directoryOptions.env.OPENCLAW_CONFIG_PATH)
+  const originalRuntimeRoot = `${runtimeRoot}.original`
+  const external = path.join(directory, 'external-runtime-guard')
+  fs.mkdirSync(external)
+  fs.renameSync(runtimeRoot, originalRuntimeRoot)
+  fs.symlinkSync(external, runtimeRoot, 'dir')
+
+  assert.throws(() => validateOpenClawRuntimeGuard(
+    directoryOptions.openClawRuntimeGuard,
+    directoryOptions.env,
+  ), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+
+  const fileOptions = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:runtime-file-guard',
+    provider: provider(),
+  })
+  const configPath = fileOptions.env.OPENCLAW_CONFIG_PATH
+  const contents = fs.readFileSync(configPath)
+  fs.renameSync(configPath, `${configPath}.original`)
+  fs.writeFileSync(configPath, contents, { mode: 0o600 })
+
+  assert.throws(() => validateOpenClawRuntimeGuard(
+    fileOptions.openClawRuntimeGuard,
+    fileOptions.env,
+  ), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+})
+
+test('runtime guard rejects in-place config and credential changes without exposing secret state', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const configOptions = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:runtime-content-guard',
+    provider: provider(),
+  })
+  const serializedGuard = JSON.stringify(configOptions.openClawRuntimeGuard)
+  const credentialDigest = crypto.createHash('sha256')
+    .update(configOptions.env.ROUNDRELAY_OPENCLAW_API_KEY)
+    .digest('hex')
+  assert.equal(serializedGuard.includes(configOptions.env.ROUNDRELAY_OPENCLAW_API_KEY), false)
+  assert.equal(serializedGuard.includes(credentialDigest), false)
+
+  const configPath = configOptions.env.OPENCLAW_CONFIG_PATH
+  const originalIdentity = fs.statSync(configPath).ino
+  const originalConfig = fs.readFileSync(configPath, 'utf8')
+  fs.writeFileSync(configPath, originalConfig.replace('"read"', '"exec"'), { mode: 0o600 })
+  assert.equal(fs.statSync(configPath).ino, originalIdentity)
+  assert.throws(() => validateOpenClawRuntimeGuard(
+    configOptions.openClawRuntimeGuard,
+    configOptions.env,
+  ), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+
+  const credentialOptions = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:runtime-credential-guard',
+    provider: provider(),
+  })
+  assert.throws(() => validateOpenClawRuntimeGuard(
+    credentialOptions.openClawRuntimeGuard,
+    {
+      ...credentialOptions.env,
+      ROUNDRELAY_OPENCLAW_API_KEY: 'tampered-openclaw-key',
+    },
+  ), { message: 'OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID' })
+})
+
+test('runtime guard rejects permissions broadened after creation', {
+  skip: process.platform === 'win32',
+}, (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  for (const target of ['directory', 'config']) {
+    const options = managedOpenClawOptions({
+      storageRoot: directory,
+      workdir,
+      sessionRef: `agent:main:runtime-${target}-permission-guard`,
+      provider: provider(),
+    })
+    fs.chmodSync(
+      target === 'directory' ? options.env.OPENCLAW_HOME : options.env.OPENCLAW_CONFIG_PATH,
+      target === 'directory' ? 0o755 : 0o644,
+    )
+    assert.throws(() => validateOpenClawRuntimeGuard(
+      options.openClawRuntimeGuard,
+      options.env,
+    ), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+  }
 })
 
 test('runtime paths are stable and isolated per topic and workspace', (t) => {

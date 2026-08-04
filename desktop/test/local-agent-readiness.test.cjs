@@ -11,6 +11,19 @@ const {
   resolveNativeCredentialState,
 } = require('../src/local-agent-readiness.cjs')
 
+function openClawModelsCatalog(apiKey, baseUrl = 'https://provider.example/v1') {
+  return JSON.stringify({
+    providers: {
+      provider: {
+        baseUrl,
+        api: 'openai-completions',
+        apiKey,
+        models: [{ id: 'model', name: 'Model', input: ['text'] }],
+      },
+    },
+  })
+}
+
 test('Hermes readiness detects a native credential without returning its value', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-readiness-'))
   const secret = 'hermes-secret-value'
@@ -228,6 +241,166 @@ test('OpenClaw native runtime rejects Env SecretRefs without reading unrelated p
   }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
 
   assert.equal(calls[0].env.GITHUB_TOKEN, undefined)
+})
+
+test('OpenClaw native runtime rejects every structured and string SecretRef marker', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-secretrefs-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const refs = [
+    { source: 'env', provider: 'default', id: 'GITHUB_TOKEN' },
+    { source: 'file', provider: 'default', id: '/tmp/secret' },
+    { source: 'exec', provider: 'default', id: 'secret-command' },
+    { source: 'env', id: 'GITHUB_TOKEN' },
+    '$GITHUB_TOKEN',
+    '${GITHUB_TOKEN}',
+    'secretref-env:GITHUB_TOKEN',
+    '__env__:GITHUB_TOKEN',
+    'secretref-managed',
+    'GITHUB_TOKEN',
+    'AWS_PROFILE',
+    'oauth:github',
+    'custom-local',
+    'gcp-vertex-credentials',
+  ]
+
+  for (const apiKey of refs) {
+    fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog(apiKey))
+    await assert.rejects(resolveNativeOpenClawRuntime({
+      home,
+      env: {
+        PATH: '/usr/bin',
+        GITHUB_TOKEN: 'must-not-leave-process',
+        AWS_PROFILE: 'must-not-leave-process',
+      },
+      executable: '/tmp/openclaw',
+      execFileFn: async (_command, _args, options) => {
+        assert.equal(options.env.GITHUB_TOKEN, undefined)
+        assert.equal(options.env.AWS_PROFILE, undefined)
+        return { stdout: JSON.stringify({
+          resolvedDefault: 'provider/model', agentDir,
+          auth: { missingProvidersInUse: [] },
+        }) }
+      },
+    }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
+  }
+})
+
+test('OpenClaw native runtime rejects ancestor path changes while reading models', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-model-path-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  const external = path.join(home, 'external-agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  fs.mkdirSync(external)
+  fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog('inside-key'))
+  fs.writeFileSync(path.join(external, 'models.json'), openClawModelsCatalog('outside-key'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+
+  const canonicalAgentDir = fs.realpathSync(agentDir)
+  const modelsPath = path.join(canonicalAgentDir, 'models.json')
+  const originalLstat = fs.lstatSync
+  let redirected = false
+  fs.lstatSync = function guardedLstat(filename, ...args) {
+    const stat = originalLstat.call(this, filename, ...args)
+    if (!redirected && String(filename) === modelsPath) {
+      redirected = true
+      fs.renameSync(agentDir, `${agentDir}.original`)
+      fs.symlinkSync(external, agentDir, 'dir')
+    }
+    return stat
+  }
+
+  try {
+    await assert.rejects(resolveNativeOpenClawRuntime({
+      home,
+      env: {},
+      executable: '/tmp/openclaw',
+      execFileFn: async () => ({ stdout: JSON.stringify({
+        resolvedDefault: 'provider/model', agentDir,
+        auth: { missingProvidersInUse: [] },
+      }) }),
+    }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
+  } finally {
+    fs.lstatSync = originalLstat
+  }
+})
+
+test('OpenClaw native runtime rejects models file identity changes after opening', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-model-inode-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog('inside-key'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+
+  const modelsPath = path.join(fs.realpathSync(agentDir), 'models.json')
+  const originalOpen = fs.openSync
+  let replaced = false
+  fs.openSync = function guardedOpen(filename, ...args) {
+    const descriptor = originalOpen.call(this, filename, ...args)
+    if (!replaced && String(filename) === modelsPath) {
+      replaced = true
+      fs.renameSync(modelsPath, `${modelsPath}.original`)
+      fs.writeFileSync(modelsPath, openClawModelsCatalog('replacement-key'))
+    }
+    return descriptor
+  }
+
+  try {
+    await assert.rejects(resolveNativeOpenClawRuntime({
+      home,
+      env: {},
+      executable: '/tmp/openclaw',
+      execFileFn: async () => ({ stdout: JSON.stringify({
+        resolvedDefault: 'provider/model', agentDir,
+        auth: { missingProvidersInUse: [] },
+      }) }),
+    }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
+  } finally {
+    fs.openSync = originalOpen
+  }
+})
+
+test('OpenClaw native runtime rejects in-place models changes while reading', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-model-content-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog('inside-key'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+
+  const modelsPath = path.join(fs.realpathSync(agentDir), 'models.json')
+  const originalReadFile = fs.readFileSync
+  const originalIdentity = fs.statSync(modelsPath).ino
+  let modified = false
+  fs.readFileSync = function guardedReadFile(filename, ...args) {
+    const contents = originalReadFile.call(this, filename, ...args)
+    if (!modified && typeof filename === 'number') {
+      modified = true
+      fs.writeFileSync(modelsPath, openClawModelsCatalog('edited-key'))
+      assert.equal(fs.statSync(modelsPath).ino, originalIdentity)
+    }
+    return contents
+  }
+
+  try {
+    await assert.rejects(resolveNativeOpenClawRuntime({
+      home,
+      env: {},
+      executable: '/tmp/openclaw',
+      execFileFn: async () => ({ stdout: JSON.stringify({
+        resolvedDefault: 'provider/model', agentDir,
+        auth: { missingProvidersInUse: [] },
+      }) }),
+    }), { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' })
+  } finally {
+    fs.readFileSync = originalReadFile
+  }
 })
 
 test('OpenClaw native runtime rejects unsafe status and Provider descriptors', async (t) => {

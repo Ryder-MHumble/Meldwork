@@ -2,6 +2,7 @@ const path = require('node:path')
 const { searchPath, systemChildEnvironment } = require('./cli-discovery.cjs')
 const { redactChildSecrets } = require('./cli-runtime-events.cjs')
 const { agentRuntimeError } = require('./agent-runtime-contract.cjs')
+const { validateOpenClawRuntimeGuard } = require('./openclaw-runtime.cjs')
 
 const TERMINATE_GRACE_MS = 500
 const KILL_SETTLE_MS = 500
@@ -14,6 +15,19 @@ const OPENCODE_READ_ONLY_PERMISSION = JSON.stringify({
   webfetch: 'allow',
   websearch: 'allow',
 })
+const OPENCLAW_RUNTIME_PATH_KEYS = Object.freeze([
+  'OPENCLAW_HOME',
+  'OPENCLAW_STATE_DIR',
+  'OPENCLAW_CONFIG_PATH',
+  'OPENCLAW_WORKSPACE_DIR',
+])
+const OPENCLAW_GUARDED_ENV_KEYS = new Set([
+  'OPENCLAW_HOME',
+  'OPENCLAW_STATE_DIR',
+  'OPENCLAW_CONFIG_PATH',
+  'ROUNDRELAY_OPENCLAW_API_KEY',
+  'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
+])
 
 function agentExecutionError(code, diagnostic = '') {
   return agentRuntimeError(code, diagnostic)
@@ -44,7 +58,50 @@ function failedAgentProcessError(detail, options = {}) {
   )
 }
 
+function openClawChildEnvironment(workdir, options, platform) {
+  const source = options.env || {}
+  const guard = options.openClawRuntimeGuard
+  if (!guard && Object.keys(source).some(key => OPENCLAW_GUARDED_ENV_KEYS.has(key))) {
+    throw new Error('OPENCLAW_RUNTIME_GUARD_REQUIRED')
+  }
+  if (guard) validateOpenClawRuntimeGuard(guard, source)
+  if (guard && source.OPENCLAW_WORKSPACE_DIR !== path.resolve(workdir)) {
+    throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  }
+
+  const env = systemChildEnvironment(process.env, platform)
+  for (const key of [
+    'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
+    'XDG_RUNTIME_DIR', 'APPDATA', 'LOCALAPPDATA',
+  ]) {
+    delete env[key]
+  }
+
+  if (guard) {
+    for (const key of OPENCLAW_RUNTIME_PATH_KEYS) env[key] = source[key]
+    env[guard.credentialKey] = source[guard.credentialKey]
+    const isolatedHome = source.OPENCLAW_HOME
+    env.HOME = isolatedHome
+    env.USERPROFILE = isolatedHome
+    env.XDG_CONFIG_HOME = path.join(isolatedHome, '.config')
+    env.XDG_DATA_HOME = path.join(isolatedHome, '.local', 'share')
+    env.XDG_STATE_HOME = path.join(isolatedHome, '.local', 'state')
+    env.XDG_CACHE_HOME = path.join(isolatedHome, '.cache')
+    env.XDG_RUNTIME_DIR = path.join(isolatedHome, '.runtime')
+    env.APPDATA = path.join(isolatedHome, 'AppData', 'Roaming')
+    env.LOCALAPPDATA = path.join(isolatedHome, 'AppData', 'Local')
+  } else {
+    env.OPENCLAW_WORKSPACE_DIR = path.resolve(workdir)
+  }
+  env.PATH = searchPath({ platform })
+  return env
+}
+
 function childEnvironment(agent, workdir, options, platform) {
+  if (agent.kind === 'openclaw') {
+    return openClawChildEnvironment(workdir, options, platform)
+  }
   const hermesSafetyEnv = agent.kind === 'hermes'
     ? options.sandbox === 'workspace-write'
       ? { HERMES_EXEC_ASK: '', HERMES_YOLO_MODE: '1' }
@@ -54,15 +111,11 @@ function childEnvironment(agent, workdir, options, platform) {
       && options.sandbox !== 'workspace-write'
     ? { OPENCODE_PERMISSION: OPENCODE_READ_ONLY_PERMISSION }
     : {}
-  const openClawWorkspaceEnv = agent.kind === 'openclaw'
-    ? { OPENCLAW_WORKSPACE_DIR: path.resolve(workdir) }
-    : {}
   return {
     ...systemChildEnvironment(process.env, platform),
     ...options.env,
     ...hermesSafetyEnv,
     ...openCodeSafetyEnv,
-    ...openClawWorkspaceEnv,
     PATH: searchPath({ platform }),
   }
 }

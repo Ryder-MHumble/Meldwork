@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { promisify } = require('node:util')
 const { prepareCommand, searchPath } = require('./cli-adapters.cjs')
+const { isOpenClawSecretReference } = require('./openclaw-runtime.cjs')
 
 const execFileAsync = promisify(execFile)
 
@@ -179,6 +180,49 @@ function pathInside(parent, child) {
     && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)
 }
 
+function identityValue(value) {
+  return typeof value === 'bigint' ? value.toString() : String(value)
+}
+
+function sameFilesystemIdentity(stat, expected) {
+  return identityValue(stat.dev) === expected.dev && identityValue(stat.ino) === expected.ino
+}
+
+function fileVersion(stat) {
+  return {
+    dev: identityValue(stat.dev),
+    ino: identityValue(stat.ino),
+    size: identityValue(stat.size),
+    mtime: identityValue(stat.mtimeNs ?? stat.mtimeMs),
+    ctime: identityValue(stat.ctimeNs ?? stat.ctimeMs),
+  }
+}
+
+function sameFileVersion(stat, expected) {
+  const current = fileVersion(stat)
+  return current.dev === expected.dev && current.ino === expected.ino
+    && current.size === expected.size && current.mtime === expected.mtime
+    && current.ctime === expected.ctime
+}
+
+function openClawDirectoryIdentity(filename) {
+  const resolved = path.resolve(filename)
+  const stat = fs.lstatSync(resolved)
+  if (!stat.isDirectory() || stat.isSymbolicLink() || fs.realpathSync(resolved) !== resolved) {
+    throw new Error('OPENCLAW_NATIVE_RUNTIME_UNSAFE_PATH')
+  }
+  return { path: resolved, dev: identityValue(stat.dev), ino: identityValue(stat.ino) }
+}
+
+function validateOpenClawDirectoryIdentities(identities) {
+  for (const expected of identities) {
+    const current = openClawDirectoryIdentity(expected.path)
+    if (current.dev !== expected.dev || current.ino !== expected.ino) {
+      throw new Error('OPENCLAW_NATIVE_RUNTIME_UNSAFE_PATH')
+    }
+  }
+}
+
 function parseOpenClawStatus(output, options = {}) {
   try {
     const status = JSON.parse(String(output || '').trim())
@@ -192,14 +236,26 @@ function parseOpenClawStatus(output, options = {}) {
     if (!path.isAbsolute(requestedAgentDir)) {
       return { credentialState: { state: 'ready', source: 'native-auth-status' } }
     }
-    const nativeRoot = fs.realpathSync(path.join(options.home || os.homedir(), '.openclaw'))
+    const resolvedHome = fs.realpathSync(path.resolve(options.home || os.homedir()))
+    const nativeRoot = path.join(resolvedHome, '.openclaw')
+    const nativeRootIdentity = openClawDirectoryIdentity(nativeRoot)
     const agentDir = fs.realpathSync(requestedAgentDir)
     if (!fs.statSync(agentDir).isDirectory() || !pathInside(nativeRoot, agentDir)) {
       return { credentialState: { state: 'ready', source: 'native-auth-status' } }
     }
+    const directoryIdentities = [nativeRootIdentity]
+    let current = nativeRoot
+    for (const segment of path.relative(nativeRoot, agentDir).split(path.sep).filter(Boolean)) {
+      current = path.join(current, segment)
+      directoryIdentities.push(openClawDirectoryIdentity(current))
+    }
     return {
       credentialState: { state: 'ready', source: 'native-auth-status' },
-      runtime: { model: resolvedModel, agentDir: path.normalize(agentDir) },
+      runtime: {
+        model: resolvedModel,
+        agentDir: path.normalize(agentDir),
+        directoryIdentities,
+      },
     }
   } catch {
     return null
@@ -263,7 +319,7 @@ function sanitizedOpenClawModel(input, modelId) {
 }
 
 function openClawApiKey(input) {
-  if (typeof input !== 'string') return ''
+  if (typeof input !== 'string' || isOpenClawSecretReference(input)) return ''
   const value = input.trim()
   return value && value.length <= 8192 ? value : ''
 }
@@ -290,16 +346,33 @@ function parseOpenClawModelsFile(output, modelRef) {
   }
 }
 
-function readOpenClawModelsFile(agentDir) {
-  const modelsPath = path.join(agentDir, 'models.json')
-  const entry = fs.lstatSync(modelsPath)
-  if (!entry.isFile() || entry.isSymbolicLink()) return ''
+function readOpenClawModelsFile(runtime) {
+  validateOpenClawDirectoryIdentities(runtime.directoryIdentities)
+  const modelsPath = path.join(runtime.agentDir, 'models.json')
+  const resolvedModelsPath = path.resolve(modelsPath)
+  const entry = fs.lstatSync(modelsPath, { bigint: true })
+  if (!entry.isFile() || entry.isSymbolicLink()
+      || fs.realpathSync(resolvedModelsPath) !== resolvedModelsPath) return ''
   const noFollow = fs.constants.O_NOFOLLOW || 0
-  const descriptor = fs.openSync(modelsPath, fs.constants.O_RDONLY | noFollow)
+  const descriptor = fs.openSync(resolvedModelsPath, fs.constants.O_RDONLY | noFollow)
   try {
-    const stat = fs.fstatSync(descriptor)
-    if (!stat.isFile() || stat.size <= 0 || stat.size > MAX_CREDENTIAL_FILE_BYTES) return ''
-    return fs.readFileSync(descriptor, 'utf8')
+    const before = fs.fstatSync(descriptor, { bigint: true })
+    if (!before.isFile() || before.size <= 0n || before.size > BigInt(MAX_CREDENTIAL_FILE_BYTES)
+        || !sameFilesystemIdentity(before, {
+          dev: identityValue(entry.dev), ino: identityValue(entry.ino),
+        })) return ''
+    const expectedVersion = fileVersion(before)
+    const contents = fs.readFileSync(descriptor, 'utf8')
+    const after = fs.fstatSync(descriptor, { bigint: true })
+    validateOpenClawDirectoryIdentities(runtime.directoryIdentities)
+    const current = fs.lstatSync(resolvedModelsPath, { bigint: true })
+    if (!sameFileVersion(after, expectedVersion)
+        || !current.isFile() || current.isSymbolicLink()
+        || !sameFileVersion(current, expectedVersion)
+        || fs.realpathSync(resolvedModelsPath) !== resolvedModelsPath) {
+      throw new Error('OPENCLAW_NATIVE_RUNTIME_UNSAFE_PATH')
+    }
+    return contents
   } finally {
     fs.closeSync(descriptor)
   }
@@ -336,7 +409,7 @@ async function resolveNativeOpenClawRuntime(options = {}) {
   if (!parts) throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
   try {
     const runtime = parseOpenClawModelsFile(
-      readOpenClawModelsFile(status.runtime.agentDir),
+      readOpenClawModelsFile(status.runtime),
       status.runtime.model,
     )
     if (runtime) return runtime

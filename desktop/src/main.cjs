@@ -284,10 +284,11 @@ function createWorkspace() {
       const nativeEnv = agent.kind === 'openclaw'
         ? {}
         : nativeCredentialEnvironment(agent.kind)
+      const callerEnv = agent.kind === 'openclaw' ? {} : options.env
       return runAgent(agent, prompt, workdir, {
         ...options,
         ...injected,
-        env: { ...nativeEnv, ...options.env, ...injected.env },
+        env: { ...nativeEnv, ...callerEnv, ...injected.env },
       })
     },
   })
