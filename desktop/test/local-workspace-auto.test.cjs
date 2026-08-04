@@ -329,6 +329,41 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
   assert.equal(finished[0].mode, 'auto')
 })
 
+test('automatic dialogue persists attempts beyond the live Harness window', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const consensus = calls.length > 60 ? 'agree' : 'continue'
+    return {
+      text: `${agent.kind} round result\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Durable automatic history',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi', 'openclaw'],
+    workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Keep every automatic attempt durable')
+
+  workspace.startAuto({ groupId: group.id, unlimitedRounds: true })
+  const runId = workspace.activeRuns.get(group.id).runId
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(calls.length, 65)
+  const restored = new RunLedger({ storagePath: ledgerPath }).get(runId)
+  assert.equal(restored.agentRuns.length, 65)
+  assert.equal(restored.agentRuns[0].round, 1)
+  assert.equal(restored.agentRuns[0].kind, 'codex')
+  assert.equal(restored.agentRuns.at(-1).round, 13)
+  assert.equal(restored.agentRuns.at(-1).kind, 'openclaw')
+})
+
 test('automatic dialogue reuses Kimi ACP sessions across rounds', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

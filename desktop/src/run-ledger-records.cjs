@@ -1,12 +1,12 @@
 const { redactSecrets } = require('./secret-redaction.cjs')
 const {
-  DEFAULT_MAX_AGENT_RUNS,
   DEFAULT_MAX_EVENTS_PER_AGENT,
   DEFAULT_MAX_OUTPUT_CHARS,
   normalizeRunEvent,
   normalizeTraceCapsule,
 } = require('./run-harness.cjs')
 
+const DEFAULT_MAX_DURABLE_AGENT_RUNS = 256
 const MAX_TARGET_KINDS = 32
 const MAX_REASON_CHARS = 240
 const PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
@@ -353,7 +353,7 @@ function normalizeRecord(input, options = {}) {
   const parent = { runId, groupId, threadRootId, targetKinds }
   const rawAgentRuns = selectedValue(input, existing, 'agentRuns')
   const agentRuns = (Array.isArray(rawAgentRuns) ? rawAgentRuns : [])
-    .slice(-DEFAULT_MAX_AGENT_RUNS)
+    .slice(-DEFAULT_MAX_DURABLE_AGENT_RUNS)
     .map(agentRun => normalizeAgentRun(agentRun, parent, startedAt))
     .filter(Boolean)
 
@@ -426,6 +426,7 @@ function newestFirst(records) {
 }
 
 module.exports = {
+  DEFAULT_MAX_DURABLE_AGENT_RUNS,
   TERMINAL_STATUSES,
   boundedNumber,
   cleanGroupId,

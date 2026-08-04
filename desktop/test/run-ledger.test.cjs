@@ -105,7 +105,7 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
     command: `cat /Users/private/${index}`,
   }))
   const sourceMessageIds = Array.from({ length: 40 }, (_, index) => `message-${index}`)
-  const extraAgentRuns = Array.from({ length: 69 }, (_, index) => ({
+  const extraAgentRuns = Array.from({ length: 260 }, (_, index) => ({
     agentRunId: `extra-agent-${index}`,
     kind: 'codex',
     status: 'completed',
@@ -148,7 +148,7 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   assert.equal(saved.currentRound, 8)
   assert.equal(saved.startedAt, 1000)
   assert.equal('arbitrary' in saved, false)
-  assert.equal(saved.agentRuns.length, 64)
+  assert.equal(saved.agentRuns.length, 256)
   const boundedAgent = saved.agentRuns.at(-1)
   assert.equal(boundedAgent.output.length, 20000)
   assert.equal(boundedAgent.events.length, 80)
@@ -168,6 +168,48 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   const detached = restored.list()
   detached[0].agentRuns.at(-1).context.charCount = 1
   assert.equal(restored.get('run-1').agentRuns.at(-1).context.charCount, 1000000)
+})
+
+test('merges sliding live Agent snapshots into durable history across restart', (t) => {
+  const { storagePath } = fixture(t)
+  let now = 1000
+  const ledger = new RunLedger({ storagePath, now: () => now })
+  const attempts = Array.from({ length: 65 }, (_, index) => ({
+    agentRunId: `agent-${index + 1}`,
+    kind: 'codex',
+    round: index + 1,
+    status: 'completed',
+    output: `Output ${index + 1}`,
+  }))
+
+  const first = ledger.checkpoint(runRecord(
+    'run-sliding', 'group-sliding', 'running', attempts.slice(0, 64),
+  ))
+  assert.deepEqual(
+    first.agentRuns.map(agentRun => agentRun.agentRunId),
+    attempts.slice(0, 64).map(attempt => attempt.agentRunId),
+  )
+
+  now = 2000
+  const nextSnapshot = attempts.slice(1).map(attempt => (
+    attempt.agentRunId === 'agent-32'
+      ? { ...attempt, status: 'failed', output: 'Fresh terminal output', reason: 'updated' }
+      : attempt
+  ))
+  const second = ledger.checkpoint(runRecord(
+    'run-sliding', 'group-sliding', 'running', nextSnapshot,
+  ))
+
+  assert.equal(second.agentRuns.length, 65)
+  assert.equal(second.agentRuns[0].agentRunId, 'agent-1')
+  assert.equal(second.agentRuns.at(-1).agentRunId, 'agent-65')
+  const updated = second.agentRuns.find(agentRun => agentRun.agentRunId === 'agent-32')
+  assert.equal(updated.status, 'failed')
+  assert.equal(updated.output, 'Fresh terminal output')
+  assert.equal(updated.reason, 'updated')
+
+  const restored = new RunLedger({ storagePath, now: () => 3000 }).get('run-sliding')
+  assert.deepEqual(restored.agentRuns, second.agentRuns)
 })
 
 test('writer normalizes invalid Agent and event statuses before restart', (t) => {

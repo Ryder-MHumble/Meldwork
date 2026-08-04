@@ -2,6 +2,7 @@ const fs = require('node:fs')
 
 const { atomicWritePrivateFile } = require('./private-file.cjs')
 const {
+  DEFAULT_MAX_DURABLE_AGENT_RUNS,
   TERMINAL_STATUSES,
   boundedNumber,
   cleanGroupId,
@@ -18,6 +19,24 @@ const {
 const STORE_VERSION = 1
 const DEFAULT_MAX_RUNS = 64
 const MAX_RUNS = 512
+
+function mergeAgentRuns(existingRuns, incomingRuns, targetKinds) {
+  const allowedKinds = new Set(targetKinds)
+  const merged = (Array.isArray(existingRuns) ? existingRuns : [])
+    .filter(agentRun => allowedKinds.has(agentRun.kind))
+    .map(clone)
+  const indexes = new Map(merged.map((agentRun, index) => [agentRun.agentRunId, index]))
+  for (const agentRun of Array.isArray(incomingRuns) ? incomingRuns : []) {
+    const index = indexes.get(agentRun.agentRunId)
+    if (index === undefined) {
+      indexes.set(agentRun.agentRunId, merged.length)
+      merged.push(agentRun)
+    } else {
+      merged[index] = agentRun
+    }
+  }
+  return merged.slice(-DEFAULT_MAX_DURABLE_AGENT_RUNS)
+}
 
 class RunLedger {
   constructor(options = {}) {
@@ -103,6 +122,13 @@ class RunLedger {
       touch: true,
     })
     if (!normalized) throw new Error('RUN_LEDGER_RECORD_INVALID')
+    if (existing) {
+      normalized.agentRuns = mergeAgentRuns(
+        existing.agentRuns,
+        normalized.agentRuns,
+        normalized.targetKinds,
+      )
+    }
     const nextRuns = this.runs.filter((_item, recordIndex) => recordIndex !== index)
     nextRuns.push(normalized)
     this.commit(pruneRecords(nextRuns, this.maxRuns))
