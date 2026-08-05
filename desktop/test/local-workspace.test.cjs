@@ -37,6 +37,24 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(readinessAgents.find(agent => agent.kind === 'kimi').executable, '/tmp/kimi')
 })
 
+test('rejects unsupported workflow submissions before launching an Agent', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Standard group', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Do not run this legacy workflow.',
+    targetKinds: ['codex'],
+    workflow: { template: 'role-review' },
+  }), { message: 'LOCAL_WORKFLOW_UNSUPPORTED' })
+  assert.equal(calls.length, 0)
+})
+
 test('workspace startup rejects orphaned Human Gates after restoring interrupted Runs', (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

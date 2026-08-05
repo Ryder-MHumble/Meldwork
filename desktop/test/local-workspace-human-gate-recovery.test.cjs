@@ -77,6 +77,52 @@ function removeContextPack(workspace, contextPackId) {
   ))
 }
 
+test('legacy Role Review continuations fail closed without reading workflow data', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Legacy workflow', agentKinds: ['codex'], workdir: directory,
+  })
+  const durable = {
+    runId: 'run-legacy-workflow',
+    groupId: group.id,
+    continuation: {
+      gateId: 'gate-legacy-workflow',
+      resumeKind: 'role_review_decision',
+    },
+  }
+  const controller = {
+    signal: new AbortController().signal,
+    stopReason: '',
+  }
+  let requestRead = false
+  let completed
+  let finished
+  workspace.runLedger = { get: () => durable }
+  workspace.canResumeHumanGateRecord = () => true
+  workspace.runCoordinator.resume = () => controller
+  workspace.humanGateStore.request = () => {
+    requestRead = true
+    return {}
+  }
+  workspace.completeHumanGateContinuation = (...args) => { completed = args }
+  workspace.finishRun = (...args) => { finished = args }
+
+  await workspace.resumeHumanGateDecision({
+    gateId: durable.continuation.gateId,
+    runId: durable.runId,
+    type: 'decision',
+  }, { status: 'approved', optionId: 'accept-artifact' })
+
+  assert.equal(requestRead, false)
+  assert.equal(controller.stopReason, 'LOCAL_WORKFLOW_UNSUPPORTED')
+  assert.deepEqual(completed, [durable.runId, durable.continuation.gateId, 'failed'])
+  assert.deepEqual(finished, [group.id, controller, 'failed'])
+  assert.equal(calls.length, 0)
+})
+
 test('restart resumes a durable Gate decision whose continuation checkpoint stayed pending once', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

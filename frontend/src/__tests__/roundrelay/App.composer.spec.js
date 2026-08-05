@@ -1,5 +1,4 @@
 import { readFileSync as readNodeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { resolve } from 'node:path'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -14,17 +13,6 @@ function readFileSync(filename, encoding) {
     return readStylesSource(filename)
   }
   return readNodeFileSync(filename, encoding)
-}
-
-function canonicalJson(value) {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') {
-    return JSON.stringify(value)
-  }
-  if (typeof value === 'number') return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
-  return `{${Object.keys(value).sort().map(key => (
-    `${JSON.stringify(key)}:${canonicalJson(value[key])}`
-  )).join(',')}}`
 }
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
@@ -56,105 +44,6 @@ afterEach(() => {
 })
 
 describe('RoundRelay workbench', () => {
-  it('creates a typed Role Review workflow from the group composer', async () => {
-    const { wrapper, bridge } = await mountApp(({ state }) => {
-      state.agents = AGENTS.slice(0, 4).map(agent => ({
-        kind: agent.kind,
-        installed: true,
-        available: true,
-        credentialState: 'ready',
-        version: '1.0.0',
-      }))
-      state.groups.push({
-        id: 'group-role-review',
-        conversationType: 'group',
-        name: 'Release review',
-        topic: '',
-        agentKinds: ['codex', 'hermes', 'openclaw', 'workbuddy'],
-        workdir: '/tmp/roundrelay-workspace',
-        allowWrite: false,
-        createdAt: '2026-08-05T08:00:00Z',
-        updatedAt: '2026-08-05T08:00:00Z',
-      })
-    })
-
-    await wrapper.get('.conversation-link').trigger('click')
-    await wrapper.get('.composer-box textarea').setValue('Prepare the release candidate')
-    await wrapper.get('.role-review-entry-button').trigger('click')
-
-    const form = wrapper.get('.role-review-form')
-    expect(wrapper.get('#modal-title').text()).toBe('Start role review')
-    expect(form.get('textarea').element.value).toBe('Prepare the release candidate')
-
-    const primaryChoices = form.findAll('.agent-choice')
-    expect(primaryChoices[0].classes()).toContain('selected')
-    await primaryChoices[2].get('input').setValue(true)
-    const selects = form.findAll('select')
-    await selects[1].setValue('workbuddy')
-    const textareas = form.findAll('textarea')
-    await textareas[1].setValue('The release Artifact is complete.\nFocused checks are documented.')
-    await form.trigger('submit')
-    await flushPromises()
-
-    expect(bridge.localWorkspace.send).toHaveBeenCalledTimes(1)
-    const payload = bridge.localWorkspace.send.mock.calls[0][0]
-    expect(payload).toMatchObject({
-      groupId: 'group-role-review',
-      text: 'Prepare the release candidate',
-      targetKinds: ['codex', 'openclaw', 'hermes', 'workbuddy'],
-      skillHints: [],
-      knowledgeBaseHints: [],
-      attachments: [],
-    })
-    expect(payload).not.toHaveProperty('mode')
-    expect(payload.workflow).toMatchObject({
-      version: 1,
-      recordType: 'workflow-definition',
-      template: 'role-review',
-      roles: { primary: 'codex', reviewer: 'hermes', arbiter: 'workbuddy' },
-      criteria: [
-        {
-          criterionId: 'criterion-1',
-          kind: 'artifact',
-          description: 'The release Artifact is complete.',
-          required: true,
-          requiredEvidenceLevel: 'observed',
-        },
-        {
-          criterionId: 'criterion-2',
-          kind: 'artifact',
-          description: 'Focused checks are documented.',
-          required: true,
-          requiredEvidenceLevel: 'observed',
-        },
-      ],
-    })
-    expect(payload.workflow.nodes).toEqual([
-      {
-        nodeId: 'primary-1', role: 'primary', agentKind: 'codex',
-        dependsOn: [], parallelSafe: true, criterionIds: [],
-      },
-      {
-        nodeId: 'primary-2', role: 'primary', agentKind: 'openclaw',
-        dependsOn: [], parallelSafe: true, criterionIds: [],
-      },
-      {
-        nodeId: 'review', role: 'reviewer', agentKind: 'hermes',
-        dependsOn: ['primary-1', 'primary-2'], parallelSafe: false,
-        criterionIds: ['criterion-1', 'criterion-2'],
-      },
-      {
-        nodeId: 'arbitrate', role: 'arbiter', agentKind: 'workbuddy',
-        dependsOn: ['review'], parallelSafe: false,
-        criterionIds: ['criterion-1', 'criterion-2'],
-      },
-    ])
-    const { workflowId, ...workflowBody } = payload.workflow
-    const expectedHash = createHash('sha256').update(canonicalJson(workflowBody)).digest('hex')
-    expect(workflowId).toBe(`workflow-${expectedHash}`)
-    wrapper.unmount()
-  })
-
   it('sends one mentioned Agent as a manual reply while the group defaults to automatic mode', async () => {
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -822,7 +711,6 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    expect(wrapper.find('.role-review-entry-button').exists()).toBe(false)
     bridge.agentInstaller.skills.mockClear()
     const textarea = wrapper.get('.composer-box textarea')
     await textarea.setValue('@review')

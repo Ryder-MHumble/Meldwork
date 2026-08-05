@@ -60,21 +60,7 @@
 
           <ConversationTimelineView :controller="timelineController" />
 
-          <div class="conversation-composer-stack">
-            <div v-if="activeGroup?.conversationType !== 'direct'" class="role-review-entry-row">
-              <button
-                class="secondary-button compact role-review-entry-button"
-                type="button"
-                :title="roleReviewEntryTitle"
-                :disabled="!canOpenRoleReview || Boolean(activeRun) || sending || importingAttachment"
-                @click="openRoleReview"
-              >
-                <GitCompareOutline aria-hidden="true" />
-                {{ t('roleReview.open') }}
-              </button>
-            </div>
-            <ConversationComposer :controller="composerController" />
-          </div>
+          <ConversationComposer :controller="composerController" />
         </section>
       </section>
 
@@ -113,7 +99,7 @@
               ref="modalDialog"
               class="modal"
               :class="{
-                medium: ['new-group', 'settings', 'custom-agent', 'role-review'].includes(modal),
+                medium: ['new-group', 'settings', 'custom-agent'].includes(modal),
                 'agent-detail-modal': modal === 'agent-detail',
                 'unlimited-confirm-modal': modal === 'unlimited-confirm',
               }"
@@ -132,98 +118,7 @@
                 </button>
               </header>
 
-              <form
-                v-if="modal === 'role-review'"
-                class="modal-body form-stack role-review-form"
-                @submit.prevent="startRoleReview"
-              >
-                <label>
-                  <span>{{ t('roleReview.task') }}</span>
-                  <textarea
-                    v-model="roleReviewForm.task"
-                    rows="3"
-                    maxlength="8000"
-                    :placeholder="t('roleReview.taskPlaceholder')"
-                    :disabled="sending"
-                  />
-                </label>
-
-                <fieldset :disabled="sending">
-                  <legend class="agent-choice-legend">
-                    <span>{{ t('roleReview.primaryAgents') }}</span>
-                    <small>{{ t('group.selectedCount', { count: roleReviewForm.primaryKinds.length }) }}</small>
-                  </legend>
-                  <div class="agent-choice-grid">
-                    <label
-                      v-for="agent in roleReviewAgents"
-                      :key="agent.kind"
-                      class="agent-choice"
-                      :class="{ selected: roleReviewForm.primaryKinds.includes(agent.kind) }"
-                      :title="agent.label"
-                    >
-                      <input
-                        v-model="roleReviewForm.primaryKinds"
-                        type="checkbox"
-                        :value="agent.kind"
-                        :disabled="roleReviewPrimaryDisabled(agent.kind)"
-                      />
-                      <img :src="agent.logo" alt="" />
-                      <span>{{ agent.label }}</span>
-                      <CheckmarkCircleOutline />
-                    </label>
-                  </div>
-                </fieldset>
-
-                <div class="settings-primary-grid">
-                  <label>
-                    <span>{{ t('roleReview.reviewer') }}</span>
-                    <select v-model="roleReviewForm.reviewerKind" :disabled="sending">
-                      <option
-                        v-for="agent in roleReviewReviewerAgents"
-                        :key="agent.kind"
-                        :value="agent.kind"
-                      >
-                        {{ agent.label }}
-                      </option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>{{ t('roleReview.arbiter') }}</span>
-                    <select v-model="roleReviewForm.arbiterKind" :disabled="sending">
-                      <option value="">{{ t('roleReview.noArbiter') }}</option>
-                      <option
-                        v-for="agent in roleReviewArbiterAgents"
-                        :key="agent.kind"
-                        :value="agent.kind"
-                      >
-                        {{ agent.label }}
-                      </option>
-                    </select>
-                  </label>
-                </div>
-
-                <label>
-                  <span>{{ t('roleReview.criteria') }}</span>
-                  <textarea
-                    v-model="roleReviewForm.criteriaText"
-                    rows="3"
-                    maxlength="4000"
-                    :placeholder="t('roleReview.criteriaPlaceholder')"
-                    :disabled="sending"
-                  />
-                </label>
-
-                <footer class="modal-footer">
-                  <button class="secondary-button" type="button" :disabled="sending" @click="closeModal">
-                    {{ t('common.cancel') }}
-                  </button>
-                  <button class="primary-button" type="submit" :disabled="!roleReviewCanSubmit || sending">
-                    {{ t('roleReview.start') }}
-                  </button>
-                </footer>
-              </form>
               <WorkspaceModalContent
-                v-else
                 ref="workspaceModalContent"
                 :controller="workspaceModalController"
               />
@@ -262,7 +157,6 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   CheckmarkCircleOutline,
   CloseOutline,
-  GitCompareOutline,
   WarningOutline,
 } from '@vicons/ionicons5'
 import ConversationComposer from './components/ConversationComposer.vue'
@@ -330,13 +224,6 @@ const saving = ref(false)
 const agentControlPendingAgentRunId = ref('')
 const humanGateDecisionPendingIds = ref([])
 const modal = ref('')
-const roleReviewForm = ref({
-  task: '',
-  primaryKinds: [],
-  reviewerKind: '',
-  arbiterKind: '',
-  criteriaText: '',
-})
 const composerContextVersion = ref(0)
 const maxRounds = ref(6)
 const unlimitedRounds = ref(false)
@@ -732,41 +619,6 @@ const composerTargetsReady = computed(() => (
   composerTargetKinds.value.length > 0
   && composerTargetKinds.value.every(kind => readyAgentKinds.value.has(kind))
 ))
-const roleReviewAgents = computed(() => {
-  const readyByKind = new Map(readyAgents.value.map(agent => [agent.kind, agent]))
-  return (activeGroup.value?.agentKinds || []).map(kind => readyByKind.get(kind)).filter(Boolean)
-})
-const canOpenRoleReview = computed(() => roleReviewAgents.value.length >= 2)
-const roleReviewEntryTitle = computed(() => (
-  canOpenRoleReview.value ? t('roleReview.open') : t('roleReview.unavailable')
-))
-const roleReviewReviewerAgents = computed(() => {
-  const primaryKinds = new Set(roleReviewForm.value.primaryKinds)
-  return roleReviewAgents.value.filter(agent => (
-    !primaryKinds.has(agent.kind) && agent.kind !== roleReviewForm.value.arbiterKind
-  ))
-})
-const roleReviewArbiterAgents = computed(() => {
-  const primaryKinds = new Set(roleReviewForm.value.primaryKinds)
-  return roleReviewAgents.value.filter(agent => (
-    !primaryKinds.has(agent.kind) && agent.kind !== roleReviewForm.value.reviewerKind
-  ))
-})
-const roleReviewCriteria = computed(() => roleReviewForm.value.criteriaText
-  .split(/\r?\n/u)
-  .map(value => value.trim())
-  .filter(Boolean))
-const roleReviewCanSubmit = computed(() => {
-  const form = roleReviewForm.value
-  const participants = [...form.primaryKinds, form.reviewerKind, form.arbiterKind].filter(Boolean)
-  return Boolean(form.task.trim())
-    && form.primaryKinds.length > 0
-    && Boolean(form.reviewerKind)
-    && new Set(participants).size === participants.length
-    && roleReviewCriteria.value.length > 0
-    && roleReviewCriteria.value.length <= 32
-    && roleReviewCriteria.value.every(description => description.length <= 1200)
-})
 const attachmentController = useComposerAttachments({
   activeGroup,
   attachmentsApi,
@@ -820,37 +672,6 @@ const { canSendMessage } = conversationExecution
 
 function sendMessage(...args) {
   return conversationExecution.sendMessage(...args)
-}
-
-function roleReviewPrimaryDisabled(kind) {
-  return kind === roleReviewForm.value.reviewerKind || kind === roleReviewForm.value.arbiterKind
-}
-
-function openRoleReview() {
-  if (!canOpenRoleReview.value || activeRun.value || sending.value || importingAttachment.value) return
-  const [primary, reviewer] = roleReviewAgents.value
-  roleReviewForm.value = {
-    task: draft.value,
-    primaryKinds: [primary.kind],
-    reviewerKind: reviewer.kind,
-    arbiterKind: '',
-    criteriaText: t('roleReview.defaultCriterion'),
-  }
-  modal.value = 'role-review'
-}
-
-async function startRoleReview() {
-  if (!roleReviewCanSubmit.value) return
-  const input = {
-    text: roleReviewForm.value.task,
-    primaryKinds: [...roleReviewForm.value.primaryKinds],
-    reviewerKind: roleReviewForm.value.reviewerKind,
-    arbiterKind: roleReviewForm.value.arbiterKind,
-    criteria: [...roleReviewCriteria.value],
-  }
-  draft.value = input.text
-  closeModal()
-  await conversationExecution.sendRoleReview(input)
 }
 
 function stopRun(...args) {
@@ -1012,13 +833,11 @@ const modalTitle = computed(() => ({
   'custom-agent': t('customAgent.title'),
   'unlimited-confirm': t('composer.unlimitedConfirmTitle'),
   'agent-detail': selectedAgentDetail.value?.label || t('systemSettings.openAgentDetailDefault'),
-  'role-review': t('roleReview.title'),
 })[modal.value] || '')
 const modalSubtitle = computed(() => ({
   settings: groupName(activeGroup.value),
   'custom-agent': t('customAgent.subtitle'),
   'agent-detail': agentDetailSkillSummary.value,
-  'role-review': groupName(activeGroup.value),
 })[modal.value] || '')
 
 const {
@@ -1236,44 +1055,3 @@ onBeforeUnmount(() => {
   clearPendingRunFinishedEvents()
 })
 </script>
-
-<style scoped>
-.conversation-composer-stack {
-  min-width: 0;
-}
-
-.role-review-entry-row {
-  width: min(var(--conversation-content-width), 100%);
-  box-sizing: border-box;
-  display: flex;
-  justify-content: flex-end;
-  margin: 0 auto -5px;
-  padding: 6px clamp(18px, 4vw, 44px) 0;
-}
-
-.role-review-entry-button svg {
-  width: 15px;
-  height: 15px;
-}
-
-.role-review-form select {
-  width: 100%;
-  height: 38px;
-  padding: 0 11px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-  color: var(--text);
-}
-
-.role-review-form .agent-choice:has(input:disabled) {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-@media (max-width: 620px) {
-  .role-review-entry-row {
-    padding-inline: 10px;
-  }
-}
-</style>

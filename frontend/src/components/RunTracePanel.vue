@@ -455,7 +455,7 @@ function humanGateSummary(gate) {
   const key = {
     'Agent requests permission to continue a tool action.': 'humanGate.summary.permission',
     'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
-    'Role review requires a human decision.': 'humanGate.summary.decision',
+    'This run requires a human decision.': 'humanGate.summary.decision',
   }[gate?.summary]
   return key ? t(key) : gate?.summary || ''
 }

@@ -368,7 +368,7 @@ describe('run event normalization', () => {
       humanGates: [
         humanGate(gateId, {
           type: 'decision',
-          summary: 'Role review requires a human decision.',
+          summary: 'This run requires a human decision.',
           options: [
             { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
             { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
@@ -384,7 +384,7 @@ describe('run event normalization', () => {
     expect(snapshot.runs[0].waitingGateIds).toEqual([gateId])
     expect(snapshot.humanGates).toEqual([humanGate(gateId, {
       type: 'decision',
-      summary: 'Role review requires a human decision.',
+      summary: 'This run requires a human decision.',
       options: [
         { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
         { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },

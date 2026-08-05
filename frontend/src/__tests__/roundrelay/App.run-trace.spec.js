@@ -185,7 +185,7 @@ describe('RoundRelay workbench', () => {
         runId: 'run-runtime-controls',
         agentRunId: 'agent-runtime-codex',
         agentKind: 'codex',
-        summary: 'Role review requires a human decision.',
+        summary: 'This run requires a human decision.',
         options: [
           { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
           { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
@@ -202,7 +202,7 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.trace-waiting-state').text()).toBe('Waiting for your decision')
     expect(wrapper.get('.trace-human-gate-section').text())
-      .toContain('The independent review requires your decision')
+      .toContain('This run requires your decision')
     expect(wrapper.get('.trace-budget-section').text()).toContain('Input tokens')
     expect(wrapper.get('.trace-budget-section').text()).toContain('750 / 4,000')
     expect(wrapper.get('.trace-agent-control-section').text()).toContain('Agent controls')

@@ -152,8 +152,8 @@ test('resume restores the latest durable completion and failure state per Agent'
     attemptHistory: [],
     continuation: {
       gateId: 'gate-1',
-      gateType: 'decision',
-      resumeKind: 'role_review_decision',
+      gateType: 'permission',
+      resumeKind: 'agent_slot',
       state: 'ready',
       agentRunId: 'agent-run-hermes-2',
       agentKind: 'hermes',

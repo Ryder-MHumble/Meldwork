@@ -17,9 +17,6 @@ const { LocalWorkspaceMessageSubmission } = require('./local-workspace-message-s
 const { LocalWorkspaceRunCoordinator } = require('./local-workspace-run-coordinator.cjs')
 const { LocalWorkspaceRunMessages } = require('./local-workspace-run-messages.cjs')
 const {
-  LocalWorkspaceRoleReviewRunner,
-} = require('./local-workspace-role-review-runner.cjs')
-const {
   clearSessionState,
   openClawSessionRef,
   packedPromptContext,
@@ -284,36 +281,6 @@ class LocalWorkspace extends EventEmitter {
       resetAgentSession: (...args) => this.resetAgentSession(...args),
       refreshAgents: () => this.refreshAgents(),
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
-    })
-    this.roleReviewRunner = new LocalWorkspaceRoleReviewRunner({
-      state: () => this.state,
-      detectedAgents: () => this.detectedAgents,
-      getGroup: (...args) => this.getGroup(...args),
-      reserveRun: (...args) => this.reserveRun(...args),
-      bindRunTask: (...args) => this.bindRunTask(...args),
-      releasePreparation: (...args) => this.releasePreparation(...args),
-      configureRunBudget: (...args) => this.configureRunBudget(...args),
-      beginRun: (...args) => this.beginRun(...args),
-      finishRun: (...args) => this.finishRun(...args),
-      preflightMessage: (...args) => this.preflightMessage(...args),
-      addMessage: (...args) => this.addMessage(...args),
-      rollbackAddedMessage: (...args) => this.conversations.rollbackAddedMessage(...args),
-      createContextPack: (...args) => this.createContextPack(...args),
-      invokeWithRecovery: input => this.autoRunner.invokeWithUnauthorizedRecovery({
-        ...input,
-        mode: 'manual',
-      }),
-      recordAgentFailure: (...args) => this.recordAgentFailure(...args),
-      recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),
-      requestHumanGate: (...args) => this.requestHumanGate(...args),
-      completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
-      checkpointRun: (...args) => this.checkpointRun(...args),
-      hasRunLedger: () => Boolean(this.runLedger),
-      save: () => this.save(),
-      emitChanged: () => this.emitChanged(),
-      contentBlobStore: this.contentBlobStore,
-      contextPackStore: this.contextPackStore,
-      outcomeStore: this.outcomeStore,
     })
     this.humanGateCoordinator.reconcileDecisions?.()
     this.restoreInterruptedRuns()
@@ -639,15 +606,16 @@ class LocalWorkspace extends EventEmitter {
     try {
       controller = this.runCoordinator.resume(durable)
       const group = this.getGroup(durable.groupId)
-      const request = this.humanGateStore.request(gate.gateId)
       if (durable.continuation.resumeKind === 'agent_slot'
           && decision.status === 'approved'
           && !this.canFinalizeReplayedAgentSlot(durable)) {
         throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
       }
       if (durable.continuation.resumeKind === 'role_review_decision') {
-        this.roleReviewRunner.resumeDecision(request, decision, { group, controller, durable })
-      } else if (gate.type === 'permission') {
+        throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      }
+      const request = this.humanGateStore.request(gate.gateId)
+      if (gate.type === 'permission') {
         if (decision.status === 'rejected') {
           this.resetAgentSession(group, durable.continuation.agentKind, true, durable.taskId)
           if (!controller.completedKinds.includes(durable.continuation.agentKind)) {
@@ -684,6 +652,9 @@ class LocalWorkspace extends EventEmitter {
             new Set(),
           )
           controller.stopReason = String(error?.message || 'human_gate_continuation_failed')
+        }
+        if (durable.continuation.resumeKind === 'role_review_decision') {
+          controller.stopReason = 'LOCAL_WORKFLOW_UNSUPPORTED'
         }
         this.completeHumanGateContinuation(
           durable.runId, gate.gateId,
@@ -1051,7 +1022,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async sendMessage(input) {
-    if (input?.workflow) return this.roleReviewRunner.send(input)
+    if (input?.workflow) throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
     return this.messageSubmission.send(input)
   }
 
@@ -1066,32 +1037,17 @@ class LocalWorkspace extends EventEmitter {
   controlAgent(groupId, runId, kind, action, replacementKind = '') {
     const group = this.getGroup(groupId)
     if (!group.agentKinds.includes(kind)) return false
-    let roleReviewReplacement = false
-    let controller = null
     if (action === 'replace') {
-      controller = this.activeRuns.get(groupId)
-      roleReviewReplacement = controller?.workflowType === 'role-review'
-      if (roleReviewReplacement
-          && !['reviewer', 'arbiter'].includes(controller.workflowRole)) return false
+      const controller = this.activeRuns.get(groupId)
       const replacement = this.detectedAgents.find(agent => (
         agent.kind === replacementKind && agent.available && group.agentKinds.includes(agent.kind)
-          && (roleReviewReplacement
-            ? !controller?.targetKinds?.includes(agent.kind)
-            : controller?.targetKinds?.includes(agent.kind))
+          && controller?.targetKinds?.includes(agent.kind)
       ))
       if (!replacement) return false
     }
-    const controlled = this.runCoordinator.controlAgent(
+    return this.runCoordinator.controlAgent(
       groupId, runId, kind, action, replacementKind,
     )
-    if (controlled && roleReviewReplacement && controller
-        && !controller.targetKinds.includes(replacementKind)) {
-      controller.targetKinds.push(replacementKind)
-      controller.harness?.addTargetKind?.(replacementKind)
-      this.scheduleRunCheckpoint(groupId, controller)
-      this.emitChanged()
-    }
-    return controlled
   }
 
   async stopAll() {

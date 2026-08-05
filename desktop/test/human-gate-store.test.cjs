@@ -178,21 +178,21 @@ test('rolls back only the exact durable decision to a retryable pending gate', (
   })
 })
 
-test('accepts the typed role-review decision Gate contract', (t) => {
+test('accepts the typed decision Gate contract', (t) => {
   const { store } = fixture(t)
   const record = store.create({
     type: 'decision',
-    runId: 'run-role-review',
-    agentRunId: 'agent-run-reviewer',
+    runId: 'run-decision',
+    agentRunId: 'agent-run-decision',
     agentKind: 'claude',
-    summary: 'Role review requires a human decision.',
+    summary: 'This run requires a human decision.',
     options: [
       { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
       { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
       { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
     ],
     createdAt: '2026-08-04T00:00:00.000Z',
-    request: { workflowId: `workflow-${'a'.repeat(64)}` },
+    request: { reason: 'manual-confirmation' },
   })
 
   assert.equal(record.type, 'decision')

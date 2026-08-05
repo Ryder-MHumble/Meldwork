@@ -8,7 +8,6 @@ Meldwork embeds local Agent automation, optional main-process Cloud/Channel Conn
 | --- | --- | --- | --- |
 | Manual Agent reply | Local user sends a message and selects targets | Invokes selected built-in or approved Connector Agents sequentially once | Agent process or Connector call, Provider/native network use, local message/session writes |
 | Automatic discussion | Local user sends a group message in automatic mode | Runs the explicitly selected group Agents in complete rounds, 6 rounds by default, with either a finite 1-10 round limit or an explicitly confirmed no-round-limit mode; no-round-limit mode stops on consensus or manual stop, while every individual Agent invocation retains its own timeout | Same as manual replies, repeated within the selected round policy |
-| Role Review workflow | An app-owned caller submits a typed review Task | Runs parallel-safe Primary branches, isolated Reviewer checks, optional Arbiter resolution, and a Human decision Gate | Agent/Connector calls plus durable Artifact, Evidence, Finding, Adoption, and Gate records |
 | Agent detection/readiness | App startup or explicit refresh | Scans fixed command names and credential evidence | Local process/file reads; Claude may run `auth status --json` |
 | Knowledge-source readiness | Explicit Knowledge Base settings refresh or source validation | Probes code-defined Feishu/DingTalk CLI status and Obsidian installation/Vault access | Local process/file reads; document-list permission probes may call the configured knowledge service through its CLI |
 | Agent installation | Local user confirms installation | One installer task at a time | Network download/npm access and global CLI installation |
@@ -42,7 +41,7 @@ Meldwork embeds local Agent automation, optional main-process Cloud/Channel Conn
 **Steering:**
 
 - `LocalWorkspace.promptFor` identifies the Agent, repeats bounded stable user constraints, adds only the delivery delta required by that Task-scoped group Session or conversation-scoped direct Session, and asks it not to impersonate other Agents.
-- Selected knowledge sources add an explicit read-only instruction plus immutable snapshot/citation records or an explicit live-reference limitation. Reviewer workflows receive the Artifact, acceptance criteria, and declared Evidence instead of the Primary's complete conversation.
+- Selected knowledge sources add an explicit read-only instruction plus immutable snapshot/citation records or an explicit live-reference limitation.
 - Automatic discussion preflights root-image limits for every explicitly targeted Agent, so each selected participant can receive the same root image set or the run does not start. Agents still run sequentially, so later participants can see earlier conclusions; native Sessions remain Agent-specific while the approved Task context is shared.
 
 **Output contract:**
@@ -54,7 +53,7 @@ Meldwork embeds local Agent automation, optional main-process Cloud/Channel Conn
 - Before launching Hermes, main makes a best-effort read of the message-ID watermark through Electron's read-only SQLite API. After exit, a non-empty post-watermark `assistant` row with `finish_reason` equal to `stop` or `length` is authoritative. If the database is absent, locked, incompatible, or has no current-turn final row, Meldwork falls back to the ANSI-stripped official `--quiet` stdout instead of blocking the Agent. Any newly reported native session reference is persisted before this lookup. Final text becomes `message.content`; up to eight sanitized process steps and elapsed time remain separate metadata and are not included in later Agent prompts.
 - Successful final text becomes a local Agent message. User-visible failure diagnostics remain local system messages; an all-failed manual run resolves after recording each failure because the user message has already been accepted and persisted.
 - Live progress events are transient renderer updates. Main also stores bounded sanitized checkpoints in the private Run Ledger and persists compact evidence capsules with terminal conversation messages, including partial, failure, stop, timeout, and interruption outcomes. Native session references are never exposed to the renderer, listener failures cannot change a completed run result, and shutdown suppresses terminal desktop notifications.
-- Artifacts, Evidence, Reviewer Findings, Adoption, exact delivery fingerprints, and Human Gate decisions are durable records separate from reasoning and tool summaries.
+- Artifacts, Evidence, Findings, Adoption, exact delivery fingerprints, and Human Gate decisions are durable records separate from reasoning and tool summaries.
 - Automatic replies carry an internal final-line consensus marker. Meldwork removes the marker before persistence and stops only when every Agent completes and agrees in the same round.
 
 ## Workspace Side Effects

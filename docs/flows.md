@@ -131,18 +131,7 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 “Equal context” here means every Agent can receive the same root image set before the run is allowed. Discussion remains sequential, so later Agents in a round can see earlier replies. Native Sessions are Task-and-Agent-specific for group work and conversation-and-Agent-specific for direct work; selected Skills remain Agent-specific.
 
-## 9. Role Review, Evidence, And Human Decision
-
-**Precondition:** In a group conversation, the Role Review composer action submits a typed Task declaring one or more Primary roles, a Reviewer, acceptance criteria, and an optional Arbiter. Direct conversations keep the standard single-Agent workflow.
-
-1. Independent Primary branches may run in parallel when their dependency graph permits it and produce typed Artifacts plus declared Evidence.
-2. Reviewer execution receives an isolated bundle containing the Artifact, acceptance criteria, and declared Evidence rather than the Primary's complete conversation.
-3. Supporting and contradicting Findings are persisted separately. Conflicts enter Arbiter or Human decision state instead of being treated as consensus.
-4. The final Human Gate records accepted, rejected, or reopened state and appends the decision Evidence and Adoption references to the Run and result message.
-
-**State/side effects:** Restart preserves role assignments, graph state, Artifact/Evidence/Finding IDs, Gate decision, and Adoption history. Listener failures cannot roll back an already committed outcome.
-
-## 10. Cloud Agent Detach And Reattach
+## 9. Cloud Agent Detach And Reattach
 
 **Precondition:** A main-owned approved Cloud Connector is configured; local-only deployments leave the Connector list empty.
 
@@ -153,7 +142,7 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **External side effects:** Calls the configured Cloud Connector. Shutdown aborts observation and waits only for a bounded grace period even when a Connector ignores cancellation.
 
-## 11. Channel Ingress And Durable Inbox
+## 10. Channel Ingress And Durable Inbox
 
 **Precondition:** A main-owned Channel Connector, Connection, ExternalActor, Subscription, and Workspace/Task mapping are configured. The production default has no Connector.
 
@@ -165,7 +154,7 @@ Meldwork has one human actor: the local desktop user. There are no accounts, rol
 
 **Renderer boundary:** There is no Channel IPC, preload method, Inbox browser, raw payload exposure, or renderer-visible CredentialRef.
 
-## 12. Shutdown IPC Gate
+## 11. Shutdown IPC Gate
 
 **Precondition:** Electron receives `before-quit`.
 
