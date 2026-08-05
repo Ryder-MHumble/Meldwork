@@ -387,6 +387,11 @@ test('local preload exposes attachment import and open without filesystem read o
     name: 'brief.pdf', mimeType: 'application/pdf', bytes: documentBytes,
   })
   documentBytes[0] = 0
+  const archiveBytes = Uint8Array.from(Buffer.from('PK\u0003\u0004archive'))
+  await api.localAttachments.importAttachment({
+    name: 'source.zip', mimeType: 'application/zip', bytes: archiveBytes,
+  })
+  archiveBytes[0] = 0
   await api.localAttachments.preview('attachment-1')
   await api.localAttachments.open('attachment-1')
   await api.localAttachments.discard(['attachment-1'])
@@ -402,6 +407,14 @@ test('local preload exposes attachment import and open without filesystem read o
         name: 'brief.pdf',
         mimeType: 'application/pdf',
         bytes: Uint8Array.from(Buffer.from('%PDF-1.7')),
+      }],
+    },
+    {
+      channel: 'local-attachments:import',
+      args: [{
+        name: 'source.zip',
+        mimeType: 'application/zip',
+        bytes: Uint8Array.from(Buffer.from('PK\u0003\u0004archive')),
       }],
     },
     { channel: 'local-attachments:preview', args: ['attachment-1'] },

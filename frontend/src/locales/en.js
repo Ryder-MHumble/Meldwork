@@ -726,7 +726,7 @@ export default {
     'error.mediaLimit': 'A selected Agent supports fewer files of this media type.',
     'error.attachmentInvalid': 'This attachment is no longer valid. Remove it and attach it again.',
     'error.attachmentLimit': 'You can attach up to 4 files.',
-    'error.attachmentType': 'Only supported images, media, and document files can be attached.',
+    'error.attachmentType': 'Only supported images, media, documents, code, and archive files can be attached.',
     'error.attachmentTooLarge': 'This file is too large to attach.',
     'error.attachmentUnavailable': 'This attachment is unavailable. Attach it again.',
     'error.attachmentOpen': 'The file could not be opened with the default system app.',

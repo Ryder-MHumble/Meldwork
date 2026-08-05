@@ -516,9 +516,17 @@ test('automatic dialogue queues only the explicitly targeted group members', asy
   assert.deepEqual(finished[1].targetKinds, ['workbuddy', 'openclaw'])
 })
 
-test('automatic dialogue carries root images until delivery and injects Hermes root Skills in prompts', async (t) => {
+test('automatic dialogue falls back to staged image files beyond native limits', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const attachmentRoot = path.join(directory, 'attachments')
+  fs.mkdirSync(attachmentRoot)
+  fs.writeFileSync(path.join(attachmentRoot, 'attachment-auto.png'), Buffer.alloc(128))
+  fs.writeFileSync(path.join(attachmentRoot, 'attachment-detail.png'), Buffer.alloc(64))
+  options.attachmentSupport = kind => ({
+    image: options.imageAttachmentLimit(kind),
+    file: 4,
+  })
   let hermesAttempts = 0
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
@@ -536,27 +544,30 @@ test('automatic dialogue carries root images until delivery and injects Hermes r
   const group = workspace.createGroup({
     name: '附件自动讨论', agentKinds: ['codex', 'hermes'], workdir: directory,
   })
-  const attachment = {
-    id: 'attachment-auto', name: 'architecture.png', mimeType: 'image/png', size: 128,
-  }
+  const attachments = [
+    { id: 'attachment-auto', name: 'architecture.png', mimeType: 'image/png', size: 128 },
+    { id: 'attachment-detail', name: 'detail.png', mimeType: 'image/png', size: 64 },
+  ]
   const skill = {
     targetKind: 'hermes', namespace: 'global', slug: 'research', name: 'Research',
   }
   workspace.addMessage(group.id, 'user', '审查这张架构图', '', '', null, {
-    attachments: [attachment], skillHints: [skill],
+    attachments, skillHints: [skill],
   })
 
   workspace.startAuto({ groupId: group.id, maxRounds: 2 })
   await workspace.activeRuns.get(group.id).promise
 
   const attachmentPath = path.join(directory, 'attachments', 'attachment-auto.png')
+  const detailPath = path.join(directory, 'attachments', 'attachment-detail.png')
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
   assert.deepEqual(calls.map(call => call.runOptions.attachments), [
-    [attachmentPath], [attachmentPath], [], [attachmentPath],
+    [attachmentPath, detailPath], [attachmentPath], [], [attachmentPath],
   ])
   const hermesCalls = calls.filter(call => call.agent.kind === 'hermes')
   assert.equal(hermesCalls.every(call => call.runOptions.skills === undefined), true)
   assert.equal(hermesCalls.every(call => /global\/research: Research/.test(call.prompt)), true)
+  assert.equal(hermesCalls.every(call => /\.meldwork-input\/\.run-[^/]+\/1-detail\.png/.test(call.prompt)), true)
 })
 
 test('automatic dialogue rejects unequal image context before starting any Agent', async (t) => {

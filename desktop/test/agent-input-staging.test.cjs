@@ -40,6 +40,30 @@ test('stages non-image inputs as temporary relative paths and cleans them up', (
   assert.equal(fs.existsSync(path.join(workdir, '.meldwork-input')), false)
 })
 
+test('stages images beyond the native limit as temporary file inputs', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-input-'))
+  const sourceRoot = path.join(directory, 'private')
+  const workdir = path.join(directory, 'workspace')
+  fs.mkdirSync(sourceRoot)
+  fs.mkdirSync(workdir)
+  const firstPath = path.join(sourceRoot, 'first.png')
+  const secondPath = path.join(sourceRoot, 'second.png')
+  fs.writeFileSync(firstPath, 'first')
+  fs.writeFileSync(secondPath, 'second')
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const staged = stageAgentInputs(workdir, [
+    { path: firstPath, name: 'first.png', mimeType: 'image/png', size: 5 },
+    { path: secondPath, name: 'second.png', mimeType: 'image/png', size: 6 },
+  ], 1)
+
+  assert.deepEqual(staged.nativeImagePaths, [firstPath])
+  assert.equal(staged.files.length, 1)
+  assert.match(staged.files[0].relativePath, /second\.png$/)
+  assert.match(stagedAgentInputPrompt(staged), /second\.png/)
+  assert.equal(fs.readFileSync(path.join(workdir, staged.files[0].relativePath), 'utf8'), 'second')
+})
+
 test('rejects unsafe staged sources without leaving an input directory', {
   skip: process.platform === 'win32',
 }, (t) => {

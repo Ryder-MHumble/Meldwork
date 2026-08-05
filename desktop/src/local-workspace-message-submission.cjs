@@ -82,10 +82,15 @@ class LocalWorkspaceMessageSubmission {
         if (!type) throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
         const count = (counts.get(type) || 0) + 1
         counts.set(type, count)
-        const limit = Math.max(0, Math.min(
+        const nativeLimit = Math.max(0, Math.min(
           MAX_MESSAGE_ATTACHMENTS,
           Math.floor(Number(support[type]) || 0),
         ))
+        const fileFallbackLimit = Math.max(0, Math.min(
+          MAX_MESSAGE_ATTACHMENTS,
+          Math.floor(Number(support.file) || 0),
+        ))
+        const limit = Math.max(nativeLimit, fileFallbackLimit)
         if (!limit) throw new Error(attachmentLimitError(type))
         if (count > limit) throw new Error(attachmentLimitError(type, true))
       }

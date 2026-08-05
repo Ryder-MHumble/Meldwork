@@ -225,6 +225,7 @@ class LocalWorkspace extends EventEmitter {
       requestHumanGate: (...args) => this.requestHumanGate(...args),
       completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
       connectorRuntime: options.connectorRuntime,
+      attachmentSupport: (...args) => this.attachmentSupportFn(...args),
     })
     this.autoRunner = new LocalWorkspaceAutoRunner({
       state: () => this.state,

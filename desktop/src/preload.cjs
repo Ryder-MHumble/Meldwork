@@ -19,6 +19,13 @@ const ATTACHMENT_LIMITS = new Map([
   ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 32 * 1024 * 1024],
   ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 32 * 1024 * 1024],
   ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 32 * 1024 * 1024],
+  ['application/msword', 32 * 1024 * 1024],
+  ['application/vnd.ms-excel', 32 * 1024 * 1024],
+  ['application/vnd.ms-powerpoint', 32 * 1024 * 1024],
+  ['application/zip', MAX_ATTACHMENT_BYTES],
+  ['application/gzip', MAX_ATTACHMENT_BYTES],
+  ['application/x-tar', MAX_ATTACHMENT_BYTES],
+  ['application/x-7z-compressed', MAX_ATTACHMENT_BYTES],
 ])
 
 function attachmentError(code) {

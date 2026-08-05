@@ -153,6 +153,7 @@ class LocalWorkspaceAgentInvocation {
     this.requestHumanGate = options.requestHumanGate
     this.completeHumanGateContinuation = options.completeHumanGateContinuation
     this.connectorRuntime = options.connectorRuntime || null
+    this.attachmentSupport = options.attachmentSupport || (() => ({}))
   }
 
   commitSessionState(mutator) {
@@ -509,9 +510,13 @@ class LocalWorkspaceAgentInvocation {
           /* artifact output capture is best effort */
         }
       }
+      const nativeImageLimit = Math.max(
+        0,
+        Math.floor(Number(this.attachmentSupport(kind)?.image) || 0),
+      )
       stagedInputs = isolated
         ? null
-        : stageAgentInputs(group.workdir, context.attachmentSnapshots || [])
+        : stageAgentInputs(group.workdir, context.attachmentSnapshots || [], nativeImageLimit)
       const runtimeInstruction = cleanText(context.runtimeInstruction, 3000)
       const buildPrompt = (afterKind, contextPackage) => isolated
         ? isolated.promptOverride

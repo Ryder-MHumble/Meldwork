@@ -1,5 +1,6 @@
 const { ADOPTION_ACTION_STATUSES } = require('./outcome-records.cjs')
 const { statusForHumanGateOption } = require('./human-gate-coordinator.cjs')
+const { ATTACHMENT_FILE_EXTENSIONS } = require('./attachment-records.cjs')
 
 const LOCAL_GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
 const LOCAL_RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
@@ -429,10 +430,7 @@ function registerDesktopIpc(options) {
       properties: ['openFile', 'multiSelections'],
       filters: [{
         name: 'Files',
-        extensions: [
-          'png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm',
-          'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'rtf', 'docx', 'xlsx', 'pptx',
-        ],
+        extensions: ATTACHMENT_FILE_EXTENSIONS,
       }],
     })
     if (isShutdownStarted()) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')

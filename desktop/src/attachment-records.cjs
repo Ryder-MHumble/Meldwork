@@ -7,6 +7,18 @@ const MAX_ATTACHMENTS = 4
 const MAX_METADATA_BYTES = 64 * 1024
 const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
 const MAX_TEXT_BYTES = 8 * 1024 * 1024
+const TEXT_FILE_EXTENSIONS = Object.freeze([
+  'txt', 'html', 'htm', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'config', 'log',
+  'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'css', 'scss', 'sass', 'less', 'vue', 'svelte',
+  'py', 'pyi', 'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp', 'cs', 'go',
+  'rs', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'sql', 'graphql', 'gql', 'proto',
+  'swift', 'dart', 'lua', 'r', 'rmd', 'tex', 'bib', 'svg', 'jsonl', 'ndjson', 'diff',
+  'patch', 'properties', 'gradle', 'tf', 'hcl', 'sol', 'plist',
+])
+const ZIP_FILE_EXTENSIONS = Object.freeze([
+  'zip', 'pages', 'numbers', 'key', 'odt', 'ods', 'odp', 'epub',
+])
+const GZIP_FILE_EXTENSIONS = Object.freeze(['gz', 'tgz'])
 
 const ATTACHMENT_TYPES = Object.freeze([
   Object.freeze({ mimeType: 'image/png', extension: 'png', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
@@ -18,10 +30,19 @@ const ATTACHMENT_TYPES = Object.freeze([
   Object.freeze({ mimeType: 'video/quicktime', extension: 'mov', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
   Object.freeze({ mimeType: 'video/webm', extension: 'webm', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
   Object.freeze({ mimeType: 'application/pdf', extension: 'pdf', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document' }),
-  Object.freeze({ mimeType: 'text/plain', extension: 'txt', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
-  Object.freeze({ mimeType: 'text/markdown', extension: 'md', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({
+    mimeType: 'text/plain', extension: 'txt', maxBytes: MAX_TEXT_BYTES, storageBase: 'document',
+    preserveExtensions: TEXT_FILE_EXTENSIONS,
+  }),
+  Object.freeze({
+    mimeType: 'text/markdown', extension: 'md', maxBytes: MAX_TEXT_BYTES, storageBase: 'document',
+    preserveExtensions: Object.freeze(['md', 'markdown', 'mdx']),
+  }),
   Object.freeze({ mimeType: 'text/csv', extension: 'csv', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
-  Object.freeze({ mimeType: 'application/json', extension: 'json', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({
+    mimeType: 'application/json', extension: 'json', maxBytes: MAX_TEXT_BYTES, storageBase: 'document',
+    preserveExtensions: Object.freeze(['json', 'ipynb', 'geojson']),
+  }),
   Object.freeze({ mimeType: 'application/rtf', extension: 'rtf', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
   Object.freeze({
     mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
@@ -35,6 +56,19 @@ const ATTACHMENT_TYPES = Object.freeze([
     mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     extension: 'pptx', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document',
   }),
+  Object.freeze({ mimeType: 'application/msword', extension: 'doc', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'application/vnd.ms-excel', extension: 'xls', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'application/vnd.ms-powerpoint', extension: 'ppt', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document' }),
+  Object.freeze({
+    mimeType: 'application/zip', extension: 'zip', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'document',
+    preserveExtensions: ZIP_FILE_EXTENSIONS,
+  }),
+  Object.freeze({
+    mimeType: 'application/gzip', extension: 'gz', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'document',
+    preserveExtensions: GZIP_FILE_EXTENSIONS,
+  }),
+  Object.freeze({ mimeType: 'application/x-tar', extension: 'tar', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'application/x-7z-compressed', extension: '7z', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'document' }),
 ])
 const TYPE_BY_MIME = new Map(ATTACHMENT_TYPES.map(type => [type.mimeType, type]))
 const TYPE_BY_EXTENSION = new Map([
@@ -57,8 +91,32 @@ const TYPE_BY_EXTENSION = new Map([
   ['docx', TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.wordprocessingml.document')],
   ['xlsx', TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')],
   ['pptx', TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.presentationml.presentation')],
+  ['doc', TYPE_BY_MIME.get('application/msword')],
+  ['xls', TYPE_BY_MIME.get('application/vnd.ms-excel')],
+  ['ppt', TYPE_BY_MIME.get('application/vnd.ms-powerpoint')],
+  ['tar', TYPE_BY_MIME.get('application/x-tar')],
+  ['7z', TYPE_BY_MIME.get('application/x-7z-compressed')],
 ])
+for (const extension of TEXT_FILE_EXTENSIONS) {
+  TYPE_BY_EXTENSION.set(extension, TYPE_BY_MIME.get('text/plain'))
+}
+for (const extension of ['markdown', 'mdx']) {
+  TYPE_BY_EXTENSION.set(extension, TYPE_BY_MIME.get('text/markdown'))
+}
+for (const extension of ['ipynb', 'geojson']) {
+  TYPE_BY_EXTENSION.set(extension, TYPE_BY_MIME.get('application/json'))
+}
+for (const extension of ZIP_FILE_EXTENSIONS) {
+  TYPE_BY_EXTENSION.set(extension, TYPE_BY_MIME.get('application/zip'))
+}
+for (const extension of GZIP_FILE_EXTENSIONS) {
+  TYPE_BY_EXTENSION.set(extension, TYPE_BY_MIME.get('application/gzip'))
+}
+const ATTACHMENT_FILE_EXTENSIONS = Object.freeze([...TYPE_BY_EXTENSION.keys()])
 const TEXT_MIME_TYPES = new Set(['text/plain', 'text/markdown', 'text/csv', 'application/json'])
+const LEGACY_OFFICE_MIME_TYPES = new Set([
+  'application/msword', 'application/vnd.ms-excel', 'application/vnd.ms-powerpoint',
+])
 
 function attachmentError(code) {
   const error = new Error(code)
@@ -172,6 +230,24 @@ function detectAttachmentType(bytes, nameType = null, declaredMime = '') {
   }
   const ooxml = detectedOoxmlType(bytes)
   if (ooxml) return ooxml
+  if (bytes.length >= 8
+      && bytes.subarray(0, 8).equals(Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]))
+      && LEGACY_OFFICE_MIME_TYPES.has(nameType?.mimeType)) {
+    return nameType
+  }
+  if (bytes.length >= 4 && bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))) {
+    return TYPE_BY_MIME.get('application/zip')
+  }
+  if (bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    return TYPE_BY_MIME.get('application/gzip')
+  }
+  if (bytes.length >= 265 && bytes.subarray(257, 262).toString('ascii') === 'ustar') {
+    return TYPE_BY_MIME.get('application/x-tar')
+  }
+  if (bytes.length >= 6
+      && bytes.subarray(0, 6).equals(Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c]))) {
+    return TYPE_BY_MIME.get('application/x-7z-compressed')
+  }
   const textType = nameType && TEXT_MIME_TYPES.has(nameType.mimeType)
     ? nameType
     : (TEXT_MIME_TYPES.has(declaredMime) ? TYPE_BY_MIME.get(declaredMime) : null)
@@ -205,7 +281,11 @@ function sanitizeName(value, type) {
     .trim()
   let stem = basename.replace(/\.[^.]*$/, '').replace(/^\.+/, '').replace(/[. ]+$/, '').trim()
   stem = stem.slice(0, 120).replace(/[. ]+$/, '') || 'attachment'
-  return `${stem}.${type.extension}`
+  const requestedExtension = path.posix.extname(basename).slice(1).toLowerCase()
+  const extension = type.preserveExtensions?.includes(requestedExtension)
+    ? requestedExtension
+    : type.extension
+  return `${stem}.${extension}`
 }
 
 function toBuffer(value) {
@@ -305,6 +385,7 @@ function validateStoredAttachment(bytes, document) {
 }
 
 module.exports = {
+  ATTACHMENT_FILE_EXTENSIONS,
   MAX_ATTACHMENT_BYTES,
   MAX_METADATA_BYTES,
   attachmentError,

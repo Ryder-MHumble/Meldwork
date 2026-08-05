@@ -1479,10 +1479,7 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
     properties: ['openFile', 'multiSelections'],
     filters: [{
       name: 'Files',
-      extensions: [
-        'png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm',
-        'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'rtf', 'docx', 'xlsx', 'pptx',
-      ],
+      extensions: require('../src/attachment-records.cjs').ATTACHMENT_FILE_EXTENSIONS,
     }],
   })
   for (const attachment of picked.attachments) {

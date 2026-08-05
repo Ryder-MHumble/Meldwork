@@ -10,12 +10,27 @@ const MIME_BY_EXTENSION = new Map([
   ['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'],
   ['mp3', 'audio/mpeg'], ['wav', 'audio/wav'], ['m4a', 'audio/mp4'],
   ['mp4', 'video/mp4'], ['mov', 'video/quicktime'], ['webm', 'video/webm'],
-  ['pdf', 'application/pdf'], ['txt', 'text/plain'], ['md', 'text/markdown'],
-  ['markdown', 'text/markdown'], ['csv', 'text/csv'], ['json', 'application/json'],
-  ['rtf', 'application/rtf'],
-  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
-  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
-  ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ['pdf', 'application/pdf'], ['txt', 'text/plain'], ['md', 'text/markdown'],
+    ['markdown', 'text/markdown'], ['csv', 'text/csv'], ['json', 'application/json'],
+    ['rtf', 'application/rtf'],
+    ...[
+      'html', 'htm', 'xml', 'yaml', 'yml', 'toml', 'ini', 'conf', 'config', 'log',
+      'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx', 'css', 'scss', 'sass', 'less', 'vue',
+      'svelte', 'py', 'pyi', 'java', 'kt', 'kts', 'c', 'h', 'cc', 'cpp', 'cxx', 'hpp',
+      'cs', 'go', 'rs', 'rb', 'php', 'sh', 'bash', 'zsh', 'fish', 'sql', 'graphql',
+      'gql', 'proto', 'swift', 'dart', 'lua', 'r', 'rmd', 'tex', 'bib', 'svg', 'jsonl',
+      'ndjson', 'diff', 'patch', 'properties', 'gradle', 'tf', 'hcl', 'sol', 'plist',
+    ].map(extension => [extension, 'text/plain']),
+    ['mdx', 'text/markdown'], ['ipynb', 'application/json'], ['geojson', 'application/json'],
+    ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+    ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+    ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+    ['doc', 'application/msword'], ['xls', 'application/vnd.ms-excel'],
+    ['ppt', 'application/vnd.ms-powerpoint'],
+    ...['zip', 'pages', 'numbers', 'key', 'odt', 'ods', 'odp', 'epub']
+      .map(extension => [extension, 'application/zip']),
+    ['gz', 'application/gzip'], ['tgz', 'application/gzip'],
+    ['tar', 'application/x-tar'], ['7z', 'application/x-7z-compressed'],
 ])
 const SUPPORTED_MIME_TYPES = new Set(MIME_BY_EXTENSION.values())
 
@@ -25,7 +40,6 @@ export function useComposerAttachments({
   composerDisabled,
   composerContextVersion,
   composerTargetKinds,
-  composerTargetsReady,
   mergedCatalog,
   notify,
   showError,
@@ -91,12 +105,14 @@ export function useComposerAttachments({
     if (!targets.length) return 0
     const limits = targets.map((kind) => {
       const agent = mergedCatalog.value.find(item => item.kind === kind)
-      if (Array.isArray(agent?.attachmentTypes) && agent.attachmentTypes.includes(normalizedType)) {
-        return MAX_ATTACHMENTS
-      }
-      return normalizedType === 'image'
+      const attachmentTypes = Array.isArray(agent?.attachmentTypes) ? agent.attachmentTypes : []
+      const nativeLimit = attachmentTypes.includes(normalizedType)
+        ? MAX_ATTACHMENTS
+        : (normalizedType === 'image'
         ? Math.max(0, Math.floor(Number(agent?.imageLimit) || 0))
-        : 0
+        : 0)
+      const fileFallbackLimit = attachmentTypes.includes('file') ? MAX_ATTACHMENTS : 0
+      return Math.max(nativeLimit, fileFallbackLimit)
     })
     return Math.min(MAX_ATTACHMENTS, ...limits)
   }
@@ -111,9 +127,24 @@ export function useComposerAttachments({
   }))
   const attachmentActionLabel = computed(() => {
     if (!composerTargetKinds.value.length) return t('composer.selectTarget')
-    if (!composerTargetsReady.value) return t('error.agentUnavailable')
     return composerAttachmentLimit.value > 0 ? t('composer.attachMedia') : t('composer.attachmentsUnsupported')
   })
+
+  function uniqueFiles(values) {
+    return [...new Map(Array.from(values || [])
+      .filter(Boolean)
+      .map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
+  }
+
+  function transferFiles(dataTransfer) {
+    return uniqueFiles([
+      ...Array.from(dataTransfer?.files || []),
+      ...Array.from(dataTransfer?.items || [])
+        .filter(item => item?.kind === 'file')
+        .map(item => item.getAsFile?.())
+        .filter(Boolean),
+    ])
+  }
 
   function safeAttachmentPayload(attachment) {
     return {
@@ -251,10 +282,6 @@ export function useComposerAttachments({
       notify(t('composer.selectTarget'))
       return
     }
-    if (!composerTargetsReady.value) {
-      notify(t('error.agentUnavailable'))
-      return
-    }
     if (composerAttachmentLimit.value <= 0) {
       notify(t('composer.attachmentsUnsupported'))
       return
@@ -288,9 +315,7 @@ export function useComposerAttachments({
   async function importFiles(inputFiles) {
     const importAttachment = attachmentsApi.value?.importAttachment
     if (typeof importAttachment !== 'function') return
-    const files = [...new Map(Array.from(inputFiles || [])
-      .filter(Boolean)
-      .map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
+    const files = uniqueFiles(inputFiles)
     if (!files.length) return
     if (importingAttachment.value) {
       notify(t('composer.attachmentImporting'))
@@ -298,10 +323,6 @@ export function useComposerAttachments({
     }
     if (!composerTargetKinds.value.length) {
       notify(t('composer.selectTarget'))
-      return
-    }
-    if (!composerTargetsReady.value) {
-      notify(t('error.agentUnavailable'))
       return
     }
     const room = Math.max(0, MAX_ATTACHMENTS - composerAttachments.value.length)
@@ -356,21 +377,29 @@ export function useComposerAttachments({
   }
 
   async function handleComposerPaste(event) {
-    const files = [...new Map([
+    const files = uniqueFiles([
       ...Array.from(event.clipboardData?.files || []),
       ...Array.from(event.clipboardData?.items || [])
         .filter(item => item.kind === 'file')
         .map(item => item.getAsFile?.())
         .filter(Boolean),
-    ].map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
+    ])
     if (!files.length) return
     event.preventDefault()
     await importFiles(files)
   }
 
   function hasDraggedFiles(event) {
-    return Array.from(event?.dataTransfer?.types || []).includes('Files')
-      || Array.from(event?.dataTransfer?.files || []).length > 0
+    const dataTransfer = event?.dataTransfer
+    if (!dataTransfer) return false
+    if (Array.from(dataTransfer.files || []).length > 0
+        || Array.from(dataTransfer.items || []).some(item => item?.kind === 'file')) return true
+    return Array.from(dataTransfer.types || []).some((type) => {
+      const normalized = String(type || '').toLowerCase()
+      return normalized === 'files'
+        || normalized === 'application/x-moz-file'
+        || normalized === 'public.file-url'
+    })
   }
 
   function handleComposerDragEnter(event) {
@@ -399,7 +428,7 @@ export function useComposerAttachments({
     composerDragDepth = 0
     composerDropActive.value = false
     if (composerDisabled?.value) return
-    await importFiles(event.dataTransfer?.files || [])
+    await importFiles(transferFiles(event.dataTransfer))
   }
 
   return {

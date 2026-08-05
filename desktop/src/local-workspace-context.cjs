@@ -347,7 +347,7 @@ function promptFor({
           'Deliverable capture contract: Save or copy each final document, code file, diff, structured-data file, media file, or bundle into .meldwork-output/ in the conversation working directory.',
           'Only files created or changed during this run are captured as durable outputs. Do not claim a deliverable exists until the real file has been written there.',
           'When the user asks for an image, audio, or video, do not claim it was generated unless a real file exists.',
-          'Supported chat attachments include .png, .jpg, .jpeg, .mp3, .wav, .m4a, .mp4, .mov, .webm, .pdf, .txt, .md, .csv, .json, .rtf, .docx, .xlsx, and .pptx. Other recognized outputs remain durable Artifacts.',
+          'Supported chat attachments include common images, media, documents, source code, configuration text, and archives. Other recognized outputs remain durable Artifacts.',
         ].join('\n')
     : [
         'This conversation is read-only. Do not claim that a media file was generated or delivered because no writable output can be attached.',

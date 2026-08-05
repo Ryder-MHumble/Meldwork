@@ -97,8 +97,9 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('imports a document dropped onto a direct-chat composer and infers its MIME type', async () => {
+  it('imports Finder-style files dropped onto an unavailable direct-chat Agent', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.agents.find(agent => agent.kind === 'codex').available = false
       state.groups.push({
         id: 'direct-codex',
         conversationType: 'direct',
@@ -112,14 +113,33 @@ describe('RoundRelay workbench', () => {
       })
     })
     await wrapper.get('.direct-session-open').trigger('click')
-    const file = {
+    const pdf = {
       name: 'report.pdf',
       type: '',
       size: 9,
       lastModified: 1,
       arrayBuffer: vi.fn(async () => Uint8Array.from([37, 80, 68, 70, 45, 49, 46, 55, 10]).buffer),
     }
-    const dataTransfer = { types: ['Files'], files: [file], dropEffect: 'none' }
+    const markdown = {
+      name: 'notes.md',
+      type: 'text/markdown',
+      size: 8,
+      lastModified: 2,
+      arrayBuffer: vi.fn(async () => new TextEncoder().encode('# Notes\n').buffer),
+    }
+    const html = {
+      name: 'preview.html',
+      type: 'text/html',
+      size: 16,
+      lastModified: 3,
+      arrayBuffer: vi.fn(async () => new TextEncoder().encode('<h1>Preview</h1>').buffer),
+    }
+    const dataTransfer = {
+      types: ['public.file-url'],
+      files: [],
+      items: [pdf, markdown, html].map(file => ({ kind: 'file', getAsFile: () => file })),
+      dropEffect: 'none',
+    }
     const composer = wrapper.get('.composer-box')
 
     await composer.trigger('dragenter', { dataTransfer })
@@ -127,24 +147,43 @@ describe('RoundRelay workbench', () => {
     await composer.trigger('drop', { dataTransfer })
     await flushPromises()
 
-    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith({
-      name: 'report.pdf',
-      mimeType: 'application/pdf',
-      bytes: Uint8Array.from([37, 80, 68, 70, 45, 49, 46, 55, 10]),
-    })
-    expect(wrapper.get('.composer-attachment').text()).toContain('report.pdf')
+    expect(bridge.localAttachments.importAttachment.mock.calls.map(([input]) => ({
+      name: input.name,
+      mimeType: input.mimeType,
+      bytes: Array.from(input.bytes),
+    }))).toEqual([
+      {
+        name: 'report.pdf',
+        mimeType: 'application/pdf',
+        bytes: [37, 80, 68, 70, 45, 49, 46, 55, 10],
+      },
+      {
+        name: 'notes.md',
+        mimeType: 'text/markdown',
+        bytes: Array.from(new TextEncoder().encode('# Notes\n')),
+      },
+      {
+        name: 'preview.html',
+        mimeType: 'text/plain',
+        bytes: Array.from(new TextEncoder().encode('<h1>Preview</h1>')),
+      },
+    ])
+    expect(wrapper.findAll('.composer-attachment').map(item => item.text())).toEqual([
+      'report.pdf', 'notes.md', 'preview.html',
+    ])
     expect(wrapper.find('.composer-drop-overlay').exists()).toBe(false)
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
   })
 
-  it('imports a dropped document in a group conversation', async () => {
+  it('imports a dropped image through generic file support in a group conversation', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
-        id: 'group-documents',
+        id: 'group-file-fallback',
         conversationType: 'group',
-        name: 'Document review',
+        name: 'Image review',
         topic: '',
-        agentKinds: ['codex', 'hermes'],
+        agentKinds: ['codex', 'workbuddy'],
         workdir: '/tmp/roundrelay-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
@@ -153,11 +192,11 @@ describe('RoundRelay workbench', () => {
     })
     await wrapper.get('.conversation-link').trigger('click')
     const file = {
-      name: 'brief.md',
-      type: 'text/markdown',
-      size: 8,
+      name: 'diagram.png',
+      type: 'image/png',
+      size: 7,
       lastModified: 1,
-      arrayBuffer: vi.fn(async () => new TextEncoder().encode('# Brief\n').buffer),
+      arrayBuffer: vi.fn(async () => Uint8Array.from([1, 2, 3, 4, 5, 6, 7]).buffer),
     }
     const dataTransfer = { types: ['Files'], files: [file], dropEffect: 'none' }
 
@@ -165,10 +204,66 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith(expect.objectContaining({
-      name: 'brief.md',
+      name: 'diagram.png',
+      mimeType: 'image/png',
+    }))
+    expect(wrapper.get('.composer-attachment').text()).toContain('diagram.png')
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('keeps group attachment picking and Finder drops available with an offline member', async () => {
+    const picked = [{
+      id: 'picked-document', name: 'plan.pdf', mimeType: 'application/pdf', size: 12,
+    }]
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.agents.find(agent => agent.kind === 'hermes').available = false
+      state.groups.push({
+        id: 'group-offline-member',
+        conversationType: 'group',
+        name: 'Offline member group',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({ attachments: picked })
+    })
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('[data-mode="auto"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(4)
+    expect(wrapper.get('.composer-attachment').text()).toContain('plan.pdf')
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
+
+    await wrapper.get('[aria-label="Remove attachment"]').trigger('click')
+    await flushPromises()
+    const file = {
+      name: 'group-notes.md',
+      type: 'text/markdown',
+      size: 14,
+      lastModified: 3,
+      arrayBuffer: vi.fn(async () => new TextEncoder().encode('# Group notes\n').buffer),
+    }
+    const dataTransfer = {
+      types: [],
+      files: [],
+      items: [{ kind: 'file', getAsFile: () => file }],
+      dropEffect: 'none',
+    }
+    await wrapper.get('.composer-box').trigger('drop', { dataTransfer })
+    await flushPromises()
+
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'group-notes.md',
       mimeType: 'text/markdown',
     }))
-    expect(wrapper.get('.composer-attachment').text()).toContain('brief.md')
+    expect(wrapper.get('.composer-attachment').text()).toContain('group-notes.md')
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -359,7 +454,7 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('limits picked media to the selected Agent capability', async () => {
+  it('falls back to generic files beyond an Agent native image limit', async () => {
     const picked = [imageAttachment('hermes-1')]
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -375,7 +470,7 @@ describe('RoundRelay workbench', () => {
       })
       desktopBridge.localAttachments.pickAttachments.mockResolvedValueOnce({
         attachments: picked,
-        truncated: true,
+        truncated: false,
       })
     })
 
@@ -403,8 +498,12 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
 
-    expect(bridge.localAttachments.importAttachment).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('supports fewer files')
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'overflow.png',
+      mimeType: 'image/png',
+    }))
+    expect(wrapper.findAll('.composer-attachment')).toHaveLength(2)
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
   })
 

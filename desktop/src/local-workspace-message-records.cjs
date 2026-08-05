@@ -28,6 +28,8 @@ const USER_ATTACHMENT_MIME_TYPES = new Set([
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/msword', 'application/vnd.ms-excel', 'application/vnd.ms-powerpoint',
+  'application/zip', 'application/gzip', 'application/x-tar', 'application/x-7z-compressed',
 ])
 const ATTACHMENT_MIME_TYPES = new Set([
   ...USER_ATTACHMENT_MIME_TYPES,

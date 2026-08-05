@@ -726,7 +726,7 @@ export default {
     'error.mediaLimit': '所选 Agent 支持的此媒体类型文件数量更少。',
     'error.attachmentInvalid': '该附件已失效，请移除后重新添加。',
     'error.attachmentLimit': '最多添加 4 个文件。',
-    'error.attachmentType': '只能添加受支持的图片、音视频或文档文件。',
+    'error.attachmentType': '只能添加受支持的图片、音视频、文档、代码或压缩文件。',
     'error.attachmentTooLarge': '该文件过大，无法添加。',
     'error.attachmentUnavailable': '该附件当前不可用，请重新添加。',
     'error.attachmentOpen': '无法使用系统默认应用打开该文件。',

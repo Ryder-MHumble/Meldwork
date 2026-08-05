@@ -626,7 +626,6 @@ const attachmentController = useComposerAttachments({
   composerDisabled,
   composerContextVersion,
   composerTargetKinds,
-  composerTargetsReady,
   mergedCatalog,
   notify,
   showError,

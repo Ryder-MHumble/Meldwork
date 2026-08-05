@@ -811,40 +811,37 @@ test('WebP attachment metadata is rejected before a message or Agent run is reco
   assert.equal(workspace.snapshot().messages.length, 0)
 })
 
-test('image capability failures happen before a message or Agent run is recorded', async (t) => {
+test('generic file support delivers images to Agents without native image arguments', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const attachmentRoot = path.join(directory, 'attachments')
+  fs.mkdirSync(attachmentRoot)
+  fs.writeFileSync(path.join(attachmentRoot, 'attachment-1.png'), '0123456789')
+  options.attachmentSupport = kind => ({
+    image: options.imageAttachmentLimit(kind),
+    file: 4,
+  })
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const mixed = workspace.createGroup({
     name: 'Mixed image support', agentKinds: ['codex', 'workbuddy'], workdir: directory,
   })
   const first = { id: 'attachment-1', name: 'one.png', mimeType: 'image/png', size: 10 }
-  const second = { id: 'attachment-2', name: 'two.png', mimeType: 'image/png', size: 10 }
 
-  await assert.rejects(
-    workspace.sendMessage({
-      groupId: mixed.id,
-      text: 'Inspect',
-      targetKinds: ['codex', 'workbuddy'],
-      attachments: [first],
-    }),
-    { message: 'LOCAL_AGENT_IMAGE_UNSUPPORTED' },
-  )
-
-  const hermes = workspace.createGroup({
-    name: 'Hermes image limit', agentKinds: ['hermes'], workdir: directory,
+  await workspace.sendMessage({
+    groupId: mixed.id,
+    text: 'Inspect',
+    targetKinds: ['codex', 'workbuddy'],
+    attachments: [first],
   })
-  await assert.rejects(
-    workspace.sendMessage({
-      groupId: hermes.id,
-      text: 'Inspect both',
-      attachments: [first, second],
-    }),
-    { message: 'LOCAL_AGENT_IMAGE_LIMIT' },
-  )
-  assert.equal(calls.length, 0)
-  assert.equal(workspace.snapshot().messages.length, 0)
+
+  const attachmentPath = path.join(attachmentRoot, 'attachment-1.png')
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'workbuddy'])
+  assert.deepEqual(calls.map(call => call.runOptions.attachments), [[attachmentPath], []])
+  assert.doesNotMatch(calls[0].prompt, /\.meldwork-input/)
+  assert.match(calls[1].prompt, /\.meldwork-input\/\.run-[^/]+\/1-one\.png/)
+  assert.equal(fs.existsSync(path.join(directory, '.meldwork-input')), false)
+  assert.equal(workspace.snapshot().messages.length, 3)
 })
 
 test('a failed run-start notification does not leave an active run behind', (t) => {

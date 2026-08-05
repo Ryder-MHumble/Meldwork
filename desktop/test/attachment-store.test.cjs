@@ -30,6 +30,11 @@ const WEBM_VIDEO = Buffer.concat([
 ])
 const PDF = Buffer.from('%PDF-1.7\n')
 const DOCX = Buffer.from('PK\u0003\u0004[Content_Types].xml word/document.xml')
+const OLE = Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00])
+const ZIP = Buffer.from('PK\u0003\u0004archive-entry')
+const GZIP = Buffer.from([0x1f, 0x8b, 0x08, 0x00])
+const TAR = Buffer.concat([Buffer.alloc(257), Buffer.from('ustar'), Buffer.alloc(8)])
+const SEVEN_ZIP = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00])
 
 function fixture(t, createId) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachments-'))
@@ -128,6 +133,9 @@ test('imports validated documents with controlled names and storage paths', (t) 
     [Buffer.from('# Notes\n'), 'notes.md', 'text/markdown', 'document.md'],
     [Buffer.from('name,value\na,1\n'), 'data.csv', 'text/csv', 'document.csv'],
     [Buffer.from('{"ok":true}'), 'data.json', 'application/json', 'document.json'],
+    [Buffer.from('<!doctype html><title>Report</title>'), 'report.html', 'text/plain', 'document.txt'],
+    [Buffer.from('print("hello")\n'), 'analysis.py', 'text/plain', 'document.txt'],
+    [Buffer.from('title: report\n'), 'report.yaml', 'text/plain', 'document.txt'],
     [Buffer.from('{\\rtf1 report}'), 'report.rtf', 'application/rtf', 'document.rtf'],
     [
       DOCX,
@@ -144,6 +152,27 @@ test('imports validated documents with controlled names and storage paths', (t) 
     assert.equal(metadata.mimeType, mimeType)
     assert.equal(path.basename(resolved.path), storedName)
     assert.equal(path.dirname(path.dirname(resolved.path)), rootPath)
+  }
+})
+
+test('imports legacy Office and validated archive containers', (t) => {
+  const { store } = fixture(t)
+  const fixtures = [
+    [OLE, 'report.doc', 'application/msword'],
+    [OLE, 'data.xls', 'application/vnd.ms-excel'],
+    [OLE, 'slides.ppt', 'application/vnd.ms-powerpoint'],
+    [ZIP, 'project.zip', 'application/zip'],
+    [ZIP, 'draft.pages', 'application/zip'],
+    [GZIP, 'logs.tgz', 'application/gzip'],
+    [TAR, 'source.tar', 'application/x-tar'],
+    [SEVEN_ZIP, 'assets.7z', 'application/x-7z-compressed'],
+  ]
+
+  for (const [bytes, name, mimeType] of fixtures) {
+    const metadata = store.importBuffer({ bytes, name, mimeType })
+    assert.equal(metadata.name, name)
+    assert.equal(metadata.mimeType, mimeType)
+    assert.deepEqual(store.read(metadata.id), bytes)
   }
 })
 
