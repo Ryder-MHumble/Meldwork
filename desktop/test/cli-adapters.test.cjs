@@ -1,5 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -32,6 +33,28 @@ const {
   waitForExit,
   within,
 } = require('./cli-adapters-test-helpers.cjs')
+
+const OUTBOUND_PAYLOAD_KEYS = [
+  'prompt',
+  'promptMode',
+  'serialization',
+  'transport',
+  'wirePayloadBytes',
+  'wirePayloadHash',
+]
+
+function wireFingerprint(value) {
+  const bytes = Buffer.from(JSON.stringify(value), 'utf8')
+  return {
+    wirePayloadHash: crypto.createHash('sha256').update(bytes).digest('hex'),
+    wirePayloadBytes: bytes.length,
+  }
+}
+
+function assertSafeOutboundPayload(payload) {
+  assert.deepEqual(Object.keys(payload).sort(), OUTBOUND_PAYLOAD_KEYS)
+  assert.equal(Object.isFrozen(payload), true)
+}
 
 test('new Codex sessions persist and default to the read-only sandbox', (t) => {
   const previous = process.env.ROUNDRELAY_CODEX_SANDBOX
@@ -394,6 +417,7 @@ if (process.argv[2] === 'acp') {
 `)
   const invalidations = []
   const events = []
+  const outboundPayloads = []
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
   const result = await runAgent(
@@ -408,6 +432,7 @@ if (process.argv[2] === 'acp') {
         invalidations.push(metadata)
         return { prompt: 'rebuilt full context' }
       },
+      onOutboundPayload: payload => outboundPayloads.push(payload),
       onEvent: event => events.push(event),
     },
   )
@@ -422,7 +447,276 @@ if (process.argv[2] === 'acp') {
     sessionRef: 'hermes-stale-session',
     transport: 'acp',
   }])
+  assert.equal(outboundPayloads.length, 1)
+  assertSafeOutboundPayload(outboundPayloads[0])
+  assert.deepEqual(outboundPayloads[0], {
+    prompt: 'rebuilt full context',
+    transport: 'legacy',
+    serialization: 'cli-argv-stdin-v1',
+    promptMode: 'argument',
+    ...wireFingerprint({
+      args: ['chat', '--quiet', '--query', 'rebuilt full context'],
+      command: cli,
+      cwd: directory,
+      stdin: '',
+    }),
+  })
   assert.equal(events.some(event => event.title === 'connector_fallback'), true)
+})
+
+test('runAgent reports minimal legacy payloads before argv and stdin delivery', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-outbound-payload-'))
+  const lifecycleFile = path.join(directory, 'lifecycle.log')
+  const wireFile = path.join(directory, 'wire.log')
+  const codexCli = executable(directory, 'codex-outbound.cjs', `
+const fs = require('node:fs')
+let prompt = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', chunk => { prompt += chunk })
+process.stdin.on('end', () => {
+  fs.appendFileSync(
+    process.env.ROUNDRELAY_TEST_WIRE_FILE,
+    JSON.stringify({ args: process.argv.slice(2), stdin: prompt }) + '\\n',
+  )
+  fs.appendFileSync(process.env.ROUNDRELAY_TEST_LIFECYCLE_FILE, 'stdin:' + prompt + '\\n')
+  const events = [
+    { type: 'thread.started', thread_id: 'codex-outbound-session' },
+    { type: 'item.completed', item: { type: 'agent_message', text: 'stdin reply' } },
+    { type: 'turn.completed' },
+  ]
+  for (const event of events) process.stdout.write(JSON.stringify(event) + '\\n')
+})
+`)
+  const workBuddyCli = executable(directory, 'workbuddy-outbound.cjs', `
+const fs = require('node:fs')
+fs.appendFileSync(
+  process.env.ROUNDRELAY_TEST_WIRE_FILE,
+  JSON.stringify({ args: process.argv.slice(2), stdin: '' }) + '\\n',
+)
+fs.appendFileSync(
+  process.env.ROUNDRELAY_TEST_LIFECYCLE_FILE,
+  'argv:' + process.argv.at(-1) + '\\n',
+)
+process.stdout.write(JSON.stringify([
+  { type: 'result', result: 'argv reply', session_id: 'workbuddy-outbound-session' },
+]))
+`)
+  const outboundPayloads = []
+  const onOutboundPayload = async (payload) => {
+    outboundPayloads.push(payload)
+    fs.appendFileSync(lifecycleFile, 'hook:' + payload.prompt + '\n')
+  }
+  const options = {
+    sandbox: 'read-only',
+    env: {
+      ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile,
+      ROUNDRELAY_TEST_WIRE_FILE: wireFile,
+    },
+    onOutboundPayload,
+  }
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const stdinResult = await runAgent(
+    { kind: 'codex', executable: codexCli, name: 'Codex' },
+    'stdin prompt',
+    directory,
+    options,
+  )
+  const argvResult = await runAgent(
+    { kind: 'workbuddy', executable: workBuddyCli, name: 'WorkBuddy' },
+    'argv prompt',
+    directory,
+    { ...options, sessionRef: 'private-workbuddy-session' },
+  )
+
+  assert.equal(stdinResult.text, 'stdin reply')
+  assert.equal(argvResult.text, 'argv reply')
+  const [stdinWire, argvWire] = fs.readFileSync(wireFile, 'utf8')
+    .trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(stdinWire.stdin, 'stdin prompt')
+  assert.equal(argvWire.args.includes('private-workbuddy-session'), true)
+  assert.equal(argvWire.args.at(-1), 'argv prompt')
+  assert.equal(outboundPayloads.length, 2)
+  outboundPayloads.forEach(assertSafeOutboundPayload)
+  assert.deepEqual(outboundPayloads[0], {
+    prompt: 'stdin prompt',
+    transport: 'legacy',
+    serialization: 'cli-argv-stdin-v1',
+    promptMode: 'stdin',
+    ...wireFingerprint({
+      args: stdinWire.args,
+      command: codexCli,
+      cwd: directory,
+      stdin: stdinWire.stdin,
+    }),
+  })
+  assert.deepEqual(outboundPayloads[1], {
+    prompt: 'argv prompt',
+    transport: 'legacy',
+    serialization: 'cli-argv-stdin-v1',
+    promptMode: 'argument',
+    ...wireFingerprint({
+      args: argvWire.args,
+      command: workBuddyCli,
+      cwd: directory,
+      stdin: argvWire.stdin,
+    }),
+  })
+  const publicPayloads = JSON.stringify(outboundPayloads)
+  assert.equal(publicPayloads.includes(directory), false)
+  assert.equal(publicPayloads.includes(codexCli), false)
+  assert.equal(publicPayloads.includes(workBuddyCli), false)
+  assert.equal(publicPayloads.includes('private-workbuddy-session'), false)
+  assert.deepEqual(
+    fs.readFileSync(lifecycleFile, 'utf8').trim().split('\n'),
+    ['hook:stdin prompt', 'stdin:stdin prompt', 'hook:argv prompt', 'argv:argv prompt'],
+  )
+})
+
+test('legacy outbound callback failure prevents prompt delivery', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-outbound-blocked-'))
+  const deliveryFile = path.join(directory, 'delivered.txt')
+  const cli = executable(directory, 'workbuddy-outbound-blocked.cjs', `
+const fs = require('node:fs')
+fs.writeFileSync(process.env.ROUNDRELAY_TEST_DELIVERY_FILE, process.argv.at(-1))
+process.stdout.write(JSON.stringify([
+  { type: 'result', result: 'unexpected', session_id: 'workbuddy-blocked-session' },
+]))
+`)
+  const callbackError = new Error('outbound payload capture failed')
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'workbuddy', executable: cli, name: 'WorkBuddy' },
+      'must not be delivered',
+      directory,
+      {
+        env: { ROUNDRELAY_TEST_DELIVERY_FILE: deliveryFile },
+        onOutboundPayload: async () => { throw callbackError },
+      },
+    ),
+    error => error === callbackError,
+  )
+  assert.equal(fs.existsSync(deliveryFile), false)
+})
+
+test('legacy outbound fingerprint uses the command prepared from a Windows shim', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-outbound-windows-'))
+  const shim = path.join(directory, 'codex.cmd')
+  fs.writeFileSync(
+    shim,
+    '@"%~dp0\\node_modules\\codex\\bin\\codex.js" %*\r\n',
+  )
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  let invocation
+  let outboundPayload
+  let spawnCalled = false
+  let deliveredStdin = ''
+  const child = new EventEmitter()
+  child.stdin = new PassThrough()
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.stdin.setEncoding('utf8')
+  child.stdin.on('data', chunk => { deliveredStdin += chunk })
+  child.stdin.on('finish', () => {
+    setImmediate(() => {
+      for (const event of [
+        { type: 'thread.started', thread_id: 'windows-prepared-session' },
+        { type: 'item.completed', item: { type: 'agent_message', text: 'prepared reply' } },
+        { type: 'turn.completed' },
+      ]) child.stdout.write(`${JSON.stringify(event)}\n`)
+      child.emit('close', 0)
+    })
+  })
+  child.kill = () => true
+
+  const result = await runAgent(
+    { kind: 'codex', executable: shim, name: 'Codex' },
+    'prepared stdin prompt',
+    directory,
+    {
+      platform: 'win32',
+      sandbox: 'read-only',
+      spawnFn: (command, args, options) => {
+        spawnCalled = true
+        invocation = { command, args, options }
+        return child
+      },
+      onOutboundPayload: (payload) => {
+        assert.equal(spawnCalled, false)
+        outboundPayload = payload
+      },
+    },
+  )
+
+  assert.equal(invocation.command, 'node.exe')
+  assert.match(invocation.args[0], /node_modules\\codex\\bin\\codex\.js$/)
+  assert.equal(deliveredStdin, 'prepared stdin prompt')
+  assert.deepEqual(outboundPayload, {
+    prompt: 'prepared stdin prompt',
+    transport: 'legacy',
+    serialization: 'cli-argv-stdin-v1',
+    promptMode: 'stdin',
+    ...wireFingerprint({
+      args: invocation.args,
+      command: invocation.command,
+      cwd: invocation.options.cwd,
+      stdin: deliveredStdin,
+    }),
+  })
+  assert.equal(JSON.stringify(outboundPayload).includes(shim), false)
+  assert.equal(result.text, 'prepared reply')
+})
+
+test('Hermes ACP outbound callback failure cannot fall back to legacy delivery', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-outbound-blocked-'))
+  const deliveryFile = path.join(directory, 'delivered.txt')
+  const cli = executable(directory, 'hermes-outbound-blocked.cjs', `
+const fs = require('node:fs')
+if (process.argv[2] !== 'acp') {
+  fs.writeFileSync(process.env.ROUNDRELAY_TEST_DELIVERY_FILE, process.argv.at(-1))
+  process.stdout.write('unexpected legacy reply\\n')
+  process.exit(0)
+}
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'hermes-blocked-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_DELIVERY_FILE, 'acp prompt delivered')
+  }
+})
+`)
+  const callbackError = new Error('Hermes outbound payload capture failed')
+  let callbackCalls = 0
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'hermes', executable: cli, name: 'Hermes' },
+      'must not be delivered',
+      directory,
+      {
+        env: { ROUNDRELAY_TEST_DELIVERY_FILE: deliveryFile },
+        onOutboundPayload: async () => {
+          callbackCalls += 1
+          if (callbackCalls === 1) throw callbackError
+        },
+      },
+    ),
+    error => error === callbackError,
+  )
+  assert.equal(callbackCalls, 1)
+  assert.equal(fs.existsSync(deliveryFile), false)
 })
 
 test('Hermes ACP streams only the current turn after resume history replay', async (t) => {
@@ -542,27 +836,22 @@ test('Hermes ACP keeps explicit Provider credentials out of process arguments', 
   assert.equal(spec.args.some(value => value.includes('test-secret')), false)
 })
 
-test('Hermes preloads validated selected skills through its native CLI flags', () => {
-  const spec = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
+test('Hermes receives selected Skill snapshots through the prompt without native CLI flags', () => {
+  const legacySpec = invocation('hermes', '/tmp/hermes', '/tmp', 'hermes-session-123', {
     skills: ['research', 'code-review', 'research'],
+    hermesAcpAvailable: false,
   })
-  assert.deepEqual(spec.args, [
+  assert.deepEqual(legacySpec.args, [
     'chat', '--quiet',
-    '--skills', 'research',
-    '--skills', 'code-review',
     '--resume', 'hermes-session-123',
     '--query',
   ])
-  assert.throws(
-    () => invocation('hermes', '/tmp/hermes', '/tmp', '', { skills: ['../private'] }),
-    { message: 'LOCAL_SKILL_SELECTION_INVALID' },
-  )
-  assert.throws(
-    () => invocation('hermes', '/tmp/hermes', '/tmp', '', {
-      skills: ['one', 'two', 'three', 'four', 'five'],
-    }),
-    { message: 'LOCAL_SKILL_LIMIT' },
-  )
+  assert.equal(legacySpec.args.includes('--skills'), false)
+
+  const acpSpec = invocation('hermes', '/tmp/hermes', '/tmp', '', {
+    skills: ['research'],
+  })
+  assert.deepEqual(acpSpec.args, ['acp'])
 })
 
 test('Hermes forwards one image and rejects additional images instead of dropping them', () => {
@@ -622,7 +911,7 @@ process.stderr.write('session_id: hermes-env-session\\n')
     {
       home: directory,
       sandbox: 'workspace-write',
-      skills: ['legacy-test'],
+      hermesAcpAvailable: false,
       env: { HERMES_EXEC_ASK: '0', HERMES_YOLO_MODE: '1' },
       hermesMessageWatermarkFn: () => 0,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -651,7 +940,7 @@ process.stderr.write('diagnostic\\nsession_id: hermes-session-123\\n')
     directory,
     {
       home: directory,
-      skills: ['legacy-test'],
+      hermesAcpAvailable: false,
       hermesMessageWatermarkFn: () => 23,
       hermesFinalResponseFn: () => 'Hermes reply',
     },
@@ -680,7 +969,7 @@ process.stderr.write('┊ review diff\\na//tmp/report.py → b//tmp/report.py\\n
     directory,
     {
       env: { OPENAI_API_KEY: 'test-secret-value' },
-      skills: ['legacy-test'],
+      hermesAcpAvailable: false,
       onProgress: step => progress.push(step),
       hermesMessageWatermarkFn: () => 41,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
@@ -789,7 +1078,7 @@ process.stderr.write(${JSON.stringify(`${processProgress}\nsession_id: hermes-se
     directory,
     {
       onProgress: step => progress.push(step),
-      skills: ['legacy-test'],
+      hermesAcpAvailable: false,
       onSessionRef: async (sessionRef) => {
         await new Promise(resolve => setImmediate(resolve))
         lifecycle.push(`session:${sessionRef}`)
@@ -832,7 +1121,7 @@ process.stderr.write('session_id: hermes-session-lookup-failure\\n')
         await new Promise(resolve => setImmediate(resolve))
         lifecycle.push(`session:${sessionRef}`)
       },
-      skills: ['legacy-test'],
+      hermesAcpAvailable: false,
       hermesMessageWatermarkFn: () => 61,
       hermesFinalResponseFn: () => {
         lifecycle.push('final-lookup')
@@ -862,7 +1151,7 @@ process.stderr.write('session_id: hermes-session-no-watermark\\n')
     'hello',
     directory,
     {
-      skills: ['legacy-test'],
+      hermesAcpAvailable: false,
       hermesMessageWatermarkFn: () => null,
       hermesFinalResponseFn: () => {
         finalLookupCount += 1

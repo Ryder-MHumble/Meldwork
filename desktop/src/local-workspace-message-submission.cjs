@@ -5,6 +5,7 @@ const {
   MAX_MESSAGE_ATTACHMENTS,
   MAX_SKILL_HINTS,
   USER_ATTACHMENT_MIME_TYPES,
+  abortableOperation,
   attachmentLimitError,
   attachmentType,
   cleanInline,
@@ -12,6 +13,7 @@ const {
   normalizeAttachmentMetadata,
   normalizeAutoRounds,
   normalizeKnowledgeBaseHint,
+  normalizeSkillHint,
   normalizeTargetKinds,
 } = require('./local-workspace-inputs.cjs')
 
@@ -34,20 +36,26 @@ class LocalWorkspaceMessageSubmission {
     this.startAutoRunner = options.startAutoRunner
     this.beginRun = options.beginRun
     this.invokeAgent = options.invokeAgent
+    this.invokeWithRecovery = options.invokeWithRecovery
     this.recordAgentInterruption = options.recordAgentInterruption
     this.recordAgentFailure = options.recordAgentFailure
     this.emitChanged = options.emitChanged
     this.snapshot = options.snapshot
     this.finishRun = options.finishRun
+    this.createContextPack = options.createContextPack
+    this.configureRunBudget = options.configureRunBudget
+    this.resetAgentSession = options.resetAgentSession
+    this.refreshAgents = options.refreshAgents
+    this.consumeAgentControl = options.consumeAgentControl
   }
 
-  async resolveAttachments(attachmentRefs) {
+  async resolveAttachments(attachmentRefs, signal) {
     if (!Array.isArray(attachmentRefs)) throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
     if (attachmentRefs.length > MAX_MESSAGE_ATTACHMENTS) {
       throw new Error('LOCAL_ATTACHMENT_COUNT_LIMIT')
     }
     const resolved = attachmentRefs.length
-      ? await this.resolveAttachmentsFn(attachmentRefs)
+      ? await abortableOperation(() => this.resolveAttachmentsFn(attachmentRefs), signal)
       : []
     if (!Array.isArray(resolved) || resolved.length !== attachmentRefs.length) {
       throw new Error('LOCAL_ATTACHMENT_REFERENCE_INVALID')
@@ -86,7 +94,7 @@ class LocalWorkspaceMessageSubmission {
 
   async preflight(targetKinds, input, reservation) {
     const text = cleanText(input.text)
-    const attachments = await this.resolveAttachments(input.attachments || [])
+    const attachments = await this.resolveAttachments(input.attachments || [], reservation.signal)
     if (reservation.signal.aborted || this.isShuttingDown()) {
       throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     }
@@ -95,28 +103,43 @@ class LocalWorkspaceMessageSubmission {
 
     const requestedSkillHints = input.skillHints || []
     const skillHintsByKind = new Map()
+    const publicSkillHintsByKind = new Map()
     for (const kind of targetKinds) {
       const scoped = requestedSkillHints.filter(skill => skill?.targetKind === kind)
-      const validated = await this.validateSkillSelections(kind, scoped)
+      const validated = await abortableOperation(
+        () => this.validateSkillSelections(kind, scoped),
+        reservation.signal,
+      )
       if (reservation.signal.aborted || this.isShuttingDown()) {
         throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
       }
       if (!Array.isArray(validated) || validated.some(skill => skill?.targetKind !== kind)) {
         throw new Error('LOCAL_SKILL_SELECTION_INVALID')
       }
+      const publicHints = validated.map(normalizeSkillHint).filter(Boolean)
+      if (publicHints.length !== validated.length) {
+        throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+      }
       skillHintsByKind.set(kind, validated)
+      publicSkillHintsByKind.set(kind, publicHints)
     }
     const requestedKnowledgeBaseHints = input.knowledgeBaseHints || []
-    const validatedKnowledgeBaseHints = await this.validateKnowledgeBaseSelections(
-      targetKinds,
-      requestedKnowledgeBaseHints,
+    const validatedKnowledgeBaseHints = await abortableOperation(
+      () => this.validateKnowledgeBaseSelections(targetKinds, requestedKnowledgeBaseHints),
+      reservation.signal,
     )
     if (reservation.signal.aborted || this.isShuttingDown()) {
       throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     }
     const knowledgeBaseHints = (Array.isArray(validatedKnowledgeBaseHints)
       ? validatedKnowledgeBaseHints
-      : []).map(normalizeKnowledgeBaseHint).filter(Boolean)
+      : []).map((source) => {
+      const publicHint = normalizeKnowledgeBaseHint(source)
+      if (!publicHint) return null
+      return source?.connectorSource
+        ? { ...publicHint, connectorSource: source.connectorSource }
+        : publicHint
+    }).filter(Boolean)
     if (knowledgeBaseHints.length !== requestedKnowledgeBaseHints.length
         || knowledgeBaseHints.some(source => (
           source.targetKinds.some(kind => !targetKinds.includes(kind))
@@ -131,9 +154,10 @@ class LocalWorkspaceMessageSubmission {
       text,
       attachments,
       skillHintsByKind,
-      skillHints: targetKinds.flatMap(kind => skillHintsByKind.get(kind) || []),
+      skillHints: targetKinds.flatMap(kind => publicSkillHintsByKind.get(kind) || []),
       knowledgeBaseHintsByKind,
       knowledgeBaseHints,
+      storedKnowledgeBaseHints: knowledgeBaseHints.filter(source => !source.connectorSource),
     }
   }
 
@@ -195,6 +219,16 @@ class LocalWorkspaceMessageSubmission {
     return { mode, targetKinds, unlimitedRounds, maxRounds, requestedThreadRootId }
   }
 
+  replacementInstruction(failedKind) {
+    const agent = this.detectedAgents().find(candidate => candidate.kind === failedKind)
+    const label = cleanInline(agent?.name, 60) || failedKind
+    return [
+      `You are replacing ${label} for this turn.`,
+      'Complete the interrupted Agent slot using the shared task context, then return your own conclusion.',
+      'Do not claim that the interrupted Agent completed this work.',
+    ].join('\n')
+  }
+
   async send(input) {
     const group = this.getGroup(input.groupId)
     if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
@@ -208,11 +242,18 @@ class LocalWorkspaceMessageSubmission {
     const reservation = this.reserveRun(
       group.id, mode, targetKinds, '', maxRounds, unlimitedRounds,
     )
+    try {
+      this.configureRunBudget(reservation, input.budget || {})
+    } catch (error) {
+      this.releasePreparation(group.id, reservation)
+      throw error
+    }
     const promise = (async () => {
       let controller = null
       let autoStarted = false
-      let successCount = 0
+      const successfulKinds = new Set()
       let runStatus = 'failed'
+      const reportedFailures = new Set()
       try {
         const prepared = await this.preflight(targetKinds, input, reservation)
         if (mode === 'auto') {
@@ -227,12 +268,22 @@ class LocalWorkspaceMessageSubmission {
             {
               attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
               skillHints: prepared.skillHints,
-              knowledgeBaseHints: prepared.knowledgeBaseHints,
+              knowledgeBaseHints: prepared.storedKnowledgeBaseHints,
               targetKinds,
             },
           )
           try {
-            this.bindRunTask(group.id, reservation, userMessage.id, userMessage.id)
+            const contextPack = this.createContextPack({
+              group,
+              taskId: userMessage.id,
+              mode: 'auto',
+              targetKinds,
+              message: userMessage,
+              prepared,
+            })
+            this.bindRunTask(
+              group.id, reservation, userMessage.id, userMessage.id, contextPack.contextPackId,
+            )
             controller = this.startAutoRunner(
               group, targetKinds, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
             )
@@ -264,13 +315,23 @@ class LocalWorkspaceMessageSubmission {
           {
             attachments: prepared.attachments.map(({ path: _path, ...metadata }) => metadata),
             skillHints: prepared.skillHints,
-            knowledgeBaseHints: prepared.knowledgeBaseHints,
+            knowledgeBaseHints: prepared.storedKnowledgeBaseHints,
             targetKinds: group.conversationType === 'direct' ? [] : targetKinds,
           },
         )
         const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
         try {
-          this.bindRunTask(group.id, reservation, userMessage.id, threadRootId)
+          const contextPack = this.createContextPack({
+            group,
+            taskId: userMessage.id,
+            mode: group.conversationType === 'direct' ? 'direct' : 'manual',
+            targetKinds,
+            message: userMessage,
+            prepared,
+          })
+          this.bindRunTask(
+            group.id, reservation, userMessage.id, threadRootId, contextPack.contextPackId,
+          )
           controller = this.beginRun(
             group.id, 'manual', targetKinds, threadRootId, reservation,
           )
@@ -283,19 +344,69 @@ class LocalWorkspaceMessageSubmission {
           throw error
         }
         if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
-        for (const kind of targetKinds) {
+        let activeKinds = [...targetKinds]
+        const pendingKinds = [...targetKinds]
+        const replacementInstructions = new Map()
+        while (pendingKinds.length) {
+          const kind = pendingKinds.shift()
+          if (!activeKinds.includes(kind)) continue
           if (controller.signal.aborted) break
           controller.currentKind = kind
           controller.progress = []
           this.emitChanged()
           try {
-            await this.invokeAgent(group, kind, 'manual', controller.signal, threadRootId, {
-              skillHints: prepared.skillHintsByKind.get(kind) || [],
-              knowledgeBaseHints: prepared.knowledgeBaseHintsByKind.get(kind) || [],
-              attachments: prepared.attachments.map(attachment => attachment.path),
-              sessionThreadRootId: requestedThreadRootId || threadRootId,
+            const invocation = await this.invokeWithRecovery({
+              group,
+              kind,
+              controller,
+              activeKinds,
+              threadRootId,
+              context: {
+                skillHints: prepared.skillHintsByKind.get(kind) || [],
+                knowledgeBaseHints: prepared.knowledgeBaseHintsByKind.get(kind) || [],
+                attachments: prepared.attachments.map(attachment => attachment.path),
+                attachmentSnapshots: prepared.attachments,
+                sessionThreadRootId: requestedThreadRootId || threadRootId,
+                runtimeInstruction: replacementInstructions.get(kind) || '',
+              },
+              reportedFailures,
             })
-            successCount += 1
+            replacementInstructions.delete(kind)
+            if (invocation.control?.action === 'replace') {
+              this.recordAgentInterruption(
+                group.id, kind, invocation.error, threadRootId, 'stopped', reportedFailures,
+              )
+              if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+              if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+              successfulKinds.delete(kind)
+              const replacementKind = invocation.control.replacementKind
+              activeKinds = activeKinds.filter(activeKind => activeKind !== kind)
+              replacementInstructions.set(
+                replacementKind,
+                this.replacementInstruction(kind),
+              )
+              if (!pendingKinds.includes(replacementKind)) pendingKinds.unshift(replacementKind)
+              controller.currentKind = ''
+              controller.progress = []
+              this.emitChanged()
+              continue
+            }
+            if (invocation.control?.action === 'cancel') {
+              this.recordAgentInterruption(
+                group.id, kind, invocation.error, threadRootId, 'stopped', reportedFailures,
+              )
+              if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+              if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+              successfulKinds.delete(kind)
+              controller.currentKind = ''
+              controller.progress = []
+              this.emitChanged()
+              continue
+            }
+            if (!invocation.result) {
+              throw invocation.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+            }
+            successfulKinds.add(kind)
           } catch (error) {
             if (controller.signal.aborted) {
               this.recordAgentInterruption(
@@ -305,14 +416,15 @@ class LocalWorkspaceMessageSubmission {
                 threadRootId,
                 controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
               )
-              controller.completedKinds.push(kind)
+              if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
               break
             }
-            this.recordAgentFailure(group.id, kind, error, threadRootId)
-            controller.failedKinds.push(kind)
+            this.recordAgentFailure(group.id, kind, error, threadRootId, reportedFailures)
+            successfulKinds.delete(kind)
+            if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
             if (error?.message === 'LOCAL_AGENT_TIMEOUT') runStatus = 'timeout'
           }
-          controller.completedKinds.push(kind)
+          if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
           controller.currentKind = ''
           controller.progress = []
           this.emitChanged()
@@ -321,8 +433,11 @@ class LocalWorkspaceMessageSubmission {
           runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
           return this.snapshot()
         }
+        const successCount = activeKinds.filter(kind => successfulKinds.has(kind)).length
         if (!successCount) return this.snapshot()
-        runStatus = successCount === targetKinds.length ? 'completed' : 'partial'
+        runStatus = successCount === activeKinds.length
+          ? 'completed'
+          : 'partial'
         return this.snapshot()
       } finally {
         if (mode === 'auto') {
@@ -332,7 +447,7 @@ class LocalWorkspaceMessageSubmission {
           controller.progress = []
           if (controller.signal.aborted) {
             runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
-          } else if (runStatus === 'failed' && successCount > 0) runStatus = 'partial'
+          } else if (runStatus === 'failed' && successfulKinds.size > 0) runStatus = 'partial'
           this.finishRun(group.id, controller, runStatus)
         } else {
           this.releasePreparation(group.id, reservation)
@@ -375,6 +490,17 @@ class LocalWorkspaceMessageSubmission {
       group.id, 'auto', targetKinds, threadRootId, maxRounds, unlimitedRounds,
     )
     try {
+      this.configureRunBudget(reservation, input.budget || {})
+      const contextPack = this.createContextPack({
+        group,
+        taskId: threadRootId,
+        mode: 'auto',
+        targetKinds,
+        message: rootMessage,
+      })
+      this.bindRunTask(
+        group.id, reservation, threadRootId, threadRootId, contextPack.contextPackId,
+      )
       this.startAutoRunner(
         group, targetKinds, threadRootId, maxRounds, reservation, null, unlimitedRounds,
       )

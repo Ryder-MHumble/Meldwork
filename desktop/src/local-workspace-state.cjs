@@ -12,6 +12,11 @@ const {
   normalizeSessionRef,
 } = require('./local-workspace-inputs.cjs')
 
+const FINISHED_AGENT_STATUSES = new Set([
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
+])
+const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
+
 function loadWorkspaceState(storagePath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
@@ -70,17 +75,97 @@ function saveWorkspaceState(storagePath, state) {
   fs.renameSync(tempPath, storagePath)
 }
 
-function workspaceSnapshot({ detectedAgents, state, preparingRuns, activeRuns }) {
-  const runEntries = [
+function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds, liveGroupIds }) {
+  let records = []
+  try { records = runLedger?.list?.() || [] } catch { return [] }
+  const groupIds = new Set(state.groups.map(group => group.id))
+  const pendingById = new Map(pendingGates.map(gate => [gate.gateId, gate]))
+  const projectedGroupIds = new Set()
+  const snapshots = []
+
+  for (const record of records) {
+    const continuation = record?.continuation
+    const gate = pendingById.get(continuation?.gateId)
+    if (record?.status !== 'waiting' || continuation?.state !== 'pending'
+        || !gate || liveRunIds.has(record.runId) || liveGroupIds.has(record.groupId)
+        || projectedGroupIds.has(record.groupId) || !groupIds.has(record.groupId)
+        || gate.runId !== record.runId || gate.type !== continuation.gateType
+        || gate.agentRunId !== continuation.agentRunId
+        || gate.agentKind !== continuation.agentKind
+        || !record.targetKinds?.includes(continuation.agentKind)) continue
+
+    const latestAgentStatuses = new Map()
+    for (const agentRun of Array.isArray(record.agentRuns) ? record.agentRuns : []) {
+      if (!record.targetKinds.includes(agentRun?.kind)
+          || !FINISHED_AGENT_STATUSES.has(agentRun?.status)) continue
+      latestAgentStatuses.set(agentRun.kind, agentRun.status)
+    }
+    const mode = record.mode === 'auto' ? 'auto' : 'manual'
+    const unlimitedRounds = mode === 'auto' && record.unlimitedRounds === true
+    const maxRounds = mode === 'auto' && !unlimitedRounds
+      ? cleanRunMaxRounds(record.maxRounds)
+      : 0
+    projectedGroupIds.add(record.groupId)
+    snapshots.push({
+      groupId: record.groupId,
+      runId: record.runId,
+      taskId: record.taskId || '',
+      contextPackId: record.contextPackId || '',
+      contextPackState: record.contextPackState || (record.contextPackId
+        ? 'captured'
+        : 'legacy-unavailable'),
+      phase: 'running',
+      mode,
+      targetKinds: record.targetKinds || [],
+      completedKinds: [...latestAgentStatuses.keys()],
+      failedKinds: [...latestAgentStatuses]
+        .filter(([, status]) => FAILED_AGENT_STATUSES.has(status))
+        .map(([kind]) => kind),
+      currentKind: continuation.agentKind,
+      currentRound: cleanCurrentRound(record.currentRound, maxRounds, unlimitedRounds),
+      maxRounds,
+      unlimitedRounds,
+      progress: [],
+      threadRootId: record.threadRootId || '',
+      startedAt: record.startedAt || Date.now(),
+      agentRuns: Array.isArray(record.agentRuns) ? record.agentRuns : [],
+      waitingGateIds: [gate.gateId],
+      budget: record.budget || null,
+    })
+  }
+  return snapshots
+}
+
+function workspaceSnapshot({
+  detectedAgents, state, preparingRuns, activeRuns, humanGateCoordinator, runLedger,
+}) {
+  const busyEntries = [
     ...[...preparingRuns.entries()].map(entry => [...entry, 'preparing']),
     ...[...activeRuns.entries()].map(entry => [...entry, 'running']),
   ]
+  const runEntries = busyEntries.filter(([, run, phase]) => (
+    phase === 'running' || run.taskBound === true
+  ))
+  const pendingGates = humanGateCoordinator?.list?.({ pendingOnly: true }) || []
+  const liveRunIds = new Set(runEntries.map(([, run]) => run.runId).filter(Boolean))
+  const liveGroupIds = new Set(busyEntries.map(([groupId]) => groupId))
+  const durableRuns = durableWaitingRunSnapshots({
+    state, runLedger, pendingGates, liveRunIds, liveGroupIds,
+  })
+  const visibleRunIds = new Set([
+    ...liveRunIds,
+    ...durableRuns.map(run => run.runId),
+  ])
   return {
     agents: detectedAgents.map(({ executable, ...agent }) => agent),
     groups: state.groups,
     messages: state.messages,
-    runningGroupIds: runEntries.map(([groupId]) => groupId),
-    runs: runEntries.map(([groupId, run, phase]) => {
+    runningGroupIds: [...new Set([
+      ...busyEntries.map(([groupId]) => groupId),
+      ...durableRuns.map(run => run.groupId),
+    ])],
+    humanGates: pendingGates.filter(gate => visibleRunIds.has(gate.runId)),
+    runs: [...runEntries.map(([groupId, run, phase]) => {
       const mode = run.mode === 'auto' ? 'auto' : 'manual'
       const unlimitedRounds = mode === 'auto' && run.unlimitedRounds === true
       const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
@@ -88,6 +173,8 @@ function workspaceSnapshot({ detectedAgents, state, preparingRuns, activeRuns })
         groupId,
         runId: run.runId || '',
         taskId: run.taskId || '',
+        contextPackId: run.contextPackId || '',
+        contextPackState: run.contextPackId ? 'captured' : 'legacy-unavailable',
         phase,
         mode,
         targetKinds: run.targetKinds || [],
@@ -101,8 +188,10 @@ function workspaceSnapshot({ detectedAgents, state, preparingRuns, activeRuns })
         threadRootId: run.threadRootId || '',
         startedAt: run.startedAt || Date.now(),
         agentRuns: run.harness?.snapshot?.() || [],
+        waitingGateIds: [...(run.waitingGateIds || [])],
+        budget: run.budget?.snapshot?.() || null,
       }
-    }),
+    }), ...durableRuns],
   }
 }
 

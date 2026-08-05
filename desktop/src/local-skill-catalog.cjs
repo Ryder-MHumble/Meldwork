@@ -57,6 +57,13 @@ function realpath(directory) {
   return fs.realpathSync.native ? fs.realpathSync.native(directory) : fs.realpathSync(directory)
 }
 
+function isInsideOrEqual(root, candidate) {
+  if (candidate === root) return true
+  const relative = path.relative(root, candidate)
+  return Boolean(relative && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative))
+}
+
 function readJson(filename) {
   try {
     const stat = fs.statSync(filename)
@@ -155,6 +162,7 @@ function directoryEntryKind(entry, filename) {
 function globalRoots(kind, home) {
   return (AGENT_SKILL_ROOTS[kind] || []).map(parts => ({
     directory: path.join(home, ...parts),
+    boundary: path.join(home, ...parts),
     namespace: 'global',
   }))
 }
@@ -192,8 +200,8 @@ function workBuddyPluginRoots(home) {
     if (!directRoot || !nestedRoot) continue
     const namespace = sourceNamespace('marketplace', [marketplaceName, pluginName])
     roots.push(
-      { directory: directRoot, namespace },
-      { directory: nestedRoot, namespace },
+      { directory: directRoot, boundary: installLocation, namespace },
+      { directory: nestedRoot, boundary: installLocation, namespace },
     )
   }
   return roots
@@ -204,6 +212,9 @@ function codexPluginRoots(home) {
   const roots = []
   const visited = new Set()
   let directoryCount = 0
+  let boundary
+
+  try { boundary = realpath(cacheRoot) } catch { return [] }
 
   function visit(directory, depth, relativeParts) {
     if (depth > MAX_PLUGIN_CACHE_DEPTH || directoryCount >= MAX_DIRECTORIES
@@ -212,7 +223,7 @@ function codexPluginRoots(home) {
     let entries
     try {
       resolved = realpath(directory)
-      if (visited.has(resolved)) return
+      if (!isInsideOrEqual(boundary, resolved) || visited.has(resolved)) return
       visited.add(resolved)
       directoryCount += 1
       entries = fs.readdirSync(resolved, { withFileTypes: true })
@@ -229,6 +240,7 @@ function codexPluginRoots(home) {
       if (entry.name.toLowerCase() === 'skills') {
         roots.push({
           directory: filename,
+          boundary: cacheRoot,
           namespace: sourceNamespace('plugin', relativeParts),
         })
       } else {
@@ -256,13 +268,13 @@ function collectSkills(targetKind, roots) {
   const visited = new Set()
   let directoryCount = 0
 
-  function visit(directory, namespace, depth) {
+  function visit(directory, boundary, namespace, depth) {
     if (depth > MAX_DEPTH || directoryCount >= MAX_DIRECTORIES || skills.size >= MAX_SKILLS) return
     let resolved
     let entries
     try {
       resolved = realpath(directory)
-      if (visited.has(resolved)) return
+      if (!isInsideOrEqual(boundary, resolved) || visited.has(resolved)) return
       visited.add(resolved)
       directoryCount += 1
       entries = fs.readdirSync(resolved, { withFileTypes: true })
@@ -285,7 +297,7 @@ function collectSkills(targetKind, roots) {
         )
         const key = `${namespace}\u0000${slug}`
         if (!skills.has(key)) {
-          skills.set(key, { targetKind, namespace, slug, name })
+          skills.set(key, { targetKind, namespace, slug, name, sourceDirectory: resolved })
         }
       }
       return
@@ -296,14 +308,16 @@ function collectSkills(targetKind, roots) {
       if (entry.name.startsWith('.')) continue
       const filename = path.join(resolved, entry.name)
       if (directoryEntryKind(entry, filename) === 'directory') {
-        visit(filename, namespace, depth + 1)
+        visit(filename, boundary, namespace, depth + 1)
       }
     }
   }
 
   for (const root of roots) {
     if (skills.size >= MAX_SKILLS || directoryCount >= MAX_DIRECTORIES) break
-    visit(root.directory, root.namespace, 0)
+    let boundary
+    try { boundary = realpath(root.boundary || root.directory) } catch { continue }
+    visit(root.directory, boundary, root.namespace, 0)
   }
   return [...skills.values()]
 }
@@ -317,10 +331,19 @@ function compareSkills(left, right) {
     || left.slug.localeCompare(right.slug, undefined, { numeric: true })
 }
 
+function publicSkill(skill) {
+  return {
+    targetKind: skill.targetKind,
+    namespace: skill.namespace,
+    slug: skill.slug,
+    name: skill.name,
+  }
+}
+
 function copyResult(result) {
   return {
     ...result,
-    skills: result.skills.map(skill => ({ ...skill })),
+    skills: result.skills.map(publicSkill),
   }
 }
 
@@ -332,14 +355,14 @@ class LocalSkillCatalog {
     this.cache = new Map()
   }
 
-  list(kind) {
+  load(kind) {
     const targetKind = String(kind || '').trim().toLowerCase()
     if (!SUPPORTED_KINDS.has(targetKind)) {
       return { supported: false, total: 0, limit: DISPLAY_LIMIT, skills: [] }
     }
     const now = this.now()
     const cached = this.cache.get(targetKind)
-    if (cached && now < cached.expiresAt) return copyResult(cached.result)
+    if (cached && now < cached.expiresAt) return cached.result
 
     const skills = collectSkills(targetKind, skillRoots(targetKind, this.home)).sort(compareSkills)
     const result = {
@@ -349,7 +372,11 @@ class LocalSkillCatalog {
       skills: skills.slice(0, DISPLAY_LIMIT),
     }
     this.cache.set(targetKind, { expiresAt: now + this.cacheTtlMs, result })
-    return copyResult(result)
+    return result
+  }
+
+  list(kind) {
+    return copyResult(this.load(kind))
   }
 
   invalidate(kind) {
@@ -365,7 +392,7 @@ class LocalSkillCatalog {
 
     const targetKind = String(kind || '').trim().toLowerCase()
     this.invalidate(targetKind)
-    const available = new Map(this.list(targetKind).skills.map(skill => (
+    const available = new Map(this.load(targetKind).skills.map(skill => (
       [`${skill.namespace}\u0000${skill.slug}`, skill]
     )))
     const validated = []
@@ -383,9 +410,23 @@ class LocalSkillCatalog {
       }
       if (seen.has(coordinate)) continue
       seen.add(coordinate)
-      validated.push({ ...skill })
+      validated.push(publicSkill(skill))
     }
     return validated
+  }
+
+  resolveSelections(kind, selections) {
+    const validated = this.validateSelections(kind, selections)
+    if (!validated.length) return []
+    const targetKind = String(kind || '').trim().toLowerCase()
+    const available = new Map(this.load(targetKind).skills.map(skill => (
+      [`${skill.namespace}\u0000${skill.slug}`, skill]
+    )))
+    return validated.map((skill) => {
+      const resolved = available.get(`${skill.namespace}\u0000${skill.slug}`)
+      if (!resolved?.sourceDirectory) throw skillError('LOCAL_SKILL_SELECTION_INVALID')
+      return { ...skill, sourceDirectory: resolved.sourceDirectory }
+    })
   }
 }
 

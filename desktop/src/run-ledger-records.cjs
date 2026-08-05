@@ -1,11 +1,29 @@
 const { redactSecrets } = require('./secret-redaction.cjs')
 const { normalizeExternalRunRef } = require('./agent-runtime-contract.cjs')
+const { parseConnectorRunSnapshot } = require('./agent-connector-registry.cjs')
+const { parseRunEventState } = require('./run-event-protocol.cjs')
+const {
+  canonicalJson,
+  normalizeContextPackId,
+  normalizeDeliveryRecordId,
+  normalizeSessionProvenance,
+} = require('./context-pack-records.cjs')
 const {
   DEFAULT_MAX_EVENTS_PER_AGENT,
   DEFAULT_MAX_OUTPUT_CHARS,
+  normalizeOutcomeRefs,
   normalizeRunEvent,
   normalizeTraceCapsule,
 } = require('./run-harness.cjs')
+const {
+  BUDGET_DIMENSIONS,
+  BUDGET_ENFORCEMENTS,
+  BUDGET_SOURCES,
+} = require('./run-budget.cjs')
+const {
+  MAX_ATTEMPT_HISTORY,
+  normalizeAttemptHistory,
+} = require('./failure-policy.cjs')
 
 const DEFAULT_MAX_DURABLE_AGENT_RUNS = 256
 const MAX_TARGET_KINDS = 32
@@ -18,6 +36,23 @@ const REMOTE_JOB_FIELDS = new Set([
 ])
 const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
+  'contextPackId', 'contextPackState', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+  'connector', 'connectorEventState',
+])
+const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
+const BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const BUDGET_DIMENSION_SET = new Set(BUDGET_DIMENSIONS)
+const BUDGET_SOURCE_SET = new Set(BUDGET_SOURCES)
+const BUDGET_ENFORCEMENT_SET = new Set(BUDGET_ENFORCEMENTS)
+const HUMAN_GATE_ID = /^human-gate-[a-f0-9]{64}$/
+const CONTINUATION_FIELDS = new Set([
+  'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
+  'round', 'createdAt', 'updatedAt',
+])
+const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision'])
+const CONTINUATION_RESUME_KINDS = new Set(['agent_slot', 'role_review_decision'])
+const CONTINUATION_STATES = new Set([
+  'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
 ])
 
 const RUN_STATUSES = new Set([
@@ -173,6 +208,8 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
   })
   const hasContext = isRecord(input.context) && [
     'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
+    'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+    'connector', 'connectorEventState',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
@@ -238,17 +275,108 @@ function hasStoredTimestamps(input, fields) {
   return fields.every(field => !hasOwn(input, field) || isStoredTimestamp(input[field]))
 }
 
+function hasExactBudgetDimensions(value) {
+  return isRecord(value)
+    && Object.keys(value).length === BUDGET_DIMENSIONS.length
+    && Object.keys(value).every(field => BUDGET_DIMENSION_SET.has(field))
+}
+
+function hasValidStoredBudgetSnapshot(input) {
+  if (!isRecord(input)
+      || Object.keys(input).length !== BUDGET_FIELDS.size
+      || Object.keys(input).some(field => !BUDGET_FIELDS.has(field))
+      || !Number.isSafeInteger(input.startedAt)
+      || input.startedAt < 0
+      || !hasExactBudgetDimensions(input.limits)
+      || !hasExactBudgetDimensions(input.used)
+      || !hasExactBudgetDimensions(input.source)
+      || !hasExactBudgetDimensions(input.enforcement)) return false
+  return BUDGET_DIMENSIONS.every(dimension => (
+    (input.limits[dimension] === null
+      || (Number.isSafeInteger(input.limits[dimension]) && input.limits[dimension] >= 0))
+    && Number.isSafeInteger(input.used[dimension])
+    && input.used[dimension] >= 0
+    && BUDGET_SOURCE_SET.has(input.source[dimension])
+    && BUDGET_ENFORCEMENT_SET.has(input.enforcement[dimension])
+  ))
+}
+
+function hasValidStoredAttemptHistory(input) {
+  if (!Array.isArray(input) || input.length > MAX_ATTEMPT_HISTORY) return false
+  const normalized = normalizeAttemptHistory(input)
+  return normalized !== null && canonicalJson(normalized) === canonicalJson(input)
+}
+
+function normalizeBudgetSnapshot(input) {
+  if (!hasValidStoredBudgetSnapshot(input)) return null
+  return {
+    limits: Object.fromEntries(BUDGET_DIMENSIONS.map(dimension => [
+      dimension, input.limits[dimension],
+    ])),
+    used: Object.fromEntries(BUDGET_DIMENSIONS.map(dimension => [
+      dimension, input.used[dimension],
+    ])),
+    source: Object.fromEntries(BUDGET_DIMENSIONS.map(dimension => [
+      dimension, input.source[dimension],
+    ])),
+    enforcement: Object.fromEntries(BUDGET_DIMENSIONS.map(dimension => [
+      dimension, input.enforcement[dimension],
+    ])),
+    startedAt: input.startedAt,
+  }
+}
+
+function normalizeContinuation(input) {
+  if (input == null) return null
+  if (!isRecord(input) || Object.keys(input).some(field => !CONTINUATION_FIELDS.has(field))) {
+    return undefined
+  }
+  const gateId = String(input.gateId || '')
+  const gateType = String(input.gateType || '')
+  const resumeKind = String(input.resumeKind || '')
+  const state = String(input.state || '')
+  const agentRunId = cleanId(input.agentRunId)
+  const agentKind = cleanId(input.agentKind)
+  const round = boundedNumber(input.round, 0, 100000)
+  const createdAt = safeTimestamp(input.createdAt, 0)
+  const updatedAt = safeTimestamp(input.updatedAt, createdAt)
+  if (!HUMAN_GATE_ID.test(gateId) || !CONTINUATION_GATE_TYPES.has(gateType)
+      || !CONTINUATION_RESUME_KINDS.has(resumeKind)
+      || !CONTINUATION_STATES.has(state) || !agentRunId || !agentKind
+      || (resumeKind === 'role_review_decision' && gateType !== 'decision')) return undefined
+  return {
+    gateId, gateType, resumeKind, state, agentRunId, agentKind,
+    round, createdAt, updatedAt,
+  }
+}
+
 function hasValidStoredRecordShape(input) {
   if (!isRecord(input)) return false
   if (!hasStoredFieldTypes(input, [
-    'runId', 'taskId', 'groupId', 'threadRootId', 'reason',
+    'runId', 'taskId', 'contextPackId', 'contextPackState', 'groupId', 'threadRootId', 'reason',
   ], 'string')) return false
+  if (hasOwn(input, 'contextPackId') && input.contextPackId
+      && normalizeContextPackId(input.contextPackId) !== input.contextPackId) return false
+  if (hasOwn(input, 'contextPackState')
+      && !CONTEXT_PACK_STATES.has(input.contextPackState)) return false
+  if (input.contextPackState === 'captured' && !normalizeContextPackId(input.contextPackId)) {
+    return false
+  }
+  if (input.contextPackState === 'legacy-unavailable' && input.contextPackId) return false
   if (!hasStoredEnum(input, 'mode', MODES)) return false
   if (!hasStoredEnum(input, 'status', RUN_STATUSES)) return false
   if (!hasStoredEnum(input, 'permissionMode', PERMISSION_MODES)) return false
   if (!hasStoredBoundedInteger(input, 'currentRound', 0, 100000)) return false
   if (!hasStoredBoundedInteger(input, 'maxRounds', 0, 100000)) return false
   if (!hasStoredFieldTypes(input, ['unlimitedRounds'], 'boolean')) return false
+  if (hasOwn(input, 'budget') && !hasValidStoredBudgetSnapshot(input.budget)) return false
+  if (hasOwn(input, 'attemptHistory')
+      && !hasValidStoredAttemptHistory(input.attemptHistory)) return false
+  if (hasOwn(input, 'continuation')) {
+    const continuation = normalizeContinuation(input.continuation)
+    if (continuation === undefined
+        || canonicalJson(continuation) !== canonicalJson(input.continuation)) return false
+  }
   if (hasOwn(input, 'remoteJob')) {
     if (!isRecord(input.remoteJob)
         || Object.keys(input.remoteJob).some(field => !REMOTE_JOB_FIELDS.has(field))
@@ -312,6 +440,63 @@ function hasValidStoredRecordShape(input) {
       if (!hasStoredBoundedInteger(agentRun.context, 'omittedCount', 0, 100000)) return false
       if (!hasStoredBoundedInteger(agentRun.context, 'charCount', 0, 1000000)) return false
       if (!hasStoredFieldTypes(agentRun.context, ['sessionRotated'], 'boolean')) return false
+      if (hasOwn(agentRun.context, 'contextPackId')
+          && normalizeContextPackId(agentRun.context.contextPackId)
+            !== agentRun.context.contextPackId) return false
+      if (hasOwn(agentRun.context, 'contextPackState')
+          && !CONTEXT_PACK_STATES.has(agentRun.context.contextPackState)) return false
+      if (agentRun.context.contextPackState === 'captured'
+          && !normalizeContextPackId(agentRun.context.contextPackId)) return false
+      if (agentRun.context.contextPackState === 'legacy-unavailable'
+          && agentRun.context.contextPackId) return false
+      if (hasOwn(agentRun.context, 'deliveryRecordIds') && (
+        !Array.isArray(agentRun.context.deliveryRecordIds)
+        || agentRun.context.deliveryRecordIds.length > 8
+        || new Set(agentRun.context.deliveryRecordIds).size
+          !== agentRun.context.deliveryRecordIds.length
+        || agentRun.context.deliveryRecordIds.some(id => (
+          typeof id !== 'string' || normalizeDeliveryRecordId(id) !== id
+        ))
+      )) return false
+      if (hasOwn(agentRun.context, 'sessionProvenance')) {
+        if (!isRecord(agentRun.context.sessionProvenance)) return false
+        const normalizedProvenance = normalizeSessionProvenance(
+          agentRun.context.sessionProvenance,
+        )
+        if (!normalizedProvenance
+            || canonicalJson(normalizedProvenance)
+              !== canonicalJson(agentRun.context.sessionProvenance)) return false
+      }
+      if (hasOwn(agentRun.context, 'outcomeRefs')) {
+        if (!isRecord(agentRun.context.outcomeRefs)) return false
+        const normalizedOutcomeRefs = normalizeOutcomeRefs(agentRun.context.outcomeRefs)
+        if (!Object.keys(normalizedOutcomeRefs).length
+            || canonicalJson(normalizedOutcomeRefs)
+              !== canonicalJson(agentRun.context.outcomeRefs)) return false
+      }
+      if (hasOwn(agentRun.context, 'connector')
+          || hasOwn(agentRun.context, 'connectorEventState')) {
+        if (!hasOwn(agentRun.context, 'connector')
+            || !hasOwn(agentRun.context, 'connectorEventState')) return false
+        let connector
+        let connectorEventState
+        try {
+          connector = parseConnectorRunSnapshot(agentRun.context.connector)
+          connectorEventState = parseRunEventState(agentRun.context.connectorEventState)
+        } catch {
+          return false
+        }
+        if (canonicalJson(connector) !== canonicalJson(agentRun.context.connector)
+            || canonicalJson(connectorEventState)
+              !== canonicalJson(agentRun.context.connectorEventState)) return false
+        const fields = [
+          'connectorId', 'connectorVersion', 'manifestId', 'instanceId',
+          'upstreamId', 'upstreamVersion',
+        ]
+        if (fields.some(field => connector[field] !== connectorEventState[field])
+            || connector.capabilities.eventProtocolVersion
+              !== connectorEventState.protocolVersion) return false
+      }
       if (hasOwn(agentRun.context, 'externalRunRef') && (
         typeof agentRun.context.externalRunRef !== 'string'
         || normalizeExternalRunRef(redactSecrets(agentRun.context.externalRunRef))
@@ -390,6 +575,17 @@ function normalizeRecord(input, options = {}) {
   const status = cleanStatus(selectedValue(input, existing, 'status'), fallbackStatus)
   const targetKinds = normalizeKinds(selectedValue(input, existing, 'targetKinds'))
   const taskId = cleanId(selectedValue(input, existing, 'taskId'))
+  const contextPackId = normalizeContextPackId(
+    selectedValue(input, existing, 'contextPackId'),
+  )
+  const existingContextPackState = existing?.contextPackState
+  const contextPackState = contextPackId
+    ? 'captured'
+    : (options.allowLegacyContext === true
+        || existingContextPackState === 'legacy-unavailable'
+      ? 'legacy-unavailable'
+      : '')
+  if (!contextPackState) return null
   const threadRootId = cleanId(selectedValue(input, existing, 'threadRootId'))
   const remoteJob = normalizeRemoteJob(
     selectedValue(input, null, 'remoteJob'),
@@ -427,10 +623,22 @@ function normalizeRecord(input, options = {}) {
     .slice(-DEFAULT_MAX_DURABLE_AGENT_RUNS)
     .map(agentRun => normalizeAgentRun(agentRun, parent, startedAt))
     .filter(Boolean)
+  const rawBudget = selectedValue(input, existing, 'budget')
+  const budget = rawBudget == null ? null : normalizeBudgetSnapshot(rawBudget)
+  if (rawBudget != null && !budget) return null
+  const attemptHistory = normalizeAttemptHistory(
+    selectedValue(input, existing, 'attemptHistory'),
+  )
+  if (!attemptHistory) return null
+  const rawContinuation = selectedValue(input, existing, 'continuation')
+  const continuation = normalizeContinuation(rawContinuation)
+  if (continuation === undefined) return null
 
   const record = {
     runId,
     taskId,
+    contextPackId,
+    contextPackState,
     groupId,
     threadRootId,
     mode,
@@ -444,8 +652,11 @@ function normalizeRecord(input, options = {}) {
     currentRound,
     maxRounds,
     unlimitedRounds,
+    attemptHistory,
     agentRuns,
   }
+  if (budget) record.budget = budget
+  if (continuation) record.continuation = continuation
   if (remoteJob) record.remoteJob = remoteJob
   if (TERMINAL_STATUSES.has(status)) {
     record.finishedAt = safeTimestamp(

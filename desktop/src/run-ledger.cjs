@@ -80,6 +80,8 @@ function journalRunSignature(record) {
   return JSON.stringify({
     runId: record.runId,
     taskId: record.taskId,
+    contextPackId: record.contextPackId,
+    contextPackState: record.contextPackState,
     groupId: record.groupId,
     threadRootId: record.threadRootId,
     mode: record.mode,
@@ -93,6 +95,9 @@ function journalRunSignature(record) {
     currentRound: record.currentRound,
     maxRounds: record.maxRounds,
     unlimitedRounds: record.unlimitedRounds,
+    budget: record.budget || null,
+    attemptHistory: record.attemptHistory,
+    continuation: record.continuation || null,
     remoteJob: record.remoteJob || null,
   })
 }
@@ -109,6 +114,8 @@ function journalRun(record, existing = null, includeAllAgents = false) {
   const run = {
     runId: record.runId,
     taskId: record.taskId,
+    contextPackId: record.contextPackId,
+    contextPackState: record.contextPackState,
     groupId: record.groupId,
     threadRootId: record.threadRootId,
     mode: record.mode,
@@ -122,8 +129,11 @@ function journalRun(record, existing = null, includeAllAgents = false) {
     currentRound: record.currentRound,
     maxRounds: record.maxRounds,
     unlimitedRounds: record.unlimitedRounds,
+    attemptHistory: record.attemptHistory,
     agentRuns,
   }
+  if (record.continuation) run.continuation = record.continuation
+  if (record.budget) run.budget = record.budget
   if (record.finishedAt != null) run.finishedAt = record.finishedAt
   if (record.remoteJob) run.remoteJob = record.remoteJob
   return run
@@ -171,7 +181,7 @@ class RunLedger {
       const agentRunIds = new Set()
       for (const rawRecord of parsed.runs) {
         const normalized = hasValidStoredRecordShape(rawRecord)
-          ? normalizeRecord(rawRecord, { now: 0 })
+          ? normalizeRecord(rawRecord, { now: 0, allowLegacyContext: true })
           : null
         if (!normalized || runIds.has(normalized.runId)) {
           throw new Error('RUN_LEDGER_STORE_INVALID')
@@ -186,7 +196,7 @@ class RunLedger {
       }
       const byId = new Map()
       for (const rawRecord of parsed.runs.slice(-MAX_RUNS * 4)) {
-        const normalized = normalizeRecord(rawRecord, { now: 0 })
+        const normalized = normalizeRecord(rawRecord, { now: 0, allowLegacyContext: true })
         byId.set(normalized.runId, normalized)
       }
       return { exists: true, runs: pruneRecords([...byId.values()], this.maxRuns) }
@@ -204,7 +214,7 @@ class RunLedger {
     const runIds = new Set()
     const agentRunIds = new Set()
     for (const rawRecord of Array.isArray(value) ? value : []) {
-      const normalized = normalizeRecord(rawRecord, { now: 0 })
+      const normalized = normalizeRecord(rawRecord, { now: 0, allowLegacyContext: true })
       if (!normalized || runIds.has(normalized.runId)) {
         throw new Error('RUN_JOURNAL_STORE_INVALID')
       }
@@ -225,6 +235,11 @@ class RunLedger {
     return recoveredRuns.map((record) => {
       const snapshot = snapshotById.get(record.runId)
       if (!snapshot) return record
+      const runLifecycleAligned = journalRunSignature(snapshot) === journalRunSignature(record)
+      const snapshotIsOlder = snapshot.updatedAt < record.updatedAt
+      if (!runLifecycleAligned && !snapshotIsOlder) {
+        return record
+      }
       const snapshotAgents = new Map(snapshot.agentRuns.map(agentRun => [
         agentRun.agentRunId, agentRun,
       ]))
@@ -233,6 +248,16 @@ class RunLedger {
         agentRuns: record.agentRuns.map((agentRun) => {
           const details = snapshotAgents.get(agentRun.agentRunId)
           if (!details || details.kind !== agentRun.kind) return agentRun
+          const agentLifecycleAligned = journalAgentSignature(details)
+            === journalAgentSignature(agentRun)
+          const detailsAreOlder = snapshotIsOlder
+            && details.round === agentRun.round
+            && details.startedAt === agentRun.startedAt
+            && details.lastActivityAt <= agentRun.lastActivityAt
+            && details.eventCursor <= agentRun.eventCursor
+          if (!agentLifecycleAligned && !detailsAreOlder) {
+            return agentRun
+          }
           return {
             ...agentRun,
             output: details.output,
@@ -354,6 +379,22 @@ class RunLedger {
     }
     const index = this.runs.findIndex(item => item.runId === record.runId)
     const existing = index >= 0 ? this.runs[index] : null
+    if (!existing && (
+      record.contextPackState !== 'captured'
+      || !cleanId(record.taskId)
+      || !record.contextPackId
+    )) {
+      throw new Error('RUN_LEDGER_RECORD_INVALID')
+    }
+    if (existing?.contextPackState === 'captured' && [
+      'taskId', 'contextPackId', 'contextPackState',
+    ].some(field => Object.hasOwn(record, field) && record[field] !== existing[field])) {
+      throw new Error('RUN_LEDGER_RECORD_INVALID')
+    }
+    if (existing?.contextPackState === 'legacy-unavailable'
+        && (record.contextPackState === 'captured' || record.contextPackId)) {
+      throw new Error('RUN_LEDGER_RECORD_INVALID')
+    }
     const normalized = normalizeRecord(record, {
       existing,
       now: this.timestamp(),
@@ -371,6 +412,55 @@ class RunLedger {
     nextRuns.push(normalized)
     this.commit(pruneRecords(nextRuns, this.maxRuns), [normalized.runId])
     return clone(normalized)
+  }
+
+  reconcileContextPacks(resolveContextPack) {
+    this.assertLoaded()
+    if (typeof resolveContextPack !== 'function') {
+      throw new Error('RUN_LEDGER_CONTEXT_RESOLVER_REQUIRED')
+    }
+    const validity = new Map()
+    const isValid = (contextPackId, taskId) => {
+      const key = `${contextPackId}\u0000${taskId}`
+      if (validity.has(key)) return validity.get(key)
+      let valid = false
+      try {
+        const pack = resolveContextPack(contextPackId)
+        valid = Boolean(
+          pack
+          && pack.contextPackId === contextPackId
+          && pack.taskId === taskId,
+        )
+      } catch { /* missing and tampered packs are both unavailable */ }
+      validity.set(key, valid)
+      return valid
+    }
+    const nextRuns = clone(this.runs)
+    const changedRunIds = []
+    for (const record of nextRuns) {
+      let changed = false
+      const runContextAvailable = record.contextPackState === 'captured'
+        && isValid(record.contextPackId, record.taskId)
+      if (!runContextAvailable && record.contextPackState === 'captured') {
+        record.contextPackId = ''
+        record.contextPackState = 'legacy-unavailable'
+        changed = true
+      }
+      for (const agentRun of record.agentRuns) {
+        const context = agentRun.context
+        if (!context?.contextPackId) continue
+        if (runContextAvailable && isValid(context.contextPackId, record.taskId)) continue
+        agentRun.context = {
+          ...context,
+          contextPackState: 'legacy-unavailable',
+        }
+        delete agentRun.context.contextPackId
+        changed = true
+      }
+      if (changed) changedRunIds.push(record.runId)
+    }
+    if (changedRunIds.length) this.commit(nextRuns, changedRunIds)
+    return clone(nextRuns.filter(record => changedRunIds.includes(record.runId)))
   }
 
   finish(runId, status, reason = '') {
@@ -404,18 +494,27 @@ class RunLedger {
     const remoteConnectorIds = new Set((Array.isArray(options.remoteConnectorIds)
       ? options.remoteConnectorIds
       : []).map(cleanId).filter(Boolean))
+    const preserveWaitingRun = typeof options.preserveWaitingRun === 'function'
+      ? options.preserveWaitingRun
+      : () => false
     const nextRuns = clone(this.runs)
     const changed = []
     for (let index = 0; index < nextRuns.length; index += 1) {
       const record = nextRuns[index]
       let recordChanged = false
       if (!TERMINAL_STATUSES.has(record.status)) {
+        let preserveWaiting = false
+        try { preserveWaiting = preserveWaitingRun(clone(record)) === true } catch {}
         const canReconcileRemote = Boolean(
           recoveryOwnerId
           && record.remoteJob?.jobId
           && remoteConnectorIds.has(record.remoteJob.connectorId),
         )
-        if (canReconcileRemote) {
+        if (preserveWaiting) {
+          record.status = 'waiting'
+          record.reason = 'human_gate_pending'
+          delete record.finishedAt
+        } else if (canReconcileRemote) {
           record.status = 'reconciling'
           record.reason = 'app_restart'
           delete record.finishedAt
@@ -440,7 +539,10 @@ class RunLedger {
       }
       if (!recordChanged) continue
       record.updatedAt = now
-      const normalized = normalizeRecord(record, { now })
+      const normalized = normalizeRecord(record, {
+        now,
+        allowLegacyContext: record.contextPackState === 'legacy-unavailable',
+      })
       nextRuns[index] = normalized
       changed.push(normalized)
     }

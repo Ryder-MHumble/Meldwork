@@ -22,6 +22,7 @@ class LocalWorkspaceRunLedger {
     this.createId = options.createId
     this.now = options.now
     this.agentLabel = options.agentLabel
+    this.preserveWaitingRun = options.preserveWaitingRun
     this.preparingRuns = options.preparingRuns
     this.timers = options.timers
   }
@@ -30,7 +31,9 @@ class LocalWorkspaceRunLedger {
     let recovered = []
     let records = []
     try {
-      recovered = this.runLedger?.recoverInterrupted?.() || []
+      recovered = this.runLedger?.recoverInterrupted?.({
+        preserveWaitingRun: this.preserveWaitingRun,
+      }) || []
       records = this.runLedger?.list?.() || recovered
     } catch {
       return
@@ -54,7 +57,13 @@ class LocalWorkspaceRunLedger {
         }, {
           runId: record.runId,
           status,
-          context: agentRun.context,
+          context: {
+            ...agentRun.context,
+            ...(record.contextPackState === 'legacy-unavailable'
+              && !agentRun.context?.contextPackId
+              ? { contextPackState: 'legacy-unavailable' }
+              : {}),
+          },
         })
         if (!trace) continue
         const label = this.agentLabel(agentRun.kind)
@@ -131,6 +140,8 @@ class LocalWorkspaceRunLedger {
     return {
       runId: controller.runId,
       taskId: controller.taskId,
+      contextPackId: controller.contextPackId,
+      contextPackState: 'captured',
       groupId,
       threadRootId: controller.threadRootId,
       mode: controller.mode === 'auto' ? 'auto' : 'manual',
@@ -143,6 +154,9 @@ class LocalWorkspaceRunLedger {
       currentRound: controller.currentRound,
       maxRounds: controller.maxRounds,
       unlimitedRounds: controller.unlimitedRounds,
+      budget: controller.budget?.snapshot?.(),
+      attemptHistory: controller.attemptHistory,
+      continuation: controller.continuation,
       agentRuns,
     }
   }

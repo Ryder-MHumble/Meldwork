@@ -33,6 +33,12 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-workspace:delete-message',
   'local-workspace:send',
   'local-workspace:stop',
+  'local-workspace:control-agent',
+  'local-workspace:decide-human-gate',
+  'local-cloud-agent:provide-input',
+  'local-cloud-agent:decide-permission',
+  'local-cloud-agent:cancel',
+  'local-outcome:record-adoption',
   'local-workspace:pick-directory',
   'local-workspace:default-directory',
   'local-agent-installer:catalog',
@@ -43,6 +49,9 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-agent-installer:set-sidebar-visibility',
   'local-custom-agent:create',
   'local-custom-agent:delete',
+  'local-agent-connector:list',
+  'local-agent-connector:configure',
+  'local-agent-connector:delete',
   'local-attachments:pick',
   'local-attachments:import',
   'local-attachments:preview',
@@ -52,6 +61,15 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-agent-provider:save',
   'local-agent-provider:activate',
   'local-agent-provider:delete',
+  'local-knowledge-connector:list',
+  'local-knowledge-connector:authorize',
+  'local-knowledge-connector:revoke',
+  'local-knowledge-connector:probe',
+  'local-knowledge-connector:search',
+  'local-knowledge-connector:fetch',
+  'local-knowledge-connector:snapshot',
+  'local-knowledge-connector:citation',
+  'local-knowledge-connector:select',
   'local-knowledge-base:status',
   'local-knowledge-base:open-guide',
   'local-knowledge-base:pick-obsidian-vault',
@@ -92,6 +110,12 @@ function loadMain(userData, options = {}) {
   const knowledgeBaseResolveCalls = []
   const attachmentInstances = []
   const skillCatalogInstances = []
+  const skillSnapshotStoreInstances = []
+  const skillSnapshotSelectionInstances = []
+  const cloudAgentRuntimeInstances = []
+  const cloudAgentOperationStoreInstances = []
+  const channelInboxStoreInstances = []
+  const channelIngressRuntimeInstances = []
   const runAgentCalls = []
   const customAgentRunCalls = []
   const externalUrls = []
@@ -115,6 +139,7 @@ function loadMain(userData, options = {}) {
     constructor(input) {
       super()
       this.input = input
+      this.outcomeStore = input.outcomeStore
       this.state = structuredClone(options.workspaceSnapshot || {
         agents: [], groups: [], messages: [], localOnly: true,
       })
@@ -126,6 +151,8 @@ function loadMain(userData, options = {}) {
       this.stopCount = 0
       this.deleteMessageCalls = []
       this.stopCalls = []
+      this.agentControlCalls = []
+      this.humanGateDecisionCalls = []
       workspaceInstances.push(this)
     }
 
@@ -176,6 +203,15 @@ function loadMain(userData, options = {}) {
     stop(groupId, runId) {
       this.stopCalls.push({ groupId, runId })
       return true
+    }
+    controlAgent(groupId, runId, kind, action, replacementKind) {
+      this.agentControlCalls.push({ groupId, runId, kind, action, replacementKind })
+      return true
+    }
+    listHumanGates() { return this.state.humanGates || [] }
+    decideHumanGate(gateId, decision) {
+      this.humanGateDecisionCalls.push({ gateId, decision })
+      return { gateId, ...decision }
     }
     setSidebarVisibility() { return this.snapshot() }
     async stopAll() {
@@ -288,6 +324,79 @@ function loadMain(userData, options = {}) {
     }
   }
 
+  class TestCloudAgentOperationStore {
+    constructor(input) {
+      this.input = input
+      cloudAgentOperationStoreInstances.push(this)
+    }
+  }
+
+  class TestCloudAgentRuntime {
+    constructor(input) {
+      this.input = input
+      this.startCount = 0
+      this.shutdownCount = 0
+      this.inputCalls = []
+      this.permissionCalls = []
+      this.cancelCalls = []
+      cloudAgentRuntimeInstances.push(this)
+    }
+
+    workspaceLedger() { return this.input.runLedger }
+    async start() { this.startCount += 1; return [] }
+    async shutdown() {
+      this.shutdownCount += 1
+      if (options.cloudShutdownGate) await options.cloudShutdownGate.promise
+    }
+    provideInput(runId, requestId, value) {
+      this.inputCalls.push({ runId, requestId, value })
+      return { runId, status: 'running' }
+    }
+    decidePermission(runId, requestId, decision) {
+      this.permissionCalls.push({ runId, requestId, decision })
+      return { runId, status: 'running' }
+    }
+    cancel(runId) {
+      this.cancelCalls.push(runId)
+      return true
+    }
+  }
+
+  class TestChannelInboxStore {
+    constructor(input) {
+      this.input = input
+      channelInboxStoreInstances.push(this)
+    }
+  }
+
+  class TestChannelIngressRuntime {
+    constructor(input) {
+      this.input = input
+      this.startCount = 0
+      this.shutdownCount = 0
+      channelIngressRuntimeInstances.push(this)
+    }
+
+    status() {
+      return {
+        started: this.startCount > this.shutdownCount,
+        connectorIds: [],
+        receiverCount: options.channelReceiverCount || 0,
+        queuedDeliveries: 0,
+        queuedOutbound: 0,
+      }
+    }
+
+    async start() {
+      this.startCount += 1
+      return this.status()
+    }
+
+    async shutdown() {
+      this.shutdownCount += 1
+    }
+  }
+
   class TestAttachmentStore {
     constructor(input) {
       attachmentConstructionCount += 1
@@ -373,6 +482,30 @@ function loadMain(userData, options = {}) {
 
     validateSelections(kind, selections) {
       this.validationCalls.push({ kind, selections })
+      return selections
+    }
+
+    resolveSelections(kind, selections) {
+      return this.validateSelections(kind, selections)
+    }
+  }
+
+  class TestLocalSkillSnapshotStore {
+    constructor(input) {
+      this.input = input
+      skillSnapshotStoreInstances.push(this)
+    }
+  }
+
+  class TestLocalSkillSnapshotSelections {
+    constructor(input) {
+      this.input = input
+      this.prepareCalls = []
+      skillSnapshotSelectionInstances.push(this)
+    }
+
+    prepare(kind, selections) {
+      this.prepareCalls.push({ kind, selections })
       return selections
     }
   }
@@ -623,6 +756,10 @@ function loadMain(userData, options = {}) {
       },
     },
     './agent-installer.cjs': { AgentInstaller: TestInstaller },
+    './cloud-agent-operation-store.cjs': { CloudAgentOperationStore: TestCloudAgentOperationStore },
+    './cloud-agent-runtime.cjs': { CloudAgentRuntime: TestCloudAgentRuntime },
+    './channel-inbox-store.cjs': { ChannelInboxStore: TestChannelInboxStore },
+    './channel-ingress-runtime.cjs': { ChannelIngressRuntime: TestChannelIngressRuntime },
     './custom-agent-store.cjs': { CustomAgentStore: TestCustomAgentStore },
     './attachment-store.cjs': { AttachmentStore: TestAttachmentStore },
     './local-agent-readiness.cjs': {
@@ -641,6 +778,10 @@ function loadMain(userData, options = {}) {
     },
     './local-workspace.cjs': { LocalWorkspace: TestWorkspace },
     './local-skill-catalog.cjs': { LocalSkillCatalog: TestLocalSkillCatalog },
+    './local-skill-snapshot.cjs': { LocalSkillSnapshotStore: TestLocalSkillSnapshotStore },
+    './local-skill-snapshot-selections.cjs': {
+      LocalSkillSnapshotSelections: TestLocalSkillSnapshotSelections,
+    },
     './openclaw-runtime.cjs': {
       managedOpenClawOptions: input => ({ env: { MANAGED_OPENCLAW: JSON.stringify(input) } }),
       nativeOpenClawOptions: input => ({ env: { NATIVE_OPENCLAW: JSON.stringify(input) } }),
@@ -700,6 +841,10 @@ function loadMain(userData, options = {}) {
         installerInstances,
         customAgentStoreInstances,
         customAgentRunCalls,
+        cloudAgentRuntimeInstances,
+        cloudAgentOperationStoreInstances,
+        channelInboxStoreInstances,
+        channelIngressRuntimeInstances,
         dockIconCalls,
         nativeImageCalls,
         nativeImagePathCalls,
@@ -714,6 +859,8 @@ function loadMain(userData, options = {}) {
         providerInstances,
         runAgentCalls,
         skillCatalogInstances,
+        skillSnapshotStoreInstances,
+        skillSnapshotSelectionInstances,
         windows,
         workspaceInstances,
         get quitCount() { return quitCount },

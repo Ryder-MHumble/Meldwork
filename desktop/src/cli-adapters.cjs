@@ -47,6 +47,7 @@ const {
   childEnvironment,
   failedAgentProcessError,
 } = require('./cli-process-support.cjs')
+const { createLegacyOutboundPayload } = require('./outbound-payload.cjs')
 
 const MAX_PROGRESS_STEPS = 8
 const MAX_HERMES_PROGRESS_PENDING_CHARS = 64 * 1024
@@ -194,7 +195,6 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     sandbox: options.sandbox,
     provider: options.provider,
     attachments: options.attachments,
-    skills: options.skills,
     hermesAcpAvailable,
     sessionTransport: options.sessionTransport,
   })
@@ -238,6 +238,17 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   if (spec.promptArg) args.push(prompt)
   if (spec.suffixArgs) args.push(...spec.suffixArgs)
   const prepared = prepareCommand(spec.command, args, { platform })
+  const stdin = spec.stdin ? prompt : ''
+  if (typeof options.onOutboundPayload === 'function') {
+    await options.onOutboundPayload(createLegacyOutboundPayload({
+      prompt,
+      command: prepared.command,
+      args: prepared.args,
+      cwd: workdir,
+      stdin,
+      promptMode: spec.stdin ? 'stdin' : 'argument',
+    }))
+  }
   const childEnv = childEnvironment(agent, workdir, options, platform)
   const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
   if (['hermes', 'openclaw', 'workbuddy', 'opencodereview'].includes(agent.kind)) {
@@ -499,7 +510,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         resolve(output)
       })().catch(error => reject(error))
     }))
-    if (spec.stdin) child.stdin.end(prompt)
+    if (spec.stdin) child.stdin.end(stdin)
     else child.stdin.end()
   })
 }

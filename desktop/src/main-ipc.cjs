@@ -1,5 +1,139 @@
+const { ADOPTION_ACTION_STATUSES } = require('./outcome-records.cjs')
+const { statusForHumanGateOption } = require('./human-gate-coordinator.cjs')
+
 const LOCAL_GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
 const LOCAL_RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
+const LOCAL_AGENT_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
+const HUMAN_GATE_IDENTIFIER = /^human-gate-[a-f0-9]{64}$/
+const HUMAN_GATE_OPTION_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
+const ARTIFACT_IDENTIFIER = /^artifact-[a-f0-9]{64}$/
+const EVIDENCE_IDENTIFIER = /^evidence-[a-f0-9]{64}$/
+const REVIEWER_FINDING_IDENTIFIER = /^reviewer-finding-[a-f0-9]{64}$/
+const ADOPTION_IDENTIFIER = /^adoption-[a-f0-9]{64}$/
+const AGENT_CONTROL_ACTIONS = new Set(['cancel', 'retry', 'replace'])
+const ADOPTION_STATUS_SET = new Set(ADOPTION_ACTION_STATUSES)
+const ADOPTION_REQUEST_KEYS = new Set([
+  'artifactId', 'destinationRef', 'evidenceIds', 'findingIds',
+  'previousAdoptionId', 'status', 'summary',
+])
+const MAX_CLOUD_INPUT_BYTES = 64 * 1024
+
+function isPlainObject(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function boundedIds(value, pattern) {
+  return Array.isArray(value) && value.length <= 64
+    && new Set(value).size === value.length
+    && value.every(item => typeof item === 'string' && pattern.test(item))
+}
+
+function adoptionDestination(value) {
+  if (!isPlainObject(value)) return null
+  const keys = Reflect.ownKeys(value)
+  if (value.kind === 'workspace-relative'
+      && keys.length === 2 && keys.includes('kind') && keys.includes('path')
+      && typeof value.path === 'string') {
+    return { kind: value.kind, path: value.path }
+  }
+  if (value.kind === 'uri'
+      && keys.length === 2 && keys.includes('kind') && keys.includes('uri')
+      && typeof value.uri === 'string') {
+    return { kind: value.kind, uri: value.uri }
+  }
+  return null
+}
+
+function normalizeAdoptionRequest(input) {
+  if (!isPlainObject(input)
+      || Reflect.ownKeys(input).some(key => (
+        typeof key !== 'string' || !ADOPTION_REQUEST_KEYS.has(key)
+      ))
+      || !ARTIFACT_IDENTIFIER.test(String(input.artifactId || ''))
+      || !ADOPTION_STATUS_SET.has(input.status)
+      || !Object.hasOwn(input, 'destinationRef')
+      || (Object.hasOwn(input, 'summary')
+        && (typeof input.summary !== 'string' || !input.summary || input.summary.length > 4000))
+      || (Object.hasOwn(input, 'evidenceIds')
+        && !boundedIds(input.evidenceIds, EVIDENCE_IDENTIFIER))
+      || (Object.hasOwn(input, 'findingIds')
+        && !boundedIds(input.findingIds, REVIEWER_FINDING_IDENTIFIER))
+      || (Object.hasOwn(input, 'previousAdoptionId')
+        && input.previousAdoptionId !== null
+        && !ADOPTION_IDENTIFIER.test(String(input.previousAdoptionId || '')))) {
+    throw new Error('LOCAL_ADOPTION_REQUEST_INVALID')
+  }
+  const destinationRef = Object.hasOwn(input, 'destinationRef')
+    ? adoptionDestination(input.destinationRef)
+    : null
+  if (Object.hasOwn(input, 'destinationRef') && !destinationRef) {
+    throw new Error('LOCAL_ADOPTION_REQUEST_INVALID')
+  }
+  return {
+    artifactId: input.artifactId,
+    status: input.status,
+    ...(Object.hasOwn(input, 'summary') ? { summary: input.summary } : {}),
+    evidenceIds: Object.hasOwn(input, 'evidenceIds') ? input.evidenceIds : [],
+    findingIds: Object.hasOwn(input, 'findingIds') ? input.findingIds : [],
+    ...(destinationRef ? { destinationRef } : {}),
+    previousAdoptionId: Object.hasOwn(input, 'previousAdoptionId')
+      ? input.previousAdoptionId
+      : null,
+  }
+}
+
+function sanitizeAdoptionSnapshot(record) {
+  if (!isPlainObject(record)
+      || !ADOPTION_IDENTIFIER.test(String(record.adoptionId || ''))
+      || !ARTIFACT_IDENTIFIER.test(String(record.artifactId || ''))
+      || !ADOPTION_STATUS_SET.has(record.status)
+      || (record.previousAdoptionId !== null
+        && !ADOPTION_IDENTIFIER.test(String(record.previousAdoptionId || '')))) {
+    throw new Error('LOCAL_ADOPTION_RESPONSE_INVALID')
+  }
+  return {
+    adoptionId: record.adoptionId,
+    artifactId: record.artifactId,
+    status: record.status,
+    previousAdoptionId: record.previousAdoptionId,
+  }
+}
+
+function sanitizeCloudAgentSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
+    throw new Error('CLOUD_AGENT_RESPONSE_INVALID')
+  }
+  const stringValue = value => (typeof value === 'string' ? value : '')
+  const stringIds = value => (Array.isArray(value)
+    ? value.filter(item => typeof item === 'string')
+    : [])
+  let waiting = null
+  if (snapshot.waiting?.type === 'input') {
+    waiting = {
+      type: 'input',
+      requestId: stringValue(snapshot.waiting.requestId),
+      prompt: stringValue(snapshot.waiting.prompt),
+    }
+  } else if (snapshot.waiting?.type === 'permission') {
+    waiting = {
+      type: 'permission',
+      requestId: stringValue(snapshot.waiting.requestId),
+      permission: stringValue(snapshot.waiting.permission),
+      summary: stringValue(snapshot.waiting.summary),
+    }
+  }
+  return {
+    runId: stringValue(snapshot.runId),
+    agentRunId: stringValue(snapshot.agentRunId),
+    status: stringValue(snapshot.status),
+    connectorId: stringValue(snapshot.connectorId),
+    artifactIds: stringIds(snapshot.artifactIds),
+    evidenceIds: stringIds(snapshot.evidenceIds),
+    waiting,
+  }
+}
 
 function registerDesktopIpc(options) {
   const {
@@ -9,7 +143,11 @@ function registerDesktopIpc(options) {
     customAgentStore,
     dialog,
     getAttachmentStore,
+    getAgentConnectors,
+    getCloudAgentRuntime,
+    getKnowledgeConnectors,
     getMainWindow,
+    getOutcomeStore,
     getWorkspace,
     installer,
     isShutdownStarted,
@@ -94,6 +232,104 @@ function registerDesktopIpc(options) {
         || !LOCAL_RUN_IDENTIFIER.test(normalizedRunId)) return false
     return workspace.stop(normalizedGroupId, normalizedRunId)
   })
+  registerTrustedHandle('local-workspace:control-agent', (
+    groupId, runId, kind, action, replacementKind = '',
+  ) => {
+    const workspace = getWorkspace()
+    if (!workspace) return false
+    const normalizedGroupId = String(groupId || '')
+    const normalizedRunId = String(runId || '')
+    const normalizedKind = String(kind || '')
+    const normalizedAction = String(action || '')
+    const normalizedReplacement = String(replacementKind || '')
+    if (!LOCAL_GROUP_IDENTIFIER.test(normalizedGroupId)
+        || !LOCAL_RUN_IDENTIFIER.test(normalizedRunId)
+        || !LOCAL_AGENT_IDENTIFIER.test(normalizedKind)
+        || !AGENT_CONTROL_ACTIONS.has(normalizedAction)
+        || (normalizedAction === 'replace'
+          ? (!LOCAL_AGENT_IDENTIFIER.test(normalizedReplacement)
+            || normalizedReplacement === normalizedKind)
+          : Boolean(normalizedReplacement))) return false
+    return workspace.controlAgent(
+      normalizedGroupId,
+      normalizedRunId,
+      normalizedKind,
+      normalizedAction,
+      normalizedReplacement,
+    )
+  })
+  registerTrustedHandle('local-workspace:decide-human-gate', (gateId, decision) => {
+    const workspace = getWorkspace()
+    if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
+    const normalizedGateId = String(gateId || '')
+    const optionId = typeof decision?.optionId === 'string' ? decision.optionId : ''
+    const hasStatus = Object.hasOwn(decision || {}, 'status')
+    const requestedStatus = hasStatus ? decision.status : ''
+    if (!HUMAN_GATE_IDENTIFIER.test(normalizedGateId)
+        || !HUMAN_GATE_OPTION_IDENTIFIER.test(optionId)
+        || !isPlainObject(decision)
+        || (hasStatus && !['approved', 'rejected'].includes(requestedStatus))
+        || Reflect.ownKeys(decision).some(key => !['status', 'optionId'].includes(key))) {
+      throw new Error('HUMAN_GATE_DECISION_INVALID')
+    }
+    const gates = workspace.listHumanGates()
+    const gate = Array.isArray(gates)
+      ? gates.find(candidate => candidate.gateId === normalizedGateId)
+      : null
+    const option = gate?.options?.find(candidate => candidate.optionId === optionId)
+    let status = ''
+    try { status = statusForHumanGateOption(option) } catch {}
+    if (!status || (hasStatus && requestedStatus !== status)) {
+      throw new Error('HUMAN_GATE_DECISION_INVALID')
+    }
+    return workspace.decideHumanGate(normalizedGateId, { status, optionId })
+  })
+  registerTrustedHandle('local-cloud-agent:provide-input', (runId, requestId, value) => {
+    const runtime = getCloudAgentRuntime?.()
+    const normalizedRunId = String(runId || '')
+    const normalizedRequestId = String(requestId || '')
+    if (!runtime) throw new Error('CLOUD_AGENT_RUNTIME_UNAVAILABLE')
+    if (!LOCAL_RUN_IDENTIFIER.test(normalizedRunId)
+        || !LOCAL_RUN_IDENTIFIER.test(normalizedRequestId)
+        || typeof value !== 'string' || !value || value.includes('\u0000')
+        || Buffer.byteLength(value) > MAX_CLOUD_INPUT_BYTES) {
+      throw new Error('CLOUD_AGENT_INPUT_INVALID')
+    }
+    return Promise.resolve(runtime.provideInput(normalizedRunId, normalizedRequestId, value))
+      .then(sanitizeCloudAgentSnapshot)
+  })
+  registerTrustedHandle('local-cloud-agent:decide-permission', (runId, requestId, decision) => {
+    const runtime = getCloudAgentRuntime?.()
+    const normalizedRunId = String(runId || '')
+    const normalizedRequestId = String(requestId || '')
+    const normalizedDecision = String(decision || '')
+    if (!runtime) throw new Error('CLOUD_AGENT_RUNTIME_UNAVAILABLE')
+    if (!LOCAL_RUN_IDENTIFIER.test(normalizedRunId)
+        || !LOCAL_RUN_IDENTIFIER.test(normalizedRequestId)
+        || !['approved', 'rejected'].includes(normalizedDecision)) {
+      throw new Error('CLOUD_AGENT_PERMISSION_DECISION_INVALID')
+    }
+    return Promise.resolve(runtime.decidePermission(
+      normalizedRunId, normalizedRequestId, normalizedDecision,
+    )).then(sanitizeCloudAgentSnapshot)
+  })
+  registerTrustedHandle('local-cloud-agent:cancel', (runId) => {
+    const runtime = getCloudAgentRuntime?.()
+    const normalizedRunId = String(runId || '')
+    if (!runtime) throw new Error('CLOUD_AGENT_RUNTIME_UNAVAILABLE')
+    if (!LOCAL_RUN_IDENTIFIER.test(normalizedRunId)) throw new Error('CLOUD_AGENT_RUN_INVALID')
+    return runtime.cancel(normalizedRunId)
+  })
+  registerTrustedHandle('local-outcome:record-adoption', (...args) => {
+    if (args.length !== 1) throw new Error('LOCAL_ADOPTION_REQUEST_INVALID')
+    const outcomeStore = getOutcomeStore?.()
+    if (!outcomeStore || typeof outcomeStore.recordHumanAdoption !== 'function') {
+      throw new Error('LOCAL_OUTCOME_STORE_UNAVAILABLE')
+    }
+    return sanitizeAdoptionSnapshot(
+      outcomeStore.recordHumanAdoption(normalizeAdoptionRequest(args[0])),
+    )
+  })
   registerTrustedHandle('local-workspace:pick-directory', async () => {
     const result = await dialog.showOpenDialog(getMainWindow(), {
       properties: ['openDirectory', 'createDirectory'],
@@ -144,6 +380,47 @@ function registerDesktopIpc(options) {
     customAgentStore.remove(selectedKind)
     await refreshLocalAgentState()
     return { deleted: true, kind: selectedKind }
+  })
+  registerTrustedHandle('local-agent-connector:list', async (...args) => {
+    if (args.length) throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    connectors.refresh(await installer.detectedAgents())
+    return connectors.list()
+  })
+  registerTrustedHandle('local-agent-connector:configure', async (...args) => {
+    if (args.length !== 1 || !args[0] || typeof args[0] !== 'object'
+        || Array.isArray(args[0])
+        || Reflect.ownKeys(args[0]).sort().join(',') !== 'credentials,label,manifestId') {
+      throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    }
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    const input = args[0]
+    connectors.refresh(await installer.detectedAgents())
+    const result = connectors.configure({
+      manifestId: input.manifestId,
+      label: input.label,
+      credentials: input.credentials === null ? null : input.credentials,
+    })
+    await refreshLocalAgentState()
+    return result
+  })
+  registerTrustedHandle('local-agent-connector:delete', async (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    }
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    const instanceId = String(args[0] || '')
+    const referenced = (getWorkspace()?.snapshot().groups || []).some(group => (
+      group?.directAgentKind === instanceId
+      || (Array.isArray(group?.agentKinds) && group.agentKinds.includes(instanceId))
+    ))
+    if (referenced) throw new Error('AGENT_CONNECTOR_INSTANCE_IN_USE')
+    const result = connectors.delete(instanceId)
+    await refreshLocalAgentState()
+    return result
   })
   registerTrustedHandle('local-attachments:pick', async (remainingCapacity) => {
     attachments.availableStore()
@@ -196,6 +473,60 @@ function registerDesktopIpc(options) {
     await refreshLocalAgentState()
     return result
   })
+  registerTrustedHandle('local-knowledge-connector:list', (...args) => {
+    if (args.length) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.list()
+  })
+  registerTrustedHandle('local-knowledge-connector:authorize', (...args) => {
+    if (args.length !== 1) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.authorize(args[0])
+  })
+  registerTrustedHandle('local-knowledge-connector:revoke', (...args) => {
+    if (args.length !== 1) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.revoke(args[0])
+  })
+  registerTrustedHandle('local-knowledge-connector:probe', (...args) => {
+    if (args.length !== 1) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.probe(args[0])
+  })
+  registerTrustedHandle('local-knowledge-connector:search', (...args) => {
+    if (args.length !== 2) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.search(args[0], args[1])
+  })
+  registerTrustedHandle('local-knowledge-connector:fetch', (...args) => {
+    if (args.length !== 2) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.fetch(args[0], args[1])
+  })
+  registerTrustedHandle('local-knowledge-connector:snapshot', (...args) => {
+    if (args.length !== 2) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.snapshot(args[0], args[1])
+  })
+  registerTrustedHandle('local-knowledge-connector:citation', (...args) => {
+    if (args.length !== 2) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.citation(args[0], args[1])
+  })
+  registerTrustedHandle('local-knowledge-connector:select', (...args) => {
+    if (args.length !== 2) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID')
+    const connectors = getKnowledgeConnectors?.()
+    if (!connectors) throw new Error('LOCAL_KNOWLEDGE_CONNECTOR_UNAVAILABLE')
+    return connectors.select(args[0], args[1])
+  })
   registerTrustedHandle('local-knowledge-base:status', async (kind = '') => (
     loadKnowledgeBaseSources(kind)
   ))
@@ -212,6 +543,7 @@ function registerDesktopIpc(options) {
     if (isShutdownStarted()) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
     if (result.canceled) return knowledgeBaseStore.state()
     knowledgeBaseStore.saveObsidianVaultPath(result.filePaths[0] || '')
+    await getKnowledgeConnectors?.()?.refresh(true)
     return loadKnowledgeBaseSources()
   })
 }

@@ -153,9 +153,9 @@ class LocalWorkspaceConversations {
       throw new Error('LOCAL_GROUP_NOT_FOUND')
     }
     this.commit(() => {
+      this.clearSessionState(groupId)
       state.groups = state.groups.filter(group => group.id !== groupId)
       state.messages = state.messages.filter(message => message.groupId !== groupId)
-      this.clearSessionState(groupId)
     }, () => this.runLedger?.deleteGroup?.(groupId))
   }
 

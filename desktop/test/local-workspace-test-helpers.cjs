@@ -42,6 +42,8 @@ function fixture() {
     now: () => '2026-07-28T00:00:00.000Z',
     createId: () => `id-${++id}`,
     createRunId: () => `run-${++runId}`,
+    retryBaseDelayMs: 1,
+    retryMaxDelayMs: 4,
   }
   Object.defineProperty(options, 'runAgent', {
     enumerable: true,

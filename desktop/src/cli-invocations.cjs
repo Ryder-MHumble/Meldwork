@@ -6,8 +6,6 @@ const IMAGE_ATTACHMENT_LIMITS = Object.freeze({
   hermes: 1,
   opencode: 4,
 })
-const MAX_NATIVE_SKILLS = 4
-const NATIVE_SKILL_NAME = /^[\p{L}\p{N}._-]{1,100}$/u
 
 function codexSandbox(requested) {
   if (requested != null) {
@@ -41,19 +39,6 @@ function attachmentPaths(kind, value) {
   return normalized
 }
 
-function hermesSkillNames(value) {
-  if (value == null) return []
-  if (!Array.isArray(value)) throw new Error('LOCAL_SKILL_SELECTION_INVALID')
-  if (value.length > MAX_NATIVE_SKILLS) throw new Error('LOCAL_SKILL_LIMIT')
-  const normalized = value.map((skill) => {
-    if (typeof skill !== 'string' || !NATIVE_SKILL_NAME.test(skill)) {
-      throw new Error('LOCAL_SKILL_SELECTION_INVALID')
-    }
-    return skill
-  })
-  return [...new Set(normalized)]
-}
-
 function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
   const attachments = attachmentPaths(kind, options.attachments)
   if (kind === 'codex') {
@@ -77,9 +62,8 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'hermes') {
-    const skills = hermesSkillNames(options.skills)
     const legacySessionRef = options.sessionTransport === 'acp' ? '' : sessionRef
-    const useAcp = !attachments.length && !skills.length
+    const useAcp = !attachments.length
       && options.hermesAcpAvailable !== false
       && (!sessionRef || options.sessionTransport === 'acp')
     if (useAcp) {
@@ -97,7 +81,6 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         ...(options.sandbox === 'workspace-write' ? ['--yolo'] : []),
         ...(options.provider?.id ? ['--provider', options.provider.id] : []),
         ...(options.provider?.model ? ['--model', options.provider.model] : []),
-        ...skills.flatMap(skill => ['--skills', skill]),
         ...(legacySessionRef ? ['--resume', legacySessionRef] : []),
         ...(attachments[0] ? ['--image', attachments[0]] : []),
         '--query',

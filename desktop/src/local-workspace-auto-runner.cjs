@@ -1,29 +1,49 @@
 const {
   cleanText,
+  credentialFailure,
   normalizeKnowledgeBaseHint,
 } = require('./local-workspace-inputs.cjs')
+const {
+  boundedBackoffDelay,
+  normalizeAttemptHistoryEntry,
+  normalizeFailure,
+  retryDecision,
+} = require('./failure-policy.cjs')
 
-const UNAUTHORIZED_RETRY_COUNT = 3
-const POST_RECOVERY_VERIFY_COUNT = 3
+function authenticationFailureText(error) {
+  return [
+    error?.diagnostic,
+    error?.message,
+    error?.cause?.diagnostic,
+    error?.cause?.message,
+  ].filter(Boolean).join('\n')
+}
 
 function unauthorizedFailure(error) {
-  const status = Number(error?.statusCode || error?.status || error?.response?.status)
-  if ([401, 403].includes(status)) return true
-  return /(?:\bHTTP\s*)?\b(?:401|403)\b|unauthori[sz]ed|forbidden|invalid token/i
-    .test(String(error?.message || error || ''))
+  return normalizeFailure(error).category === 'authentication'
 }
 
 function authenticationFailureStatus(error) {
-  const status = Number(error?.statusCode || error?.status || error?.response?.status)
+  const status = normalizeFailure(error).httpStatus
   if ([401, 403].includes(status)) return status
-  const message = String(error?.message || error || '')
+  const message = authenticationFailureText(error)
   if (/(?:\bHTTP\s*)?\b403\b|forbidden/i.test(message)) return 403
   return 401
 }
 
-function sanitizedUnauthorizedError(error) {
-  const sanitized = new Error(
-    `HTTP ${authenticationFailureStatus(error)}; removed after recovery failed`,
+function sanitizedAuthenticationError(error) {
+  const statusCode = authenticationFailureStatus(error)
+  const sanitized = Object.assign(
+    new Error(`HTTP ${statusCode}; authentication failed; Agent retained`),
+    {
+      code: 'LOCAL_AGENT_AUTH_REQUIRED',
+      statusCode,
+      failure: Object.freeze({
+        code: 'LOCAL_AGENT_AUTH_REQUIRED',
+        category: 'authentication',
+        retryable: false,
+      }),
+    },
   )
   if (error?.runTrace) {
     Object.defineProperty(sanitized, 'runTrace', {
@@ -35,6 +55,22 @@ function sanitizedUnauthorizedError(error) {
   return sanitized
 }
 
+function abortableDelay(delayMs, signal) {
+  if (!delayMs) return Promise.resolve()
+  if (signal?.aborted) return Promise.reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', abortHandler)
+      resolve()
+    }, delayMs)
+    const abortHandler = () => {
+      clearTimeout(timer)
+      reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+    }
+    signal?.addEventListener('abort', abortHandler, { once: true })
+  })
+}
+
 class LocalWorkspaceAutoRunner {
   constructor(options) {
     this.state = options.state
@@ -44,7 +80,8 @@ class LocalWorkspaceAutoRunner {
     this.validateKnowledgeBaseSelections = options.validateKnowledgeBaseSelections
     this.invokeAgent = options.invokeAgent
     this.resetAgentSession = options.resetAgentSession
-    this.removeAgentFromGroup = options.removeAgentFromGroup
+    this.refreshAgents = options.refreshAgents
+    this.consumeAgentControl = options.consumeAgentControl
     this.markRuntimeCredential = options.markRuntimeCredential
     this.agentLabel = options.agentLabel
     this.recordAgentFailure = options.recordAgentFailure
@@ -52,6 +89,17 @@ class LocalWorkspaceAutoRunner {
     this.addMessage = options.addMessage
     this.emitChanged = options.emitChanged
     this.finishRun = options.finishRun
+    this.checkpointRun = options.checkpointRun
+    this.hasRunLedger = typeof options.hasRunLedger === 'function'
+      ? options.hasRunLedger
+      : () => false
+    this.retryBaseDelayMs = Number.isFinite(options.retryBaseDelayMs)
+      ? Math.max(1, Math.floor(options.retryBaseDelayMs))
+      : 250
+    this.retryMaxDelayMs = Number.isFinite(options.retryMaxDelayMs)
+      ? Math.max(this.retryBaseDelayMs, Math.floor(options.retryMaxDelayMs))
+      : 2000
+    this.sleep = options.retrySleep || abortableDelay
   }
 
   setCurrentAgent(controller, kind) {
@@ -60,89 +108,234 @@ class LocalWorkspaceAutoRunner {
     this.emitChanged()
   }
 
-  nextRecoveryKind(activeKinds, failedKind) {
-    if (activeKinds.length < 2) return ''
-    const failedIndex = activeKinds.indexOf(failedKind)
-    for (let offset = 1; offset < activeKinds.length; offset += 1) {
-      const candidate = activeKinds[(failedIndex + offset + activeKinds.length) % activeKinds.length]
-      if (candidate && candidate !== failedKind) return candidate
-    }
-    return ''
-  }
-
-  recoveryInstruction(failedKind, error) {
-    const label = this.agentLabel(failedKind)
-    const status = authenticationFailureStatus(error)
-    const statusLabel = status === 403 ? 'Forbidden' : 'Unauthorized'
+  replacementInstruction(failedKind) {
     return [
-      `This is an infrastructure recovery turn. ${label} returned HTTP ${status} ${statusLabel} after the original call and ${UNAUTHORIZED_RETRY_COUNT} automatic retries.`,
-      'Do not answer the original group topic during this turn.',
-      'Inspect the local Agent, Provider, transport, and session configuration available to you and attempt a concrete repair.',
-      'Never print, quote, or expose credential values. Report only the checks performed, changes made, and whether the failing Agent is ready to retry.',
+      `You are replacing ${this.agentLabel(failedKind)} for this turn.`,
+      'Complete the interrupted Agent slot using the shared task context, then return your own conclusion.',
+      'Do not claim that the interrupted Agent completed this work.',
     ].join('\n')
   }
 
-  async invokeWithUnauthorizedRecovery({
+  retryDelay(failedAttempt) {
+    return boundedBackoffDelay(failedAttempt, {
+      baseDelayMs: this.retryBaseDelayMs,
+      maxDelayMs: this.retryMaxDelayMs,
+    })
+  }
+
+  recordAttempt(group, controller, input) {
+    const history = Array.isArray(controller.attemptHistory) ? controller.attemptHistory : []
+    const previousSequence = history.at(-1)?.sequence || 0
+    const entry = normalizeAttemptHistoryEntry({
+      sequence: previousSequence + 1,
+      agentKind: input.agentKind,
+      phase: input.phase,
+      attempt: input.attempt,
+      failureCategory: input.failureCategory ?? null,
+      policyAction: input.policyAction,
+      backoffMs: input.backoffMs || 0,
+      recoveryAgentKind: input.recoveryAgentKind || '',
+      finalOutcome: input.finalOutcome,
+      timestamp: Date.now(),
+    })
+    if (!entry) throw new Error('LOCAL_RUN_ATTEMPT_INVALID')
+    controller.attemptHistory = [...history, entry].slice(-256)
+    const persisted = this.checkpointRun?.(group.id, controller)
+    if (this.hasRunLedger() && persisted !== true) {
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    }
+    return entry
+  }
+
+  async prepareRetry(group, kind, controller, failedAttempt, options = {}) {
+    if (options.resetSession === true) {
+      this.resetAgentSession(group, kind, true, controller.taskId)
+    }
+    this.markRuntimeCredential(kind, 'unknown')
+    try { await this.refreshAgents() } catch {
+      if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+    }
+    const delayMs = Number.isFinite(options.delayMs)
+      ? Math.max(0, Math.floor(options.delayMs))
+      : this.retryDelay(failedAttempt)
+    await this.sleep(delayMs, controller.signal)
+    return delayMs
+  }
+
+  async invokeTransiently(invokeSource, group, kind, controller, options = {}) {
+    for (let attempt = 1; ; attempt += 1) {
+      const phase = attempt === 1 ? (options.phase || 'initial') : 'transient_retry'
+      const phaseAttempt = attempt === 1 ? (options.attempt || 1) : attempt - 1
+      try {
+        const result = await invokeSource()
+        this.recordAttempt(group, controller, {
+          agentKind: options.agentKind || kind,
+          phase,
+          attempt: phaseAttempt,
+          failureCategory: null,
+          policyAction: options.successAction || 'complete',
+          backoffMs: options.successBackoffMs || 0,
+          recoveryAgentKind: options.recoveryAgentKind || '',
+          finalOutcome: 'succeeded',
+        })
+        return result
+      } catch (error) {
+        if (controller.signal.aborted) {
+          this.recordAttempt(group, controller, {
+            agentKind: options.agentKind || kind,
+            phase,
+            attempt: phaseAttempt,
+            failureCategory: 'cancellation',
+            policyAction: 'cancel',
+            recoveryAgentKind: options.recoveryAgentKind || '',
+            finalOutcome: 'cancelled',
+          })
+          throw error
+        }
+        if (unauthorizedFailure(error)) throw error
+        const failure = normalizeFailure(error)
+        if (failure.category === 'cancellation') throw error
+        // Session recovery is owned by LocalWorkspaceAgentInvocation so a stale
+        // native Session gets exactly one fresh attempt across every run mode.
+        const decision = retryDecision(failure, {
+          attempt,
+          maxAttempts: 4,
+          baseDelayMs: this.retryBaseDelayMs,
+          maxDelayMs: this.retryMaxDelayMs,
+        })
+        if (decision.action !== 'retry') {
+          this.recordAttempt(group, controller, {
+            agentKind: options.agentKind || kind,
+            phase,
+            attempt: phaseAttempt,
+            failureCategory: failure.category,
+            policyAction: options.failureAction
+              || (decision.action === 'refresh_session' ? 'refresh_session' : 'fail'),
+            backoffMs: options.failureBackoffMs || 0,
+            recoveryAgentKind: options.recoveryAgentKind || '',
+            finalOutcome: 'failed',
+          })
+          throw error
+        }
+        this.recordAttempt(group, controller, {
+          agentKind: options.agentKind || kind,
+          phase,
+          attempt: phaseAttempt,
+          failureCategory: failure.category,
+          policyAction: 'retry',
+          backoffMs: decision.delayMs,
+          recoveryAgentKind: options.recoveryAgentKind || '',
+          finalOutcome: 'failed',
+        })
+        this.markRuntimeCredential(kind, 'unknown')
+        try { await this.refreshAgents() } catch {
+          if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+        }
+        await this.sleep(decision.delayMs, controller.signal)
+      }
+    }
+  }
+
+  async controlAfterFailure(group, kind, controller, error) {
+    const request = this.consumeAgentControl(controller, kind)
+    if (!request) return null
+    const failure = normalizeFailure(error)
+    const manualAttempt = (controller.manualRetryCounts.get(kind) || 0) + 1
+    if (request.action === 'retry') {
+      controller.manualRetryCounts.set(kind, manualAttempt)
+      const delayMs = this.retryDelay(manualAttempt)
+      this.recordAttempt(group, controller, {
+        agentKind: kind,
+        phase: 'manual_retry',
+        attempt: manualAttempt,
+        failureCategory: failure.category,
+        policyAction: 'retry',
+        backoffMs: delayMs,
+        finalOutcome: 'failed',
+      })
+      await this.prepareRetry(group, kind, controller, manualAttempt, {
+        resetSession: true,
+        delayMs,
+      })
+      return { action: 'retry' }
+    }
+    this.recordAttempt(group, controller, {
+      agentKind: kind,
+      phase: 'manual_retry',
+      attempt: manualAttempt,
+      failureCategory: failure.category,
+      policyAction: request.action === 'replace' ? 'replace_agent' : 'cancel',
+      recoveryAgentKind: request.replacementKind || '',
+      finalOutcome: request.action === 'replace' ? 'replaced' : 'cancelled',
+    })
+    return request
+  }
+
+  async invokeWithUnauthorizedRecovery(input) {
+    const { controller, kind } = input
+    if (controller.agentSlotKinds.has(kind)) {
+      throw new Error('LOCAL_AGENT_ATTEMPT_RUNNING')
+    }
+    controller.agentSlotKinds.add(kind)
+    try {
+      return await this.invokeWithUnauthorizedRecoveryInSlot(input)
+    } finally {
+      controller.agentSlotKinds.delete(kind)
+    }
+  }
+
+  async invokeWithUnauthorizedRecoveryInSlot({
     group,
     kind,
     controller,
-    activeKinds,
     threadRootId,
     context,
-    reportedFailures,
+    mode = 'auto',
   }) {
-    let lastUnauthorized = null
     const invokeSource = async () => {
       this.setCurrentAgent(controller, kind)
-      return this.invokeAgent(group, kind, 'auto', controller.signal, threadRootId, {
+      return this.invokeAgent(group, kind, mode, controller.signal, threadRootId, {
         ...context,
         deferCredentialFailure: true,
       })
     }
-    for (let attempt = 0; attempt <= UNAUTHORIZED_RETRY_COUNT; attempt += 1) {
+    let phase = 'initial'
+    let phaseAttempt = 1
+    while (true) {
       try {
-        return { result: await invokeSource(), removed: false }
-      } catch (error) {
-        if (controller.signal.aborted || !unauthorizedFailure(error)) throw error
-        lastUnauthorized = error
-      }
-    }
-
-    this.resetAgentSession(group, kind)
-    const recoveryKind = this.nextRecoveryKind(activeKinds, kind)
-    if (recoveryKind && !controller.signal.aborted) {
-      this.setCurrentAgent(controller, recoveryKind)
-      try {
-        await this.invokeAgent(group, recoveryKind, 'auto', controller.signal, threadRootId, {
-          attachments: [],
-          skillHints: [],
-          knowledgeBaseHints: [],
-          runtimeInstruction: this.recoveryInstruction(kind, lastUnauthorized),
-          deferCredentialFailure: false,
-        })
+        return {
+          result: await this.invokeTransiently(invokeSource, group, kind, controller, {
+            phase,
+            attempt: phaseAttempt,
+          }),
+          removed: false,
+        }
       } catch (error) {
         if (controller.signal.aborted) throw error
-        this.recordAgentFailure(
-          group.id, recoveryKind, error, threadRootId, reportedFailures,
-        )
+        const control = await this.controlAfterFailure(group, kind, controller, error)
+        if (control?.action === 'retry') {
+          phase = 'manual_retry'
+          phaseAttempt = controller.manualRetryCounts.get(kind) || 1
+          continue
+        }
+        if (control) return { result: null, removed: false, control, error }
+        if (!unauthorizedFailure(error)) {
+          if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
+          throw error
+        }
+        this.markRuntimeCredential(kind, 'missing')
+        this.recordAttempt(group, controller, {
+          agentKind: kind,
+          phase,
+          attempt: phaseAttempt,
+          failureCategory: 'authentication',
+          policyAction: 'fail',
+          finalOutcome: 'failed',
+        })
+        this.resetAgentSession(group, kind, false, controller.taskId)
+        throw sanitizedAuthenticationError(error)
       }
     }
-
-    for (let attempt = 0; attempt < POST_RECOVERY_VERIFY_COUNT; attempt += 1) {
-      try {
-        return { result: await invokeSource(), removed: false }
-      } catch (error) {
-        if (controller.signal.aborted || !unauthorizedFailure(error)) throw error
-        lastUnauthorized = error
-      }
-    }
-
-    const terminalError = sanitizedUnauthorizedError(lastUnauthorized)
-    this.markRuntimeCredential(kind, 'missing')
-    this.recordAgentFailure(group.id, kind, terminalError, threadRootId, reportedFailures)
-    const removed = this.removeAgentFromGroup(group.id, kind)
-    this.resetAgentSession(group, kind, false)
-    return { result: null, removed, error: terminalError }
   }
 
   start(
@@ -200,7 +393,7 @@ class LocalWorkspaceAutoRunner {
         }
         const attachmentRecipients = new Set()
         let consensusReached = false
-        let authRemovalOccurred = false
+        let terminalFailureOccurred = false
         let activeKinds = [...controller.targetKinds]
         const reportedFailures = new Set()
         for (
@@ -208,46 +401,82 @@ class LocalWorkspaceAutoRunner {
           (controller.unlimitedRounds || round < maxRounds) && !controller.signal.aborted;
           round += 1
         ) {
-          let agreements = 0
-          let successes = 0
+          const successfulKinds = new Set()
+          const agreementKinds = new Set()
+          const replacementInstructions = new Map()
+          const roundQueue = [...activeKinds]
           controller.currentRound = round + 1
           controller.completedKinds = []
           controller.failedKinds = []
           this.emitChanged()
-          for (const kind of [...activeKinds]) {
+          while (roundQueue.length) {
+            const kind = roundQueue.shift()
+            if (!activeKinds.includes(kind)) continue
             if (controller.signal.aborted) break
+            let executionKind = kind
             try {
-              const attachments = attachmentRecipients.has(kind)
+              const attachments = attachmentRecipients.has(executionKind)
                 ? []
                 : rootAttachments.map(attachment => attachment.path)
               const invocation = await this.invokeWithUnauthorizedRecovery({
                 group,
-                kind,
+                kind: executionKind,
                 controller,
                 activeKinds,
                 threadRootId,
                 context: {
                   attachments,
-                  skillHints: rootSkillsByKind.get(kind) || [],
-                  knowledgeBaseHints: rootKnowledgeBasesByKind.get(kind) || [],
+                  attachmentSnapshots: attachments.length ? rootAttachments : [],
+                  skillHints: rootSkillsByKind.get(executionKind) || [],
+                  knowledgeBaseHints: rootKnowledgeBasesByKind.get(executionKind) || [],
+                  runtimeInstruction: replacementInstructions.get(executionKind) || '',
                 },
                 reportedFailures,
               })
-              if (invocation.removed) {
-                authRemovalOccurred = true
-                activeKinds = activeKinds.filter(activeKind => activeKind !== kind)
-                controller.failedKinds.push(kind)
-                controller.completedKinds.push(kind)
-                if (activeKinds.length < 2) break
+              replacementInstructions.delete(executionKind)
+              if (invocation.control?.action === 'replace') {
+                this.recordAgentInterruption(
+                  group.id, executionKind, invocation.error, threadRootId, 'stopped', reportedFailures,
+                )
+                if (!controller.failedKinds.includes(executionKind)) {
+                  controller.failedKinds.push(executionKind)
+                }
+                if (!controller.completedKinds.includes(executionKind)) {
+                  controller.completedKinds.push(executionKind)
+                }
+                successfulKinds.delete(executionKind)
+                agreementKinds.delete(executionKind)
+                const replacementKind = invocation.control.replacementKind
+                activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
+                replacementInstructions.set(
+                  replacementKind,
+                  this.replacementInstruction(executionKind),
+                )
+                if (!roundQueue.includes(replacementKind)) roundQueue.unshift(replacementKind)
+                controller.currentKind = ''
+                controller.progress = []
+                this.emitChanged()
+                continue
+              }
+              if (invocation.control?.action === 'cancel') {
+                this.recordAgentInterruption(
+                  group.id, executionKind, invocation.error, threadRootId, 'stopped', reportedFailures,
+                )
+                controller.failedKinds.push(executionKind)
+                controller.completedKinds.push(executionKind)
+                controller.currentKind = ''
+                controller.progress = []
+                this.emitChanged()
                 continue
               }
               const result = invocation.result
-              if (attachments.length) attachmentRecipients.add(kind)
-              successes += 1
-              if (result.consensus) agreements += 1
+              if (attachments.length) attachmentRecipients.add(executionKind)
+              successfulKinds.add(executionKind)
+              if (result.consensus) agreementKinds.add(executionKind)
+              else agreementKinds.delete(executionKind)
             } catch (error) {
               if (controller.signal.aborted) {
-                const interruptedKind = controller.currentKind || kind
+                const interruptedKind = controller.currentKind || executionKind
                 if (error?.runTrace) {
                   this.recordAgentInterruption(
                     group.id,
@@ -265,15 +494,27 @@ class LocalWorkspaceAutoRunner {
                 break
               }
               this.recordAgentFailure(
-                group.id, kind, error, threadRootId, reportedFailures,
+                group.id, executionKind, error, threadRootId, reportedFailures,
               )
-              controller.failedKinds.push(kind)
+              successfulKinds.delete(executionKind)
+              agreementKinds.delete(executionKind)
+              if (!controller.failedKinds.includes(executionKind)) {
+                controller.failedKinds.push(executionKind)
+              }
+              if (['authentication', 'compatibility'].includes(normalizeFailure(error).category)) {
+                terminalFailureOccurred = true
+                activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
+              }
             }
-            controller.completedKinds.push(kind)
+            if (!controller.completedKinds.includes(executionKind)) {
+              controller.completedKinds.push(executionKind)
+            }
             controller.currentKind = ''
             controller.progress = []
             this.emitChanged()
           }
+          const successes = activeKinds.filter(kind => successfulKinds.has(kind)).length
+          const agreements = activeKinds.filter(kind => agreementKinds.has(kind)).length
           totalSuccesses += successes
           if (controller.signal.aborted) break
           if (activeKinds.length < 2) break
@@ -284,10 +525,10 @@ class LocalWorkspaceAutoRunner {
         }
         if (controller.signal.aborted) {
           runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
-        } else if (authRemovalOccurred) runStatus = totalSuccesses > 0 ? 'partial' : 'failed'
+        } else if (terminalFailureOccurred) runStatus = totalSuccesses > 0 ? 'partial' : 'failed'
         else if (consensusReached) runStatus = 'completed'
         else runStatus = totalSuccesses > 0 ? 'round-limit' : 'failed'
-        if (!authRemovalOccurred && !controller.unlimitedRounds
+        if (!terminalFailureOccurred && !controller.unlimitedRounds
             && (runStatus === 'round-limit' || runStatus === 'failed')) {
           this.addMessage(
             group.id,

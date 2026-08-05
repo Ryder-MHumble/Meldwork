@@ -61,6 +61,12 @@ if (isLocalDocument) Object.assign(desktopApi, {
     deleteMessage: (groupId, messageId) => ipcRenderer.invoke('local-workspace:delete-message', groupId, messageId),
     send: input => ipcRenderer.invoke('local-workspace:send', input),
     stop: (groupId, runId) => ipcRenderer.invoke('local-workspace:stop', groupId, runId),
+    controlAgent: (groupId, runId, kind, action, replacementKind = '') => ipcRenderer.invoke(
+      'local-workspace:control-agent', groupId, runId, kind, action, replacementKind,
+    ),
+    decideHumanGate: (gateId, decision) => ipcRenderer.invoke(
+      'local-workspace:decide-human-gate', gateId, decision,
+    ),
     pickDirectory: () => ipcRenderer.invoke('local-workspace:pick-directory'),
     defaultDirectory: () => ipcRenderer.invoke('local-workspace:default-directory'),
     onChanged: callback => {
@@ -84,6 +90,18 @@ if (isLocalDocument) Object.assign(desktopApi, {
       return () => ipcRenderer.removeListener('local-workspace:open-group', listener)
     },
   }),
+  cloudAgent: Object.freeze({
+    provideInput: (runId, requestId, value) => ipcRenderer.invoke(
+      'local-cloud-agent:provide-input', runId, requestId, value,
+    ),
+    decidePermission: (runId, requestId, decision) => ipcRenderer.invoke(
+      'local-cloud-agent:decide-permission', runId, requestId, decision,
+    ),
+    cancel: runId => ipcRenderer.invoke('local-cloud-agent:cancel', runId),
+  }),
+  localOutcome: Object.freeze({
+    recordAdoption: input => ipcRenderer.invoke('local-outcome:record-adoption', input),
+  }),
   agentInstaller: Object.freeze({
     catalog: () => ipcRenderer.invoke('local-agent-installer:catalog'),
     skills: kind => ipcRenderer.invoke('local-agent-installer:skills', kind),
@@ -102,6 +120,11 @@ if (isLocalDocument) Object.assign(desktopApi, {
   customAgent: Object.freeze({
     create: input => ipcRenderer.invoke('local-custom-agent:create', input),
     delete: kind => ipcRenderer.invoke('local-custom-agent:delete', kind),
+  }),
+  localAgentConnector: Object.freeze({
+    list: () => ipcRenderer.invoke('local-agent-connector:list'),
+    configure: input => ipcRenderer.invoke('local-agent-connector:configure', input),
+    delete: instanceId => ipcRenderer.invoke('local-agent-connector:delete', instanceId),
   }),
   localAttachments: Object.freeze({
     pickAttachments: remainingCapacity => ipcRenderer.invoke(
@@ -124,6 +147,29 @@ if (isLocalDocument) Object.assign(desktopApi, {
     status: kind => (kind ? ipcRenderer.invoke('local-knowledge-base:status', kind) : ipcRenderer.invoke('local-knowledge-base:status')),
     openGuide: (kind, action) => ipcRenderer.invoke('local-knowledge-base:open-guide', kind, action),
     pickObsidianVault: () => ipcRenderer.invoke('local-knowledge-base:pick-obsidian-vault'),
+  }),
+  localKnowledgeConnector: Object.freeze({
+    authorize: connectorId => ipcRenderer.invoke(
+      'local-knowledge-connector:authorize', connectorId,
+    ),
+    revoke: instanceId => ipcRenderer.invoke('local-knowledge-connector:revoke', instanceId),
+    list: () => ipcRenderer.invoke('local-knowledge-connector:list'),
+    probe: instanceId => ipcRenderer.invoke('local-knowledge-connector:probe', instanceId),
+    search: (instanceId, input) => ipcRenderer.invoke(
+      'local-knowledge-connector:search', instanceId, input,
+    ),
+    fetch: (instanceId, input) => ipcRenderer.invoke(
+      'local-knowledge-connector:fetch', instanceId, input,
+    ),
+    snapshot: (instanceId, input) => ipcRenderer.invoke(
+      'local-knowledge-connector:snapshot', instanceId, input,
+    ),
+    citation: (instanceId, input) => ipcRenderer.invoke(
+      'local-knowledge-connector:citation', instanceId, input,
+    ),
+    select: (instanceId, input) => ipcRenderer.invoke(
+      'local-knowledge-connector:select', instanceId, input,
+    ),
   }),
 })
 

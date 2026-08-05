@@ -1,6 +1,20 @@
 const IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/
 const GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
 const AGENT_KIND = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
+const CONTEXT_RECORD_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
+const CONTEXT_PACK_ID = /^context-pack-[a-f0-9]{64}$/
+const DELIVERY_RECORD_ID = /^delivery-record-[a-f0-9]{64}$/
+const SESSION_SCOPES = new Set(['task', 'conversation', 'group', 'unknown-legacy', 'none'])
+const SESSION_ORIGINS = new Set(['created', 'resumed', 'migrated', 'unknown-legacy', 'none'])
+const SESSION_PROVENANCE_COMPLETENESS = new Set(['complete', 'partial', 'unknown-legacy'])
+const SESSION_PROVENANCE_FIELDS = new Set([
+  'scope',
+  'reuse',
+  'origin',
+  'originTaskId',
+  'inheritedTaskIds',
+  'completeness',
+])
 const RUN_EVENT_TYPES = new Set([
   'status',
   'answer_delta',
@@ -29,6 +43,8 @@ export const MAX_TRACE_EVENTS = 200
 const MAX_CAPSULE_EVENTS = 12
 export const MAX_SEEN_EVENT_SEQUENCES = 512
 const MAX_SOURCE_MESSAGE_IDS = 32
+const MAX_DELIVERY_RECORD_IDS = 8
+const MAX_INHERITED_TASK_IDS = 64
 export const MAX_AGENT_OUTPUT = 20000
 
 export function record(value) {
@@ -80,6 +96,82 @@ function sourceMessageIds(value) {
   return [...new Set(value.slice(0, MAX_SOURCE_MESSAGE_IDS).map(identifier).filter(Boolean))]
 }
 
+function contextRecordIdentifier(value) {
+  const normalized = boundedString(value, 120)
+  return CONTEXT_RECORD_IDENTIFIER.test(normalized) ? normalized : ''
+}
+
+function normalizedContextPackId(value) {
+  return typeof value === 'string' && CONTEXT_PACK_ID.test(value) ? value : ''
+}
+
+function normalizedDeliveryRecordIds(value) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.map(item => (
+    typeof item === 'string' && DELIVERY_RECORD_ID.test(item) ? item : ''
+  )).filter(Boolean))].slice(-MAX_DELIVERY_RECORD_IDS)
+}
+
+function normalizeSessionProvenance(value) {
+  const input = record(value)
+  if (!input) return null
+  const keys = Reflect.ownKeys(input)
+  if (
+    keys.length !== SESSION_PROVENANCE_FIELDS.size
+    || keys.some(key => typeof key !== 'string' || !SESSION_PROVENANCE_FIELDS.has(key))
+    || [...SESSION_PROVENANCE_FIELDS].some(key => !Object.hasOwn(input, key))
+  ) return null
+
+  const scope = boundedString(input.scope, 32)
+  const origin = boundedString(input.origin, 32)
+  const completeness = boundedString(input.completeness, 32)
+  if (
+    !SESSION_SCOPES.has(scope)
+    || typeof input.reuse !== 'boolean'
+    || !SESSION_ORIGINS.has(origin)
+    || !SESSION_PROVENANCE_COMPLETENESS.has(completeness)
+    || (input.originTaskId !== null && !contextRecordIdentifier(input.originTaskId))
+    || !Array.isArray(input.inheritedTaskIds)
+    || input.inheritedTaskIds.length > MAX_INHERITED_TASK_IDS
+  ) return null
+
+  const originTaskId = input.originTaskId === null ? null : contextRecordIdentifier(input.originTaskId)
+  const inheritedTaskIds = input.inheritedTaskIds.map(contextRecordIdentifier)
+  if (
+    inheritedTaskIds.some(id => !id)
+    || new Set(inheritedTaskIds).size !== inheritedTaskIds.length
+    || (!input.reuse && inheritedTaskIds.length)
+    || (input.reuse && ['created', 'none'].includes(origin))
+    || (!input.reuse && !['created', 'none'].includes(origin))
+  ) return null
+
+  if (scope === 'none' && (
+    input.reuse
+    || origin !== 'none'
+    || originTaskId !== null
+    || inheritedTaskIds.length
+    || completeness !== 'complete'
+  )) return null
+
+  const unknownLegacy = scope === 'unknown-legacy' || origin === 'unknown-legacy'
+  if (
+    unknownLegacy !== (completeness === 'unknown-legacy')
+    || (unknownLegacy && (originTaskId !== null || inheritedTaskIds.length))
+    || (!unknownLegacy && scope !== 'none' && !originTaskId)
+    || (scope === 'task' && inheritedTaskIds.length)
+    || (originTaskId && inheritedTaskIds.includes(originTaskId))
+  ) return null
+
+  return {
+    scope,
+    reuse: input.reuse,
+    origin,
+    originTaskId,
+    inheritedTaskIds,
+    completeness,
+  }
+}
+
 function normalizeTraceContext(value) {
   const input = record(value)
   if (!input) return { includedCount: 0, omittedCount: 0, charCount: 0 }
@@ -89,6 +181,15 @@ function normalizeTraceContext(value) {
     charCount: nonNegativeInteger(input.charCount, 1000000) ?? 0,
   }
   if (input.sessionRotated === true) context.sessionRotated = true
+  const contextPackId = normalizedContextPackId(input.contextPackId)
+  if (contextPackId) context.contextPackId = contextPackId
+  if (input.contextPackState === 'legacy-unavailable' && !contextPackId) {
+    context.contextPackState = 'legacy-unavailable'
+  } else if (contextPackId) context.contextPackState = 'captured'
+  const deliveryRecordIds = normalizedDeliveryRecordIds(input.deliveryRecordIds)
+  if (deliveryRecordIds.length) context.deliveryRecordIds = deliveryRecordIds
+  const sessionProvenance = normalizeSessionProvenance(input.sessionProvenance)
+  if (sessionProvenance) context.sessionProvenance = sessionProvenance
   return context
 }
 

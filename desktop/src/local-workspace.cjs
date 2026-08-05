@@ -1,14 +1,24 @@
 const { EventEmitter } = require('node:events')
 const { randomUUID } = require('node:crypto')
-const { normalizeSessionMeta } = require('./run-harness.cjs')
+const path = require('node:path')
+const { ContentBlobStore } = require('./content-blob-store.cjs')
+const { ContextPackStore } = require('./context-pack-store.cjs')
+const { HumanGateCoordinator } = require('./human-gate-coordinator.cjs')
+const { HumanGateStore } = require('./human-gate-store.cjs')
+const { OutcomeStore } = require('./outcome-store.cjs')
+const { normalizeOutcomeRefs, normalizeSessionMeta } = require('./run-harness.cjs')
 const { LocalWorkspaceRunLedger } = require('./local-workspace-ledger.cjs')
 const { LocalWorkspaceAgentCatalog } = require('./local-workspace-agent-catalog.cjs')
 const { LocalWorkspaceAgentInvocation } = require('./local-workspace-agent-invocation.cjs')
 const { LocalWorkspaceAutoRunner } = require('./local-workspace-auto-runner.cjs')
 const { LocalWorkspaceConversations } = require('./local-workspace-conversations.cjs')
+const { LocalWorkspaceContextPacks } = require('./local-workspace-context-packs.cjs')
 const { LocalWorkspaceMessageSubmission } = require('./local-workspace-message-submission.cjs')
 const { LocalWorkspaceRunCoordinator } = require('./local-workspace-run-coordinator.cjs')
 const { LocalWorkspaceRunMessages } = require('./local-workspace-run-messages.cjs')
+const {
+  LocalWorkspaceRoleReviewRunner,
+} = require('./local-workspace-role-review-runner.cjs')
 const {
   clearSessionState,
   openClawSessionRef,
@@ -16,7 +26,7 @@ const {
   promptFor,
   promptMessageText,
   recentTranscriptEntries,
-  resolveSessionRef,
+  resolveSessionState,
   sessionKey,
   stableUserInstructions,
   stableUserMessages,
@@ -36,6 +46,8 @@ const {
   workspaceSnapshot,
 } = require('./local-workspace-state.cjs')
 
+const MAX_AGENT_OUTCOME_ARTIFACTS = 16
+const OUTCOME_RECORDER = Object.freeze({ kind: 'system', actorId: 'meldwork-main' })
 
 class LocalWorkspace extends EventEmitter {
   constructor(options) {
@@ -49,6 +61,9 @@ class LocalWorkspace extends EventEmitter {
     })
     this.captureAgentOutputsFn = options.captureAgentOutputs || (async () => null)
     this.importAgentOutputsFn = options.importAgentOutputs || (async () => [])
+    this.captureArtifactOutputsFn = options.captureArtifactOutputs || (async () => null)
+    this.captureAgentOutcomeDescriptorsFn = options.captureAgentOutcomeDescriptors
+      || (async () => [])
     this.validateSkillSelectionsFn = options.validateSkillSelections || ((_kind, selections) => selections)
     this.validateKnowledgeBaseSelectionsFn = options.validateKnowledgeBaseSelections || ((_kinds, selections) => selections)
     this.imageAttachmentLimitFn = options.imageAttachmentLimit || (() => 0)
@@ -70,14 +85,48 @@ class LocalWorkspace extends EventEmitter {
       && options.runAbortGraceMs > 0
       ? options.runAbortGraceMs
       : DEFAULT_RUN_ABORT_GRACE_MS
+    this.runBudgetDefaults = options.runBudgetDefaults || {}
     this.now = options.now || (() => new Date().toISOString())
     this.createId = options.createId || randomUUID
     this.createRunId = options.createRunId || randomUUID
     this.runLedger = options.runLedger || null
+    const privateRoot = path.join(path.dirname(this.storagePath), 'roundrelay-private')
+    this.contentBlobStore = options.contentBlobStore || new ContentBlobStore({
+      rootPath: path.join(privateRoot, 'content-blobs'),
+    })
+    this.contextPackStore = options.contextPackStore || new ContextPackStore({
+      rootPath: path.join(privateRoot, 'context-packs'),
+    })
+    this.outcomeStore = options.outcomeStore || new OutcomeStore({
+      rootPath: path.join(privateRoot, 'outcomes'),
+      contentBlobStore: this.contentBlobStore,
+    })
+    this.humanGateStore = options.humanGateStore || new HumanGateStore({
+      storagePath: path.join(privateRoot, 'human-gates.json'),
+      contentBlobStore: this.contentBlobStore,
+    })
+    this.humanGateCoordinator = options.humanGateCoordinator || new HumanGateCoordinator({
+      store: this.humanGateStore,
+      now: () => this.now(),
+      onChanged: () => this.emitChanged(),
+      onWaiting: (record, continuation) => this.markHumanGateWaiting(record, continuation),
+      onResumed: record => this.markHumanGateResumed(record),
+      canResume: record => this.canResumeHumanGate(record),
+      onOrphanDecision: (record, decision) => this.resumeHumanGateDecision(record, decision),
+      onResumeFailed: (record, error) => this.failHumanGateContinuation(record, error),
+    })
+    this.contextPacks = new LocalWorkspaceContextPacks({
+      contentBlobStore: this.contentBlobStore,
+      contextPackStore: this.contextPackStore,
+    })
+    this.runLedger?.reconcileContextPacks?.(
+      contextPackId => this.contextPackStore.get(contextPackId),
+    )
     this.detectedAgents = []
     this.preparingRuns = new Map()
     this.activeRuns = new Map()
     this.runCheckpointTimers = new Map()
+    this.humanGateWaitTails = new Map()
     this.shuttingDown = false
     this.state = this.load()
     this.agentCatalog = new LocalWorkspaceAgentCatalog({
@@ -99,6 +148,7 @@ class LocalWorkspace extends EventEmitter {
       createId: () => this.createId(),
       now: () => this.now(),
       agentLabel: kind => this.agentLabel(kind),
+      preserveWaitingRun: record => this.canResumeHumanGateRecord(record),
       preparingRuns: this.preparingRuns,
       timers: this.runCheckpointTimers,
     })
@@ -111,10 +161,15 @@ class LocalWorkspace extends EventEmitter {
       setShuttingDown: value => { this.shuttingDown = value },
       checkpointRun: (...args) => this.checkpointRun(...args),
       hasRunLedger: () => Boolean(this.runLedger),
+      validateContextPack: (contextPackId, taskId) => {
+        const pack = this.contextPackStore.get(contextPackId)
+        return pack.contextPackId === contextPackId && pack.taskId === taskId
+      },
       finishRunCheckpoint: (...args) => this.finishRunCheckpoint(...args),
       scheduleRunCheckpoint: (...args) => this.scheduleRunCheckpoint(...args),
       emitChanged: () => this.emitChanged(),
       emit: (...args) => this.emit(...args),
+      runBudgetDefaults: this.runBudgetDefaults,
     })
     this.conversations = new LocalWorkspaceConversations({
       state: () => this.state,
@@ -142,10 +197,15 @@ class LocalWorkspace extends EventEmitter {
       runAgentTimeoutMs: this.runAgentTimeoutMs,
       runAbortGraceMs: this.runAbortGraceMs,
       captureAgentOutputs: (...args) => this.captureAgentOutputsFn(...args),
+      captureArtifactOutputs: (...args) => this.captureArtifactOutputsFn(...args),
+      captureAgentOutcomeDescriptors: (...args) => (
+        this.captureAgentOutcomeDescriptorsFn(...args)
+      ),
       runAgent: (...args) => this.runAgentFn(...args),
       importAgentOutputs: (...args) => this.importAgentOutputsFn(...args),
+      recordAgentOutcomes: (...args) => this.recordAgentOutcomes(...args),
       sessionKey: (...args) => this.sessionKey(...args),
-      sessionRef: (...args) => this.sessionRef(...args),
+      sessionState: (...args) => this.sessionState(...args),
       openClawSessionRef: (...args) => this.openClawSessionRef(...args),
       save: () => this.save(),
       packedPromptContext: (...args) => this.packedPromptContext(...args),
@@ -157,10 +217,17 @@ class LocalWorkspace extends EventEmitter {
       scheduleRunCheckpoint: (...args) => this.scheduleRunCheckpoint(...args),
       emitChanged: () => this.emitChanged(),
       promptFor: (...args) => this.promptFor(...args),
-      persistSessionRef: (...args) => this.persistSessionRef(...args),
-      persistSessionMeta: (...args) => this.persistSessionMeta(...args),
+      persistSessionState: (...args) => this.persistSessionState(...args),
+      createAttemptContextPack: (...args) => this.createAttemptContextPack(...args),
+      recordContextDelivery: (...args) => this.recordContextDelivery(...args),
       markRuntimeCredential: (...args) => this.markRuntimeCredential(...args),
       addMessage: (...args) => this.addMessage(...args),
+      runScheduler: options.runScheduler,
+      registerAgentController: (...args) => this.runCoordinator.registerAgentController(...args),
+      unregisterAgentController: (...args) => this.runCoordinator.unregisterAgentController(...args),
+      requestHumanGate: (...args) => this.requestHumanGate(...args),
+      completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
+      connectorRuntime: options.connectorRuntime,
     })
     this.autoRunner = new LocalWorkspaceAutoRunner({
       state: () => this.state,
@@ -170,7 +237,8 @@ class LocalWorkspace extends EventEmitter {
       validateKnowledgeBaseSelections: (...args) => this.validateKnowledgeBaseSelectionsFn(...args),
       invokeAgent: (...args) => this.invokeAgent(...args),
       resetAgentSession: (...args) => this.resetAgentSession(...args),
-      removeAgentFromGroup: (...args) => this.removeAgentFromGroup(...args),
+      refreshAgents: () => this.refreshAgents(),
+      consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
       markRuntimeCredential: (...args) => this.markRuntimeCredential(...args),
       agentLabel: kind => this.agentLabel(kind),
       recordAgentFailure: (...args) => this.recordAgentFailure(...args),
@@ -178,6 +246,11 @@ class LocalWorkspace extends EventEmitter {
       addMessage: (...args) => this.addMessage(...args),
       emitChanged: () => this.emitChanged(),
       finishRun: (...args) => this.finishRun(...args),
+      checkpointRun: (...args) => this.checkpointRun(...args),
+      hasRunLedger: () => Boolean(this.runLedger),
+      retryBaseDelayMs: options.retryBaseDelayMs,
+      retryMaxDelayMs: options.retryMaxDelayMs,
+      retrySleep: options.retrySleep,
     })
     this.messageSubmission = new LocalWorkspaceMessageSubmission({
       state: () => this.state,
@@ -197,13 +270,55 @@ class LocalWorkspace extends EventEmitter {
       startAutoRunner: (...args) => this.startAutoRunner(...args),
       beginRun: (...args) => this.beginRun(...args),
       invokeAgent: (...args) => this.invokeAgent(...args),
+      invokeWithRecovery: input => this.autoRunner.invokeWithUnauthorizedRecovery({
+        ...input,
+        mode: 'manual',
+      }),
       recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),
       recordAgentFailure: (...args) => this.recordAgentFailure(...args),
       emitChanged: () => this.emitChanged(),
       snapshot: () => this.snapshot(),
       finishRun: (...args) => this.finishRun(...args),
+      createContextPack: (...args) => this.createContextPack(...args),
+      configureRunBudget: (...args) => this.runCoordinator.configureBudget(...args),
+      resetAgentSession: (...args) => this.resetAgentSession(...args),
+      refreshAgents: () => this.refreshAgents(),
+      consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
     })
+    this.roleReviewRunner = new LocalWorkspaceRoleReviewRunner({
+      state: () => this.state,
+      detectedAgents: () => this.detectedAgents,
+      getGroup: (...args) => this.getGroup(...args),
+      reserveRun: (...args) => this.reserveRun(...args),
+      bindRunTask: (...args) => this.bindRunTask(...args),
+      releasePreparation: (...args) => this.releasePreparation(...args),
+      configureRunBudget: (...args) => this.configureRunBudget(...args),
+      beginRun: (...args) => this.beginRun(...args),
+      finishRun: (...args) => this.finishRun(...args),
+      preflightMessage: (...args) => this.preflightMessage(...args),
+      addMessage: (...args) => this.addMessage(...args),
+      rollbackAddedMessage: (...args) => this.conversations.rollbackAddedMessage(...args),
+      createContextPack: (...args) => this.createContextPack(...args),
+      invokeWithRecovery: input => this.autoRunner.invokeWithUnauthorizedRecovery({
+        ...input,
+        mode: 'manual',
+      }),
+      recordAgentFailure: (...args) => this.recordAgentFailure(...args),
+      recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),
+      requestHumanGate: (...args) => this.requestHumanGate(...args),
+      completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
+      checkpointRun: (...args) => this.checkpointRun(...args),
+      hasRunLedger: () => Boolean(this.runLedger),
+      save: () => this.save(),
+      emitChanged: () => this.emitChanged(),
+      contentBlobStore: this.contentBlobStore,
+      contextPackStore: this.contextPackStore,
+      outcomeStore: this.outcomeStore,
+    })
+    this.humanGateCoordinator.reconcileDecisions?.()
     this.restoreInterruptedRuns()
+    this.humanGateCoordinator.reconcileOrphans?.()
+    this.resumeReadyHumanGates()
   }
 
   agentLabel(kind) {
@@ -253,7 +368,14 @@ class LocalWorkspace extends EventEmitter {
   }
 
   isGroupBusy(groupId) {
-    return this.runCoordinator.isGroupBusy(groupId)
+    if (this.runCoordinator.isGroupBusy(groupId)) return true
+    try {
+      return (this.runLedger?.list?.(groupId) || []).some(record => (
+        record.status === 'waiting' && this.canResumeHumanGateRecord(record)
+      ))
+    } catch {
+      return false
+    }
   }
 
   reserveRun(
@@ -264,8 +386,10 @@ class LocalWorkspace extends EventEmitter {
     )
   }
 
-  bindRunTask(groupId, controller, taskId, threadRootId = '') {
-    return this.runCoordinator.bindTask(groupId, controller, taskId, threadRootId)
+  bindRunTask(groupId, controller, taskId, threadRootId = '', contextPackId = '') {
+    return this.runCoordinator.bindTask(
+      groupId, controller, taskId, threadRootId, contextPackId,
+    )
   }
 
   releasePreparation(groupId, controller) {
@@ -283,6 +407,328 @@ class LocalWorkspace extends EventEmitter {
 
   finishRun(groupId, controller, status) {
     return this.runCoordinator.finish(groupId, controller, status)
+  }
+
+  configureRunBudget(controller, input = {}) {
+    return this.runCoordinator.configureBudget(controller, input)
+  }
+
+  controllerForRunId(runId) {
+    return [...this.activeRuns.entries()].find(([, controller]) => controller.runId === runId) || null
+  }
+
+  continuationTimestamp() {
+    const timestamp = Date.parse(this.now())
+    return Number.isFinite(timestamp) ? timestamp : Date.now()
+  }
+
+  markHumanGateWaiting(record, input) {
+    const match = this.controllerForRunId(record?.runId)
+    if (!match || !input || typeof input !== 'object') {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const [groupId, controller] = match
+    const previousWaitingGateIds = new Set(controller.waitingGateIds)
+    const previousContinuation = controller.continuation
+    const timestamp = this.continuationTimestamp()
+    try {
+      controller.continuation = {
+        gateId: record.gateId,
+        gateType: record.type,
+        resumeKind: input.resumeKind,
+        state: 'pending',
+        agentRunId: input.agentRunId,
+        agentKind: input.agentKind,
+        round: input.round || 0,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }
+      controller.waitingGateIds.add(record.gateId)
+      if (this.runLedger && this.checkpointRun(groupId, controller, 'waiting') !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+    } catch (error) {
+      controller.waitingGateIds.clear()
+      for (const gateId of previousWaitingGateIds) controller.waitingGateIds.add(gateId)
+      controller.continuation = previousContinuation
+      throw error
+    }
+    return true
+  }
+
+  markHumanGateResumed(record) {
+    const match = this.controllerForRunId(record?.runId)
+    if (!match) {
+      const durable = this.runLedger?.get?.(record?.runId)
+      if (!durable?.continuation || durable.continuation.gateId !== record.gateId) return false
+      this.runLedger.checkpoint({
+        runId: durable.runId,
+        continuation: {
+          ...durable.continuation,
+          state: 'ready',
+          updatedAt: this.continuationTimestamp(),
+        },
+      })
+      return true
+    }
+    const [groupId, controller] = match
+    const previousWaitingGateIds = new Set(controller.waitingGateIds)
+    const previousContinuation = controller.continuation
+    try {
+      controller.waitingGateIds.delete(record.gateId)
+      if (controller.continuation?.gateId === record.gateId) {
+        controller.continuation = {
+          ...controller.continuation,
+          state: 'ready',
+          updatedAt: this.continuationTimestamp(),
+        }
+      }
+      if (this.runLedger && this.checkpointRun(
+        groupId, controller, controller.waitingGateIds.size ? 'waiting' : 'running',
+      ) !== true) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    } catch (error) {
+      controller.waitingGateIds.clear()
+      for (const gateId of previousWaitingGateIds) controller.waitingGateIds.add(gateId)
+      controller.continuation = previousContinuation
+      throw error
+    }
+    return true
+  }
+
+  async requestHumanGate(input, options = {}) {
+    const runId = String(input?.runId || '')
+    const previous = this.humanGateWaitTails.get(runId) || Promise.resolve()
+    let release
+    const current = new Promise((resolve) => { release = resolve })
+    this.humanGateWaitTails.set(runId, current)
+    let gateId = ''
+    try {
+      await previous
+      if (options.signal?.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+      const decision = await this.humanGateCoordinator.wait(input, {
+        ...options,
+        onCreated: record => { gateId = record.gateId },
+      })
+      return { ...decision, gateId }
+    } finally {
+      release()
+      if (this.humanGateWaitTails.get(runId) === current) {
+        this.humanGateWaitTails.delete(runId)
+      }
+    }
+  }
+
+  listHumanGates(options = {}) {
+    return this.humanGateCoordinator.list(options)
+  }
+
+  decideHumanGate(gateId, decision) {
+    return this.humanGateCoordinator.decide(gateId, decision)
+  }
+
+  canResumeHumanGateRecord(runRecord, gateRecord = null) {
+    const continuation = runRecord?.continuation
+    if (!continuation || continuation.gateId !== gateRecord?.gateId && gateRecord) return false
+    if (!['pending', 'ready', 'resuming'].includes(continuation.state)) return false
+    let gate = gateRecord
+    try { gate ||= this.humanGateStore.get(continuation.gateId) } catch { return false }
+    if (gate.runId !== runRecord.runId || gate.type !== continuation.gateType
+        || gate.agentRunId !== continuation.agentRunId
+        || gate.agentKind !== continuation.agentKind) return false
+    if (continuation.state !== 'pending' && gate.status === 'pending') return false
+    try {
+      const pack = this.contextPackStore.get(runRecord.contextPackId)
+      return pack.taskId === runRecord.taskId
+        && this.state.groups.some(group => group.id === runRecord.groupId)
+        && Boolean(this.humanGateStore.request(gate.gateId))
+    } catch {
+      return false
+    }
+  }
+
+  canResumeHumanGate(gateRecord) {
+    const runRecord = this.runLedger?.get?.(gateRecord?.runId)
+    return this.canResumeHumanGateRecord(runRecord, gateRecord)
+  }
+
+  completeHumanGateContinuation(runId, gateId, state = 'completed') {
+    const match = this.controllerForRunId(runId)
+    if (!match) return false
+    const [groupId, controller] = match
+    if (controller.continuation?.gateId !== gateId) return false
+    controller.waitingGateIds.delete(gateId)
+    controller.continuation = {
+      ...controller.continuation,
+      state: ['completed', 'failed', 'cancelled'].includes(state) ? state : 'completed',
+      updatedAt: this.continuationTimestamp(),
+    }
+    return this.checkpointRun(groupId, controller) === true || !this.runLedger
+  }
+
+  canFinalizeReplayedAgentSlot(durable) {
+    const continuation = durable?.continuation
+    const targetKinds = Array.isArray(durable?.targetKinds) ? durable.targetKinds : []
+    if (durable?.mode !== 'manual' || continuation?.resumeKind !== 'agent_slot'
+        || targetKinds.length !== 1 || targetKinds[0] !== continuation.agentKind) return false
+    return !durable.threadRootId || durable.taskId === durable.threadRootId
+  }
+
+  async replayAgentSlot(group, durable, controller, gate, decision, request) {
+    if (!['budget', 'permission'].includes(gate?.type)) {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const message = this.state.messages.find(candidate => (
+      candidate.groupId === group.id
+      && candidate.role === 'user'
+      && [durable.taskId, durable.threadRootId].includes(candidate.id)
+    ))
+    if (!message) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    const attachments = await this.resolveAttachments(message.attachments || [])
+    const skills = await this.validateSkillSelectionsFn(
+      durable.continuation.agentKind,
+      (message.skillHints || []).filter(skill => (
+        skill.targetKind === durable.continuation.agentKind
+      )),
+    )
+    const knowledge = await this.validateKnowledgeBaseSelectionsFn(
+      [durable.continuation.agentKind], message.knowledgeBaseHints || [],
+    )
+    const recovered = await this.autoRunner.invokeWithUnauthorizedRecovery({
+      group,
+      kind: durable.continuation.agentKind,
+      controller,
+      activeKinds: durable.targetKinds,
+      threadRootId: durable.threadRootId,
+      context: {
+        attachments: attachments.map(attachment => attachment.path),
+        attachmentSnapshots: attachments,
+        skillHints: skills,
+        knowledgeBaseHints: knowledge,
+        resumedGate: {
+          gateId: gate.gateId,
+          type: gate.type,
+          status: decision.status,
+          optionId: decision.optionId,
+          ...(gate.type === 'permission' ? { request } : {}),
+          used: false,
+        },
+        runtimeInstruction: gate.type === 'permission'
+          ? [
+              'Resume the existing Agent Session at its pending permission request.',
+              'Do not repeat actions completed before that request.',
+              'Continue only after the Harness applies the persisted decision to the exact reissued request.',
+            ].join(' ')
+          : '',
+      },
+      reportedFailures: new Set(),
+      mode: durable.mode,
+    })
+    if (!recovered?.result) throw recovered?.error || new Error('LOCAL_RUN_CONTINUATION_FAILED')
+    if (!controller.completedKinds.includes(durable.continuation.agentKind)) {
+      controller.completedKinds.push(durable.continuation.agentKind)
+    }
+    return recovered.result
+  }
+
+  async resumeHumanGateDecision(gate, decision) {
+    const durable = this.runLedger?.get?.(gate.runId)
+    if (!this.canResumeHumanGateRecord(durable, gate)) {
+      return this.failHumanGateContinuation(gate, new Error('LOCAL_RUN_CONTINUATION_INVALID'))
+    }
+    let controller = null
+    try {
+      controller = this.runCoordinator.resume(durable)
+      const group = this.getGroup(durable.groupId)
+      const request = this.humanGateStore.request(gate.gateId)
+      if (durable.continuation.resumeKind === 'agent_slot'
+          && decision.status === 'approved'
+          && !this.canFinalizeReplayedAgentSlot(durable)) {
+        throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
+      }
+      if (durable.continuation.resumeKind === 'role_review_decision') {
+        this.roleReviewRunner.resumeDecision(request, decision, { group, controller, durable })
+      } else if (gate.type === 'permission') {
+        if (decision.status === 'rejected') {
+          this.resetAgentSession(group, durable.continuation.agentKind, true, durable.taskId)
+          if (!controller.completedKinds.includes(durable.continuation.agentKind)) {
+            controller.completedKinds.push(durable.continuation.agentKind)
+          }
+          this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
+          this.finishRun(durable.groupId, controller, 'stopped')
+          return
+        }
+        await this.replayAgentSlot(group, durable, controller, gate, decision, request)
+      } else if (gate.type === 'budget' && decision.status !== 'approved') {
+        throw new Error('LOCAL_BUDGET_REJECTED')
+      } else {
+        await this.replayAgentSlot(group, durable, controller, gate, decision, request)
+      }
+      this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')
+      this.finishRun(durable.groupId, controller, 'completed')
+    } catch (error) {
+      if (controller) {
+        if (controller.signal.aborted && controller.stopReason === 'shutdown') {
+          this.finishRun(durable.groupId, controller, 'interrupted')
+          return
+        }
+        if (durable.continuation.resumeKind === 'agent_slot'
+            && decision.status !== 'rejected') {
+          if (!controller.failedKinds.includes(durable.continuation.agentKind)) {
+            controller.failedKinds.push(durable.continuation.agentKind)
+          }
+          this.recordAgentFailure(
+            durable.groupId,
+            durable.continuation.agentKind,
+            error,
+            durable.threadRootId,
+            new Set(),
+          )
+          controller.stopReason = String(error?.message || 'human_gate_continuation_failed')
+        }
+        this.completeHumanGateContinuation(
+          durable.runId, gate.gateId,
+          decision.status === 'rejected' ? 'cancelled' : 'failed',
+        )
+        this.finishRun(durable.groupId, controller, decision.status === 'rejected' ? 'stopped' : 'failed')
+      } else {
+        this.failHumanGateContinuation(gate, error)
+      }
+    }
+  }
+
+  failHumanGateContinuation(gate) {
+    const gateId = String(gate?.gateId || '')
+    const durable = (this.runLedger?.list?.() || []).find(record => (
+      record.continuation?.gateId === gateId
+        && ['pending', 'ready', 'resuming'].includes(record.continuation.state)
+    ))
+    if (!durable) return false
+    try {
+      if (durable.continuation?.gateId === gate.gateId) {
+        this.runLedger.checkpoint({
+          runId: durable.runId,
+          continuation: {
+            ...durable.continuation,
+            state: 'failed',
+            updatedAt: this.continuationTimestamp(),
+          },
+        })
+      }
+      this.runLedger.finish(durable.runId, 'failed', 'human_gate_continuation_invalid')
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  resumeReadyHumanGates() {
+    for (const durable of this.runLedger?.list?.() || []) {
+      if (!['ready', 'resuming'].includes(durable.continuation?.state)) continue
+      let gate
+      try { gate = this.humanGateStore.get(durable.continuation.gateId) } catch { continue }
+      if (!gate.decision) continue
+      queueMicrotask(() => this.resumeHumanGateDecision(gate, gate.decision))
+    }
   }
 
   recordAgentFailure(groupId, kind, error, threadRootId, reportedFailures = null) {
@@ -327,10 +773,6 @@ class LocalWorkspace extends EventEmitter {
     return this.conversations.updateGroup(groupId, input)
   }
 
-  removeAgentFromGroup(groupId, kind) {
-    return this.conversations.removeAgent(groupId, kind)
-  }
-
   deleteGroup(groupId) {
     return this.conversations.deleteGroup(groupId)
   }
@@ -351,26 +793,60 @@ class LocalWorkspace extends EventEmitter {
     )
   }
 
-  sessionKey(groupId, kind) {
-    return sessionKey(groupId, kind)
+  sessionKey(groupId, kind, taskId = '') {
+    return sessionKey(groupId, kind, taskId)
   }
 
   clearSessionState(groupId) {
     clearSessionState(this.state, groupId)
   }
 
-  openClawSessionRef(group, generation = '') {
-    return openClawSessionRef(group, generation)
+  openClawSessionRef(group, generation = '', taskId = '') {
+    return openClawSessionRef(group, generation, taskId)
   }
 
-  sessionRef(group, kind, threadRootId = '') {
-    return resolveSessionRef({
-      state: this.state,
-      group,
-      kind,
-      threadRootId,
-      save: () => this.save(),
-    })
+  sessionState(group, kind, threadRootId = '', taskId = '') {
+    const previousSessions = { ...this.state.sessions }
+    const previousSessionMeta = { ...this.state.sessionMeta }
+    try {
+      return resolveSessionState({
+        state: this.state,
+        group,
+        kind,
+        threadRootId,
+        taskId,
+        save: () => this.save(),
+      })
+    } catch (error) {
+      this.state.sessions = previousSessions
+      this.state.sessionMeta = previousSessionMeta
+      throw error
+    }
+  }
+
+  sessionRef(group, kind, threadRootId = '', taskId = '') {
+    return this.sessionState(group, kind, threadRootId, taskId).sessionRef
+  }
+
+  persistSessionState(key, sessionRef, meta) {
+    const nextRef = normalizeSessionRef(sessionRef)
+    if (!SESSION_KEY.test(String(key || '')) || !nextRef) return false
+    const hadSession = Object.hasOwn(this.state.sessions, key)
+    const hadMeta = Object.hasOwn(this.state.sessionMeta, key)
+    const previousSession = this.state.sessions[key]
+    const previousMeta = this.state.sessionMeta[key]
+    this.state.sessions[key] = nextRef
+    this.state.sessionMeta[key] = normalizeSessionMeta(meta)
+    try {
+      this.save()
+    } catch (error) {
+      if (hadSession) this.state.sessions[key] = previousSession
+      else delete this.state.sessions[key]
+      if (hadMeta) this.state.sessionMeta[key] = previousMeta
+      else delete this.state.sessionMeta[key]
+      throw error
+    }
+    return true
   }
 
   persistSessionRef(key, sessionRef) {
@@ -389,6 +865,94 @@ class LocalWorkspace extends EventEmitter {
     this.state.sessionMeta[key] = next
     this.save()
     return next
+  }
+
+  createContextPack(input) {
+    return this.contextPacks.basePack(input)
+  }
+
+  createAttemptContextPack(input) {
+    return this.contextPacks.attemptPack(input)
+  }
+
+  recordContextDelivery(input) {
+    return this.contextPacks.delivery(input)
+  }
+
+  recordAgentOutcomes(input = {}) {
+    const controller = this.activeRuns.get(String(input.groupId || ''))
+    const runId = String(input.runId || '')
+    const agentRunId = String(input.agentRunId || '')
+    const agentKind = String(input.agentKind || '')
+    const round = Number(input.round)
+    const harnessRun = controller?.harness?.current(agentKind, round, agentRunId)
+    if (!controller || controller.runId !== runId || !harnessRun
+        || harnessRun.agentRunId !== agentRunId || harnessRun.kind !== agentKind) return {}
+
+    const conclusion = String(input.conclusion || '').trim()
+    const descriptors = Array.isArray(input.descriptors) ? input.descriptors : []
+    const candidates = [
+      ...(conclusion ? [{
+        type: 'document',
+        name: `${agentKind}-conclusion.txt`,
+        content: Buffer.from(conclusion, 'utf8'),
+        mediaType: 'text/plain',
+      }] : []),
+      ...descriptors,
+    ].slice(0, MAX_AGENT_OUTCOME_ARTIFACTS)
+    const refs = { artifactIds: [], evidenceIds: [] }
+    const producedBy = { runId, agentRunId, agentKind }
+
+    for (const descriptor of candidates) {
+      if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) continue
+      try {
+        const artifactInput = {
+          type: descriptor.type,
+          name: descriptor.name,
+          producedBy,
+        }
+        if (Buffer.isBuffer(descriptor.content) || descriptor.content instanceof Uint8Array) {
+          const mediaType = String(descriptor.mediaType || '')
+          const contentRef = this.contentBlobStore.put(
+            descriptor.content,
+            mediaType ? { mediaType } : undefined,
+          )
+          if (descriptor.contentHash && descriptor.contentHash !== contentRef.hash) continue
+          artifactInput.contentRef = contentRef
+          artifactInput.contentHash = contentRef.hash
+        } else if (descriptor.contentHash) {
+          artifactInput.contentHash = descriptor.contentHash
+        }
+        if (descriptor.locationRef) artifactInput.locationRef = descriptor.locationRef
+
+        const artifact = this.outcomeStore.putArtifact(artifactInput)
+        const evidenceRefs = [{ type: 'artifact', artifactId: artifact.artifactId }]
+        if (artifact.contentRef) {
+          evidenceRefs.push({
+            type: 'blob',
+            contentRef: artifact.contentRef,
+            contentHash: artifact.contentHash,
+          })
+        } else if (artifact.locationRef) {
+          evidenceRefs.push({
+            type: 'location',
+            locationRef: artifact.locationRef,
+            ...(artifact.contentHash ? { contentHash: artifact.contentHash } : {}),
+          })
+        }
+        const evidence = this.outcomeStore.putEvidence({
+          kind: 'observation',
+          level: 'observed',
+          subject: { type: 'artifact', artifactId: artifact.artifactId },
+          summary: 'Meldwork captured the concrete Agent output.',
+          recordedBy: OUTCOME_RECORDER,
+          refs: evidenceRefs,
+        })
+        refs.artifactIds.push(artifact.artifactId)
+        refs.evidenceIds.push(evidence.evidenceId)
+      } catch { /* invalid or unavailable outcome capture must not discard the Agent reply */ }
+    }
+    return normalizeOutcomeRefs(refs)
   }
 
   promptMessageText(message, limit = 20000) {
@@ -461,8 +1025,8 @@ class LocalWorkspace extends EventEmitter {
     return this.agentInvocation.invoke(group, kind, mode, signal, threadRootId, context)
   }
 
-  resetAgentSession(group, kind, rotateOpenClaw = true) {
-    return this.agentInvocation.resetSession(group, kind, rotateOpenClaw)
+  resetAgentSession(group, kind, rotateOpenClaw = true, taskId = '') {
+    return this.agentInvocation.resetSession(group, kind, rotateOpenClaw, taskId)
   }
 
   async resolveAttachments(attachmentRefs) {
@@ -487,6 +1051,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async sendMessage(input) {
+    if (input?.workflow) return this.roleReviewRunner.send(input)
     return this.messageSubmission.send(input)
   }
 
@@ -496,6 +1061,37 @@ class LocalWorkspace extends EventEmitter {
 
   stop(groupId, runId) {
     return this.runCoordinator.stop(groupId, runId)
+  }
+
+  controlAgent(groupId, runId, kind, action, replacementKind = '') {
+    const group = this.getGroup(groupId)
+    if (!group.agentKinds.includes(kind)) return false
+    let roleReviewReplacement = false
+    let controller = null
+    if (action === 'replace') {
+      controller = this.activeRuns.get(groupId)
+      roleReviewReplacement = controller?.workflowType === 'role-review'
+      if (roleReviewReplacement
+          && !['reviewer', 'arbiter'].includes(controller.workflowRole)) return false
+      const replacement = this.detectedAgents.find(agent => (
+        agent.kind === replacementKind && agent.available && group.agentKinds.includes(agent.kind)
+          && (roleReviewReplacement
+            ? !controller?.targetKinds?.includes(agent.kind)
+            : controller?.targetKinds?.includes(agent.kind))
+      ))
+      if (!replacement) return false
+    }
+    const controlled = this.runCoordinator.controlAgent(
+      groupId, runId, kind, action, replacementKind,
+    )
+    if (controlled && roleReviewReplacement && controller
+        && !controller.targetKinds.includes(replacementKind)) {
+      controller.targetKinds.push(replacementKind)
+      controller.harness?.addTargetKind?.(replacementKind)
+      this.scheduleRunCheckpoint(groupId, controller)
+      this.emitChanged()
+    }
+    return controlled
   }
 
   async stopAll() {

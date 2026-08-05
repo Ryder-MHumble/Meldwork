@@ -2,6 +2,9 @@ const electron = require('electron')
 const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, protocol, shell } = electron
 const path = require('node:path')
 const { AttachmentStore } = require('./attachment-store.cjs')
+const { ContentBlobStore } = require('./content-blob-store.cjs')
+const { ContextPackStore } = require('./context-pack-store.cjs')
+const { OutcomeStore } = require('./outcome-store.cjs')
 const {
   MEDIA_SCHEME,
   attachmentIdsFromSnapshot,
@@ -10,10 +13,24 @@ const {
 } = require('./attachment-service.cjs')
 const {
   captureAgentOutputState,
+  captureAgentOutcomeDescriptors,
+  captureArtifactOutputState,
   importAgentOutputs,
 } = require('./agent-output-importer.cjs')
 const { detectAgents, imageAttachmentLimit, runAgent } = require('./cli-adapters.cjs')
 const { AgentInstaller } = require('./agent-installer.cjs')
+const { AgentConnectorInstanceStore } = require('./agent-connector-instance-store.cjs')
+const { LocalAgentConnectors } = require('./agent-connector-local.cjs')
+const { CloudAgentOperationStore } = require('./cloud-agent-operation-store.cjs')
+const {
+  CloudAgentRuntime,
+  createCloudAgentStartRetry = ({ runtime }) => Object.freeze({
+    start: () => Promise.resolve().then(() => runtime.start()).then(() => true, () => false),
+    cancel() {},
+  }),
+} = require('./cloud-agent-runtime.cjs')
+const { ChannelInboxStore } = require('./channel-inbox-store.cjs')
+const { ChannelIngressRuntime } = require('./channel-ingress-runtime.cjs')
 const { CustomAgentStore } = require('./custom-agent-store.cjs')
 const {
   nativeCredentialEnvironment,
@@ -32,12 +49,15 @@ const { createRunNotificationCoordinator } = require('./main-run-notifications.c
 const { normalizeRunEvent } = require('./run-harness.cjs')
 const { RunLedger } = require('./run-ledger.cjs')
 const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
+const { LocalSkillSnapshotSelections } = require('./local-skill-snapshot-selections.cjs')
+const { LocalSkillSnapshotStore } = require('./local-skill-snapshot.cjs')
 const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
 const {
   knowledgeBaseSelectionHint,
   knowledgeBaseGuideUrl,
   resolveKnowledgeBaseSources,
 } = require('./local-knowledge-base.cjs')
+const { LocalKnowledgeConnectors } = require('./local-knowledge-connectors.cjs')
 const { ProviderStore } = require('./provider-store.cjs')
 const {
   EXTERNAL_PROVIDER_KINDS,
@@ -57,7 +77,12 @@ let installer = null
 let localAgentRefreshQueue = Promise.resolve()
 let providerStore = null
 let customAgentStore = null
+let agentConnectors = null
+let cloudAgentRuntime = null
+let cloudAgentStartRetry = null
+let channelIngressRuntime = null
 let knowledgeBaseStore = null
+let knowledgeConnectors = null
 let knowledgeBaseStatusPromise = null
 const knowledgeBaseSourcesCache = new Map()
 let attachmentStore = null
@@ -117,7 +142,9 @@ function appIconImage() {
 }
 
 function isLocalAgentKind(kind) {
-  return LOCAL_AGENT_KINDS.has(kind) || customAgentStore?.has(kind) === true
+  return LOCAL_AGENT_KINDS.has(kind)
+    || customAgentStore?.has(kind) === true
+    || agentConnectors?.has(kind) === true
 }
 
 function loadFrontend() {
@@ -217,11 +244,13 @@ async function validateKnowledgeBaseSelections(targetKinds, selections) {
   const requested = Array.isArray(selections) ? selections : []
   if (!requested.length) return []
   if (!targets.length) throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
-  const requestedKinds = [...new Set(requested.map(source => String(source?.kind || '')))]
-  if (requestedKinds.some(kind => !knowledgeBaseSourcesCache.has(kind))) {
+  const genericKinds = [...new Set(requested
+    .filter(source => !source?.selectionId)
+    .map(source => String(source?.kind || '')))]
+  if (genericKinds.some(kind => !knowledgeBaseSourcesCache.has(kind))) {
     await loadKnowledgeBaseSources()
   }
-  return requested.map((selection) => {
+  return Promise.all(requested.map(async (selection) => {
     const selectionTargets = [...new Set((Array.isArray(selection?.targetKinds) ? selection.targetKinds : [])
       .map(kind => String(kind || ''))
       .filter(kind => targets.includes(kind)))]
@@ -229,80 +258,179 @@ async function validateKnowledgeBaseSelections(targetKinds, selections) {
         || selectionTargets.length !== new Set(selection?.targetKinds || []).size) {
       throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
     }
+    const selectionId = String(selection?.selectionId || '')
+    if (selectionId) {
+      const keys = Reflect.ownKeys(selection || {})
+      if (!knowledgeConnectors
+          || keys.some(key => !['kind', 'selectionId', 'targetKinds'].includes(key))) {
+        throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+      }
+      try {
+        const preparedSource = await knowledgeConnectors.prepareSelection(selectionId)
+        if (String(selection?.kind || '') !== preparedSource.kind) {
+          throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+        }
+        return knowledgeConnectors.runtimeHint(selectionTargets, preparedSource)
+      } catch {
+        throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
+      }
+    }
     const hint = knowledgeBaseSelectionHint(
       knowledgeBaseSourcesCache.get(String(selection?.kind || '')),
       selectionTargets,
     )
     if (!hint) throw new Error('LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID')
     return hint
+  }))
+}
+
+async function runCoreAgent(agent, prompt, workdir, options = {}) {
+  const status = providerStore.status(agent.kind)
+  const nativeRuntime = agent.kind === 'openclaw' && !status.configured
+    ? await resolveNativeOpenClawRuntime({ executable: agent.executable })
+    : null
+  const injected = providerOptions(agent.kind, {
+    ...options,
+    workdir,
+    storageRoot: app.getPath('userData'),
+    nativeRuntime,
+  })
+  const nativeEnv = agent.kind === 'openclaw'
+    ? {}
+    : nativeCredentialEnvironment(agent.kind)
+  const callerEnv = agent.kind === 'openclaw' ? {} : options.env
+  return runAgent(agent, prompt, workdir, {
+    ...options,
+    ...injected,
+    env: { ...nativeEnv, ...callerEnv, ...injected.env },
   })
 }
 
 function createWorkspace() {
-  return new LocalWorkspace({
-    storagePath: workspaceStoragePath(),
-    runLedger: new RunLedger({
-      storagePath: path.join(app.getPath('userData'), 'roundrelay-run-ledger.json'),
+  cloudAgentStartRetry?.cancel()
+  const privateRoot = path.join(app.getPath('userData'), 'roundrelay-private')
+  const contentBlobStore = new ContentBlobStore({
+    rootPath: path.join(privateRoot, 'content-blobs'),
+  })
+  const skillSnapshotStore = new LocalSkillSnapshotStore({
+    contentBlobStore,
+    rootPath: path.join(privateRoot, 'skill-snapshots'),
+  })
+  const skillSnapshotSelections = new LocalSkillSnapshotSelections({
+    catalog: skillCatalog,
+    snapshotStore: skillSnapshotStore,
+    contentBlobStore,
+  })
+  knowledgeConnectors = new LocalKnowledgeConnectors({
+    contentBlobStore,
+    getObsidianVaultPath: () => knowledgeBaseStore?.state().obsidianVaultPath || '',
+    storagePath: path.join(privateRoot, 'knowledge-connector-records.json'),
+  })
+  agentConnectors = new LocalAgentConnectors({
+    manifestDirectory: path.join(app.getPath('userData'), 'agent-connectors', 'manifests'),
+    instanceStore: new AgentConnectorInstanceStore({
+      instanceStoragePath: path.join(app.getPath('userData'), 'agent-connectors', 'instances.json'),
+      credentialStoragePath: path.join(privateRoot, 'agent-connector-credentials.json'),
+      safeStorage: lazySafeStorage,
     }),
-    detectAgents: async () => [
-      ...await installer.detectedAgents(),
-      ...await customAgentStore.detectAgents(),
-    ],
+    runAgent: runCoreAgent,
+  })
+  const outcomeStore = new OutcomeStore({
+    rootPath: path.join(privateRoot, 'outcomes'),
+    contentBlobStore,
+  })
+  const runLedger = new RunLedger({
+    storagePath: path.join(app.getPath('userData'), 'roundrelay-run-ledger.json'),
+  })
+  const runtime = new CloudAgentRuntime({
+    runLedger,
+    outcomeStore,
+    contentBlobStore,
+    operationStore: new CloudAgentOperationStore({
+      storagePath: path.join(privateRoot, 'cloud-agent-operations.json'),
+    }),
+    connectors: [],
+  })
+  cloudAgentRuntime = runtime
+  channelIngressRuntime = new ChannelIngressRuntime({
+    store: new ChannelInboxStore({
+      storagePath: path.join(privateRoot, 'channel-inbox.json'),
+    }),
+    connectors: [],
+  })
+  const localWorkspace = new LocalWorkspace({
+    storagePath: workspaceStoragePath(),
+    contentBlobStore,
+    contextPackStore: new ContextPackStore({
+      rootPath: path.join(privateRoot, 'context-packs'),
+    }),
+    outcomeStore,
+    runLedger: cloudAgentRuntime.workspaceLedger(),
+    detectAgents: async () => {
+      const [installedAgents, customAgents] = await Promise.all([
+        installer.detectedAgents(),
+        customAgentStore.detectAgents(),
+      ])
+      return [
+        ...installedAgents,
+        ...customAgents,
+        ...agentConnectors.refresh(installedAgents),
+      ]
+    },
     resolveAttachments: input => attachments.availableStore().resolve(input),
     captureAgentOutputs: workdir => captureAgentOutputState(workdir),
+    captureArtifactOutputs: (workdir, options) => captureArtifactOutputState(workdir, options),
+    captureAgentOutcomeDescriptors,
     importAgentOutputs: input => importAgentOutputs(input, attachments.availableStore()),
-    validateSkillSelections: (kind, selections) => skillCatalog.validateSelections(kind, selections),
+    validateSkillSelections: (kind, selections) => skillSnapshotSelections.prepare(kind, selections),
     validateKnowledgeBaseSelections,
     imageAttachmentLimit,
-    attachmentSupport: kind => customAgentStore.has(kind)
-      ? { image: 4, audio: 4, video: 4 }
-      : { image: imageAttachmentLimit(kind) },
-    credentialState: (kind, agent) => customAgentStore.has(kind)
-      ? { state: 'ready', source: 'custom-agent' }
-      : resolveNativeCredentialState(kind, { executable: agent?.executable }),
-    agentLabel: kind => customAgentStore.label(kind),
+    attachmentSupport: kind => {
+      if (customAgentStore.has(kind)) return { image: 4, audio: 4, video: 4 }
+      return agentConnectors.attachmentSupport(kind) || { image: imageAttachmentLimit(kind) }
+    },
+    credentialState: (kind, agent) => {
+      if (customAgentStore.has(kind)) return { state: 'ready', source: 'custom-agent' }
+      if (agentConnectors.has(kind)) return { state: 'ready', source: 'agent-connector' }
+      return resolveNativeCredentialState(kind, { executable: agent?.executable })
+    },
+    agentLabel: kind => customAgentStore.label(kind) || agentConnectors.label(kind),
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
+    connectorRuntime: agentConnectors,
     runAgent: async (agent, prompt, workdir, options = {}) => {
       if (customAgentStore.has(agent.kind)) {
         return customAgentStore.run(agent.kind, prompt, workdir, {
           signal: options.signal,
           onProgress: options.onProgress,
           onEvent: options.onEvent,
+          onOutboundPayload: options.onOutboundPayload,
           attachments: options.attachments,
         })
       }
-      const status = providerStore.status(agent.kind)
-      const nativeRuntime = agent.kind === 'openclaw' && !status.configured
-        ? await resolveNativeOpenClawRuntime({ executable: agent.executable })
-        : null
-      const injected = providerOptions(agent.kind, {
-        ...options,
-        workdir,
-        storageRoot: app.getPath('userData'),
-        nativeRuntime,
-      })
-      const nativeEnv = agent.kind === 'openclaw'
-        ? {}
-        : nativeCredentialEnvironment(agent.kind)
-      const callerEnv = agent.kind === 'openclaw' ? {} : options.env
-      return runAgent(agent, prompt, workdir, {
-        ...options,
-        ...injected,
-        env: { ...nativeEnv, ...callerEnv, ...injected.env },
-      })
+      return runCoreAgent(agent, prompt, workdir, options)
     },
   })
+  cloudAgentStartRetry = createCloudAgentStartRetry({
+    runtime,
+    isActive: candidate => !shutdownStarted && cloudAgentRuntime === candidate,
+  })
+  cloudAgentStartRetry.start()
+  channelIngressRuntime.start().catch(() => {})
+  return localWorkspace
 }
 
 async function localAgentCatalog() {
-  const [catalog, customAgents] = await Promise.all([
+  const [catalog, customAgents, installedAgents] = await Promise.all([
     installer.catalog(),
     customAgentStore.catalog(),
+    installer.detectedAgents(),
   ])
+  agentConnectors?.refresh(installedAgents)
+  const connectorAgents = agentConnectors?.catalog() || []
   const states = new Map((workspace?.snapshot().agents || []).map(agent => [agent.kind, agent]))
   return {
     ...catalog,
-    agents: [...catalog.agents, ...customAgents].map((agent) => {
+    agents: [...catalog.agents, ...customAgents, ...connectorAgents].map((agent) => {
       const state = states.get(agent.kind)
       return {
         ...agent,
@@ -422,15 +550,19 @@ function registerIpc() {
     customAgentStore,
     dialog,
     getAttachmentStore: () => attachmentStore,
+    getAgentConnectors: () => agentConnectors,
+    getCloudAgentRuntime: () => cloudAgentRuntime,
     getMainWindow: () => mainWindow,
     getWorkspace: () => workspace,
     installer,
     isShutdownStarted: () => shutdownStarted,
     knowledgeBaseStore,
+    getKnowledgeConnectors: () => knowledgeConnectors,
     knowledgeBaseGuideUrl,
     loadKnowledgeBaseSources,
     localAgentCatalog,
     openExternalUrl,
+    getOutcomeStore: () => workspace?.outcomeStore,
     providerStore,
     providerAgentKind,
     refreshLocalAgentState,
@@ -505,7 +637,11 @@ if (!hasSingleInstanceLock) {
   })
 
   app.on('window-all-closed', () => {
-    if (process.platform !== 'darwin') app.quit()
+    let channelReceiverActive = false
+    try {
+      channelReceiverActive = channelIngressRuntime?.status().receiverCount > 0
+    } catch { /* An unavailable optional Channel must not keep the process alive. */ }
+    if (process.platform !== 'darwin' && !channelReceiverActive) app.quit()
   })
 
   app.on('before-quit', (event) => {
@@ -513,11 +649,15 @@ if (!hasSingleInstanceLock) {
     event.preventDefault()
     if (quitCleanup) return
     shutdownStarted = true
+    cloudAgentStartRetry?.cancel()
+    cloudAgentStartRetry = null
     installer?.cancelPending()
     const installerState = installer?.state()
     const installRunning = Boolean(installerState?.canCancel)
     if (installRunning) installer.cancel(installerState.taskId)
     quitCleanup = Promise.allSettled([
+      channelIngressRuntime?.shutdown() || Promise.resolve(),
+      cloudAgentRuntime?.shutdown() || Promise.resolve(),
       workspace?.stopAll() || Promise.resolve(),
       installer?.waitForIdle() || Promise.resolve(),
     ]).then(() => {

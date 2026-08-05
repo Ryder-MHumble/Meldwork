@@ -59,10 +59,18 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.equal(api.localOnly, true)
   assert.equal(api.platform, process.platform)
   assert.equal(Object.isFrozen(api.localAgentProvider), true)
+  assert.equal(Object.isFrozen(api.localAgentConnector), true)
+  assert.equal(Object.isFrozen(api.cloudAgent), true)
+  assert.equal(Object.isFrozen(api.localOutcome), true)
+  assert.deepEqual(Object.keys(api.localOutcome), ['recordAdoption'])
+  assert.deepEqual(
+    Object.keys(api.cloudAgent).sort(),
+    ['cancel', 'decidePermission', 'provideInput'],
+  )
   assert.deepEqual(
     Object.keys(api.localWorkspace).sort(),
     [
-      'createGroup', 'defaultDirectory', 'deleteGroup', 'deleteMessage', 'get', 'onChanged',
+      'controlAgent', 'createGroup', 'decideHumanGate', 'defaultDirectory', 'deleteGroup', 'deleteMessage', 'get', 'onChanged',
       'onOpenGroup', 'onRunEvent', 'onRunFinished', 'pickDirectory', 'refreshAgents', 'send',
       'stop', 'updateGroup',
     ].sort(),
@@ -100,9 +108,31 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.deepEqual(invocations.map(call => call.args[0]), [
     'hermes', 'hermes', 'hermes', 'hermes', 'hermes',
   ])
+  invocations.length = 0
+
+  assert.deepEqual(
+    Object.keys(api.localAgentConnector).sort(),
+    ['configure', 'delete', 'list'],
+  )
+  const configuration = {
+    manifestId: `connector-manifest-${'a'.repeat(64)}`,
+    label: 'Review account',
+    credentials: { account: 'renderer-entered-secret' },
+  }
+  await api.localAgentConnector.list()
+  await api.localAgentConnector.configure(configuration)
+  await api.localAgentConnector.delete('custom-0123456789abcdef')
+  assert.deepEqual(invocations, [
+    { channel: 'local-agent-connector:list', args: [] },
+    { channel: 'local-agent-connector:configure', args: [configuration] },
+    {
+      channel: 'local-agent-connector:delete',
+      args: ['custom-0123456789abcdef'],
+    },
+  ])
 })
 
-test('local preload exposes only narrow knowledge source methods', async () => {
+test('local preload exposes the complete narrow Knowledge Connector lifecycle', async () => {
   const { api, invocations } = loadPreload('file:')
 
   assert.equal(Object.isFrozen(api.localKnowledgeBase), true)
@@ -112,15 +142,71 @@ test('local preload exposes only narrow knowledge source methods', async () => {
   )
   assert.equal('readVault' in api.localKnowledgeBase, false)
   assert.equal('runCommand' in api.localKnowledgeBase, false)
+  assert.equal(Object.isFrozen(api.localKnowledgeConnector), true)
+  assert.deepEqual(
+    Object.keys(api.localKnowledgeConnector).sort(),
+    [
+      'authorize', 'citation', 'fetch', 'list', 'probe', 'revoke',
+      'search', 'select', 'snapshot',
+    ],
+  )
 
   await api.localKnowledgeBase.status()
   await api.localKnowledgeBase.openGuide('feishu', 'login')
   await api.localKnowledgeBase.pickObsidianVault()
+  await api.localKnowledgeConnector.authorize('knowledge.filesystem')
+  await api.localKnowledgeConnector.list()
+  await api.localKnowledgeConnector.probe('obsidian-vault-1')
+  const sourceRequest = {
+    sourceId: `knowledge-source-${'a'.repeat(64)}`,
+    locator: 'notes/decision.md',
+  }
+  await api.localKnowledgeConnector.search('obsidian-vault-1', { query: 'decision', limit: 5 })
+  await api.localKnowledgeConnector.fetch('obsidian-vault-1', sourceRequest)
+  await api.localKnowledgeConnector.snapshot('obsidian-vault-1', sourceRequest)
+  await api.localKnowledgeConnector.citation('obsidian-vault-1', {
+    snapshotId: `knowledge-snapshot-${'b'.repeat(64)}`,
+  })
+  await api.localKnowledgeConnector.select('obsidian-vault-1', {
+    ...sourceRequest,
+    captureMode: 'snapshot',
+  })
+  await api.localKnowledgeConnector.revoke('obsidian-vault-1')
 
   assert.deepEqual(invocations, [
     { channel: 'local-knowledge-base:status', args: [] },
     { channel: 'local-knowledge-base:open-guide', args: ['feishu', 'login'] },
     { channel: 'local-knowledge-base:pick-obsidian-vault', args: [] },
+    { channel: 'local-knowledge-connector:authorize', args: ['knowledge.filesystem'] },
+    { channel: 'local-knowledge-connector:list', args: [] },
+    { channel: 'local-knowledge-connector:probe', args: ['obsidian-vault-1'] },
+    {
+      channel: 'local-knowledge-connector:search',
+      args: ['obsidian-vault-1', { query: 'decision', limit: 5 }],
+    },
+    {
+      channel: 'local-knowledge-connector:fetch',
+      args: ['obsidian-vault-1', sourceRequest],
+    },
+    {
+      channel: 'local-knowledge-connector:snapshot',
+      args: ['obsidian-vault-1', sourceRequest],
+    },
+    {
+      channel: 'local-knowledge-connector:citation',
+      args: ['obsidian-vault-1', {
+        snapshotId: `knowledge-snapshot-${'b'.repeat(64)}`,
+      }],
+    },
+    {
+      channel: 'local-knowledge-connector:select',
+      args: ['obsidian-vault-1', {
+        sourceId: `knowledge-source-${'a'.repeat(64)}`,
+        locator: 'notes/decision.md',
+        captureMode: 'snapshot',
+      }],
+    },
+    { channel: 'local-knowledge-connector:revoke', args: ['obsidian-vault-1'] },
   ])
 })
 
@@ -162,6 +248,71 @@ test('local preload binds stop requests to the visible run identifier', async ()
 
   assert.deepEqual(invocations, [
     { channel: 'local-workspace:stop', args: ['group-1', 'run-1'] },
+  ])
+})
+
+test('local preload exposes narrow Cloud Agent continuation and cancel methods', async () => {
+  const { api, invocations } = loadPreload('file:')
+
+  await api.cloudAgent.provideInput('run-cloud-1', 'question-1', 'release/next')
+  await api.cloudAgent.decidePermission('run-cloud-1', 'permission-1', 'approved')
+  await api.cloudAgent.cancel('run-cloud-1')
+
+  assert.deepEqual(invocations, [
+    {
+      channel: 'local-cloud-agent:provide-input',
+      args: ['run-cloud-1', 'question-1', 'release/next'],
+    },
+    {
+      channel: 'local-cloud-agent:decide-permission',
+      args: ['run-cloud-1', 'permission-1', 'approved'],
+    },
+    { channel: 'local-cloud-agent:cancel', args: ['run-cloud-1'] },
+  ])
+})
+
+test('local preload exposes one narrow Adoption recording method', async () => {
+  const { api, invocations } = loadPreload('file:')
+  const request = {
+    artifactId: `artifact-${'a'.repeat(64)}`,
+    status: 'exported',
+    evidenceIds: [],
+    findingIds: [],
+    destinationRef: { kind: 'workspace-relative', path: 'exports/report.md' },
+    previousAdoptionId: null,
+  }
+
+  await api.localOutcome.recordAdoption(request)
+
+  assert.deepEqual(invocations, [{
+    channel: 'local-outcome:record-adoption',
+    args: [request],
+  }])
+})
+
+test('local preload exposes narrow Human Gate and per-Agent control requests', async () => {
+  const { api, invocations } = loadPreload('file:')
+  const gateId = `human-gate-${'a'.repeat(64)}`
+
+  await api.localWorkspace.controlAgent('group-1', 'run-1', 'hermes', 'retry')
+  await api.localWorkspace.controlAgent('group-1', 'run-1', 'hermes', 'replace', 'codex')
+  await api.localWorkspace.decideHumanGate(gateId, {
+    status: 'approved', optionId: 'allow-once',
+  })
+
+  assert.deepEqual(invocations, [
+    {
+      channel: 'local-workspace:control-agent',
+      args: ['group-1', 'run-1', 'hermes', 'retry', ''],
+    },
+    {
+      channel: 'local-workspace:control-agent',
+      args: ['group-1', 'run-1', 'hermes', 'replace', 'codex'],
+    },
+    {
+      channel: 'local-workspace:decide-human-gate',
+      args: [gateId, { status: 'approved', optionId: 'allow-once' }],
+    },
   ])
 })
 
@@ -282,6 +433,8 @@ test('remote preload does not expose local credentials, workspace, or installer 
   assert.equal(api.localOnly, true)
   assert.equal('getAuthToken' in api, false)
   assert.equal('localWorkspace' in api, false)
+  assert.equal('cloudAgent' in api, false)
+  assert.equal('localOutcome' in api, false)
   assert.equal('agentInstaller' in api, false)
   assert.equal('customAgent' in api, false)
   assert.equal('localAttachments' in api, false)

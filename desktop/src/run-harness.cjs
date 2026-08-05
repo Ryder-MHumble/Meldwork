@@ -13,6 +13,7 @@ const {
   cleanText,
   lifecycleEventKey,
   normalizeContextStats,
+  normalizeOutcomeRefs,
   normalizeRawEvent,
   normalizeRunEvent,
   normalizeSourceMessageIds,
@@ -63,6 +64,14 @@ class RunHarness {
 
   timestamp() {
     return safeTimestamp(this.now(), Date.now())
+  }
+
+  addTargetKind(kind) {
+    const safeKind = cleanId(kind)
+    if (!safeKind) throw new Error('RUN_HARNESS_AGENT_REQUIRED')
+    if (this.targetKinds.includes(safeKind)) return false
+    this.targetKinds = Object.freeze([...this.targetKinds, safeKind])
+    return true
   }
 
   latest(kind, round) {
@@ -278,6 +287,7 @@ module.exports = {
   evidenceCapsuleText,
   nextSessionMeta,
   normalizeRawEvent,
+  normalizeOutcomeRefs,
   normalizeRunEvent,
   normalizeSessionMeta,
   normalizeTraceCapsule,

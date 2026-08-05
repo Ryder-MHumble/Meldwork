@@ -3,7 +3,11 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { getEventListeners } = require('node:events')
+const { createAgentConnectorManifest } = require('../src/agent-connector-manifest.cjs')
+const { AgentConnectorRegistry } = require('../src/agent-connector-registry.cjs')
+const { AgentConnectorRuntime } = require('../src/agent-connector-runtime.cjs')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
+const { createLegacyOutboundPayload } = require('../src/outbound-payload.cjs')
 const { RunLedger } = require('../src/run-ledger.cjs')
 const { deferred, fixture } = require('./local-workspace-test-helpers.cjs')
 test('Harness streams per-Agent events, persists a compact trace, and hands evidence to the next Agent', async (t) => {
@@ -93,6 +97,300 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
     && !Object.hasOwn(event, 'executable')
     && !Object.hasOwn(event, 'sessionRef')), true)
   assert.equal(events.every(event => Number.isInteger(event.seq) && event.runId), true)
+})
+
+test('external Connectors bypass the legacy runner and persist trusted provenance across restart', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const manifest = createAgentConnectorManifest({
+    connectorId: 'external.review-agent',
+    connectorVersion: '1.0.0',
+    kind: 'agent',
+    label: 'External Review Agent',
+    description: 'External structured review sample.',
+    transport: { type: 'http', protocol: 'event-stream' },
+    upstream: { id: 'review-service', minVersion: '3.0.0', maxVersion: '3.4.0' },
+    invocation: { recipeId: 'external.review-agent.run' },
+    domains: ['software-review'],
+    session: { supported: true, resume: true, cancel: true, checkpoint: true },
+    inputTypes: ['text'],
+    permissionModes: ['read-only'],
+    eventProtocolVersion: 1,
+    eventTypes: [
+      'Permission', 'SourceUsed', 'Artifact', 'Evidence', 'Usage',
+      'WaitingInput', 'Completed', 'Failed', 'Cancelled',
+    ],
+    usage: {
+      inputTokens: true,
+      outputTokens: true,
+      costMicros: true,
+      toolCalls: true,
+      outboundBytes: true,
+      elapsedMs: true,
+    },
+    outboundDestinations: ['https://review.example.com'],
+    credentials: {
+      mode: 'credential-ref',
+      slots: [{ slotId: 'account', type: 'oauth', required: true }],
+    },
+    license: 'Apache-2.0',
+  })
+  const registry = new AgentConnectorRegistry({
+    approvedRecipeIds: ['external.review-agent.run'],
+    approvedExternalManifestIds: [manifest.manifestId],
+  })
+  registry.registerExternal(manifest)
+  registry.registerInstance({
+    instanceId: 'custom-aaaaaaaaaaaaaaaa',
+    connectorId: manifest.connectorId,
+    connectorVersion: manifest.connectorVersion,
+    upstreamVersion: '3.2.0',
+    label: 'Review account A',
+    credentialRef: 'credential-ref:review-account-a',
+  })
+  const connectorRuntime = new AgentConnectorRuntime({
+    registry,
+    recipes: {
+      'external.review-agent.run': async (input) => {
+        assert.equal(input.credentialRefId, 'credential-ref:review-account-a')
+        await input.onOutboundPayload(createLegacyOutboundPayload({
+          prompt: input.prompt,
+          command: 'connector',
+          args: ['run'],
+          cwd: input.workdir,
+          stdin: input.prompt,
+          promptMode: 'stdin',
+        }))
+        input.emit({
+          eventId: 'source-1', cursor: 'cursor-1', sequence: 1,
+          type: 'SourceUsed', sourceId: 'source-1', sourceType: 'workspace-file',
+          contentHash: 'd'.repeat(64), citation: 'src/index.js:10',
+        })
+        input.emit({
+          eventId: 'usage-1', cursor: 'cursor-2', sequence: 2,
+          type: 'Usage', mode: 'cumulative',
+          usage: { inputTokens: 20, outputTokens: 8, toolCalls: 1 },
+        })
+        input.emit({
+          eventId: 'completed-1', cursor: 'cursor-3', sequence: 3,
+          type: 'Completed', outcome: 'completed', summary: 'Review complete.',
+        })
+        return { text: 'External Connector conclusion', sessionRef: 'connector-session' }
+      },
+    },
+  })
+  let legacyCalls = 0
+  options.detectAgents = async () => connectorRuntime.detectAgents()
+  options.connectorRuntime = connectorRuntime
+  options.runLedger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  options.runAgent = async () => {
+    legacyCalls += 1
+    throw new Error('LEGACY_RUNNER_MUST_NOT_RUN')
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Connector trace', agentKinds: ['custom-aaaaaaaaaaaaaaaa'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Review through the Connector',
+    targetKinds: ['custom-aaaaaaaaaaaaaaaa'],
+  })
+
+  assert.equal(legacyCalls, 0)
+  const message = workspace.snapshot().messages.find(item => item.role === 'agent')
+  assert.ok(message, JSON.stringify(workspace.snapshot().messages))
+  assert.equal(message.content, 'External Connector conclusion')
+  assert.equal(message.trace.context.connector.connectorVersion, '1.0.0')
+  assert.equal(message.trace.context.connector.upstreamVersion, '3.2.0')
+  assert.deepEqual(message.trace.context.connectorEventState.events.map(event => event.type), [
+    'SourceUsed', 'Usage', 'Completed',
+  ])
+  assert.equal(message.trace.events.some(event => event.title === 'connector_source_used'), true)
+  const storedContext = options.runLedger.get(message.trace.runId).agentRuns[0].context
+  assert.deepEqual(storedContext.connector, message.trace.context.connector)
+  assert.deepEqual(storedContext.connectorEventState, message.trace.context.connectorEventState)
+  assert.doesNotMatch(JSON.stringify(storedContext), /LEGACY_RUNNER_MUST_NOT_RUN/)
+
+  fs.writeFileSync(ledgerPath, '{corrupt snapshot', 'utf8')
+  const restarted = new RunLedger({ storagePath: ledgerPath, now: () => 2000 })
+  assert.equal(restarted.snapshotError instanceof Error, true)
+  assert.deepEqual(restarted.get(message.trace.runId).agentRuns[0].context, storedContext)
+})
+
+test('isolated invocations use only the approved prompt and retain workflow Outcome refs', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const exactPrompt = 'Review only the immutable approved context.'
+  let captureCalls = 0
+  let importCalls = 0
+  options.runLedger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  options.captureAgentOutputs = async () => { captureCalls += 1; return null }
+  options.importAgentOutputs = async () => { importCalls += 1; return [] }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    assert.equal(prompt, exactPrompt)
+    assert.equal(runOptions.sessionRef, '')
+    assert.equal(runOptions.sandbox, 'read-only')
+    assert.deepEqual(runOptions.attachments, [])
+    await runOptions.onOutboundPayload(createLegacyOutboundPayload({
+      prompt,
+      command: 'codex',
+      args: ['exec'],
+      cwd: workdir,
+      stdin: prompt,
+      promptMode: 'stdin',
+    }))
+    return { text: 'Isolated review conclusion', sessionRef: 'must-not-persist' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Isolated review', agentKinds: ['codex'], workdir: directory, allowWrite: true,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Ordinary conversation must stay excluded')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'manual', ['codex'], task.id)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['codex'], task.id, reservation,
+  )
+  controller.currentKind = 'codex'
+  workspace.packedPromptContext = () => { throw new Error('PACKED_CONTEXT_MUST_NOT_RUN') }
+  workspace.promptFor = () => { throw new Error('PROMPT_BUILDER_MUST_NOT_RUN') }
+  const workflowOutcomeRef = workspace.contentBlobStore.put('{"status":"accepted"}', {
+    mediaType: 'application/json',
+  })
+  const requestedOutcomeRefs = {
+    reviewerFindingIds: [`reviewer-finding-${'a'.repeat(64)}`],
+    adoptionIds: [`adoption-${'b'.repeat(64)}`],
+    workflowOutcomeRefs: [workflowOutcomeRef],
+  }
+
+  const result = await workspace.invokeAgent(
+    group,
+    'codex',
+    'manual',
+    controller.signal,
+    task.id,
+    {
+      taskId: task.id,
+      taskType: 'code_review',
+      sessionPolicy: 'isolated',
+      promptOverride: exactPrompt,
+      contextPackId: contextPack.contextPackId,
+      attachments: [{ path: '/private/attachment.png' }],
+      outcomeRefs: requestedOutcomeRefs,
+    },
+  )
+  workspace.finishRun(group.id, controller, 'completed')
+
+  assert.equal(calls.length, 1)
+  assert.equal(captureCalls, 0)
+  assert.equal(importCalls, 0)
+  assert.deepEqual(workspace.state.sessions, {})
+  assert.deepEqual(workspace.state.sessionMeta, {})
+  assert.deepEqual(
+    result.message.trace.context.outcomeRefs.reviewerFindingIds,
+    requestedOutcomeRefs.reviewerFindingIds,
+  )
+  assert.deepEqual(
+    result.message.trace.context.outcomeRefs.adoptionIds,
+    requestedOutcomeRefs.adoptionIds,
+  )
+  assert.deepEqual(
+    result.message.trace.context.outcomeRefs.workflowOutcomeRefs,
+    requestedOutcomeRefs.workflowOutcomeRefs,
+  )
+  assert.equal(result.message.trace.context.outcomeRefs.artifactIds.length, 1)
+  assert.equal(result.message.trace.context.outcomeRefs.evidenceIds.length, 1)
+  assert.doesNotMatch(JSON.stringify(result.message.trace), /Ordinary conversation|immutable approved/)
+  const storedContext = options.runLedger.get(result.message.trace.runId).agentRuns[0].context
+  assert.deepEqual(storedContext.outcomeRefs, result.message.trace.context.outcomeRefs)
+  fs.writeFileSync(ledgerPath, '{corrupt snapshot', 'utf8')
+  const restarted = new RunLedger({ storagePath: ledgerPath, now: () => 2000 })
+  assert.deepEqual(restarted.get(result.message.trace.runId).agentRuns[0].context, storedContext)
+})
+
+test('terminal conclusions and explicit outputs become durable observed Outcomes', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  const baseline = { version: 1, files: [] }
+  options.captureArtifactOutputs = async () => baseline
+  options.captureAgentOutcomeDescriptors = async (input) => {
+    assert.equal(input.baseline, baseline)
+    assert.equal(input.agentKind, 'codex')
+    return [{
+      type: 'diff',
+      name: 'change.patch',
+      mediaType: 'text/x-diff',
+      content: Buffer.from('diff --git a/a b/a\n'),
+      locationRef: { kind: 'workspace-relative', path: '.meldwork-output/change.patch' },
+    }]
+  }
+  options.runAgent = async () => ({
+    text: 'Implemented the requested change.',
+    sessionRef: 'codex-session',
+    outcome: 'completed',
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Outcome capture', agentKinds: ['codex'], workdir: directory, allowWrite: true,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'Implement the change', targetKinds: ['codex'],
+  })
+
+  const message = workspace.snapshot().messages.find(item => item.role === 'agent')
+  const outcomeRefs = message.trace.context.outcomeRefs
+  assert.equal(outcomeRefs.artifactIds.length, 2)
+  assert.equal(outcomeRefs.evidenceIds.length, 2)
+  const artifacts = outcomeRefs.artifactIds.map(id => workspace.outcomeStore.getArtifact(id))
+  assert.deepEqual(artifacts.map(artifact => artifact.type).sort(), ['diff', 'document'])
+  assert.equal(artifacts.every(artifact => (
+    artifact.producedBy.runId === message.trace.runId
+    && artifact.producedBy.agentRunId === message.trace.agentRunId
+    && artifact.producedBy.agentKind === 'codex'
+  )), true)
+  const evidence = outcomeRefs.evidenceIds.map(id => workspace.outcomeStore.getEvidence(id))
+  assert.equal(evidence.every(record => (
+    record.level === 'observed'
+    && record.recordedBy.kind === 'system'
+    && record.refs.some(ref => ref.type === 'blob')
+  )), true)
+  assert.doesNotMatch(
+    JSON.stringify(message.trace),
+    /diff --git|\.meldwork-output|Implemented the requested change/,
+  )
+
+  const storedRun = options.runLedger.get(message.trace.runId)
+  assert.deepEqual(storedRun.agentRuns[0].context.outcomeRefs, outcomeRefs)
+  const restarted = new RunLedger({ storagePath: ledgerPath, now: () => 2000 })
+  assert.deepEqual(restarted.get(message.trace.runId).agentRuns[0].context.outcomeRefs, outcomeRefs)
+  assert.deepEqual(workspace.recordAgentOutcomes({
+    groupId: group.id,
+    runId: 'another-run',
+    agentRunId: message.trace.agentRunId,
+    agentKind: 'codex',
+    round: 0,
+    conclusion: 'forged',
+  }), {})
 })
 
 test('terminal Agent traces hand compact partial evidence to the next Agent only', async (t) => {
@@ -197,9 +495,9 @@ test('Harness rotates an over-budget native session while retaining compressed c
   const previousAgent = workspace.addMessage(
     group.id, 'agent', 'Previous conclusion', 'codex', oldUser.id,
   )
-  const key = workspace.sessionKey(group.id, 'codex')
-  workspace.state.sessions[key] = 'old-session'
-  workspace.state.sessionMeta[key] = { turns: 18, estimatedChars: 48000 }
+  const legacyKey = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[legacyKey] = 'old-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 18, estimatedChars: 48000 }
   workspace.save()
 
   await workspace.sendMessage({
@@ -214,6 +512,7 @@ test('Harness rotates an over-budget native session while retaining compressed c
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue with a fresh context'
   ))
+  const key = workspace.sessionKey(group.id, 'codex', currentUser.id)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
@@ -223,7 +522,45 @@ test('Harness rotates an over-budget native session while retaining compressed c
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > calls[0].prompt.length, true)
 })
 
-test('Hermes rebuilds full context when an ACP session must switch to legacy for a skill', async (t) => {
+test('Session rotation restores the previous ref and provenance when saving fails', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return { text: 'Should not run', sessionRef: 'new-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Atomic rotation', agentKinds: ['codex'], workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Rotate atomically')
+  const key = workspace.sessionKey(group.id, 'codex', task.id)
+  workspace.state.sessions[key] = 'codex-before-rotation'
+  workspace.state.sessionMeta[key] = {
+    turns: 18,
+    estimatedChars: 48000,
+    sessionScope: 'task',
+    originTaskId: task.id,
+    inheritedTaskIds: [],
+    provenanceCompleteness: 'complete',
+  }
+  workspace.save()
+  const before = structuredClone(workspace.state)
+  workspace.save = () => { throw new Error('WORKSPACE_SAVE_FAILED') }
+
+  await assert.rejects(
+    workspace.invokeAgent(
+      group, 'codex', 'manual', new AbortController().signal, task.id, { taskId: task.id },
+    ),
+    { message: 'WORKSPACE_SAVE_FAILED' },
+  )
+
+  assert.deepEqual(workspace.state, before)
+  assert.equal(calls.length, 0)
+})
+
+test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays prompt-only', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -247,9 +584,9 @@ test('Hermes rebuilds full context when an ACP session must switch to legacy for
   const previousAgent = workspace.addMessage(
     group.id, 'agent', 'Previous Hermes conclusion', 'hermes', oldUser.id,
   )
-  const key = workspace.sessionKey(group.id, 'hermes')
-  workspace.state.sessions[key] = 'hermes-acp-session'
-  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'acp' }
+  const legacyKey = workspace.sessionKey(group.id, 'hermes')
+  workspace.state.sessions[legacyKey] = 'hermes-acp-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 2, estimatedChars: 1200, transport: 'acp' }
   workspace.save()
 
   await workspace.sendMessage({
@@ -263,15 +600,17 @@ test('Hermes rebuilds full context when an ACP session must switch to legacy for
 
   assert.equal(calls[0].runOptions.sessionRef, '')
   assert.equal(calls[0].runOptions.sessionTransport, '')
-  assert.deepEqual(calls[0].runOptions.skills, ['research'])
+  assert.equal(calls[0].runOptions.skills, undefined)
+  assert.match(calls[0].prompt, /global\/research: Research/)
   assert.match(calls[0].prompt, /Previous Hermes conclusion/)
-  assert.equal(workspace.state.sessions[key], 'hermes-legacy-session')
-  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
-  assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const snapshot = workspace.snapshot()
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue with the selected skill'
   ))
+  const key = workspace.sessionKey(group.id, 'hermes', currentUser.id)
+  assert.equal(workspace.state.sessions[key], 'hermes-legacy-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
@@ -302,9 +641,9 @@ test('Hermes migrates a stored ACP session to legacy with rebuilt context before
   const previousAgent = workspace.addMessage(
     group.id, 'agent', 'Previous Hermes conclusion', 'hermes', oldUser.id,
   )
-  const key = workspace.sessionKey(group.id, 'hermes')
-  workspace.state.sessions[key] = 'hermes-stale-acp-session'
-  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'acp' }
+  const legacyKey = workspace.sessionKey(group.id, 'hermes')
+  workspace.state.sessions[legacyKey] = 'hermes-stale-acp-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 2, estimatedChars: 1200, transport: 'acp' }
   workspace.save()
 
   await workspace.sendMessage({
@@ -318,13 +657,14 @@ test('Hermes migrates a stored ACP session to legacy with rebuilt context before
   assert.equal(calls[0].runOptions.hermesAcpAvailable, false)
   assert.match(calls[0].prompt, /Previous Hermes conclusion/)
   assert.match(calls[0].prompt, /Continue after recovering the session/)
-  assert.equal(workspace.state.sessions[key], 'hermes-recovered-session')
-  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
-  assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const snapshot = workspace.snapshot()
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue after recovering the session'
   ))
+  const key = workspace.sessionKey(group.id, 'hermes', currentUser.id)
+  assert.equal(workspace.state.sessions[key], 'hermes-recovered-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
@@ -347,10 +687,10 @@ test('Harness rotates an over-budget OpenClaw managed session to a new key', asy
   const previousAgent = workspace.addMessage(
     group.id, 'agent', 'Prior OpenClaw conclusion', 'openclaw', oldUser.id,
   )
-  const key = workspace.sessionKey(group.id, 'openclaw')
+  const legacyKey = workspace.sessionKey(group.id, 'openclaw')
   const previousSessionRef = workspace.openClawSessionRef(group)
-  workspace.state.sessions[key] = previousSessionRef
-  workspace.state.sessionMeta[key] = { turns: 18, estimatedChars: 48000 }
+  workspace.state.sessions[legacyKey] = previousSessionRef
+  workspace.state.sessionMeta[legacyKey] = { turns: 18, estimatedChars: 48000 }
   workspace.save()
 
   await workspace.sendMessage({
@@ -359,13 +699,18 @@ test('Harness rotates an over-budget OpenClaw managed session to a new key', asy
     targetKinds: ['openclaw'],
   })
 
-  assert.notEqual(calls[0].runOptions.sessionRef, previousSessionRef)
-  assert.match(calls[0].runOptions.sessionRef, new RegExp(`^${previousSessionRef}-[a-f0-9]{12}$`))
-  assert.match(calls[0].prompt, /Prior OpenClaw conclusion/)
   const snapshot = workspace.snapshot()
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue with bounded context'
   ))
+  const key = workspace.sessionKey(group.id, 'openclaw', currentUser.id)
+  const currentTaskSessionRef = workspace.openClawSessionRef(group, '', currentUser.id)
+  assert.notEqual(calls[0].runOptions.sessionRef, previousSessionRef)
+  assert.match(
+    calls[0].runOptions.sessionRef,
+    new RegExp(`^${currentTaskSessionRef}-[a-f0-9]{12}$`),
+  )
+  assert.match(calls[0].prompt, /Prior OpenClaw conclusion/)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
@@ -382,12 +727,16 @@ test('legacy sessions resume once and initialize bounded session metadata', asyn
   const group = workspace.createGroup({
     name: 'Legacy session metadata', agentKinds: ['codex'], workdir: directory,
   })
-  const key = workspace.sessionKey(group.id, 'codex')
-  workspace.state.sessions[key] = 'legacy-codex-session'
+  const legacyKey = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[legacyKey] = 'legacy-codex-session'
   workspace.save()
 
   await workspace.sendMessage({ groupId: group.id, text: 'Resume safely', targetKinds: ['codex'] })
 
+  const task = workspace.snapshot().messages.find(message => (
+    message.role === 'user' && message.content === 'Resume safely'
+  ))
+  const key = workspace.sessionKey(group.id, 'codex', task.id)
   assert.equal(calls[0].runOptions.sessionRef, 'legacy-codex-session')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > 0, true)
@@ -411,9 +760,9 @@ test('Harness rebuilds compressed context once when a reused legacy session is i
   const previousAgent = workspace.addMessage(
     group.id, 'agent', 'Previous Codex conclusion', 'codex', oldUser.id,
   )
-  const key = workspace.sessionKey(group.id, 'codex')
-  workspace.state.sessions[key] = 'codex-stale-session'
-  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'legacy' }
+  const legacyKey = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[legacyKey] = 'codex-stale-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 2, estimatedChars: 1200, transport: 'legacy' }
   workspace.save()
 
   await workspace.sendMessage({
@@ -425,19 +774,64 @@ test('Harness rebuilds compressed context once when a reused legacy session is i
   assert.doesNotMatch(calls[0].prompt, /Previous Codex conclusion/)
   assert.match(calls[1].prompt, /Previous Codex conclusion/)
   assert.match(calls[1].prompt, /Continue after session recovery/)
+  const snapshot = workspace.snapshot()
+  const task = snapshot.messages.find(message => (
+    message.role === 'user' && message.content === 'Continue after session recovery'
+  ))
+  const key = workspace.sessionKey(group.id, 'codex', task.id)
   assert.equal(workspace.state.sessions[key], 'codex-fresh-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
-  const trace = workspace.snapshot().messages.at(-1).trace
+  const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.status, 'completed')
   assert.equal(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [
     oldUser.id,
-    workspace.snapshot().messages.find(message => (
+    snapshot.messages.find(message => (
       message.role === 'user' && message.content === 'Continue after session recovery'
     )).id,
     previousAgent.id,
   ])
+})
+
+test('invalid Session recovery restores the reused ref when saving the rebuild fails', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    throw new Error('LOCAL_AGENT_SESSION_INVALID')
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Atomic invalid Session rebuild', agentKinds: ['codex'], workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Recover atomically')
+  const key = workspace.sessionKey(group.id, 'codex', task.id)
+  workspace.state.sessions[key] = 'codex-before-rebuild'
+  workspace.state.sessionMeta[key] = {
+    turns: 2,
+    estimatedChars: 1200,
+    transport: 'legacy',
+    sessionScope: 'task',
+    originTaskId: task.id,
+    inheritedTaskIds: [],
+    provenanceCompleteness: 'complete',
+  }
+  workspace.save()
+  const before = structuredClone(workspace.state)
+  workspace.save = () => { throw new Error('WORKSPACE_SAVE_FAILED') }
+
+  await assert.rejects(
+    workspace.invokeAgent(
+      group, 'codex', 'manual', new AbortController().signal, task.id, { taskId: task.id },
+    ),
+    { message: 'WORKSPACE_SAVE_FAILED' },
+  )
+
+  assert.deepEqual(workspace.state, before)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].runOptions.sessionRef, 'codex-before-rebuild')
 })
 
 test('Harness retries a reused ACP session once with a fresh session', async (t) => {
@@ -457,9 +851,9 @@ test('Harness retries a reused ACP session once with a fresh session', async (t)
   const group = workspace.createGroup({
     name: 'ACP session recovery', agentKinds: ['kimi'], workdir: directory,
   })
-  const key = workspace.sessionKey(group.id, 'kimi')
-  workspace.state.sessions[key] = 'kimi-stale-session'
-  workspace.state.sessionMeta[key] = { turns: 3, estimatedChars: 1800, transport: 'acp' }
+  const legacyKey = workspace.sessionKey(group.id, 'kimi')
+  workspace.state.sessions[legacyKey] = 'kimi-stale-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 3, estimatedChars: 1800, transport: 'acp' }
   workspace.save()
 
   await workspace.sendMessage({
@@ -468,6 +862,10 @@ test('Harness retries a reused ACP session once with a fresh session', async (t)
 
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['kimi-stale-session', ''])
   assert.deepEqual(calls.map(call => call.runOptions.sessionTransport), ['acp', ''])
+  const task = workspace.snapshot().messages.find(message => (
+    message.role === 'user' && message.content === 'Recover the ACP session'
+  ))
+  const key = workspace.sessionKey(group.id, 'kimi', task.id)
   assert.equal(workspace.state.sessions[key], 'kimi-fresh-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
@@ -486,9 +884,9 @@ test('Harness stops after one fresh-session retry when the Session remains inval
   const group = workspace.createGroup({
     name: 'Bounded session recovery', agentKinds: ['codex'], workdir: directory,
   })
-  const key = workspace.sessionKey(group.id, 'codex')
-  workspace.state.sessions[key] = 'codex-stale-session'
-  workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 1200, transport: 'legacy' }
+  const legacyKey = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[legacyKey] = 'codex-stale-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 2, estimatedChars: 1200, transport: 'legacy' }
   workspace.save()
 
   await workspace.sendMessage({
@@ -497,6 +895,10 @@ test('Harness stops after one fresh-session retry when the Session remains inval
 
   assert.equal(calls.length, 2)
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['codex-stale-session', ''])
+  const task = workspace.snapshot().messages.find(message => (
+    message.role === 'user' && message.content === 'Do not loop recovery'
+  ))
+  const key = workspace.sessionKey(group.id, 'codex', task.id)
   assert.equal(Object.hasOwn(workspace.state.sessions, key), false)
   assert.equal(Object.hasOwn(workspace.state.sessionMeta, key), false)
   const failure = workspace.snapshot().messages.find(message => (
@@ -798,7 +1200,9 @@ test('Harness emits a soft waiting warning without cancelling a long-running Age
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runSilenceWarningMs = 5
   const gate = deferred()
+  const started = deferred()
   options.runAgent = async () => {
+    started.resolve()
     await gate.promise
     return { text: 'Eventually finished', sessionRef: 'codex-session' }
   }
@@ -811,6 +1215,7 @@ test('Harness emits a soft waiting warning without cancelling a long-running Age
   })
 
   const send = workspace.sendMessage({ groupId: group.id, text: 'Wait', targetKinds: ['codex'] })
+  await started.promise
   await new Promise(resolve => setTimeout(resolve, 25))
   const warning = events.find(event => event.type === 'warning')
   assert.equal(warning?.status, 'waiting')
@@ -874,7 +1279,15 @@ test('Run Ledger checkpoints bounded trace state and is cleared with its convers
     finish: (runId, status, reason) => finishes.push({ runId, status, reason }),
     deleteGroup: groupId => deletedGroups.push(groupId),
   }
-  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+  options.runAgent = async (_agent, prompt, _workdir, runOptions) => {
+    await runOptions.onOutboundPayload(createLegacyOutboundPayload({
+      prompt,
+      command: '/private/bin/mock-agent',
+      args: ['--prompt', prompt],
+      cwd: '/private/workspace',
+      stdin: prompt,
+      promptMode: 'stdin',
+    }))
     runOptions.onEvent({
       id: 'plan-1', type: 'plan', status: 'running', summary: 'Inspect the current implementation.',
     })
@@ -901,6 +1314,9 @@ test('Run Ledger checkpoints bounded trace state and is cleared with its convers
   assert.equal(terminal.agentRuns[0].status, 'completed')
   assert.equal(terminal.agentRuns[0].events.some(event => event.type === 'plan'), true)
   assert.equal(terminal.agentRuns[0].context.includedCount, 1)
+  assert.equal(terminal.budget.startedAt <= terminal.startedAt, true)
+  assert.equal(terminal.budget.used.outboundBytes > 0, true)
+  assert.equal(terminal.budget.source.outboundBytes, 'reported')
   assert.deepEqual(finishes, [{ runId: terminal.runId, status: 'completed', reason: '' }])
 
   workspace.deleteGroup(group.id)
@@ -908,7 +1324,7 @@ test('Run Ledger checkpoints bounded trace state and is cleared with its convers
 })
 
 test('durable Task acceptance fails closed at every pre-execution Ledger checkpoint', async (t) => {
-  for (const failureAttempt of [1, 2, 3]) {
+  for (const failureAttempt of [1, 2]) {
     await t.test(`checkpoint ${failureAttempt}`, async (subtest) => {
       const { directory, calls, options } = fixture()
       subtest.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -941,6 +1357,7 @@ test('durable Task acceptance fails closed at every pre-execution Ledger checkpo
       assert.equal(calls.length, 0)
       assert.equal(workspace.snapshot().messages.length, 0)
       assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+      assert.deepEqual(workspace.snapshot().runs, [])
       assert.equal(workspace.getGroup(group.id).updatedAt, previousUpdatedAt)
     })
   }
@@ -959,6 +1376,8 @@ test('the durable Task link exists before the Agent process starts', async (t) =
     const durable = ledger.get(active.runId)
     assert.equal(durable.status, 'running')
     assert.equal(durable.taskId, userTask.id)
+    assert.match(durable.contextPackId, /^context-pack-[a-f0-9]{64}$/)
+    assert.equal(workspace.contextPackStore.get(durable.contextPackId).taskId, userTask.id)
     assert.equal(durable.threadRootId, userTask.id)
     assert.equal(durable.permissionMode, 'read-only')
     assert.equal(runOptions.sandbox, 'read-only')
@@ -1107,8 +1526,21 @@ test('Run Ledger finalization retries the full terminal snapshot before finish',
   const group = workspace.createGroup({
     name: 'Retry terminal checkpoint', agentKinds: ['codex'], workdir: directory,
   })
-  const controller = workspace.createRunController('manual', ['codex'], 'root-1')
-  controller.groupId = group.id
+  const task = workspace.addMessage(group.id, 'user', 'Retry this terminal checkpoint')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'manual', ['codex'], task.id)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['codex'], task.id, reservation,
+  )
   controller.startedAt = 1000
   let agentRuns = [{
     agentRunId: `${controller.runId}:0:codex:agent-1`,
@@ -1166,7 +1598,11 @@ test('a Unicode group identifier preserves native sessions and every runtime pat
   workspace.on('run-finished', result => finished.push(result))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Unicode group', agentKinds: ['codex'], workdir: directory,
+    name: 'Unicode group',
+    agentKinds: ['codex'],
+    conversationType: 'direct',
+    directAgentKind: 'codex',
+    workdir: directory,
   })
 
   await workspace.sendMessage({
@@ -1378,9 +1814,19 @@ test('restart reconciles after recovery message persistence fails and then dedup
     name: 'Retry interrupted recovery', agentKinds: ['codex'], workdir: directory,
   })
   const root = initial.addMessage(group.id, 'user', 'Recover this once')
+  const contextPack = initial.createContextPack({
+    group,
+    taskId: root.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: root,
+  })
   const seeded = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
   seeded.checkpoint({
     runId: 'run-crashed',
+    taskId: root.id,
+    contextPackId: contextPack.contextPackId,
+    contextPackState: 'captured',
     groupId: group.id,
     threadRootId: root.id,
     targetKinds: ['codex'],
@@ -1437,6 +1883,13 @@ test('restart reconciliation enriches an existing terminal message with Ledger o
     name: 'Existing terminal recovery', agentKinds: ['codex'], workdir: directory,
   })
   const root = initial.addMessage(group.id, 'user', 'Preserve the streamed conclusion')
+  const contextPack = initial.createContextPack({
+    group,
+    taskId: root.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: root,
+  })
   initial.addMessage(
     group.id,
     'system',
@@ -1459,6 +1912,9 @@ test('restart reconciliation enriches an existing terminal message with Ledger o
   const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
   ledger.checkpoint({
     runId: 'run-existing-terminal',
+    taskId: root.id,
+    contextPackId: contextPack.contextPackId,
+    contextPackState: 'captured',
     groupId: group.id,
     threadRootId: root.id,
     targetKinds: ['codex'],
@@ -1614,9 +2070,19 @@ test('restart reconciles every terminal Agent checkpoint with its real status an
     name: 'Terminal checkpoint recovery', agentKinds: ['codex'], workdir: directory,
   })
   const root = initial.addMessage(group.id, 'user', 'Restore terminal attempts')
+  const contextPack = initial.createContextPack({
+    group,
+    taskId: root.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: root,
+  })
   const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
   ledger.checkpoint({
     runId: 'run-terminal',
+    taskId: root.id,
+    contextPackId: contextPack.contextPackId,
+    contextPackState: 'captured',
     groupId: group.id,
     threadRootId: root.id,
     targetKinds: ['codex'],
@@ -1907,7 +2373,14 @@ test('session references stay opaque and OpenClaw group scopes do not collide', 
 
   await workspace.sendMessage({ groupId: group.id, text: 'Keep the session private' })
 
+  const task = workspace.snapshot().messages.find(message => (
+    message.role === 'user' && message.content === 'Keep the session private'
+  ))
   assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'codex')], undefined)
+  assert.equal(
+    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', task.id)],
+    undefined,
+  )
   assert.doesNotMatch(fs.readFileSync(options.storagePath, 'utf8'), /Users\/private|token=secret/)
   assert.equal(workspace.persistSessionRef(
     workspace.sessionKey(group.id, 'codex'),
@@ -1924,5 +2397,12 @@ test('session references stay opaque and OpenClaw group scopes do not collide', 
   workspace.state.sessions[legacyKey] = 'agent:main:desktop-roundrelay-groupabcdefg-openclaw'
   workspace.state.sessionMeta[legacyKey] = { turns: 4, estimatedChars: 1200 }
   assert.equal(workspace.sessionRef(legacyGroup, 'openclaw'), first)
-  assert.equal(workspace.state.sessionMeta[legacyKey], undefined)
+  assert.deepEqual(workspace.state.sessionMeta[legacyKey], {
+    turns: 4,
+    estimatedChars: 1200,
+    sessionScope: 'unknown-legacy',
+    originTaskId: '',
+    inheritedTaskIds: [],
+    provenanceCompleteness: 'unknown-legacy',
+  })
 })

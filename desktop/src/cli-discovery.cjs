@@ -189,6 +189,12 @@ function searchPath(options = {}) {
 function agentCommands(kind, options = {}) {
   const { platform, home, pathApi } = runtimeOptions(options)
   const commands = [...AGENT_PROFILES[kind].commands]
+  if (kind === 'codex' && platform === 'darwin') {
+    commands.push('/Applications/ChatGPT.app/Contents/Resources/codex')
+    commands.push(pathApi.join(
+      home, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex',
+    ))
+  }
   if (kind === 'workbuddy' && platform === 'darwin') {
     commands.push('/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy')
     commands.push(pathApi.join(
@@ -219,20 +225,25 @@ function executableCandidates(command, options = {}) {
   return searchDirectories(options).flatMap(directory => names.map(name => pathApi.join(directory, name)))
 }
 
-async function resolveExecutable(kind, options = {}) {
-  if (!ALLOWED_KINDS.includes(kind)) return null
+async function* resolvedExecutableCandidates(kind, options = {}) {
+  if (!ALLOWED_KINDS.includes(kind)) return
   const runtime = runtimeOptions(options)
   const { platform, env, pathApi, accessFn, execFileFn } = runtime
   const commands = agentCommands(kind, options)
+  const seen = new Set()
+  const candidateKey = candidate => platform === 'win32' ? candidate.toLowerCase() : candidate
   const lookupEnv = {
     ...systemChildEnvironment(env, platform),
     PATH: searchPath(options),
   }
   for (const command of commands) {
     for (const candidate of executableCandidates(command, options)) {
+      const key = candidateKey(candidate)
+      if (seen.has(key)) continue
+      seen.add(key)
       try {
         await accessFn(candidate, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK)
-        return candidate
+        yield candidate
       } catch { /* keep searching */ }
     }
   }
@@ -250,13 +261,20 @@ async function resolveExecutable(kind, options = {}) {
       for (const line of String(stdout || '').split(/\r?\n/)) {
         const candidate = line.trim().replace(/^"|"$/g, '')
         if (!candidate || !pathApi.isAbsolute(candidate)) continue
+        const key = candidateKey(candidate)
+        if (seen.has(key)) continue
+        seen.add(key)
         try {
           await accessFn(candidate, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK)
-          return candidate
+          yield candidate
         } catch { /* keep checking lookup results */ }
       }
     } catch { /* keep searching */ }
   }
+}
+
+async function resolveExecutable(kind, options = {}) {
+  for await (const executable of resolvedExecutableCandidates(kind, options)) return executable
   return null
 }
 
@@ -349,74 +367,93 @@ async function probeAgentCapabilities(kind, executable, options = {}) {
   }
 }
 
+async function inspectAgentCandidate(kind, executable, options, childEnv) {
+  const runtime = runtimeOptions(options)
+  const { execFileFn } = runtime
+  const prepareCommandFn = options.prepareCommandFn || prepareCommand
+  let version = ''
+  let versionCommandSucceeded = false
+  try {
+    const versionCommand = prepareCommandFn(executable, ['--version'], options)
+    const result = await execFileFn(versionCommand.command, versionCommand.args, {
+      timeout: 8000,
+      windowsHide: true,
+      env: childEnv,
+    })
+    versionCommandSucceeded = true
+    const lines = [result.stdout, result.stderr]
+      .flatMap(output => String(output || '').split(/\r?\n/))
+      .map(line => line.trim())
+      .filter(Boolean)
+    version = lines.find(line => extractAgentVersion(line)) || ''
+  } catch { /* a broken shim is not a usable CLI */ }
+  if (!versionCommandSucceeded) return null
+  const versionCompatibility = assessAgentVersion(kind, version)
+  const capabilityCompatibility = versionCompatibility.compatibilityState === 'compatible'
+    ? await (options.probeAgentCapabilitiesFn || probeAgentCapabilities)(
+        kind,
+        executable,
+        { ...options, childEnv },
+      )
+    : {
+        compatibilityState: 'incompatible',
+        incompatibilityReason: versionCompatibility.incompatibilityReason,
+        incompatibilityProbe: '',
+      }
+  let acpAvailable
+  if (kind === 'hermes' && versionCompatibility.compatibilityState === 'compatible') {
+    try {
+      const checkCommand = prepareCommandFn(executable, ['acp', '--check'], options)
+      await execFileFn(checkCommand.command, checkCommand.args, {
+        timeout: 8000,
+        windowsHide: true,
+        env: childEnv,
+      })
+      acpAvailable = true
+    } catch {
+      acpAvailable = false
+    }
+  } else if (kind === 'hermes') {
+    acpAvailable = false
+  }
+  return {
+    kind,
+    name: `${AGENT_PROFILES[kind].label} CLI`,
+    executable,
+    version,
+    ...versionCompatibility,
+    ...capabilityCompatibility,
+    ...(kind === 'hermes' ? { acpAvailable } : {}),
+  }
+}
+
 async function detectAgents(options = {}) {
   const runtime = runtimeOptions(options)
-  const { env, execFileFn, platform } = runtime
-  const resolveExecutableFn = options.resolveExecutableFn
-    || (kind => resolveExecutable(kind, options))
-  const prepareCommandFn = options.prepareCommandFn || prepareCommand
+  const { env, platform } = runtime
   const childEnv = {
     ...systemChildEnvironment(env, platform),
     PATH: searchPath(options),
   }
   const found = []
   for (const kind of ALLOWED_KINDS) {
-    const executable = await resolveExecutableFn(kind)
-    if (!executable) continue
-    let version = ''
-    let versionCommandSucceeded = false
-    try {
-      const versionCommand = prepareCommandFn(executable, ['--version'], options)
-      const result = await execFileFn(versionCommand.command, versionCommand.args, {
-        timeout: 8000,
-        windowsHide: true,
-        env: childEnv,
-      })
-      versionCommandSucceeded = true
-      const lines = [result.stdout, result.stderr]
-        .flatMap(output => String(output || '').split(/\r?\n/))
-        .map(line => line.trim())
-        .filter(Boolean)
-      version = lines.find(line => extractAgentVersion(line)) || ''
-    } catch { /* a broken shim is not a usable CLI */ }
-    if (!versionCommandSucceeded) continue
-    const versionCompatibility = assessAgentVersion(kind, version)
-    const capabilityCompatibility = versionCompatibility.compatibilityState === 'compatible'
-      ? await (options.probeAgentCapabilitiesFn || probeAgentCapabilities)(
-          kind,
-          executable,
-          { ...options, childEnv },
-        )
-      : {
-          compatibilityState: 'incompatible',
-          incompatibilityReason: versionCompatibility.incompatibilityReason,
-          incompatibilityProbe: '',
-        }
-    let acpAvailable
-    if (kind === 'hermes' && versionCompatibility.compatibilityState === 'compatible') {
-      try {
-        const checkCommand = prepareCommandFn(executable, ['acp', '--check'], options)
-        await execFileFn(checkCommand.command, checkCommand.args, {
-          timeout: 8000,
-          windowsHide: true,
-          env: childEnv,
-        })
-        acpAvailable = true
-      } catch {
-        acpAvailable = false
+    const resolved = typeof options.resolveExecutableFn === 'function'
+      ? await options.resolveExecutableFn(kind)
+      : null
+    const candidates = typeof options.resolveExecutableFn === 'function'
+      ? (resolved ? [resolved] : [])
+      : resolvedExecutableCandidates(kind, options)
+    let firstIncompatible = null
+    let selected = null
+    for await (const executable of candidates) {
+      const candidate = await inspectAgentCandidate(kind, executable, options, childEnv)
+      if (!candidate) continue
+      if (candidate.compatibilityState === 'compatible') {
+        selected = candidate
+        break
       }
-    } else if (kind === 'hermes') {
-      acpAvailable = false
+      firstIncompatible ||= candidate
     }
-    found.push({
-      kind,
-      name: `${AGENT_PROFILES[kind].label} CLI`,
-      executable,
-      version,
-      ...versionCompatibility,
-      ...capabilityCompatibility,
-      ...(kind === 'hermes' ? { acpAvailable } : {}),
-    })
+    if (selected || firstIncompatible) found.push(selected || firstIncompatible)
   }
   return found
 }

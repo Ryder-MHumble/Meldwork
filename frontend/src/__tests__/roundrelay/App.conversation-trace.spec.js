@@ -722,6 +722,112 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps direct Human Gates inline and sends exact approve or reject decisions', async () => {
+    const allowGateId = `human-gate-${'a'.repeat(64)}`
+    const rejectGateId = `human-gate-${'b'.repeat(64)}`
+    const gate = (gateId, type = 'permission') => ({
+      gateId,
+      type,
+      runId: 'run-direct-gated',
+      agentRunId: 'agent-direct-gated',
+      agentKind: 'codex',
+      summary: type === 'budget'
+        ? 'Cost usage is unavailable for this Agent attempt.'
+        : 'Agent requests permission to continue a tool action.',
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+      ],
+      status: 'pending',
+      createdAt: '2026-08-04T08:00:00.000Z',
+    })
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-gated',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex approval',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-08-04T08:00:00.000Z',
+        updatedAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.messages.push({
+        id: 'direct-gated-root',
+        groupId: 'direct-gated',
+        role: 'user',
+        content: 'Ask before continuing',
+        createdAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.runningGroupIds = ['direct-gated']
+      state.runs = [{
+        runId: 'run-direct-gated',
+        groupId: 'direct-gated',
+        threadRootId: 'direct-gated-root',
+        targetKinds: ['codex'],
+        currentKind: 'codex',
+        waitingGateIds: [allowGateId, rejectGateId],
+        budget: {
+          limits: {
+            inputTokens: 4000, outputTokens: null, costMicros: null,
+            toolCalls: 20, outboundBytes: null, elapsedMs: null,
+          },
+          used: {
+            inputTokens: 750, outputTokens: 120, costMicros: 0,
+            toolCalls: 3, outboundBytes: 2048, elapsedMs: 2500,
+          },
+          source: {
+            inputTokens: 'estimated', outputTokens: 'reported', costMicros: 'unknown',
+            toolCalls: 'estimated', outboundBytes: 'reported', elapsedMs: 'reported',
+          },
+          enforcement: {
+            inputTokens: 'hard', outputTokens: 'soft', costMicros: 'hard',
+            toolCalls: 'hard', outboundBytes: 'soft', elapsedMs: 'soft',
+          },
+          startedAt: 1000,
+        },
+        agentRuns: [{
+          agentRunId: 'agent-direct-gated',
+          kind: 'codex',
+          round: 1,
+          status: 'waiting',
+          output: '',
+          events: [],
+        }],
+      }]
+      state.humanGates = [gate(allowGateId), gate(rejectGateId, 'budget')]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
+    expect(wrapper.findAll('.direct-human-gate-list .human-gate-card')).toHaveLength(2)
+    expect(wrapper.get('.direct-human-gate-list').text()).toContain('This Agent needs permission')
+    expect(wrapper.get('.direct-human-gate-list').text()).toContain('cannot report cost usage')
+    expect(wrapper.get('.direct-budget-details').text()).toContain('Input tokens')
+    expect(wrapper.get('.direct-budget-details').text()).toContain('750 / 4,000')
+
+    const gateCards = wrapper.findAll('.direct-human-gate-list .human-gate-card')
+    await gateCards[0].findAll('button').find(button => button.text() === 'Allow once').trigger('click')
+    await gateCards[1].findAll('button').find(button => button.text() === 'Reject').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.decideHumanGate).toHaveBeenNthCalledWith(
+      1,
+      allowGateId,
+      { optionId: 'allow-once' },
+    )
+    expect(bridge.localWorkspace.decideHumanGate).toHaveBeenNthCalledWith(
+      2,
+      rejectGateId,
+      { optionId: 'reject-once' },
+    )
+    wrapper.unmount()
+  })
+
   it('keeps a live direct trace open by default and collapses its durable replacement', async () => {
     const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
       nextState.groups.push({

@@ -85,4 +85,40 @@ describe('desktop workspace lifecycle', () => {
     expect(fixture.dependencies.afterInitialLoad).not.toHaveBeenCalled()
     fixture.wrapper.unmount()
   })
+
+  it('does not render an event without provenance when the initial workspace read fails', async () => {
+    let emitRunEvent = null
+    let rejectInitialRead = null
+    const initialRead = new Promise((_, reject) => {
+      rejectInitialRead = reject
+    })
+    const fixture = mountLifecycle({
+      workspace: {
+        get: vi.fn(() => initialRead),
+        onRunEvent: vi.fn((callback) => {
+          emitRunEvent = callback
+          return vi.fn()
+        }),
+      },
+    })
+
+    emitRunEvent({
+      runId: 'run-before-snapshot',
+      agentRunId: 'agent-before-snapshot',
+      groupId: 'group-1',
+      agentKind: 'codex',
+      round: 1,
+      seq: 1,
+      type: 'answer_delta',
+      delta: 'Untrusted live output',
+    })
+    expect(fixture.dependencies.snapshot.value).toEqual(snapshot())
+
+    rejectInitialRead(new Error('initial read failed'))
+    await flushPromises()
+
+    expect(fixture.dependencies.snapshot.value).toEqual(snapshot())
+    expect(fixture.lifecycle.booting.value).toBe(false)
+    fixture.wrapper.unmount()
+  })
 })

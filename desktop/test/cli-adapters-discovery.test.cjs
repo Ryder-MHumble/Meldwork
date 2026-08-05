@@ -221,6 +221,40 @@ test('macOS WorkBuddy detection also checks the per-user Applications folder', a
   assert.equal(executable, expected)
 })
 
+test('macOS Codex detection keeps the ChatGPT application-bundled CLI path', async () => {
+  const expected = '/Applications/ChatGPT.app/Contents/Resources/codex'
+  const executable = await resolveExecutable('codex', {
+    platform: 'darwin',
+    home: '/Users/ryder',
+    env: { PATH: '' },
+    accessFn: async (candidate) => {
+      if (candidate !== expected) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    },
+    execFileFn: async () => {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    },
+  })
+
+  assert.equal(executable, expected)
+})
+
+test('macOS Codex detection also checks the per-user ChatGPT application', async () => {
+  const expected = '/Users/ryder/Applications/ChatGPT.app/Contents/Resources/codex'
+  const executable = await resolveExecutable('codex', {
+    platform: 'darwin',
+    home: '/Users/ryder',
+    env: { PATH: '' },
+    accessFn: async (candidate) => {
+      if (candidate !== expected) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    },
+    execFileFn: async () => {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    },
+  })
+
+  assert.equal(executable, expected)
+})
+
 test('WorkBuddy detection does not mistake the generic cbc solver for WorkBuddy', async () => {
   const probed = []
   const lookups = []
@@ -387,7 +421,7 @@ test('Hermes detection records ACP availability when the capability check succee
       if (args[0] === 'chat') {
         return {
           stdout: [
-            '--quiet', '--query', '--provider', '--model', '--skills', '--resume',
+            '--quiet', '--query', '--provider', '--model', '--resume',
             '--image', '--yolo',
           ].join(' '),
           stderr: '',
@@ -425,7 +459,7 @@ test('Hermes detection records unavailable ACP when the capability check fails',
       if (args[0] === 'chat') {
         return {
           stdout: [
-            '--quiet', '--query', '--provider', '--model', '--skills', '--resume',
+            '--quiet', '--query', '--provider', '--model', '--resume',
             '--image', '--yolo',
           ].join(' '),
           stderr: '',
@@ -504,6 +538,133 @@ test('Agent detection keeps unsupported versions installed but incompatible', as
     incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
     incompatibilityProbe: '',
   }])
+})
+
+test('Agent detection accepts the validated ChatGPT-bundled Codex prerelease', async () => {
+  let calls = 0
+  const found = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'codex' ? '/tmp/codex' : null,
+    execFileFn: async (_command, args) => {
+      calls += 1
+      if (args[0] === '--version') {
+        return { stdout: 'codex-cli 0.146.0-alpha.9.2\n', stderr: '' }
+      }
+      if (args.includes('resume')) {
+        return { stdout: '--json --skip-git-repo-check', stderr: '' }
+      }
+      return {
+        stdout: '--json --sandbox --skip-git-repo-check --image read-only workspace-write',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(calls, 3)
+  assert.equal(found[0].resolvedVersion, '0.146.0-alpha.9.2')
+  assert.equal(found[0].compatibilityState, 'compatible')
+  assert.equal(found[0].incompatibilityReason, '')
+})
+
+test('Agent detection skips an unsupported Codex before the compatible ChatGPT bundle', async () => {
+  const unsupported = '/tools/codex'
+  const bundled = '/Applications/ChatGPT.app/Contents/Resources/codex'
+  const found = await detectAgents({
+    platform: 'darwin',
+    home: '/Users/ryder',
+    env: { PATH: '/tools' },
+    accessFn: async (candidate) => {
+      if (![unsupported, bundled].includes(candidate)) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      }
+    },
+    execFileFn: async (command, args) => {
+      if (args[0] === '--version') {
+        return {
+          stdout: command === unsupported
+            ? 'codex-cli 0.147.0\n'
+            : 'codex-cli 0.146.0-alpha.9.2\n',
+          stderr: '',
+        }
+      }
+      if (args.includes('resume')) {
+        return { stdout: '--json --skip-git-repo-check', stderr: '' }
+      }
+      return {
+        stdout: '--json --sandbox --skip-git-repo-check --image read-only workspace-write',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(found.length, 1)
+  assert.equal(found[0].executable, bundled)
+  assert.equal(found[0].resolvedVersion, '0.146.0-alpha.9.2')
+  assert.equal(found[0].compatibilityState, 'compatible')
+})
+
+test('Agent detection skips a capability-incompatible Codex before the compatible bundle', async () => {
+  const incomplete = '/tools/codex'
+  const bundled = '/Applications/ChatGPT.app/Contents/Resources/codex'
+  const found = await detectAgents({
+    platform: 'darwin',
+    home: '/Users/ryder',
+    env: { PATH: '/tools' },
+    accessFn: async (candidate) => {
+      if (![incomplete, bundled].includes(candidate)) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      }
+    },
+    execFileFn: async (command, args) => {
+      if (args[0] === '--version') {
+        return { stdout: 'codex-cli 0.146.0\n', stderr: '' }
+      }
+      if (command === incomplete) return { stdout: '--json', stderr: '' }
+      if (args.includes('resume')) {
+        return { stdout: '--json --skip-git-repo-check', stderr: '' }
+      }
+      return {
+        stdout: '--json --sandbox --skip-git-repo-check --image read-only workspace-write',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(found.length, 1)
+  assert.equal(found[0].executable, bundled)
+  assert.equal(found[0].resolvedVersion, '0.146.0')
+  assert.equal(found[0].compatibilityState, 'compatible')
+})
+
+test('Agent detection retains the first incompatible Codex when no candidate is compatible', async () => {
+  const first = '/tools/codex'
+  const bundled = '/Applications/ChatGPT.app/Contents/Resources/codex'
+  const found = await detectAgents({
+    platform: 'darwin',
+    home: '/Users/ryder',
+    env: { PATH: '/tools' },
+    accessFn: async (candidate) => {
+      if (![first, bundled].includes(candidate)) {
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      }
+    },
+    execFileFn: async (command, args) => {
+      if (args[0] !== '--version') throw new Error('unexpected capability probe')
+      return {
+        stdout: command === first
+          ? 'codex-cli 0.147.0\n'
+          : 'codex-cli 0.146.0-alpha.9.3\n',
+        stderr: '',
+      }
+    },
+  })
+
+  assert.equal(found.length, 1)
+  assert.equal(found[0].executable, first)
+  assert.equal(found[0].resolvedVersion, '0.147.0')
+  assert.equal(found[0].compatibilityState, 'incompatible')
+  assert.equal(found[0].incompatibilityReason, 'LOCAL_AGENT_VERSION_UNSUPPORTED')
 })
 
 test('Agent detection records the required capability or protocol that is unavailable', async () => {
@@ -665,7 +826,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal, skills: ['legacy-test'], hermesMessageWatermarkFn: () => 0 },
+    { signal: controller.signal, hermesAcpAvailable: false, hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pid = Number(await readWhenReady(readyFile))
 
@@ -698,7 +859,7 @@ setInterval(() => {}, 1000)
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     readyFile,
     directory,
-    { signal: controller.signal, skills: ['legacy-test'], hermesMessageWatermarkFn: () => 0 },
+    { signal: controller.signal, hermesAcpAvailable: false, hermesMessageWatermarkFn: () => 0 },
   ).then(value => ({ value }), error => ({ error }))
   const pids = await readJsonWhenReady(readyFile)
 

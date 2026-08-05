@@ -1,5 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -38,6 +39,85 @@ const {
 } = require('./cli-adapters-test-helpers.cjs')
 
 const OUTPUT_FIXTURE_DIRECTORY = path.join(__dirname, 'fixtures', 'agent-output')
+const OUTBOUND_PAYLOAD_KEYS = [
+  'prompt',
+  'promptMode',
+  'serialization',
+  'transport',
+  'wirePayloadBytes',
+  'wirePayloadHash',
+]
+
+function wireFingerprint(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value), 'utf8')
+  return {
+    wirePayloadHash: crypto.createHash('sha256').update(bytes).digest('hex'),
+    wirePayloadBytes: bytes.length,
+  }
+}
+
+function permissionRequestExecutable(directory) {
+  return executable(directory, 'kimi-acp-permission.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+let promptRequest
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'permission-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    promptRequest = message
+    send({
+      jsonrpc: '2.0', id: 77, method: 'session/request_permission',
+      params: {
+        _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+        sessionId: 'permission-session',
+        toolCall: {
+          _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+          toolCallId: 'tool-1',
+          title: 'write /Users/private/workspace token=' + process.env.ROUNDRELAY_TEST_SECRET
+            + ' api_key=sk-testpermissionsecret123456789',
+          kind: 'edit',
+          status: 'pending',
+          content: [{ type: 'content', content: { type: 'text', text: 'private content' } }],
+          locations: [{ path: '/Users/private/workspace' }],
+          rawInput: { command: 'touch /Users/private/workspace/private.txt' },
+          rawOutput: 'private output',
+        },
+        options: [
+          {
+            _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+            optionId: 'allow-once', name: 'Allow once', kind: 'allow_once',
+          },
+          {
+            _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+            optionId: 'reject-once', name: 'Reject once', kind: 'reject_once',
+          },
+        ],
+      },
+    })
+  } else if (message.id === 77) {
+    const outcome = message.result.outcome
+    const text = outcome.outcome + '|' + (outcome.optionId || '')
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId: 'permission-session',
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+      },
+    })
+    send({ jsonrpc: '2.0', id: promptRequest.id, result: { stopReason: 'end_turn' } })
+  } else if (message.method === 'session/cancel') {
+    process.exit(0)
+  }
+})
+`)
+}
 
 function signedOpenClawRuntime(storageRoot, workdir, sessionRef) {
   return managedOpenClawOptions({
@@ -120,6 +200,7 @@ test('Kimi ACP plan mode creates and resumes sessions while reporting incomplete
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-'))
   const workdir = fs.realpathSync(directory)
   const lifecycleFile = path.join(directory, 'lifecycle.log')
+  const promptDeliveryFile = path.join(directory, 'prompt-delivery.log')
   const cli = executable(directory, 'kimi-acp.cjs', `
 const fs = require('node:fs')
 if (process.argv.includes('--prompt')) {
@@ -157,6 +238,10 @@ input.on('line', (line) => {
     send({ jsonrpc: '2.0', id: message.id, result: {} })
   } else if (message.method === 'session/prompt') {
     if (message.params.sessionId !== sessionId) process.exit(4)
+    fs.appendFileSync(
+      process.env.ROUNDRELAY_TEST_PROMPT_DELIVERY_FILE,
+      line + '\\n',
+    )
     promptRequest = message
     send({
       jsonrpc: '2.0', id: 99, method: 'session/request_permission',
@@ -221,9 +306,13 @@ input.on('line', (line) => {
 })
 `)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  const env = { ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile }
+  const env = {
+    ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile,
+    ROUNDRELAY_TEST_PROMPT_DELIVERY_FILE: promptDeliveryFile,
+  }
   const createdSessionRefs = []
   const createdEvents = []
+  const createdOutboundPayloads = []
 
   const created = await runAgent(
     { kind: 'kimi', executable: cli, name: 'Kimi' },
@@ -232,6 +321,10 @@ input.on('line', (line) => {
     {
       env,
       onSessionRef: (sessionRef, metadata) => createdSessionRefs.push({ sessionRef, metadata }),
+      onOutboundPayload: payload => {
+        assert.equal(fs.existsSync(promptDeliveryFile), false)
+        createdOutboundPayloads.push(payload)
+      },
       onEvent: event => createdEvents.push(event),
     },
   )
@@ -241,6 +334,32 @@ input.on('line', (line) => {
   assert.deepEqual(createdSessionRefs, [{
     sessionRef: 'kimi-acp-session', metadata: { transport: 'acp' },
   }])
+  const deliveredPromptLine = fs.readFileSync(promptDeliveryFile, 'utf8').trim().split('\n')[0]
+  assert.equal(deliveredPromptLine, JSON.stringify({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'session/prompt',
+    params: {
+      sessionId: 'kimi-acp-session',
+      prompt: [{ type: 'text', text: 'first prompt' }],
+    },
+  }))
+  const deliveredPromptFrame = JSON.parse(deliveredPromptLine)
+  assert.deepEqual(deliveredPromptFrame.params, {
+    sessionId: 'kimi-acp-session',
+    prompt: [{ type: 'text', text: 'first prompt' }],
+  })
+  assert.equal(createdOutboundPayloads.length, 1)
+  assert.deepEqual(Object.keys(createdOutboundPayloads[0]).sort(), OUTBOUND_PAYLOAD_KEYS)
+  assert.equal(Object.isFrozen(createdOutboundPayloads[0]), true)
+  assert.deepEqual(createdOutboundPayloads[0], {
+    prompt: 'first prompt',
+    transport: 'acp',
+    serialization: 'acp-session-prompt-v1',
+    promptMode: 'acp',
+    ...wireFingerprint(Buffer.from(`${deliveredPromptLine}\n`, 'utf8')),
+  })
+  assert.equal(JSON.stringify(createdOutboundPayloads).includes('kimi-acp-session'), false)
   assert.equal(createdEvents.some(event => event.type === 'answer_delta'), true)
   assert.equal(
     createdEvents.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
@@ -309,6 +428,126 @@ input.on('line', (line) => {
     fs.readFileSync(lifecycleFile, 'utf8').trim().split('\n'),
     ['stdin-close', 'stdin-close', 'stdin-close', 'stdin-close'],
   )
+})
+
+test('ACP outbound callback failure prevents session prompt delivery', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-acp-outbound-blocked-'))
+  const deliveryFile = path.join(directory, 'delivered.txt')
+  const cli = executable(directory, 'kimi-acp-outbound-blocked.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'blocked-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_DELIVERY_FILE, 'delivered')
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+  }
+})
+`)
+  const callbackError = new Error('ACP outbound payload capture failed')
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'kimi', executable: cli, name: 'Kimi' },
+      'must not be delivered',
+      directory,
+      {
+        env: { ROUNDRELAY_TEST_DELIVERY_FILE: deliveryFile },
+        onOutboundPayload: async () => { throw callbackError },
+      },
+    ),
+    error => error === callbackError,
+  )
+  assert.equal(fs.existsSync(deliveryFile), false)
+})
+
+test('ACP permission callback uses sanitized requests and fail-closed decisions', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-acp-permission-'))
+  const cli = permissionRequestExecutable(directory)
+  const secret = 'permission-provider-secret'
+  const agent = { kind: 'kimi', executable: cli, name: 'Kimi' }
+  const run = onPermissionRequest => runAgent(agent, 'request permission', directory, {
+    env: { ROUNDRELAY_TEST_SECRET: secret },
+    onPermissionRequest,
+  })
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await t.test('approves a requested option', async () => {
+    let received
+    const result = await run(async (request, context) => {
+      received = request
+      assert.equal(context.signal, undefined)
+      return { status: 'approved', optionId: 'allow-once' }
+    })
+    assert.equal(result.text, 'selected|allow-once')
+    assert.deepEqual(Object.keys(received).sort(), ['options', 'sessionId', 'toolCall'])
+    assert.deepEqual(received.options, [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ])
+    assert.equal(received.sessionId, 'permission-session')
+    assert.equal(received.toolCall.toolCallId, 'tool-1')
+    assert.equal(received.toolCall.kind, 'edit')
+    assert.equal(received.toolCall.status, 'pending')
+    assert.match(received.toolCall.title, /\[path\]/)
+    assert.equal(Object.isFrozen(received), true)
+    assert.equal(Object.isFrozen(received.toolCall), true)
+    assert.equal(Object.isFrozen(received.options), true)
+    assert.equal(received.options.every(Object.isFrozen), true)
+    assert.doesNotMatch(
+      JSON.stringify(received),
+      /providerSecret|permission-provider-secret|sk-testpermissionsecret|rawInput|rawOutput|locations|content|_meta|Users/i,
+    )
+  })
+
+  await t.test('selects an explicit rejection', async () => {
+    const result = await run(async () => ({ status: 'rejected', optionId: 'reject-once' }))
+    assert.equal(result.text, 'selected|reject-once')
+  })
+
+  await t.test('callback errors and forged options fail closed', async () => {
+    const missing = await run(undefined)
+    assert.equal(missing.text, 'selected|reject-once')
+
+    const forged = await run(async () => ({ status: 'approved', optionId: 'forged-option' }))
+    assert.equal(forged.text, 'selected|reject-once')
+
+    const extra = await run(async () => ({
+      status: 'approved', optionId: 'allow-once', reason: 'unvalidated',
+    }))
+    assert.equal(extra.text, 'selected|reject-once')
+
+    const failed = await run(async () => { throw new Error('permission store unavailable') })
+    assert.equal(failed.text, 'selected|reject-once')
+  })
+
+  await t.test('AbortSignal interrupts a pending decision', async () => {
+    const controller = new AbortController()
+    let requestedResolve
+    const requested = new Promise(resolve => { requestedResolve = resolve })
+    const outcome = runAgent(agent, 'wait for permission', directory, {
+      signal: controller.signal,
+      env: { ROUNDRELAY_TEST_SECRET: secret },
+      onPermissionRequest: async (_request, context) => {
+        assert.equal(context.signal, controller.signal)
+        requestedResolve()
+        return new Promise(() => {})
+      },
+    }).then(value => ({ value }), error => ({ error }))
+    await requested
+    controller.abort()
+    const result = await within(outcome)
+    assert.equal(result.error?.message, 'LOCAL_AGENT_EXECUTION_STOPPED')
+  })
 })
 
 test('Kimi ACP preserves new sessions across failures and keeps diagnostics private', async (t) => {

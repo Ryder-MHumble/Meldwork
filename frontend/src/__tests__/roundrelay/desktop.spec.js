@@ -55,6 +55,57 @@ describe('run event normalization', () => {
     timestamp: '2026-07-31T12:00:00.000Z',
     ...overrides,
   })
+  const budgetSnapshot = overrides => ({
+    limits: {
+      inputTokens: 4000,
+      outputTokens: null,
+      costMicros: null,
+      toolCalls: 20,
+      outboundBytes: null,
+      elapsedMs: null,
+    },
+    used: {
+      inputTokens: 750,
+      outputTokens: 120,
+      costMicros: 0,
+      toolCalls: 3,
+      outboundBytes: 2048,
+      elapsedMs: 2500,
+    },
+    source: {
+      inputTokens: 'estimated',
+      outputTokens: 'reported',
+      costMicros: 'unknown',
+      toolCalls: 'estimated',
+      outboundBytes: 'reported',
+      elapsedMs: 'reported',
+    },
+    enforcement: {
+      inputTokens: 'hard',
+      outputTokens: 'soft',
+      costMicros: 'hard',
+      toolCalls: 'hard',
+      outboundBytes: 'soft',
+      elapsedMs: 'soft',
+    },
+    startedAt: 1000,
+    ...overrides,
+  })
+  const humanGate = (gateId, overrides = {}) => ({
+    gateId,
+    type: 'permission',
+    runId: 'run-gated',
+    agentRunId: 'agent-gated',
+    agentKind: 'codex',
+    summary: 'Agent requests permission to continue a tool action.',
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+    ],
+    status: 'pending',
+    createdAt: '2026-08-04T08:00:00.000Z',
+    ...overrides,
+  })
 
   it('keeps only bounded public fields and rejects unsupported events', () => {
     const normalized = normalizeRunEvent(event({
@@ -126,6 +177,19 @@ describe('run event normalization', () => {
   })
 
   it('normalizes bounded run agents and durable traces from snapshots', () => {
+    const contextPackId = `context-pack-${'a'.repeat(64)}`
+    const deliveryRecordIds = Array.from(
+      { length: 10 },
+      (_, index) => `delivery-record-${String(index).padStart(64, '0')}`,
+    )
+    const sessionProvenance = {
+      scope: 'conversation',
+      reuse: true,
+      origin: 'resumed',
+      originTaskId: 'task-origin',
+      inheritedTaskIds: ['task-earlier'],
+      completeness: 'complete',
+    }
     const run = {
       runId: 'run-1',
       groupId: 'group-1',
@@ -182,7 +246,16 @@ describe('run event normalization', () => {
       ],
       sourceMessageIds: ['root-1'],
       truncated: true,
-      context: { includedCount: 3, omittedCount: 7, charCount: 1200, sessionRotated: true, ignored: 'secret' },
+      context: {
+        includedCount: 3,
+        omittedCount: 7,
+        charCount: 1200,
+        sessionRotated: true,
+        contextPackId,
+        deliveryRecordIds: [deliveryRecordIds[0], 'invalid-record', ...deliveryRecordIds, deliveryRecordIds[9]],
+        sessionProvenance,
+        ignored: 'secret',
+      },
     }, { groupId: 'group-1', threadRootId: 'root-1', agentKind: 'codex' })
 
     expect(trace).toMatchObject({
@@ -192,7 +265,15 @@ describe('run event normalization', () => {
       status: 'completed',
       summary: 'Final trace summary',
       truncated: true,
-      context: { includedCount: 3, omittedCount: 7, charCount: 1200, sessionRotated: true },
+      context: {
+        includedCount: 3,
+        omittedCount: 7,
+        charCount: 1200,
+        sessionRotated: true,
+        contextPackId,
+        deliveryRecordIds: deliveryRecordIds.slice(-8),
+        sessionProvenance,
+      },
     })
     expect(trace.events).toEqual([
       {
@@ -226,6 +307,121 @@ describe('run event normalization', () => {
     expect(snapshot.messages[0].trace.round).toBe(2)
   })
 
+  it('drops malformed Context Pack and Session provenance fields', () => {
+    const trace = normalizeMessageTrace({
+      runId: 'run-1',
+      agentRunId: 'agent-run-1',
+      context: {
+        contextPackId: `context-pack-${'A'.repeat(64)}`,
+        deliveryRecordIds: ['delivery-record-not-a-hash'],
+        sessionProvenance: {
+          scope: 'task',
+          reuse: true,
+          origin: 'created',
+          originTaskId: 'task-1',
+          inheritedTaskIds: [],
+          completeness: 'complete',
+          privateSessionRef: 'must-not-cross-the-bridge',
+        },
+      },
+    })
+
+    expect(trace.context).toEqual({ includedCount: 0, omittedCount: 0, charCount: 0 })
+  })
+
+  it('preserves an explicit legacy Context Pack provenance gap', () => {
+    const trace = normalizeMessageTrace({
+      runId: 'run-legacy-context',
+      agentRunId: 'agent-run-legacy-context',
+      context: { contextPackState: 'legacy-unavailable' },
+    })
+
+    expect(trace.context).toEqual({
+      includedCount: 0,
+      omittedCount: 0,
+      charCount: 0,
+      contextPackState: 'legacy-unavailable',
+    })
+  })
+
+  it('retains only exact budget snapshots and linked pending Human Gates', () => {
+    const gateId = `human-gate-${'a'.repeat(64)}`
+    const mismatchedGateId = `human-gate-${'b'.repeat(64)}`
+    const extraFieldGateId = `human-gate-${'c'.repeat(64)}`
+    const budget = budgetSnapshot()
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-gated'],
+      runs: [{
+        runId: 'run-gated',
+        groupId: 'group-gated',
+        targetKinds: ['codex'],
+        currentKind: 'codex',
+        waitingGateIds: [gateId, mismatchedGateId, extraFieldGateId, gateId],
+        budget,
+        agentRuns: [{
+          agentRunId: 'agent-gated', kind: 'codex', round: 1, status: 'waiting', events: [],
+        }],
+      }],
+      humanGates: [
+        humanGate(gateId, {
+          type: 'decision',
+          summary: 'Role review requires a human decision.',
+          options: [
+            { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
+            { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
+            { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+          ],
+        }),
+        humanGate(mismatchedGateId, { agentRunId: 'agent-other' }),
+        { ...humanGate(extraFieldGateId), requestHash: 'must-not-cross-the-bridge' },
+      ],
+    })
+
+    expect(snapshot.runs[0].budget).toEqual(budget)
+    expect(snapshot.runs[0].waitingGateIds).toEqual([gateId])
+    expect(snapshot.humanGates).toEqual([humanGate(gateId, {
+      type: 'decision',
+      summary: 'Role review requires a human decision.',
+      options: [
+        { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
+        { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
+        { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+      ],
+    })])
+  })
+
+  it('drops budget snapshots with extra or missing fields', () => {
+    const valid = budgetSnapshot()
+    const malformed = [
+      { ...valid, privateCost: 42 },
+      { ...valid, limits: { ...valid.limits, privateLimit: 1 } },
+      { ...valid, limits: { inputTokens: 4000 } },
+      { ...valid, used: { ...valid.used, inputTokens: -1 } },
+      { ...valid, source: { ...valid.source, costMicros: 'guessed' } },
+      { ...valid, enforcement: { ...valid.enforcement, toolCalls: 'warn' } },
+    ]
+
+    for (const budget of malformed) {
+      const snapshot = normalizeSnapshot({
+        agents: [],
+        groups: [],
+        messages: [],
+        runningGroupIds: ['group-budget'],
+        runs: [{
+          runId: 'run-budget',
+          groupId: 'group-budget',
+          targetKinds: ['codex'],
+          budget,
+          agentRuns: [],
+        }],
+      })
+      expect(snapshot.runs[0]).not.toHaveProperty('budget')
+    }
+  })
+
   it('merges answer deltas by run, Agent run, and sequence without duplicates', () => {
     const base = normalizeSnapshot({
       agents: [],
@@ -250,6 +446,20 @@ describe('run event normalization', () => {
     expect(second.runs[0].agentRuns[0].output).toBe('First answer')
     expect(second.runs[0].agentRuns[0].events.map(item => item.seq)).toEqual([10, 11])
     expect(mergeRunEvent(second, event({ seq: 12, type: 'unknown' }))).toBe(second)
+  })
+
+  it('does not synthesize a Run from an event without a durable snapshot record', () => {
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: [],
+      runs: [],
+    })
+
+    expect(mergeRunEvent(snapshot, event({ seq: 13 }))).toBe(snapshot)
+    expect(snapshot.runs).toEqual([])
+    expect(snapshot.runningGroupIds).toEqual([])
   })
 
   it('upserts a tool lifecycle by public tool id', () => {

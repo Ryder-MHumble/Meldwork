@@ -1,4 +1,5 @@
 const path = require('node:path')
+const { normalizeContentBlobRef } = require('./content-blob-store.cjs')
 const { normalizeTraceCapsule } = require('./run-harness.cjs')
 const {
   CUSTOM_AGENT_KIND,
@@ -29,6 +30,8 @@ const ATTACHMENT_MIME_TYPES = new Set([
   'video/mp4', 'video/quicktime', 'video/webm',
 ])
 const ATTACHMENT_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/
+const SKILL_SNAPSHOT_ID = /^skill-snapshot-[a-f0-9]{64}$/
+const SHA256 = /^[a-f0-9]{64}$/
 const KNOWLEDGE_BASE_KINDS = new Set(['feishu', 'dingtalk', 'obsidian'])
 
 function emptyState() {
@@ -91,7 +94,19 @@ function normalizeSkillHint(input) {
   const slug = cleanInline(input.slug, 100)
   const name = cleanInline(input.name, 100)
   if (!isSupportedAgentKind(targetKind) || !namespace || !slug || !name) return null
-  return { targetKind, namespace, slug, name }
+  const hint = { targetKind, namespace, slug, name }
+  const snapshotFields = ['snapshotId', 'manifestHash', 'snapshotRef']
+  const hasSnapshot = snapshotFields.some(field => Object.hasOwn(input, field))
+  if (!hasSnapshot) return hint
+  if (!snapshotFields.every(field => Object.hasOwn(input, field))) return null
+  const snapshotId = String(input.snapshotId || '')
+  const manifestHash = String(input.manifestHash || '')
+  if (!SKILL_SNAPSHOT_ID.test(snapshotId) || !SHA256.test(manifestHash)
+      || snapshotId !== `skill-snapshot-${manifestHash}`) return null
+  let snapshotRef
+  try { snapshotRef = normalizeContentBlobRef(input.snapshotRef) } catch { return null }
+  if (snapshotRef.mediaType !== 'application/json') return null
+  return { ...hint, snapshotId, manifestHash, snapshotRef }
 }
 
 function normalizeKnowledgeBaseHint(input) {
@@ -121,8 +136,16 @@ function normalizeTargetKinds(input) {
 function skillHintsPrompt(hints) {
   if (!hints.length) return ''
   return [
-    'The user explicitly selected these local skills for this Agent. Load and follow them when relevant:',
-    ...hints.map(skill => `- ${skill.namespace}/${skill.slug}: ${skill.name}`),
+    'The user explicitly selected these immutable Skill snapshots for this Agent. Load and follow only the recorded snapshot when relevant; do not reload the live installed Skill:',
+    ...hints.map((skill) => {
+      const entryPath = typeof skill.entryPath === 'string' && path.isAbsolute(skill.entryPath)
+        && !/[\u0000-\u001f\u007f]/.test(skill.entryPath)
+        ? path.normalize(skill.entryPath)
+        : ''
+      return entryPath
+        ? `- ${skill.namespace}/${skill.slug}: ${skill.name}; entry ${entryPath}`
+        : `- ${skill.namespace}/${skill.slug}: ${skill.name}; snapshot ${skill.snapshotId || 'unavailable'}`
+    }),
   ].join('\n')
 }
 

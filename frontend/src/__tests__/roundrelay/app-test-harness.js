@@ -16,6 +16,7 @@ function baseSnapshot() {
     messages: [],
     runningGroupIds: [],
     runs: [],
+    humanGates: [],
   }
 }
 
@@ -137,6 +138,19 @@ export function createBridge() {
       return snapshot()
     }),
     stop: vi.fn(async () => true),
+    controlAgent: vi.fn(async () => true),
+    decideHumanGate: vi.fn(async (gateId, decision) => {
+      const gate = state.humanGates.find(candidate => candidate.gateId === gateId)
+      const option = gate?.options?.find(candidate => candidate.optionId === decision.optionId)
+      const status = ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+        ? 'approved'
+        : 'rejected'
+      return {
+        gateId,
+        status,
+        decision: { status, optionId: decision.optionId },
+      }
+    }),
     pickDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
     defaultDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
     onChanged: vi.fn((callback) => {

@@ -22,7 +22,9 @@ function fixture(t) {
 function runRecord(runId, groupId, status = 'running', agentRuns = []) {
   return {
     runId,
-    taskId: `${groupId}-task`,
+    taskId: `${runId}-task`,
+    contextPackId: `context-pack-${'a'.repeat(64)}`,
+    contextPackState: 'captured',
     groupId,
     threadRootId: `${groupId}-root`,
     mode: 'manual',
@@ -32,6 +34,276 @@ function runRecord(runId, groupId, status = 'running', agentRuns = []) {
     agentRuns,
   }
 }
+
+function budgetSnapshot(overrides = {}) {
+  const dimensions = [
+    'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
+  ]
+  return {
+    limits: Object.fromEntries(dimensions.map(dimension => [dimension, null])),
+    used: Object.fromEntries(dimensions.map(dimension => [dimension, 0])),
+    source: Object.fromEntries(dimensions.map(dimension => [dimension, 'unknown'])),
+    enforcement: Object.fromEntries(dimensions.map(dimension => [dimension, 'soft'])),
+    startedAt: 1000,
+    ...overrides,
+  }
+}
+
+function attemptHistory() {
+  return [{
+    sequence: 1,
+    agentKind: 'hermes',
+    phase: 'initial',
+    attempt: 1,
+    failureCategory: 'authentication',
+    policyAction: 'retry',
+    backoffMs: 250,
+    recoveryAgentKind: '',
+    finalOutcome: 'failed',
+    timestamp: 1000,
+  }, {
+    sequence: 2,
+    agentKind: 'hermes',
+    phase: 'recovery_agent',
+    attempt: 1,
+    failureCategory: null,
+    policyAction: 'verify',
+    backoffMs: 250,
+    recoveryAgentKind: 'codex',
+    finalOutcome: 'succeeded',
+    timestamp: 1100,
+  }]
+}
+
+test('persists sanitized attempt history through journal recovery and restart', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1200 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-attempt-history', 'group-attempt-history'),
+    attemptHistory: attemptHistory(),
+  })
+
+  assert.deepEqual(saved.attemptHistory, attemptHistory())
+  const serialized = fs.readFileSync(storagePath, 'utf8')
+  assert.doesNotMatch(serialized, /error|command|credential|Users|private-token/i)
+
+  fs.writeFileSync(storagePath, '{corrupt snapshot', 'utf8')
+  const restored = new RunLedger({ storagePath, now: () => 1300 })
+  assert.deepEqual(restored.get(saved.runId).attemptHistory, attemptHistory())
+  assert.equal(restored.snapshotError instanceof Error, true)
+})
+
+test('rejects malformed durable attempt history without changing the Run', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-attempt-invalid', 'group-attempt-invalid'),
+    attemptHistory: attemptHistory(),
+  })
+
+  for (const value of [
+    [{ ...attemptHistory()[0], phase: 'raw_retry' }],
+    [{ ...attemptHistory()[0], failureCategory: 'HTTP 401 private-token' }],
+    [attemptHistory()[1], attemptHistory()[0]],
+  ]) {
+    assert.throws(
+      () => ledger.checkpoint({ runId: saved.runId, attemptHistory: value }),
+      { message: 'RUN_LEDGER_RECORD_INVALID' },
+    )
+    assert.deepEqual(ledger.get(saved.runId), saved)
+  }
+
+  const sanitized = ledger.checkpoint({
+    runId: saved.runId,
+    attemptHistory: [{
+      ...attemptHistory()[0],
+      command: 'cat /Users/private/config',
+      error: 'Authorization: Bearer private-token',
+    }],
+  })
+  assert.equal('command' in sanitized.attemptHistory[0], false)
+  assert.equal('error' in sanitized.attemptHistory[0], false)
+})
+
+test('persists strict budget snapshots through the journal and restart', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const budget = budgetSnapshot({
+    limits: { ...budgetSnapshot().limits, inputTokens: 4000 },
+    used: { ...budgetSnapshot().used, inputTokens: 750, toolCalls: 2 },
+    source: { ...budgetSnapshot().source, inputTokens: 'estimated', toolCalls: 'reported' },
+    enforcement: { ...budgetSnapshot().enforcement, inputTokens: 'hard' },
+  })
+
+  const saved = ledger.checkpoint({
+    ...runRecord('run-budget', 'group-budget'),
+    budget,
+  })
+  assert.deepEqual(saved.budget, budget)
+
+  const updatedBudget = {
+    ...budget,
+    used: { ...budget.used, inputTokens: 1000, elapsedMs: 250 },
+    source: { ...budget.source, elapsedMs: 'reported' },
+  }
+  ledger.checkpoint({ runId: saved.runId, status: 'waiting', budget: updatedBudget })
+
+  const restored = new RunLedger({ storagePath, now: () => 2000 })
+  assert.deepEqual(restored.get(saved.runId).budget, updatedBudget)
+})
+
+test('rejects malformed budget snapshots without changing the durable Run', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-budget-invalid', 'group-budget-invalid'),
+    budget: budgetSnapshot(),
+  })
+
+  for (const budget of [
+    { ...budgetSnapshot(), secret: 'nope' },
+    { ...budgetSnapshot(), used: { ...budgetSnapshot().used, inputTokens: -1 } },
+    { ...budgetSnapshot(), source: { ...budgetSnapshot().source, costMicros: 'guessed' } },
+    { ...budgetSnapshot(), enforcement: { ...budgetSnapshot().enforcement, toolCalls: 'warn' } },
+    { ...budgetSnapshot(), limits: { inputTokens: null } },
+  ]) {
+    assert.throws(
+      () => ledger.checkpoint({ runId: saved.runId, budget }),
+      { message: 'RUN_LEDGER_RECORD_INVALID' },
+    )
+    assert.deepEqual(ledger.get(saved.runId), saved)
+  }
+})
+
+test('rejects new Runs without a captured Context Pack', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+
+  assert.throws(
+    () => ledger.checkpoint({
+      ...runRecord('run-no-context', 'group-no-context'),
+      contextPackId: '',
+      contextPackState: 'legacy-unavailable',
+    }),
+    { message: 'RUN_LEDGER_RECORD_INVALID' },
+  )
+  assert.deepEqual(ledger.list(), [])
+})
+
+test('keeps captured Task and Context Pack bindings immutable across checkpoints', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint(runRecord('run-bound', 'group-bound'))
+
+  for (const patch of [
+    { taskId: 'different-task' },
+    { contextPackId: `context-pack-${'b'.repeat(64)}` },
+    { contextPackState: 'legacy-unavailable' },
+  ]) {
+    assert.throws(
+      () => ledger.checkpoint({ runId: saved.runId, ...patch }),
+      { message: 'RUN_LEDGER_RECORD_INVALID' },
+    )
+    assert.deepEqual(ledger.get(saved.runId), saved)
+  }
+
+  const updated = ledger.checkpoint({ runId: saved.runId, status: 'waiting' })
+  assert.equal(updated.taskId, saved.taskId)
+  assert.equal(updated.contextPackId, saved.contextPackId)
+  assert.equal(updated.contextPackState, 'captured')
+})
+
+test('restart reconciliation downgrades missing Context Packs without losing delivery provenance', (t) => {
+  const { storagePath } = fixture(t)
+  const baseContextPackId = `context-pack-${'a'.repeat(64)}`
+  const attemptContextPackId = `context-pack-${'b'.repeat(64)}`
+  const deliveryRecordId = `delivery-record-${'c'.repeat(64)}`
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-missing-pack', 'group-missing-pack', 'running', [{
+      agentRunId: 'agent-missing-pack',
+      kind: 'codex',
+      status: 'running',
+      context: {
+        contextPackId: attemptContextPackId,
+        deliveryRecordIds: [deliveryRecordId],
+      },
+    }]),
+    contextPackId: baseContextPackId,
+  })
+
+  const [reconciled] = ledger.reconcileContextPacks(() => {
+    throw new Error('CONTEXT_PACK_NOT_FOUND')
+  })
+
+  assert.equal(reconciled.contextPackId, '')
+  assert.equal(reconciled.contextPackState, 'legacy-unavailable')
+  assert.equal(reconciled.agentRuns[0].context.contextPackId, undefined)
+  assert.equal(reconciled.agentRuns[0].context.contextPackState, 'legacy-unavailable')
+  assert.deepEqual(reconciled.agentRuns[0].context.deliveryRecordIds, [deliveryRecordId])
+  assert.equal(saved.contextPackState, 'captured')
+  const restarted = new RunLedger({ storagePath, now: () => 2000 })
+  assert.equal(restarted.get(saved.runId).contextPackState, 'legacy-unavailable')
+})
+
+test('restart reconciliation isolates a missing attempt Pack from a valid Run Pack', (t) => {
+  const { storagePath } = fixture(t)
+  const baseContextPackId = `context-pack-${'a'.repeat(64)}`
+  const attemptContextPackId = `context-pack-${'b'.repeat(64)}`
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-missing-attempt', 'group-missing-attempt', 'running', [{
+      agentRunId: 'agent-missing-attempt',
+      kind: 'codex',
+      status: 'running',
+      context: { contextPackId: attemptContextPackId },
+    }]),
+    contextPackId: baseContextPackId,
+  })
+
+  ledger.reconcileContextPacks(contextPackId => {
+    if (contextPackId === baseContextPackId) {
+      return { contextPackId, taskId: saved.taskId }
+    }
+    throw new Error('CONTEXT_PACK_TAMPERED')
+  })
+
+  const reconciled = ledger.get(saved.runId)
+  assert.equal(reconciled.contextPackId, baseContextPackId)
+  assert.equal(reconciled.contextPackState, 'captured')
+  assert.equal(reconciled.agentRuns[0].context.contextPackId, undefined)
+  assert.equal(reconciled.agentRuns[0].context.contextPackState, 'legacy-unavailable')
+})
+
+test('restart reconciliation downgrades a Context Pack assigned to another Task', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint(runRecord('run-wrong-pack-task', 'group-wrong-pack-task'))
+
+  ledger.reconcileContextPacks(contextPackId => ({
+    contextPackId,
+    taskId: 'another-task',
+  }))
+
+  const reconciled = ledger.get(saved.runId)
+  assert.equal(reconciled.contextPackId, '')
+  assert.equal(reconciled.contextPackState, 'legacy-unavailable')
+})
+
+test('Context Pack reconciliation fails closed when its downgrade cannot persist', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint(runRecord('run-pack-write-failure', 'group-pack-write-failure'))
+  failNextPersist(ledger)
+
+  assert.throws(
+    () => ledger.reconcileContextPacks(() => {
+      throw new Error('CONTEXT_PACK_TAMPERED')
+    }),
+    { message: 'RUN_LEDGER_WRITE_FAILED' },
+  )
+  assert.deepEqual(ledger.get(saved.runId), saved)
+})
 
 function storedTraceRecord(
   runId = 'run-stored', groupId = 'group-stored', agentRunId = 'agent-stored',
@@ -123,6 +395,8 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   const saved = ledger.checkpoint({
     runId: 'run-1',
     taskId: 'task-1',
+    contextPackId: `context-pack-${'a'.repeat(64)}`,
+    contextPackState: 'captured',
     groupId: 'group-1',
     threadRootId: 'root-1',
     mode: 'auto',
@@ -181,6 +455,48 @@ test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   const detached = restored.list()
   detached[0].agentRuns.at(-1).context.charCount = 1
   assert.equal(restored.get('run-1').agentRuns.at(-1).context.charCount, 1000000)
+})
+
+test('loads equivalent Session provenance regardless of stored field order', (t) => {
+  const { storagePath } = fixture(t)
+  const contextPackId = `context-pack-${'a'.repeat(64)}`
+  const deliveryRecordId = `delivery-record-${'b'.repeat(64)}`
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-provenance-order', 'group-provenance-order', 'completed', [{
+      agentRunId: 'agent-provenance-order',
+      kind: 'codex',
+      status: 'completed',
+      context: {
+        contextPackId,
+        deliveryRecordIds: [deliveryRecordId],
+        sessionProvenance: {
+          scope: 'conversation',
+          reuse: true,
+          origin: 'resumed',
+          originTaskId: 'task-origin',
+          inheritedTaskIds: ['task-inherited'],
+          completeness: 'complete',
+        },
+      },
+    }]),
+    contextPackId,
+  })
+  fs.unlinkSync(ledger.journalPath)
+  const stored = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
+  stored.runs[0].agentRuns[0].context.sessionProvenance = {
+    completeness: 'complete',
+    inheritedTaskIds: ['task-inherited'],
+    originTaskId: 'task-origin',
+    origin: 'resumed',
+    reuse: true,
+    scope: 'conversation',
+  }
+  fs.writeFileSync(storagePath, `${JSON.stringify(stored, null, 2)}\n`)
+
+  const restored = new RunLedger({ storagePath, now: () => 2000 })
+  assert.equal(restored.loadError, null)
+  assert.deepEqual(restored.get(saved.runId), saved)
 })
 
 test('merges sliding live Agent snapshots into durable history across restart', (t) => {
@@ -257,6 +573,9 @@ test('rejects paths, credentials, session references, raw commands, and arbitrar
   const ledger = new RunLedger({ storagePath, now: () => 1000 })
   const saved = ledger.checkpoint({
     runId: 'run-secure',
+    taskId: 'task-secure',
+    contextPackId: `context-pack-${'a'.repeat(64)}`,
+    contextPackState: 'captured',
     groupId: 'group-secure',
     targetKinds: ['codex'],
     status: 'running',
@@ -377,6 +696,50 @@ test('append-only journal recovers lifecycle state from a corrupt snapshot', (t)
   assert.equal(recovered.agentRuns[0].output, '')
 })
 
+test('Outcome references survive checkpoint, journal recovery, and restart', (t) => {
+  const { storagePath } = fixture(t)
+  const artifactId = `artifact-${'a'.repeat(64)}`
+  const evidenceId = `evidence-${'b'.repeat(64)}`
+  const reviewerFindingId = `reviewer-finding-${'c'.repeat(64)}`
+  const adoptionId = `adoption-${'d'.repeat(64)}`
+  const workflowOutcomeRef = {
+    algorithm: 'sha256',
+    hash: 'e'.repeat(64),
+    size: 128,
+    mediaType: 'application/json',
+  }
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  ledger.checkpoint(runRecord('run-outcomes', 'group-outcomes', 'completed', [{
+    agentRunId: 'agent-outcomes',
+    kind: 'codex',
+    status: 'completed',
+    context: {
+      outcomeRefs: {
+        artifactIds: [artifactId],
+        evidenceIds: [evidenceId],
+        reviewerFindingIds: [reviewerFindingId],
+        adoptionIds: [adoptionId],
+        workflowOutcomeRefs: [workflowOutcomeRef],
+      },
+    },
+  }]))
+
+  const expected = {
+    artifactIds: [artifactId],
+    evidenceIds: [evidenceId],
+    reviewerFindingIds: [reviewerFindingId],
+    adoptionIds: [adoptionId],
+    workflowOutcomeRefs: [workflowOutcomeRef],
+  }
+  assert.deepEqual(ledger.get('run-outcomes').agentRuns[0].context.outcomeRefs, expected)
+  assert.match(fs.readFileSync(ledger.journalPath, 'utf8'), new RegExp(artifactId))
+  fs.writeFileSync(storagePath, '{corrupt snapshot', 'utf8')
+
+  const restored = new RunLedger({ storagePath, now: () => 2000 })
+  assert.deepEqual(restored.get('run-outcomes').agentRuns[0].context.outcomeRefs, expected)
+  assert.equal(restored.snapshotError instanceof Error, true)
+})
+
 test('committed journal lifecycle wins over a valid stale snapshot', (t) => {
   const { storagePath } = fixture(t)
   let now = 1000
@@ -428,6 +791,72 @@ test('committed journal lifecycle wins over a valid stale snapshot', (t) => {
   assert.equal(recovered.agentRuns[0].events[0].summary, 'Older snapshot detail.')
 })
 
+test('does not mix snapshot detail from an uncommitted lifecycle transaction', (t) => {
+  const { storagePath } = fixture(t)
+  let now = 1000
+  const ledger = new RunLedger({ storagePath, now: () => now })
+  ledger.checkpoint({
+    ...runRecord('run-prepare-crash', 'group-prepare-crash', 'running', [{
+      agentRunId: 'agent-prepare-crash',
+      kind: 'codex',
+      round: 1,
+      status: 'running',
+      output: 'Committed running detail.',
+      events: [{
+        type: 'tool_update', status: 'running', seq: 1, timestamp: 1000,
+        summary: 'Committed running event.',
+      }],
+    }]),
+    mode: 'auto',
+    currentRound: 1,
+    maxRounds: 2,
+  })
+
+  now = 2000
+  const persist = ledger.persist.bind(ledger)
+  let persistCalls = 0
+  ledger.persist = (runs) => {
+    persistCalls += 1
+    if (persistCalls === 1) return persist(runs)
+    throw new Error('SIMULATED_CRASH_BEFORE_SNAPSHOT_ROLLBACK')
+  }
+  ledger.journal.commit = () => {
+    throw new Error('SIMULATED_CRASH_BEFORE_JOURNAL_COMMIT')
+  }
+
+  assert.throws(
+    () => ledger.checkpoint({
+      runId: 'run-prepare-crash',
+      agentRuns: [{
+        agentRunId: 'agent-prepare-crash',
+        kind: 'codex',
+        round: 1,
+        status: 'waiting',
+        output: 'Uncommitted waiting detail.',
+        events: [{
+          type: 'tool_update', status: 'waiting', seq: 2, timestamp: 2000,
+          summary: 'Uncommitted waiting event.',
+        }],
+      }],
+    }),
+    { message: 'RUN_LEDGER_WRITE_FAILED' },
+  )
+  const uncommittedSnapshot = JSON.parse(fs.readFileSync(storagePath, 'utf8')).runs[0]
+  assert.equal(uncommittedSnapshot.status, 'running')
+  assert.equal(uncommittedSnapshot.agentRuns[0].status, 'waiting')
+  assert.equal(uncommittedSnapshot.agentRuns[0].output, 'Uncommitted waiting detail.')
+  assert.equal(journalEntries(storagePath).at(-1).phase, 'prepare')
+
+  const restored = new RunLedger({ storagePath, now: () => 3000 })
+  const recovered = restored.get('run-prepare-crash')
+  assert.equal(restored.loadError, null)
+  assert.equal(recovered.status, 'running')
+  assert.equal(recovered.agentRuns[0].status, 'running')
+  assert.equal(recovered.agentRuns[0].eventCursor, 1)
+  assert.equal(recovered.agentRuns[0].output, '')
+  assert.deepEqual(recovered.agentRuns[0].events, [])
+})
+
 test('detail-only checkpoints do not grow the lifecycle journal', (t) => {
   const { storagePath } = fixture(t)
   let now = 1000
@@ -453,6 +882,11 @@ test('detail-only checkpoints do not grow the lifecycle journal', (t) => {
   assert.equal(journalEntries(storagePath).length, initialEntryCount)
   assert.equal(
     JSON.parse(fs.readFileSync(storagePath, 'utf8')).runs[0].agentRuns[0].output,
+    'second detail in the same four kilobyte bucket',
+  )
+  assert.equal(
+    new RunLedger({ storagePath, now: () => 2500 })
+      .get('run-bounded-journal').agentRuns[0].output,
     'second detail in the same four kilobyte bucket',
   )
 
@@ -606,7 +1040,7 @@ test('remote recovery reattaches with a durable job id and cursor', (t) => {
   const [claim] = restarted.remoteRecoveries('desktop-recovery')
   assert.deepEqual(claim, {
     runId: 'run-remote',
-    taskId: 'group-remote-task',
+    taskId: 'run-remote-task',
     groupId: 'group-remote',
     connectorId: 'mock.remote',
     jobId: 'job-123',
@@ -1327,10 +1761,16 @@ test('loads legacy records with omitted nested arrays and remains writable', (t)
 
   assert.equal(ledger.loadError, null)
   assert.equal(ledger.get('run-legacy').taskId, '')
+  assert.equal(ledger.get('run-legacy').contextPackState, 'legacy-unavailable')
   assert.deepEqual(ledger.get('run-legacy').targetKinds, [])
   assert.deepEqual(ledger.get('run-legacy').agentRuns, [])
   assert.deepEqual(ledger.get('run-legacy-agent').agentRuns[0].events, [])
+  assert.equal(ledger.get('run-legacy-agent').contextPackState, 'legacy-unavailable')
   assert.deepEqual(ledger.get('run-legacy-agent').agentRuns[0].sourceMessageIds, [])
   assert.deepEqual(ledger.get('run-legacy-agent').agentRuns[0].context, {})
-  assert.equal(ledger.finish('run-legacy', 'completed').status, 'completed')
+  const finished = ledger.finish('run-legacy', 'completed')
+  assert.equal(finished.status, 'completed')
+  assert.equal(finished.contextPackState, 'legacy-unavailable')
+  const restarted = new RunLedger({ storagePath, now: () => 2000 })
+  assert.equal(restarted.get('run-legacy').contextPackState, 'legacy-unavailable')
 })

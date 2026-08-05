@@ -9,9 +9,10 @@ const JOURNAL_ID = /^[A-Za-z0-9._:-]{1,160}$/
 const MAX_CHANGE_ITEMS = 1024
 const CHANGE_FIELDS = new Set(['replace', 'upserts', 'removedRunIds'])
 const RUN_FIELDS = new Set([
-  'runId', 'taskId', 'groupId', 'threadRootId', 'mode', 'targetKinds', 'status',
-  'createdAt', 'startedAt', 'updatedAt', 'finishedAt', 'reason', 'permissionMode',
-  'currentRound', 'maxRounds', 'unlimitedRounds', 'remoteJob', 'agentRuns',
+  'runId', 'taskId', 'contextPackId', 'contextPackState', 'groupId', 'threadRootId', 'mode',
+  'targetKinds', 'status', 'createdAt', 'startedAt', 'updatedAt', 'finishedAt',
+  'reason', 'permissionMode', 'currentRound', 'maxRounds', 'unlimitedRounds',
+  'budget', 'attemptHistory', 'continuation', 'remoteJob', 'agentRuns',
 ])
 const AGENT_RUN_FIELDS = new Set([
   'agentRunId', 'kind', 'round', 'status', 'reason', 'sourceMessageIds',
@@ -23,6 +24,8 @@ const REMOTE_JOB_FIELDS = new Set([
 ])
 const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
+  'contextPackId', 'contextPackState', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+  'connector', 'connectorEventState',
 ])
 
 function clone(value) {

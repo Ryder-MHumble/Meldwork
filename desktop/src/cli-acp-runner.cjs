@@ -10,6 +10,7 @@ const {
   createAcpRuntimeState,
   createRuntimeEventEmitter,
   redactChildSecrets,
+  stripAnsi,
 } = require('./cli-runtime-events.cjs')
 const {
   KILL_SETTLE_MS,
@@ -18,11 +19,23 @@ const {
   childEnvironment,
   failedAgentProcessError,
 } = require('./cli-process-support.cjs')
+const { createAcpOutboundPayload } = require('./outbound-payload.cjs')
+const { redactSecrets } = require('./secret-redaction.cjs')
 
 const ACP_CANCEL_GRACE_MS = 250
 const ACP_MAX_LINE_BYTES = 1024 * 1024
 const ACP_MAX_INPUT_BYTES = 16 * 1024 * 1024
 const ACP_MAX_REPLY_BYTES = 10 * 1024 * 1024
+const ACP_PERMISSION_OPTION_LIMIT = 16
+const ACP_PERMISSION_OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
+const ACP_PERMISSION_OPTION_KINDS = new Set([
+  'allow_once', 'allow_always', 'reject_once', 'reject_always',
+])
+const ACP_TOOL_KINDS = new Set([
+  'read', 'edit', 'delete', 'move', 'search',
+  'execute', 'think', 'fetch', 'switch_mode', 'other',
+])
+const ACP_TOOL_STATUSES = new Set(['pending', 'in_progress', 'completed', 'failed'])
 let acpSdkPromise
 
 function loadAcpSdk() {
@@ -91,7 +104,7 @@ function validateAcpInboundMessage(message, validators, replyState, protocolLabe
 
 function boundedAcpStream(
   output, input, validators, replyState = { bytes: 0, collecting: true },
-  protocolLabel = 'ACP Agent',
+  protocolLabel = 'ACP Agent', beforeWrite = null,
 ) {
   const textEncoder = new TextEncoder()
   const readable = new ReadableStream({
@@ -151,9 +164,16 @@ function boundedAcpStream(
   })
   const writable = new WritableStream({
     async write(message) {
+      const bytes = textEncoder.encode(`${JSON.stringify(message)}\n`)
+      if (typeof beforeWrite === 'function') {
+        await beforeWrite(
+          message,
+          Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+        )
+      }
       const writer = output.getWriter()
       try {
-        await writer.write(textEncoder.encode(`${JSON.stringify(message)}\n`))
+        await writer.write(bytes)
       } finally {
         writer.releaseLock()
       }
@@ -167,6 +187,106 @@ function permissionRejection(options) {
     ['reject_once', 'reject_always'].includes(option.kind)
       || /reject|deny/i.test(`${option.optionId || ''} ${option.name || ''}`)
   ))
+}
+
+function selectedPermissionOutcome(option) {
+  return option
+    ? { outcome: { outcome: 'selected', optionId: option.optionId } }
+    : { outcome: { outcome: 'cancelled' } }
+}
+
+function sanitizePermissionText(value, childEnv, limit) {
+  return stripAnsi(redactSecrets(redactChildSecrets(value, childEnv)))
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
+    .replace(/file:\/\/\/[^\s"'`<>|,;)}\]]+/gi, '[path]')
+    .replace(/(?<![A-Za-z0-9:])(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|,;)}\]]+/g, '[path]')
+    .replace(/(?<![A-Za-z0-9:])\/(?!\/)[^\s"'`<>|,;)}\]]+/g, '[path]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, limit)
+}
+
+function sanitizePermissionOptions(options, childEnv) {
+  const seen = new Set()
+  const sanitized = []
+  for (const option of options || []) {
+    if (sanitized.length >= ACP_PERMISSION_OPTION_LIMIT) break
+    const optionId = sanitizePermissionText(option?.optionId, childEnv, 120)
+    const kind = String(option?.kind || '')
+    const name = sanitizePermissionText(option?.name, childEnv, 160)
+    if (optionId !== option?.optionId || !ACP_PERMISSION_OPTION_ID.test(optionId)
+        || seen.has(optionId) || !ACP_PERMISSION_OPTION_KINDS.has(kind) || !name) continue
+    seen.add(optionId)
+    sanitized.push(Object.freeze({ optionId, name, kind }))
+  }
+  return Object.freeze(sanitized)
+}
+
+// Raw tool input, output, content, locations, and metadata never cross this callback boundary.
+function sanitizePermissionRequest(params, childEnv) {
+  const toolCall = params?.toolCall || {}
+  const safeToolCall = {
+    toolCallId: sanitizePermissionText(toolCall.toolCallId, childEnv, 120),
+  }
+  const title = sanitizePermissionText(toolCall.title, childEnv, 160)
+  if (title) safeToolCall.title = title
+  if (ACP_TOOL_KINDS.has(toolCall.kind)) safeToolCall.kind = toolCall.kind
+  if (ACP_TOOL_STATUSES.has(toolCall.status)) safeToolCall.status = toolCall.status
+  return Object.freeze({
+    sessionId: sanitizePermissionText(params?.sessionId, childEnv, 160),
+    toolCall: Object.freeze(safeToolCall),
+    options: sanitizePermissionOptions(params?.options, childEnv),
+  })
+}
+
+function validPermissionDecision(decision, permissionOptions) {
+  if (!decision || typeof decision !== 'object' || Array.isArray(decision)) return null
+  const prototype = Object.getPrototypeOf(decision)
+  if (prototype !== Object.prototype && prototype !== null) return null
+  const keys = Reflect.ownKeys(decision).sort()
+  if (keys.length !== 2 || keys[0] !== 'optionId' || keys[1] !== 'status') return null
+  if (!['approved', 'rejected'].includes(decision.status)
+      || typeof decision.optionId !== 'string') return null
+  const selected = permissionOptions.find(option => option.optionId === decision.optionId)
+  if (!selected) return null
+  if (decision.status === 'approved' && !selected.kind.startsWith('allow_')) return null
+  if (decision.status === 'rejected' && !selected.kind.startsWith('reject_')) return null
+  return selected
+}
+
+async function waitForPermissionDecision(callback, request, signal) {
+  if (signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  const context = Object.freeze({ signal })
+  const callbackPromise = Promise.resolve().then(() => callback(request, context))
+  if (!signal) return callbackPromise
+  let abortListener
+  const abortPromise = new Promise((_, reject) => {
+    abortListener = () => reject(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
+    signal.addEventListener('abort', abortListener, { once: true })
+  })
+  try {
+    return await Promise.race([callbackPromise, abortPromise])
+  } finally {
+    signal.removeEventListener('abort', abortListener)
+  }
+}
+
+async function permissionOutcome(params, options, childEnv) {
+  const fallback = selectedPermissionOutcome(permissionRejection(params?.options))
+  if (typeof options.onPermissionRequest !== 'function') return fallback
+  const request = sanitizePermissionRequest(params, childEnv)
+  if (!request.options.length) return fallback
+  try {
+    const decision = await waitForPermissionDecision(
+      options.onPermissionRequest,
+      request,
+      options.signal,
+    )
+    const selected = validPermissionDecision(decision, request.options)
+    return selected ? selectedPermissionOutcome(selected) : fallback
+  } catch {
+    return fallback
+  }
 }
 
 function destroyChildPipes(child) {
@@ -322,6 +442,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
   const replyState = { bytes: 0, collecting: false }
   const runtimeState = createAcpRuntimeState()
   let promptStarted = false
+  let outboundPayloadFailed = false
   const abortPromise = new Promise((_, reject) => { rejectAbort = reject })
   const stopChild = () => {
     stopPromise ||= closeAcpChild(child, platform, spawnFn)
@@ -367,10 +488,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
 
   const client = {
     async requestPermission(params) {
-      const denied = permissionRejection(params.options)
-      return denied
-        ? { outcome: { outcome: 'selected', optionId: denied.optionId } }
-        : { outcome: { outcome: 'cancelled' } }
+      return permissionOutcome(params, options, childEnv)
     },
     async sessionUpdate(params) {
       if (!replyState.collecting) return
@@ -388,6 +506,16 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
       validators,
       replyState,
       protocolLabel,
+      async (message, wireBytes) => {
+        if (message?.method !== 'session/prompt'
+            || typeof options.onOutboundPayload !== 'function') return
+        try {
+          await options.onOutboundPayload(createAcpOutboundPayload({ prompt, wireBytes }))
+        } catch (error) {
+          outboundPayloadFailed = true
+          throw error
+        }
+      },
     )
     connection = new ClientSideConnection(() => client, stream)
     await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
@@ -407,11 +535,12 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
     replyState.collecting = true
     let promptResult
     try {
-      promptStarted = true
-      promptResult = await connection.prompt({
+      const promptParams = {
         sessionId: sessionRef,
         prompt: [{ type: 'text', text: prompt }],
-      })
+      }
+      promptStarted = true
+      promptResult = await connection.prompt(promptParams)
     } finally {
       replyState.collecting = false
     }
@@ -425,6 +554,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
     runtimeEvents.emitFinalAnswer(text)
     return result
   })().catch((error) => {
+    if (outboundPayloadFailed) throw error
     const normalized = acpProtocolError(error, childEnv, resumedSessionRef)
     if (!promptStarted) allowAcpSetupFallback(normalized)
     throw normalized
@@ -433,7 +563,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
   try {
     return await Promise.race([protocol, abortPromise, childFailure])
   } catch (error) {
-    if (!promptStarted) allowAcpSetupFallback(error)
+    if (!promptStarted && !outboundPayloadFailed) allowAcpSetupFallback(error)
     throw error
   } finally {
     ending = true

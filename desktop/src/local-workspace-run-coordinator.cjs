@@ -1,6 +1,10 @@
 const { randomUUID } = require('node:crypto')
 const { RunHarness } = require('./run-harness.cjs')
 const {
+  RunBudget,
+  normalizeRunBudgetConfiguration,
+} = require('./run-budget.cjs')
+const {
   RUN_STATUSES,
   cleanRunMaxRounds,
   cleanText,
@@ -8,6 +12,11 @@ const {
 } = require('./local-workspace-inputs.cjs')
 
 const TASK_ID = /^[A-Za-z0-9._:-]{1,120}$/
+const CONTEXT_PACK_ID = /^context-pack-[a-f0-9]{64}$/
+const FINISHED_AGENT_STATUSES = new Set([
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
+])
+const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
 
 class LocalWorkspaceRunCoordinator {
   constructor(options) {
@@ -25,10 +34,12 @@ class LocalWorkspaceRunCoordinator {
     this.hasRunLedger = typeof options.hasRunLedger === 'function'
       ? options.hasRunLedger
       : () => false
+    this.validateContextPack = options.validateContextPack
     this.finishRunCheckpoint = options.finishRunCheckpoint
     this.scheduleRunCheckpoint = options.scheduleRunCheckpoint
     this.emitChanged = options.emitChanged
     this.emit = options.emit
+    this.runBudgetDefaults = normalizeRunBudgetConfiguration(options.runBudgetDefaults || {})
   }
 
   createController(mode, targetKinds, threadRootId, maxRounds = 0, unlimitedRounds = false) {
@@ -44,6 +55,8 @@ class LocalWorkspaceRunCoordinator {
     controller.mode = mode
     controller.runId = String(this.createRunId() || '')
     controller.taskId = TASK_ID.test(String(threadRootId || '')) ? String(threadRootId) : ''
+    controller.contextPackId = ''
+    controller.taskBound = false
     controller.targetKinds = [...targetKinds]
     controller.completedKinds = []
     controller.failedKinds = []
@@ -56,11 +69,34 @@ class LocalWorkspaceRunCoordinator {
       ? cleanRunMaxRounds(maxRounds)
       : 0
     controller.startedAt = Date.now()
+    controller.budget = new RunBudget({
+      startedAt: controller.startedAt,
+      limits: this.runBudgetDefaults.limits,
+      enforcement: this.runBudgetDefaults.enforcement,
+    })
     controller.stopReason = ''
     controller.harness = null
     controller.agentFailureReasons = new Map()
     controller.silenceTimers = new Map()
+    controller.agentControllers = new Map()
+    controller.agentSlotKinds = new Set()
+    controller.agentControlRequests = new Map()
+    controller.manualRetryCounts = new Map()
+    controller.waitingGateIds = new Set()
+    controller.attemptHistory = []
+    controller.continuation = null
     return controller
+  }
+
+  configureBudget(controller, input = {}) {
+    if (!controller || controller.taskBound) throw new Error('LOCAL_RUN_BUDGET_LOCKED')
+    const requested = normalizeRunBudgetConfiguration(input || {})
+    controller.budget = new RunBudget({
+      startedAt: controller.startedAt,
+      limits: { ...this.runBudgetDefaults.limits, ...requested.limits },
+      enforcement: { ...this.runBudgetDefaults.enforcement, ...requested.enforcement },
+    })
+    return controller.budget.snapshot()
   }
 
   checkpointRequired(groupId, controller, status) {
@@ -86,7 +122,6 @@ class LocalWorkspaceRunCoordinator {
     controller.groupId = groupId
     this.preparingRuns.set(groupId, controller)
     try {
-      this.checkpointRequired(groupId, controller, 'preparing')
       this.emitChanged()
     } catch (error) {
       if (this.preparingRuns.get(groupId) === controller) this.preparingRuns.delete(groupId)
@@ -97,40 +132,54 @@ class LocalWorkspaceRunCoordinator {
     return controller
   }
 
-  bindTask(groupId, controller, taskId, threadRootId = '') {
+  bindTask(groupId, controller, taskId, threadRootId = '', contextPackId = '') {
     if (this.preparingRuns.get(groupId) !== controller || controller.signal.aborted) {
       throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
     }
     const nextTaskId = String(taskId || '')
     const nextThreadRootId = String(threadRootId || '')
+    const nextContextPackId = String(contextPackId || '')
     if (!TASK_ID.test(nextTaskId)
-        || (nextThreadRootId && !TASK_ID.test(nextThreadRootId))) {
+        || (nextThreadRootId && !TASK_ID.test(nextThreadRootId))
+        || !CONTEXT_PACK_ID.test(nextContextPackId)) {
       throw new Error('LOCAL_RUN_TASK_INVALID')
     }
+    let contextPackValid = false
+    try {
+      contextPackValid = this.validateContextPack?.(nextContextPackId, nextTaskId) === true
+    } catch { /* normalize store failures to a stable lifecycle error */ }
+    if (!contextPackValid) throw new Error('LOCAL_RUN_CONTEXT_PACK_INVALID')
     const previousTaskId = controller.taskId
     const previousThreadRootId = controller.threadRootId
+    const previousContextPackId = controller.contextPackId
     controller.taskId = nextTaskId
     controller.threadRootId = nextThreadRootId
+    controller.contextPackId = nextContextPackId
     try {
       this.checkpointRequired(groupId, controller, 'preparing')
+      controller.taskBound = true
     } catch (error) {
       controller.taskId = previousTaskId
       controller.threadRootId = previousThreadRootId
+      controller.contextPackId = previousContextPackId
       throw error
     }
+    this.emitChanged()
     return true
   }
 
   releasePreparation(groupId, controller) {
     if (this.preparingRuns.get(groupId) !== controller) return false
     this.preparingRuns.delete(groupId)
-    this.finishRunCheckpoint(
-      groupId,
-      controller,
-      controller.signal.aborted
-        ? (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped')
-        : 'failed',
-    )
+    if (controller.taskBound) {
+      this.finishRunCheckpoint(
+        groupId,
+        controller,
+        controller.signal.aborted
+          ? (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped')
+          : 'failed',
+      )
+    }
     try {
       this.emitChanged()
     } finally {
@@ -151,11 +200,13 @@ class LocalWorkspaceRunCoordinator {
         throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
       }
       if (this.activeRuns.has(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
+      if (!controller.taskBound
+          || !TASK_ID.test(String(controller.taskId || ''))
+          || !CONTEXT_PACK_ID.test(String(controller.contextPackId || ''))) {
+        throw new Error('LOCAL_RUN_TASK_INVALID')
+      }
     } else {
-      if (this.isGroupBusy(groupId)) throw new Error('LOCAL_GROUP_RUNNING')
-      controller = this.createController(
-        mode, targetKinds, threadRootId, maxRounds, unlimitedRounds,
-      )
+      throw new Error('LOCAL_RUN_TASK_INVALID')
     }
     controller.mode = mode
     controller.groupId = groupId
@@ -193,10 +244,86 @@ class LocalWorkspaceRunCoordinator {
     return controller
   }
 
+  resume(record) {
+    if (this.isShuttingDown() || !record || typeof record !== 'object') {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const groupId = String(record.groupId || '')
+    if (!groupId || this.isGroupBusy(groupId)
+        || !TASK_ID.test(String(record.taskId || ''))
+        || !CONTEXT_PACK_ID.test(String(record.contextPackId || ''))
+        || !record.continuation
+        || !['pending', 'ready', 'resuming'].includes(record.continuation.state)) {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    if (this.validateContextPack?.(record.contextPackId, record.taskId) !== true) {
+      throw new Error('LOCAL_RUN_CONTEXT_PACK_INVALID')
+    }
+    const controller = this.createController(
+      record.mode,
+      record.targetKinds,
+      record.threadRootId,
+      record.maxRounds,
+      record.unlimitedRounds,
+    )
+    controller.runId = record.runId
+    controller.taskId = record.taskId
+    controller.contextPackId = record.contextPackId
+    controller.taskBound = true
+    controller.groupId = groupId
+    controller.currentRound = record.currentRound || 0
+    controller.startedAt = record.startedAt
+    controller.attemptHistory = [...(record.attemptHistory || [])]
+    const targetKinds = new Set(controller.targetKinds)
+    const latestAgentStatuses = new Map()
+    for (const agentRun of Array.isArray(record.agentRuns) ? record.agentRuns : []) {
+      if (!targetKinds.has(agentRun?.kind) || !isSupportedAgentKind(agentRun.kind)
+          || !FINISHED_AGENT_STATUSES.has(agentRun.status)) continue
+      latestAgentStatuses.set(agentRun.kind, agentRun.status)
+    }
+    controller.completedKinds = [...latestAgentStatuses.keys()]
+    controller.failedKinds = [...latestAgentStatuses]
+      .filter(([, status]) => FAILED_AGENT_STATUSES.has(status))
+      .map(([kind]) => kind)
+    controller.continuation = { ...record.continuation, state: 'resuming', updatedAt: Date.now() }
+    controller.waitingGateIds = new Set([record.continuation.gateId])
+    if (record.budget) {
+      controller.budget = new RunBudget({
+        ...record.budget,
+        now: Date.now,
+      })
+    }
+    this.activeRuns.set(groupId, controller)
+    try {
+      this.checkpointRequired(groupId, controller, 'running')
+      this.emitChanged()
+    } catch (error) {
+      this.activeRuns.delete(groupId)
+      controller.abort()
+      controller.resolveDone()
+      throw error
+    }
+    return controller
+  }
+
   finish(groupId, controller, status) {
     if (controller.finished) return
     controller.finished = true
     this.clearRunSilence(controller)
+    const preserveContinuation = status === 'interrupted'
+      && ['pending', 'ready', 'resuming'].includes(controller.continuation?.state)
+    if (preserveContinuation) {
+      controller.finished = false
+      try {
+        this.checkpointRequired(groupId, controller, 'waiting')
+      } finally {
+        controller.finished = true
+        if (this.activeRuns.get(groupId) === controller) this.activeRuns.delete(groupId)
+        try { this.emitChanged() } catch {}
+        controller.resolveDone()
+      }
+      return
+    }
     const finalStatus = RUN_STATUSES.has(status) ? status : 'failed'
     this.finishRunCheckpoint(groupId, controller, finalStatus)
     const ownsActiveRun = this.activeRuns.get(groupId) === controller
@@ -205,6 +332,12 @@ class LocalWorkspaceRunCoordinator {
       groupId: cleanText(groupId, 100),
       runId: cleanText(controller.runId, 120),
       taskId: cleanText(controller.taskId, 120),
+      contextPackId: CONTEXT_PACK_ID.test(String(controller.contextPackId || ''))
+        ? controller.contextPackId
+        : '',
+      contextPackState: CONTEXT_PACK_ID.test(String(controller.contextPackId || ''))
+        ? 'captured'
+        : 'legacy-unavailable',
       mode: controller.mode === 'auto' ? 'auto' : 'manual',
       status: finalStatus,
       threadRootId: cleanText(controller.threadRootId, 100),
@@ -268,6 +401,48 @@ class LocalWorkspaceRunCoordinator {
   clearRunSilence(controller) {
     for (const timer of controller?.silenceTimers?.values?.() || []) this.clearTimeout(timer)
     controller?.silenceTimers?.clear?.()
+  }
+
+  registerAgentController(controller, kind, agentRunId, agentController) {
+    if (!controller || !(agentController instanceof AbortController)) return false
+    const current = controller.agentControllers.get(kind)
+    if (current && current.agentController !== agentController) {
+      throw new Error('LOCAL_AGENT_ATTEMPT_RUNNING')
+    }
+    controller.agentControllers.set(kind, { agentRunId, agentController })
+    return true
+  }
+
+  unregisterAgentController(controller, kind, agentRunId, agentController) {
+    const current = controller?.agentControllers?.get(kind)
+    if (!current || current.agentRunId !== agentRunId
+        || current.agentController !== agentController) return false
+    controller.agentControllers.delete(kind)
+    return true
+  }
+
+  controlAgent(groupId, runId, kind, action, replacementKind = '') {
+    const controller = this.activeRuns.get(groupId)
+    if (!controller || controller.runId !== runId) return false
+    if (!['cancel', 'retry', 'replace'].includes(action)) return false
+    if (action === 'replace' && (!replacementKind || replacementKind === kind)) return false
+    const active = controller.agentControllers.get(kind)
+    if (!active || active.agentController.signal.aborted) return false
+    controller.agentControlRequests.set(kind, {
+      action,
+      replacementKind: action === 'replace' ? replacementKind : '',
+      requestedAt: Date.now(),
+    })
+    active.agentController.abort()
+    this.scheduleRunCheckpoint(groupId, controller)
+    this.emitChanged()
+    return true
+  }
+
+  consumeAgentControl(controller, kind) {
+    const request = controller?.agentControlRequests?.get(kind) || null
+    controller?.agentControlRequests?.delete(kind)
+    return request
   }
 
   stop(groupId, runId) {

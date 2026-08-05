@@ -1,12 +1,15 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
 const { AttachmentStore } = require('../src/attachment-store.cjs')
 const {
+  captureAgentOutcomeDescriptors,
   captureAgentOutputState,
+  captureArtifactOutputState,
   importAgentOutputs,
 } = require('../src/agent-output-importer.cjs')
 
@@ -16,6 +19,7 @@ const PNG = Buffer.from([
 ])
 const MP3 = Buffer.from('49443304000000000000', 'hex')
 const MP4 = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypisom'), Buffer.alloc(8)])
+const READ_SIZE = 128 * 1024
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-output-'))
@@ -29,6 +33,10 @@ function fixture(t) {
   })
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   return { directory, workdir, output, store }
+}
+
+function sha256(value) {
+  return crypto.createHash('sha256').update(value).digest('hex')
 }
 
 test('imports only new or changed top-level media from the controlled output directory', (t) => {
@@ -116,4 +124,184 @@ test('stops importing generated media when the run is aborted', (t) => {
 
   assert.equal(imported.length, 1)
   assert.equal(calls.length, 1)
+})
+
+test('captures changed artifact types as deterministic workspace-relative snapshots', (t) => {
+  const { workdir, output } = fixture(t)
+  fs.writeFileSync(path.join(output, 'unchanged.txt'), 'before')
+  fs.writeFileSync(path.join(output, 'mtime-only.md'), 'same content')
+  const baseline = captureArtifactOutputState(workdir)
+  const mtimeOnly = path.join(output, 'mtime-only.md')
+  fs.utimesSync(mtimeOnly, new Date(), new Date(Date.now() + 5000))
+  fs.writeFileSync(path.join(output, 'unchanged.txt'), 'after')
+  fs.mkdirSync(path.join(output, 'docs'))
+  const expected = new Map([
+    ['bundle.zip', ['bundle', 'application/zip', Buffer.from('bundle')]],
+    ['code.js', ['file', 'text/javascript', Buffer.from('export const value = 1\n')]],
+    ['data.json', ['structured-data', 'application/json', Buffer.from('{"ok":true}')]],
+    ['docs/report.md', ['document', 'text/markdown', Buffer.from('# Report\n')]],
+    ['image.png', ['media', 'image/png', PNG]],
+    ['result.patch', ['diff', 'text/x-diff', Buffer.from('--- a\n+++ b\n')]],
+    ['unchanged.txt', ['document', 'text/plain', Buffer.from('after')]],
+    ['unknown.bin', ['file', 'application/octet-stream', Buffer.from('binary')]],
+  ])
+  for (const [relativePath, [, , bytes]] of expected) {
+    const filename = path.join(output, ...relativePath.split('/'))
+    fs.writeFileSync(filename, bytes)
+  }
+
+  const artifacts = captureAgentOutcomeDescriptors({ workdir, baseline })
+
+  assert.deepEqual(
+    artifacts.map(item => item.locationRef.path),
+    [...expected.keys()].map(value => `.meldwork-output/${value}`),
+  )
+  assert.equal(artifacts.some(item => item.name === 'mtime-only.md'), false)
+  artifacts.forEach((artifact) => {
+    const relativePath = artifact.locationRef.path.slice('.meldwork-output/'.length)
+    const [type, mediaType, bytes] = expected.get(relativePath)
+    assert.equal(artifact.type, type)
+    assert.equal(artifact.mediaType, mediaType)
+    assert.equal(artifact.name, path.posix.basename(relativePath))
+    assert.deepEqual(artifact.content, bytes)
+    assert.equal(artifact.contentHash, sha256(bytes))
+    assert.equal(artifact.size, bytes.length)
+    assert.equal(Number.isFinite(artifact.mtimeMs), true)
+    assert.deepEqual(Object.keys(artifact.locationRef).sort(), ['kind', 'path'])
+    assert.equal(Object.hasOwn(artifact, 'path'), false)
+  })
+  assert.equal(JSON.stringify(artifacts).includes(workdir), false)
+})
+
+test('accepts an absent output directory baseline but rejects forged traversal baselines', (t) => {
+  const { workdir, output } = fixture(t)
+  fs.rmSync(output, { recursive: true })
+  const baseline = captureArtifactOutputState(workdir)
+  assert.equal(baseline.complete, true)
+  assert.deepEqual(baseline.files, [])
+  fs.mkdirSync(output)
+  fs.writeFileSync(path.join(output, 'created.md'), 'created after baseline')
+
+  assert.deepEqual(
+    captureAgentOutcomeDescriptors({ workdir, baseline }).map(item => item.name),
+    ['created.md'],
+  )
+  const forged = {
+    ...baseline,
+    files: [{
+      relativePath: '../outside.txt',
+      size: 1,
+      mtimeMs: 1,
+      ctimeMs: 1,
+      contentHash: '0'.repeat(64),
+    }],
+  }
+  assert.deepEqual(captureAgentOutcomeDescriptors({ workdir, baseline: forged }), [])
+  assert.deepEqual(captureAgentOutcomeDescriptors({
+    workdir,
+    baseline: { ...baseline, workdirRealPath: path.dirname(workdir) },
+  }), [])
+})
+
+test('never follows artifact file, directory, or output-root symlinks', {
+  skip: process.platform === 'win32',
+}, (t) => {
+  const { directory, workdir, output } = fixture(t)
+  const baseline = captureArtifactOutputState(workdir)
+  const outsideFile = path.join(directory, 'outside.txt')
+  const outsideDirectory = path.join(directory, 'outside-directory')
+  fs.writeFileSync(outsideFile, 'outside')
+  fs.mkdirSync(outsideDirectory)
+  fs.writeFileSync(path.join(outsideDirectory, 'nested.txt'), 'outside nested')
+  fs.writeFileSync(path.join(output, 'inside.txt'), 'inside')
+  fs.symlinkSync(outsideFile, path.join(output, 'linked.txt'))
+  fs.symlinkSync(outsideDirectory, path.join(output, 'linked-directory'))
+
+  assert.deepEqual(
+    captureAgentOutcomeDescriptors({ workdir, baseline }).map(item => item.name),
+    ['inside.txt'],
+  )
+
+  fs.rmSync(output, { recursive: true })
+  fs.symlinkSync(outsideDirectory, output)
+  assert.deepEqual(captureAgentOutcomeDescriptors({ workdir, baseline }), [])
+  assert.equal(captureArtifactOutputState(workdir).complete, false)
+})
+
+test('enforces artifact count, per-file, total-byte, scan, and abort bounds', (t) => {
+  const { workdir, output } = fixture(t)
+  const baseline = captureArtifactOutputState(workdir, {
+    limits: {
+      maxFiles: 10,
+      maxFileBytes: 100,
+      maxTotalBytes: 100,
+      maxScannedEntries: 20,
+      maxDepth: 2,
+    },
+  })
+  fs.writeFileSync(path.join(output, 'a.txt'), 'aaaaaa')
+  fs.writeFileSync(path.join(output, 'b.txt'), 'bbbbbb')
+  fs.writeFileSync(path.join(output, 'c.txt'), 'c')
+  fs.writeFileSync(path.join(output, 'oversized.txt'), '123456789')
+
+  assert.deepEqual(captureAgentOutcomeDescriptors({
+    workdir,
+    baseline,
+    limits: { maxFiles: 2 },
+  }).map(item => item.name), ['a.txt', 'b.txt'])
+  assert.deepEqual(captureAgentOutcomeDescriptors({
+    workdir,
+    baseline,
+    limits: { maxFiles: 10, maxFileBytes: 8, maxTotalBytes: 10 },
+  }).map(item => item.name), ['a.txt', 'c.txt'])
+  assert.deepEqual(captureAgentOutcomeDescriptors({
+    workdir,
+    baseline,
+    limits: { maxScannedEntries: 2 },
+  }), [])
+
+  const controller = new AbortController()
+  controller.abort()
+  assert.deepEqual(captureAgentOutcomeDescriptors({
+    workdir, baseline, signal: controller.signal,
+  }), [])
+})
+
+test('drops a file that mutates while its artifact snapshot is being read', (t) => {
+  const { workdir, output } = fixture(t)
+  const baseline = captureArtifactOutputState(workdir)
+  const filename = path.join(output, 'changing.bin')
+  fs.writeFileSync(filename, Buffer.alloc(READ_SIZE, 0x41))
+  const originalReadSync = fs.readSync
+  let mutated = false
+  fs.readSync = (...args) => {
+    const count = originalReadSync(...args)
+    if (!mutated && count > 0) {
+      mutated = true
+      fs.appendFileSync(filename, 'changed')
+    }
+    return count
+  }
+  try {
+    assert.deepEqual(captureAgentOutcomeDescriptors({ workdir, baseline }), [])
+  } finally {
+    fs.readSync = originalReadSync
+  }
+  assert.equal(mutated, true)
+})
+
+test('preserves the existing four-media attachment import limit', (t) => {
+  const { workdir, output, store } = fixture(t)
+  const baseline = captureAgentOutputState(workdir)
+  const startedAt = Date.now()
+  const names = ['a.png', 'b.png', 'c.png', 'd.png', 'e.png']
+  names.forEach((name, index) => {
+    const filename = path.join(output, name)
+    fs.writeFileSync(filename, PNG)
+    const timestamp = new Date(startedAt + ((index + 1) * 1000))
+    fs.utimesSync(filename, timestamp, timestamp)
+  })
+
+  const imported = importAgentOutputs({ workdir, baseline, startedAt }, store)
+  assert.deepEqual(imported.map(item => item.name), ['e.png', 'd.png', 'c.png', 'b.png'])
 })

@@ -4,6 +4,11 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
+const { serializeAgentConnectorManifest } = require('../src/agent-connector-manifest.cjs')
+const {
+  SAMPLE_AGENT_CONNECTOR_MANIFEST,
+  SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST,
+} = require('../src/agent-connector-local.cjs')
 const {
   LOCAL_IPC_CHANNELS,
   PROVIDER_AGENT_KINDS,
@@ -138,14 +143,61 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     path.join(directory, 'attachments'))
   assert.equal(harness.skillCatalogInstances[0].input.home,
     path.join(directory, 'Home'))
-  await harness.workspaceInstances[0].input.detectAgents()
+  assert.equal(
+    harness.skillSnapshotStoreInstances[0].input.contentBlobStore,
+    harness.workspaceInstances[0].input.contentBlobStore,
+  )
+  assert.equal(
+    harness.skillSnapshotSelectionInstances[0].input.contentBlobStore,
+    harness.workspaceInstances[0].input.contentBlobStore,
+  )
+  assert.equal(
+    harness.skillSnapshotSelectionInstances[0].input.snapshotStore,
+    harness.skillSnapshotStoreInstances[0],
+  )
+  assert.equal(
+    harness.skillSnapshotSelectionInstances[0].input.catalog,
+    harness.skillCatalogInstances[0],
+  )
+  const selectedSkills = [{
+    targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
+  }]
+  assert.deepEqual(
+    await harness.workspaceInstances[0].input.validateSkillSelections('codex', selectedSkills),
+    selectedSkills,
+  )
+  assert.deepEqual(harness.skillSnapshotSelectionInstances[0].prepareCalls, [{
+    kind: 'codex', selections: selectedSkills,
+  }])
+  const detected = await harness.workspaceInstances[0].input.detectAgents()
+  assert.deepEqual(detected, [])
   assert.equal(harness.installerInstances[0].detectedCount, 1)
   assert.equal(harness.customAgentStoreInstances[0].detectCount, 1)
+  assert.equal(typeof harness.workspaceInstances[0].input.connectorRuntime.run, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.resolveAttachments, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.validateSkillSelections, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.validateKnowledgeBaseSelections, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.imageAttachmentLimit, 'function')
   assert.equal(typeof harness.workspaceInstances[0].input.agentLabel, 'function')
+  assert.equal(harness.cloudAgentRuntimeInstances.length, 1)
+  assert.equal(harness.cloudAgentRuntimeInstances[0].input.runLedger,
+    harness.workspaceInstances[0].input.runLedger)
+  assert.equal(harness.cloudAgentRuntimeInstances[0].input.outcomeStore,
+    harness.workspaceInstances[0].input.outcomeStore)
+  assert.deepEqual(harness.cloudAgentRuntimeInstances[0].input.connectors, [])
+  assert.equal(harness.cloudAgentRuntimeInstances[0].startCount, 1)
+  assert.equal(harness.cloudAgentOperationStoreInstances[0].input.storagePath,
+    path.join(directory, 'roundrelay-private', 'cloud-agent-operations.json'))
+  assert.equal(harness.channelIngressRuntimeInstances.length, 1)
+  assert.equal(
+    harness.channelIngressRuntimeInstances[0].input.store,
+    harness.channelInboxStoreInstances[0],
+  )
+  assert.deepEqual(harness.channelIngressRuntimeInstances[0].input.connectors, [])
+  assert.equal(harness.channelIngressRuntimeInstances[0].startCount, 1)
+  assert.equal(harness.channelIngressRuntimeInstances[0].status().receiverCount, 0)
+  assert.equal(harness.channelInboxStoreInstances[0].input.storagePath,
+    path.join(directory, 'roundrelay-private', 'channel-inbox.json'))
   assert.deepEqual(harness.attachmentInstances[0].cleanupCalls, [[]])
   assert.equal(harness.windows.length, 1)
   assert.equal(harness.windows[0].input.icon?.isEmpty?.(), false)
@@ -167,9 +219,175 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     path.resolve(__dirname, '../../frontend/dist/index.html'),
   )
   assert.deepEqual(harness.windows[0].loads[0].options, { hash: '/chat' })
-  assert.equal([...harness.ipcHandlers.keys()].some(name => name.includes('cloud')), false)
-  assert.equal([...harness.ipcHandlers.keys()].some(name => name.includes('configure')), false)
+  assert.deepEqual(
+    [...harness.ipcHandlers.keys()].filter(name => name.includes('cloud')),
+    [
+      'local-cloud-agent:provide-input',
+      'local-cloud-agent:decide-permission',
+      'local-cloud-agent:cancel',
+    ],
+  )
+  assert.equal([...harness.ipcHandlers.keys()].some(name => (
+    name.startsWith('local-cloud-agent:') && name.includes('configure')
+  )), false)
+  assert.equal([...harness.ipcHandlers.keys()].some(name => name.includes('channel')), false)
   assert.equal(harness.ipcListeners.size, 0)
+})
+
+test('an explicitly installed Agent Connector is available through generic catalog metadata and main runtime', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-main-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const manifestDirectory = path.join(directory, 'agent-connectors', 'manifests')
+  fs.mkdirSync(manifestDirectory, { recursive: true })
+  fs.writeFileSync(
+    path.join(manifestDirectory, `${SAMPLE_AGENT_CONNECTOR_MANIFEST.manifestId}.json`),
+    serializeAgentConnectorManifest(SAMPLE_AGENT_CONNECTOR_MANIFEST),
+  )
+  const { harness } = loadMain(directory, {
+    detectedAgents: [{
+      kind: 'codex', name: 'Codex CLI', executable: '/private/bin/codex',
+      version: 'codex-cli 0.147.0', compatibilityState: 'compatible',
+    }],
+  })
+  await harness.ready()
+  await assert.rejects(
+    harness.ipcHandlers.get('local-agent-connector:configure')(
+      harness.event(),
+      {
+        manifestId: SAMPLE_AGENT_CONNECTOR_MANIFEST.manifestId,
+        label: 'Codex review account',
+        credentials: null,
+        credentialRef: 'credential-ref:renderer-must-not-control',
+      },
+    ),
+    { message: 'AGENT_CONNECTOR_REQUEST_INVALID' },
+  )
+  const configured = await harness.ipcHandlers.get('local-agent-connector:configure')(
+    harness.event(),
+    {
+      manifestId: SAMPLE_AGENT_CONNECTOR_MANIFEST.manifestId,
+      label: 'Codex review account',
+      credentials: null,
+    },
+  )
+  assert.equal(configured.credentialConfigured, false)
+  assert.equal(Object.hasOwn(configured, 'credentialRef'), false)
+  const workspace = harness.workspaceInstances[0]
+  const agents = await workspace.input.detectAgents()
+  const connector = agents.find(agent => agent.connectorInstanceId)
+  assert.ok(connector)
+  const catalog = await harness.ipcHandlers.get('local-agent-installer:catalog')(harness.event())
+  const profile = catalog.agents.find(agent => agent.kind === connector.kind)
+  assert.equal(profile.connector, true)
+  assert.equal(profile.providerMode, 'connector')
+  assert.equal(profile.description, SAMPLE_AGENT_CONNECTOR_MANIFEST.description)
+  assert.doesNotMatch(JSON.stringify(profile), /private\/bin|credential-ref/i)
+
+  const result = await workspace.input.connectorRuntime.run(
+    connector,
+    'Review through the installed Connector',
+    directory,
+    { runId: 'run-1', agentRunId: 'agent-run-1', sandbox: 'read-only' },
+  )
+  assert.equal(result.outcome, 'completed')
+  assert.equal(result.connector.upstreamVersion, '0.147.0')
+  assert.equal(Object.hasOwn(result.connector, 'credentialRefId'), false)
+  assert.equal(harness.runAgentCalls.length, 1)
+  assert.equal(harness.runAgentCalls[0][0].executable, '/private/bin/codex')
+})
+
+test('Agent Connector IPC persists isolated accounts without returning CredentialRefs or secrets', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-accounts-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const manifestDirectory = path.join(directory, 'agent-connectors', 'manifests')
+  fs.mkdirSync(manifestDirectory, { recursive: true })
+  fs.writeFileSync(
+    path.join(
+      manifestDirectory,
+      `${SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST.manifestId}.json`,
+    ),
+    serializeAgentConnectorManifest(SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST),
+  )
+  const options = {
+    detectedAgents: [{
+      kind: 'codex', name: 'Codex CLI', executable: '/private/bin/codex',
+      version: 'codex-cli 0.147.0', compatibilityState: 'compatible',
+    }],
+  }
+  const { harness } = loadMain(directory, options)
+  await harness.ready()
+  const configure = harness.ipcHandlers.get('local-agent-connector:configure')
+  const list = harness.ipcHandlers.get('local-agent-connector:list')
+  const remove = harness.ipcHandlers.get('local-agent-connector:delete')
+
+  const first = await configure(harness.event(), {
+    manifestId: SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST.manifestId,
+    label: 'Codex account A',
+    credentials: { 'openai-api-key': 'connector-main-secret-a' },
+  })
+  const second = await configure(harness.event(), {
+    manifestId: SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST.manifestId,
+    label: 'Codex account B',
+    credentials: { 'openai-api-key': 'connector-main-secret-b' },
+  })
+  assert.notEqual(first.instanceId, second.instanceId)
+  assert.equal(first.credentialConfigured, true)
+  const listed = await list(harness.event())
+  assert.deepEqual(listed.map(item => item.label), ['Codex account A', 'Codex account B'])
+  assert.doesNotMatch(JSON.stringify(listed), /credential-ref|connector-main-secret/i)
+
+  const workspace = harness.workspaceInstances[0]
+  const agents = await workspace.input.detectAgents()
+  const result = await workspace.input.connectorRuntime.run(
+    agents.find(agent => agent.kind === first.instanceId),
+    'Review with account A',
+    directory,
+    { runId: 'run-account-a', agentRunId: 'agent-run-account-a', sandbox: 'read-only' },
+  )
+  assert.doesNotMatch(JSON.stringify(result), /credential-ref|connector-main-secret/i)
+  assert.equal(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'connector-main-secret-a')
+
+  const instanceFile = fs.readFileSync(
+    path.join(directory, 'agent-connectors', 'instances.json'),
+    'utf8',
+  )
+  const credentialFile = fs.readFileSync(
+    path.join(directory, 'roundrelay-private', 'agent-connector-credentials.json'),
+    'utf8',
+  )
+  assert.match(instanceFile, /credential-ref:/)
+  assert.doesNotMatch(instanceFile, /connector-main-secret|encrypted/i)
+  assert.doesNotMatch(credentialFile, /connector-main-secret|Codex account/i)
+
+  const { harness: restarted } = loadMain(directory, options)
+  await restarted.ready()
+  const restored = await restarted.ipcHandlers.get('local-agent-connector:list')(
+    restarted.event(),
+  )
+  assert.deepEqual(restored.map(item => item.label), ['Codex account A', 'Codex account B'])
+  await restarted.ipcHandlers.get('local-agent-connector:delete')(
+    restarted.event(), first.instanceId,
+  )
+  const afterDelete = await restarted.ipcHandlers.get('local-agent-connector:list')(
+    restarted.event(),
+  )
+  assert.deepEqual(afterDelete.map(item => item.label), ['Codex account B'])
+
+  await assert.rejects(
+    remove(harness.event(), {
+      instanceId: second.instanceId,
+      credentialRef: 'credential-ref:renderer-controlled',
+    }),
+    { message: 'AGENT_CONNECTOR_REQUEST_INVALID' },
+  )
+  await assert.rejects(
+    configure(harness.event(), {
+      manifestId: SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST.manifestId,
+      label: 'Invalid account',
+      credentials: { unexpected: 'connector-main-secret-c' },
+    }),
+    { message: 'AGENT_CONNECTOR_CREDENTIAL_INVALID' },
+  )
 })
 
 test('Custom Agent IPC keeps executable paths private and refreshes the local catalog', async (t) => {
@@ -209,14 +427,31 @@ test('Custom Agent IPC keeps executable paths private and refreshes the local ca
   }])
   assert.equal(harness.workspaceInstances[0].refreshCount, 1)
 
+  let outboundCalls = 0
+  const onOutboundPayload = () => { outboundCalls += 1 }
+  const signal = new AbortController().signal
   const customReply = await harness.workspaceInstances[0].input.runAgent(
     { kind: result.agent.kind },
     'Review this change',
     '/tmp/project',
-    { signal: new AbortController().signal },
+    {
+      signal,
+      attachments: ['/tmp/project/input.txt'],
+      onProgress: () => {},
+      onEvent: () => {},
+      onOutboundPayload,
+    },
   )
   assert.deepEqual(customReply, { text: 'custom reply', sessionRef: '' })
   assert.equal(harness.customAgentRunCalls.length, 1)
+  assert.equal(outboundCalls, 0)
+  const [runKind, runPrompt, runWorkdir, runOptions] = harness.customAgentRunCalls[0]
+  assert.equal(runKind, result.agent.kind)
+  assert.equal(runPrompt, 'Review this change')
+  assert.equal(runWorkdir, '/tmp/project')
+  assert.equal(runOptions.signal, signal)
+  assert.deepEqual(runOptions.attachments, ['/tmp/project/input.txt'])
+  assert.equal(runOptions.onOutboundPayload, onOutboundPayload)
   assert.equal(harness.runAgentCalls.length, 0)
 
   const catalog = await harness.ipcHandlers.get('local-agent-installer:catalog')(harness.event())
@@ -285,6 +520,20 @@ test('a second desktop launch restores and focuses the existing window', async (
   assert.equal(harness.windows[0].restoreCount, 1)
   assert.equal(harness.windows[0].showCount, 1)
   assert.equal(harness.windows[0].focusCount, 1)
+})
+
+test('closing the app window does not stop an active main-process Channel receiver', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-channel-background-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory, { channelReceiverCount: 1 })
+  await harness.ready()
+  const runtime = harness.channelIngressRuntimeInstances[0]
+
+  harness.appListeners.get('window-all-closed')()
+
+  assert.equal(runtime.startCount, 1)
+  assert.equal(runtime.shutdownCount, 0)
+  assert.equal(harness.quitCount, 0)
 })
 
 test('run completion uses sanitized renderer events and a localized background notification', async (t) => {
@@ -515,6 +764,271 @@ test('workspace stop IPC forwards only a validated group and run pair', async (t
   assert.equal(workspace.stopCalls.length, 2)
 })
 
+test('workspace Agent control IPC accepts only a bound active Agent request', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-control-contract-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const control = harness.ipcHandlers.get('local-workspace:control-agent')
+  const workspace = harness.workspaceInstances[0]
+
+  assert.equal(await control(
+    harness.event(), '群聊 1', 'run:trace.1', 'hermes', 'retry', '',
+  ), true)
+  assert.equal(await control(
+    harness.event(), '群聊 1', 'run:trace.1', 'hermes', 'replace', 'codex',
+  ), true)
+  assert.deepEqual(workspace.agentControlCalls, [
+    {
+      groupId: '群聊 1', runId: 'run:trace.1', kind: 'hermes', action: 'retry', replacementKind: '',
+    },
+    {
+      groupId: '群聊 1', runId: 'run:trace.1', kind: 'hermes', action: 'replace', replacementKind: 'codex',
+    },
+  ])
+
+  for (const args of [
+    ['group\ninvalid', 'run-1', 'hermes', 'cancel', ''],
+    ['group-1', '../run', 'hermes', 'cancel', ''],
+    ['group-1', 'run-1', '../hermes', 'cancel', ''],
+    ['group-1', 'run-1', 'hermes', 'restart', ''],
+    ['group-1', 'run-1', 'hermes', 'retry', 'codex'],
+    ['group-1', 'run-1', 'hermes', 'replace', 'hermes'],
+  ]) assert.equal(await control(harness.event(), ...args), false)
+  assert.equal(workspace.agentControlCalls.length, 2)
+})
+
+test('workspace Human Gate IPC derives decisions from the persisted option', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-human-gate-contract-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const decide = harness.ipcHandlers.get('local-workspace:decide-human-gate')
+  const workspace = harness.workspaceInstances[0]
+  const gateId = `human-gate-${'b'.repeat(64)}`
+  workspace.state.humanGates = [{
+    gateId,
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+      { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+    ],
+  }]
+
+  assert.deepEqual(await decide(harness.event(), gateId, {
+    status: 'approved', optionId: 'allow-once',
+  }), { gateId, status: 'approved', optionId: 'allow-once' })
+  assert.deepEqual(await decide(harness.event(), gateId, {
+    optionId: 'reopen-task',
+  }), { gateId, status: 'rejected', optionId: 'reopen-task' })
+  assert.deepEqual(workspace.humanGateDecisionCalls, [
+    { gateId, decision: { status: 'approved', optionId: 'allow-once' } },
+    { gateId, decision: { status: 'rejected', optionId: 'reopen-task' } },
+  ])
+
+  for (const [invalidGateId, decision] of [
+    ['gate-1', { status: 'approved', optionId: 'allow-once' }],
+    [gateId, { status: 'pending', optionId: 'allow-once' }],
+    [gateId, { status: 'approved', optionId: '../allow' }],
+    [gateId, { status: 'approved', optionId: 'allow-once', actorId: 'renderer' }],
+    [gateId, { status: 'approved', optionId: 'reopen-task' }],
+    [gateId, { optionId: 'missing-option' }],
+  ]) {
+    await assert.rejects(
+      async () => decide(harness.event(), invalidGateId, decision),
+      { message: 'HUMAN_GATE_DECISION_INVALID' },
+    )
+  }
+  assert.equal(workspace.humanGateDecisionCalls.length, 2)
+})
+
+test('Cloud Agent IPC exposes only validated continuation and cancel actions', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cloud-agent-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const runtime = harness.cloudAgentRuntimeInstances[0]
+  const provideInput = harness.ipcHandlers.get('local-cloud-agent:provide-input')
+  const decidePermission = harness.ipcHandlers.get('local-cloud-agent:decide-permission')
+  const cancel = harness.ipcHandlers.get('local-cloud-agent:cancel')
+  runtime.provideInput = (runId, requestId, value) => {
+    runtime.inputCalls.push({ runId, requestId, value })
+    return {
+      runId,
+      agentRunId: 'agent-run-cloud-1',
+      status: 'waiting_input',
+      connectorId: 'cloud-test',
+      jobId: 'private-job-1',
+      cursor: 'private-cursor-1',
+      artifactIds: ['artifact-1'],
+      evidenceIds: ['evidence-1'],
+      waiting: {
+        type: 'input', requestId, prompt: 'Which branch?',
+        jobId: 'nested-private-job', cursor: 'nested-private-cursor',
+      },
+    }
+  }
+  runtime.decidePermission = (runId, requestId, decision) => {
+    runtime.permissionCalls.push({ runId, requestId, decision })
+    return {
+      runId,
+      agentRunId: 'agent-run-cloud-1',
+      status: 'waiting_permission',
+      connectorId: 'cloud-test',
+      jobId: 'private-job-1',
+      cursor: 'private-cursor-2',
+      artifactIds: ['artifact-1'],
+      evidenceIds: ['evidence-1'],
+      waiting: {
+        type: 'permission', requestId, permission: 'workspace-write', summary: 'Apply patch',
+        jobId: 'nested-private-job', cursor: 'nested-private-cursor',
+      },
+    }
+  }
+
+  assert.deepEqual(
+    await provideInput(harness.event(), 'run-cloud-1', 'question-1', 'release/next'),
+    {
+      runId: 'run-cloud-1',
+      agentRunId: 'agent-run-cloud-1',
+      status: 'waiting_input',
+      connectorId: 'cloud-test',
+      artifactIds: ['artifact-1'],
+      evidenceIds: ['evidence-1'],
+      waiting: { type: 'input', requestId: 'question-1', prompt: 'Which branch?' },
+    },
+  )
+  assert.deepEqual(
+    await decidePermission(harness.event(), 'run-cloud-1', 'permission-1', 'approved'),
+    {
+      runId: 'run-cloud-1',
+      agentRunId: 'agent-run-cloud-1',
+      status: 'waiting_permission',
+      connectorId: 'cloud-test',
+      artifactIds: ['artifact-1'],
+      evidenceIds: ['evidence-1'],
+      waiting: {
+        type: 'permission', requestId: 'permission-1',
+        permission: 'workspace-write', summary: 'Apply patch',
+      },
+    },
+  )
+  assert.equal(await cancel(harness.event(), 'run-cloud-1'), true)
+  assert.deepEqual(runtime.inputCalls, [{
+    runId: 'run-cloud-1', requestId: 'question-1', value: 'release/next',
+  }])
+  assert.deepEqual(runtime.permissionCalls, [{
+    runId: 'run-cloud-1', requestId: 'permission-1', decision: 'approved',
+  }])
+  assert.deepEqual(runtime.cancelCalls, ['run-cloud-1'])
+
+  assert.throws(
+    () => provideInput(harness.event(), '../run', 'question-1', 'value'),
+    { message: 'CLOUD_AGENT_INPUT_INVALID' },
+  )
+  assert.throws(
+    () => provideInput(harness.event(), 'run-cloud-1', 'question-1', ['private']),
+    { message: 'CLOUD_AGENT_INPUT_INVALID' },
+  )
+  assert.throws(
+    () => decidePermission(harness.event(), 'run-cloud-1', 'permission-1', 'allow'),
+    { message: 'CLOUD_AGENT_PERMISSION_DECISION_INVALID' },
+  )
+  assert.throws(
+    () => cancel(harness.event(), '../run'),
+    { message: 'CLOUD_AGENT_RUN_INVALID' },
+  )
+  assert.equal(runtime.inputCalls.length, 1)
+  assert.equal(runtime.permissionCalls.length, 1)
+  assert.equal(runtime.cancelCalls.length, 1)
+})
+
+test('Outcome IPC persists every Adoption action with a main-owned human actor', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-outcome-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const workspace = harness.workspaceInstances[0]
+  const { contentBlobStore, outcomeStore } = workspace.input
+  const contentRef = contentBlobStore.put('Outcome IPC report', { mediaType: 'text/plain' })
+  const artifact = outcomeStore.putArtifact({
+    type: 'document',
+    name: 'outcome-ipc-report.txt',
+    producedBy: {
+      runId: 'run-outcome-1',
+      agentRunId: 'agent-run-outcome-1',
+      agentKind: 'codex',
+    },
+    contentRef,
+    contentHash: contentRef.hash,
+  })
+  const recordAdoption = harness.ipcHandlers.get('local-outcome:record-adoption')
+  let previousAdoptionId = null
+
+  for (const status of ['exported', 'applied', 'committed', 'sent']) {
+    const request = {
+      artifactId: artifact.artifactId,
+      status,
+      summary: `The local user recorded ${status}.`,
+      destinationRef: { kind: 'workspace-relative', path: `adoptions/${status}.json` },
+      previousAdoptionId,
+    }
+    const result = await recordAdoption(harness.event(), request)
+    assert.deepEqual(Object.keys(result).sort(), [
+      'adoptionId', 'artifactId', 'previousAdoptionId', 'status',
+    ])
+    assert.equal(result.artifactId, artifact.artifactId)
+    assert.equal(result.status, status)
+    assert.equal(result.previousAdoptionId, previousAdoptionId)
+    const stored = outcomeStore.getAdoption(result.adoptionId)
+    assert.deepEqual(stored.actor, { kind: 'human', actorId: 'local-user' })
+    assert.deepEqual(stored.destinationRef, request.destinationRef)
+    previousAdoptionId = result.adoptionId
+  }
+
+  assert.throws(
+    () => recordAdoption(harness.event(), {
+      artifactId: artifact.artifactId,
+      status: 'exported',
+      destinationRef: { kind: 'workspace-relative', path: 'adoptions/exported.json' },
+      actor: { kind: 'agent', agentKind: 'codex' },
+    }),
+    { message: 'LOCAL_ADOPTION_REQUEST_INVALID' },
+  )
+  assert.throws(
+    () => recordAdoption(harness.event(), {
+      artifactId: `artifact-${'a'.repeat(64)}`,
+      status: 'exported',
+      destinationRef: { kind: 'workspace-relative', path: 'adoptions/exported.json' },
+    }),
+    { message: 'ARTIFACT_NOT_FOUND' },
+  )
+  assert.throws(
+    () => recordAdoption(harness.event(), {
+      artifactId: artifact.artifactId,
+      status: 'accepted',
+      destinationRef: { kind: 'workspace-relative', path: 'adoptions/accepted.json' },
+    }),
+    { message: 'LOCAL_ADOPTION_REQUEST_INVALID' },
+  )
+  assert.throws(
+    () => recordAdoption(harness.event(), {
+      artifactId: artifact.artifactId,
+      status: 'exported',
+    }),
+    { message: 'LOCAL_ADOPTION_REQUEST_INVALID' },
+  )
+  assert.throws(
+    () => recordAdoption(harness.event(), {
+      artifactId: artifact.artifactId,
+      status: 'sent',
+      summary: 'Authorization: Bearer renderer-secret-value',
+      destinationRef: { kind: 'uri', uri: 'https://example.test/delivery/1' },
+    }),
+    { message: 'ADOPTION_FORBIDDEN_VALUE' },
+  )
+})
+
 test('startup attachment cleanup receives every persisted message reference once', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachment-cleanup-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -694,6 +1208,7 @@ test('Knowledge base IPC exposes status, safe guides, and a local Obsidian direc
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const vaultPath = path.join(directory, 'Obsidian Vault')
+  fs.mkdirSync(vaultPath)
   const { harness } = loadMain(directory, {
     dialogResult: { canceled: false, filePaths: [vaultPath] },
     knowledgeBaseGuideUrl: (kind, action) => (
@@ -728,6 +1243,113 @@ test('Knowledge base IPC exposes status, safe guides, and a local Obsidian direc
   })
   assert.deepEqual(harness.knowledgeBaseStoreInstances[0].savedVaultPaths, [vaultPath])
   assert.deepEqual(picked, [{ kind: 'obsidian', installed: true, vaultPath }])
+})
+
+test('Knowledge Connector IPC exposes a sanitized complete lifecycle with main-owned source grants', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-connector-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const vaultPath = path.join(directory, 'Private Obsidian Vault')
+  const notePath = path.join(vaultPath, 'notes', 'decision.md')
+  fs.mkdirSync(path.dirname(notePath), { recursive: true })
+  fs.writeFileSync(notePath, [
+    'Connector evidence for a decision.',
+    'api_key=sk-renderer-must-not-see-123456',
+  ].join('\n'))
+  const { harness } = loadMain(directory, { obsidianVaultPath: vaultPath })
+  await harness.ready()
+  const list = harness.ipcHandlers.get('local-knowledge-connector:list')
+  const probe = harness.ipcHandlers.get('local-knowledge-connector:probe')
+  const search = harness.ipcHandlers.get('local-knowledge-connector:search')
+  const fetch = harness.ipcHandlers.get('local-knowledge-connector:fetch')
+  const snapshot = harness.ipcHandlers.get('local-knowledge-connector:snapshot')
+  const citation = harness.ipcHandlers.get('local-knowledge-connector:citation')
+  const revoke = harness.ipcHandlers.get('local-knowledge-connector:revoke')
+  const authorize = harness.ipcHandlers.get('local-knowledge-connector:authorize')
+  const select = harness.ipcHandlers.get('local-knowledge-connector:select')
+
+  const instances = await list(harness.event())
+  assert.equal(instances.length, 2)
+  const instance = instances.find(item => item.connectorId === 'knowledge.filesystem')
+  assert.ok(instance)
+  const probed = await probe(harness.event(), instance.instanceId)
+  const [source] = await search(harness.event(), instance.instanceId, {
+    query: 'evidence', limit: 5,
+  })
+  const sourceRequest = { sourceId: source.sourceId, locator: source.locator }
+  const fetched = await fetch(harness.event(), instance.instanceId, sourceRequest)
+  const captured = await snapshot(harness.event(), instance.instanceId, sourceRequest)
+  const cited = await citation(harness.event(), instance.instanceId, {
+    snapshotId: captured.snapshotId,
+  })
+  const selected = await select(harness.event(), instance.instanceId, {
+    ...sourceRequest,
+    captureMode: 'snapshot',
+  })
+  const rendererPayload = JSON.stringify({
+    instances, probed, source, fetched, captured, cited, selected,
+  })
+  assert.equal(instance.accessMode, 'read-only')
+  assert.equal(probed.status, 'ready')
+  assert.equal(Object.hasOwn(selected, 'locator'), false)
+  assert.equal(Object.hasOwn(captured, 'contentRef'), false)
+  assert.equal(Object.hasOwn(cited.citation, 'contentRef'), false)
+  assert.match(fetched.content, /\[redacted\]/)
+  assert.doesNotMatch(rendererPayload, new RegExp(vaultPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(rendererPayload, /credentialRef|sk-renderer-must-not-see/i)
+
+  const validated = await harness.workspaceInstances[0].input.validateKnowledgeBaseSelections(
+    ['codex'],
+    [{ kind: 'obsidian', targetKinds: ['codex'], selectionId: selected.selectionId }],
+  )
+  assert.equal(validated[0].connectorSource.snapshot.sourceId, source.sourceId)
+  assert.equal(validated[0].connectorSource.citation.verification, 'snapshot')
+  fs.writeFileSync(notePath, 'Mutated after main-owned snapshot')
+  assert.match(
+    harness.workspaceInstances[0].input.contentBlobStore
+      .read(validated[0].connectorSource.snapshot.contentRef).toString('utf8'),
+    /Connector evidence/,
+  )
+
+  assert.throws(
+    () => list(harness.event(), 'unexpected'),
+    { message: 'LOCAL_KNOWLEDGE_CONNECTOR_REQUEST_INVALID' },
+  )
+  await assert.rejects(
+    () => search(harness.event(), instance.instanceId, {
+      query: 'evidence', limit: 5, vaultPath,
+    }),
+    { message: 'LOCAL_KNOWLEDGE_SEARCH_INVALID' },
+  )
+  await assert.rejects(
+    () => select(harness.event(), instance.instanceId, {
+      sourceId: source.sourceId,
+      locator: source.locator,
+      captureMode: 'snapshot',
+      credentialRef: 'credential-ref:renderer-controlled',
+    }),
+    { message: 'LOCAL_KNOWLEDGE_SELECTION_INVALID' },
+  )
+  await assert.rejects(
+    () => fetch(harness.event(), instance.instanceId, {
+      sourceId: `knowledge-source-${'a'.repeat(64)}`,
+      locator: 'notes/private.md',
+    }),
+    { message: 'LOCAL_KNOWLEDGE_SOURCE_NOT_GRANTED' },
+  )
+  await assert.rejects(
+    () => harness.workspaceInstances[0].input.validateKnowledgeBaseSelections(
+      ['codex'],
+      [{
+        kind: 'obsidian', targetKinds: ['codex'], selectionId: selected.selectionId,
+        locator: source.locator,
+      }],
+    ),
+    { message: 'LOCAL_KNOWLEDGE_BASE_SELECTION_INVALID' },
+  )
+  const revoked = await revoke(harness.event(), instance.instanceId)
+  assert.equal(revoked.authorized, false)
+  const reauthorized = await authorize(harness.event(), 'knowledge.filesystem')
+  assert.equal(reauthorized.instanceId, instance.instanceId)
 })
 
 test('Knowledge base status IPC shares concurrent source probes', async (t) => {
@@ -1174,9 +1796,11 @@ test('before-quit waits for local workspace and installer cleanup', async (t) =>
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspaceStopGate = deferred()
   const installerIdleGate = deferred()
+  const cloudShutdownGate = deferred()
   const { harness } = loadMain(directory, {
     workspaceStopGate,
     installerIdleGate,
+    cloudShutdownGate,
     windowFocused: false,
     installerState: { phase: 'installing', canCancel: true, taskId: 'task-1' },
   })
@@ -1187,6 +1811,8 @@ test('before-quit waits for local workspace and installer cleanup', async (t) =>
   assert.equal(prevented, 1)
   assert.equal(harness.installerInstances[0].pendingCancelCount, 1)
   assert.deepEqual(harness.installerInstances[0].cancelled, ['task-1'])
+  assert.equal(harness.channelIngressRuntimeInstances[0].shutdownCount, 1)
+  assert.equal(harness.cloudAgentRuntimeInstances[0].shutdownCount, 1)
   assert.equal(harness.quitCount, 0)
 
   harness.workspaceInstances[0].emit('run-finished', {
@@ -1206,6 +1832,9 @@ test('before-quit waits for local workspace and installer cleanup', async (t) =>
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(harness.quitCount, 0)
   installerIdleGate.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(harness.quitCount, 0)
+  cloudShutdownGate.resolve()
   await waitFor(() => harness.quitCount === 1)
   assert.equal(harness.workspaceInstances[0].stopCount, 1)
 })

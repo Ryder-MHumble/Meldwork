@@ -7,6 +7,8 @@ const { LocalWorkspaceRunCoordinator } = coordinatorApi
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { fixture: workspaceFixture } = require('./local-workspace-test-helpers.cjs')
 
+const CONTEXT_PACK_ID = `context-pack-${'a'.repeat(64)}`
+
 function fixture(overrides = {}) {
   const preparingRuns = new Map()
   const activeRuns = new Map()
@@ -31,6 +33,7 @@ function fixture(overrides = {}) {
       return true
     }),
     hasRunLedger: () => overrides.hasRunLedger === true,
+    validateContextPack: overrides.validateContextPack || (() => true),
     finishRunCheckpoint: (...args) => calls.push(['ledger-finish', ...args]),
     scheduleRunCheckpoint: (...args) => calls.push(['schedule', ...args]),
     emitChanged: overrides.emitChanged || (() => calls.push(['changed'])),
@@ -78,6 +81,7 @@ test('controller construction copies targets and keeps its completion state idem
 
   assert.equal(controller.runId, 'run-1')
   assert.equal(controller.taskId, 'root-1')
+  assert.equal(controller.taskBound, false)
   assert.deepEqual(controller.targetKinds, ['codex', 'hermes'])
   assert.equal(controller.maxRounds, 10)
   assert.equal(controller.unlimitedRounds, false)
@@ -99,14 +103,17 @@ test('reservation migrates the same controller into active state and preserves l
   const reservation = coordinator.reserve('group-1', 'auto', ['codex'], 'root-1', 3)
 
   assert.equal(preparingRuns.get('group-1'), reservation)
-  assert.deepEqual(calls.map(call => call[0]), ['checkpoint', 'changed'])
-  assert.equal(calls[0][3], 'preparing')
+  assert.deepEqual(calls.map(call => call[0]), ['changed'])
 
   calls.length = 0
-  assert.equal(coordinator.bindTask('group-1', reservation, 'task-1', 'root-1'), true)
+  assert.equal(coordinator.bindTask(
+    'group-1', reservation, 'task-1', 'root-1', CONTEXT_PACK_ID,
+  ), true)
   assert.equal(reservation.taskId, 'task-1')
   assert.equal(reservation.threadRootId, 'root-1')
-  assert.deepEqual(calls.map(call => call[0]), ['checkpoint'])
+  assert.equal(reservation.contextPackId, CONTEXT_PACK_ID)
+  assert.equal(reservation.taskBound, true)
+  assert.deepEqual(calls.map(call => call[0]), ['checkpoint', 'changed'])
   assert.equal(calls[0][3], 'preparing')
 
   calls.length = 0
@@ -130,7 +137,54 @@ test('reservation migrates the same controller into active state and preserves l
   assert.equal(calls[2][2].taskId, 'task-1')
 })
 
-test('durable lifecycle checkpoints fail closed and release the reserved controller', async () => {
+test('resume restores the latest durable completion and failure state per Agent', async () => {
+  const { activeRuns, calls, coordinator } = fixture()
+  const controller = coordinator.resume({
+    runId: 'run-durable',
+    taskId: 'task-1',
+    contextPackId: CONTEXT_PACK_ID,
+    groupId: 'group-1',
+    threadRootId: 'root-1',
+    mode: 'manual',
+    targetKinds: ['codex', 'hermes', 'kimi', 'workbuddy'],
+    currentRound: 2,
+    startedAt: 100,
+    attemptHistory: [],
+    continuation: {
+      gateId: 'gate-1',
+      gateType: 'decision',
+      resumeKind: 'role_review_decision',
+      state: 'ready',
+      agentRunId: 'agent-run-hermes-2',
+      agentKind: 'hermes',
+      round: 2,
+      createdAt: 100,
+      updatedAt: 200,
+    },
+    agentRuns: [
+      { agentRunId: 'agent-run-codex-1', kind: 'codex', status: 'failed' },
+      { agentRunId: 'agent-run-codex-2', kind: 'codex', status: 'completed' },
+      { agentRunId: 'agent-run-hermes-1', kind: 'hermes', status: 'completed' },
+      { agentRunId: 'agent-run-hermes-2', kind: 'hermes', status: 'stopped' },
+      { agentRunId: 'agent-run-kimi-1', kind: 'kimi', status: 'waiting' },
+      { agentRunId: 'agent-run-workbuddy-1', kind: 'workbuddy', status: 'interrupted' },
+    ],
+  })
+
+  assert.equal(controller.runId, 'run-durable')
+  assert.equal(activeRuns.get('group-1'), controller)
+  assert.deepEqual(controller.completedKinds, ['codex', 'hermes', 'workbuddy'])
+  assert.deepEqual(controller.failedKinds, ['hermes'])
+
+  calls.length = 0
+  coordinator.finish('group-1', controller, 'completed')
+  await controller.done
+  const event = calls.find(call => call[0] === 'emit' && call[1] === 'run-finished')[2]
+  assert.deepEqual(event.completedKinds, ['codex', 'hermes', 'workbuddy'])
+  assert.deepEqual(event.failedKinds, ['hermes'])
+})
+
+test('the first durable Task checkpoint fails closed without creating a Run', async () => {
   const calls = []
   const { activeRuns, coordinator, preparingRuns } = fixture({
     hasRunLedger: true,
@@ -140,39 +194,115 @@ test('durable lifecycle checkpoints fail closed and release the reserved control
     },
   })
 
-  let controller
-  assert.throws(() => {
-    controller = coordinator.reserve('group-1', 'manual', ['codex'])
-  }, { message: 'LOCAL_RUN_PERSIST_FAILED' })
+  const controller = coordinator.reserve('group-1', 'manual', ['codex'])
+  assert.throws(
+    () => coordinator.bindTask(
+      'group-1', controller, 'task-1', 'root-1', CONTEXT_PACK_ID,
+    ),
+    { message: 'LOCAL_RUN_PERSIST_FAILED' },
+  )
 
-  controller = calls[0][1]
-  assert.equal(controller.signal.aborted, true)
-  assert.equal(preparingRuns.size, 0)
+  assert.equal(controller.taskBound, false)
+  assert.equal(controller.contextPackId, '')
+  assert.equal(preparingRuns.get('group-1'), controller)
   assert.equal(activeRuns.size, 0)
+  assert.equal(coordinator.releasePreparation('group-1', controller), true)
+  assert.equal(calls.some(call => call[0] === 'ledger-finish'), false)
+  await controller.done
+})
+
+test('Context Pack validation happens before the first durable checkpoint', async () => {
+  const validationCalls = []
+  const { calls, coordinator } = fixture({
+    validateContextPack: (...args) => {
+      validationCalls.push(args)
+      return false
+    },
+  })
+  const controller = coordinator.reserve('group-1', 'manual', ['codex'])
+  calls.length = 0
+
+  assert.throws(
+    () => coordinator.bindTask(
+      'group-1', controller, 'task-1', 'root-1', CONTEXT_PACK_ID,
+    ),
+    { message: 'LOCAL_RUN_CONTEXT_PACK_INVALID' },
+  )
+
+  assert.deepEqual(validationCalls, [[CONTEXT_PACK_ID, 'task-1']])
+  assert.deepEqual(calls, [])
+  assert.equal(controller.taskBound, false)
+  assert.equal(controller.contextPackId, '')
+  coordinator.releasePreparation('group-1', controller)
+  await controller.done
+})
+
+test('LocalWorkspace rejects a Context Pack captured for another Task', async (t) => {
+  const { directory, options } = workspaceFixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Pack binding', agentKinds: ['codex'], workdir: directory,
+  })
+  const firstTask = workspace.addMessage(group.id, 'user', 'First Task')
+  const secondTask = workspace.addMessage(group.id, 'user', 'Second Task')
+  const firstPack = workspace.createContextPack({
+    group,
+    taskId: firstTask.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: firstTask,
+  })
+  const controller = workspace.reserveRun(
+    group.id, 'manual', ['codex'], secondTask.id,
+  )
+
+  assert.throws(
+    () => workspace.bindRunTask(
+      group.id, controller, secondTask.id, secondTask.id, firstPack.contextPackId,
+    ),
+    { message: 'LOCAL_RUN_CONTEXT_PACK_INVALID' },
+  )
+  assert.equal(controller.taskBound, false)
+  assert.equal(controller.contextPackId, '')
+  workspace.releasePreparation(group.id, controller)
   await controller.done
 })
 
 test('changed failures abort and release newly reserved or active controllers', async () => {
   const expected = new Error('listener failed')
   const first = fixture({ emitChanged: () => { throw expected } })
-  let reservation
+  let reservation = null
+  const createController = first.coordinator.createController.bind(first.coordinator)
+  first.coordinator.createController = (...args) => {
+    reservation = createController(...args)
+    return reservation
+  }
   assert.throws(() => {
-    reservation = first.coordinator.reserve('group-1', 'manual', ['codex'])
+    first.coordinator.reserve('group-1', 'manual', ['codex'])
   }, expected)
   assert.equal(first.preparingRuns.has('group-1'), false)
-  reservation = first.calls[0][2]
   assert.equal(reservation.signal.aborted, true)
 
-  const second = fixture({ emitChanged: () => { throw expected } })
-  let active
+  const second = fixture()
+  const secondReservation = second.coordinator.reserve('group-2', 'manual', ['codex'])
+  second.coordinator.bindTask(
+    'group-2', secondReservation, 'task-2', 'root-2', CONTEXT_PACK_ID,
+  )
+  second.coordinator.emitChanged = () => { throw expected }
   assert.throws(() => {
-    active = second.coordinator.begin('group-2', 'manual', ['codex'], '')
+    second.coordinator.begin(
+      'group-2', 'manual', ['codex'], 'root-2', secondReservation,
+    )
   }, expected)
   assert.equal(second.activeRuns.has('group-2'), false)
-  active = second.calls[0][2]
-  assert.equal(active.signal.aborted, true)
+  assert.equal(second.preparingRuns.get('group-2'), secondReservation)
+  assert.equal(secondReservation.signal.aborted, false)
+  second.coordinator.emitChanged = () => {}
+  second.coordinator.releasePreparation('group-2', secondReservation)
 
-  await Promise.all([reservation.done, active.done])
+  await Promise.all([reservation.done, secondReservation.done])
 })
 
 test('stale finish keeps a newer active controller while still publishing completion', async () => {
@@ -256,4 +386,34 @@ test('stopAll deduplicates controllers, preserves stop reasons, and waits for do
   controller.resolveDone()
   await stopping
   assert.equal(settled, true)
+})
+
+test('shutdown settles a waiting Run even when its final continuation checkpoint fails', async () => {
+  const { activeRuns, coordinator } = fixture({
+    hasRunLedger: true,
+    checkpointRun: (_groupId, _controller, status) => status !== 'waiting',
+  })
+  const controller = coordinator.createController('manual', ['codex'], 'task-1')
+  controller.groupId = 'group-1'
+  controller.continuation = {
+    gateId: 'human-gate-pending',
+    state: 'pending',
+  }
+  activeRuns.set('group-1', controller)
+
+  const stopping = coordinator.stopAll()
+  assert.throws(
+    () => coordinator.finish('group-1', controller, 'interrupted'),
+    { message: 'LOCAL_RUN_PERSIST_FAILED' },
+  )
+
+  let timeout
+  const settled = await Promise.race([
+    stopping.then(() => true),
+    new Promise(resolve => { timeout = setTimeout(() => resolve(false), 100) }),
+  ])
+  clearTimeout(timeout)
+  assert.equal(settled, true)
+  assert.equal(controller.finished, true)
+  assert.equal(activeRuns.has('group-1'), false)
 })

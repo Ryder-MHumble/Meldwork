@@ -2,6 +2,8 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { ContentBlobStore } = require('../src/content-blob-store.cjs')
+const { HumanGateStore } = require('../src/human-gate-store.cjs')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { deferred, fixture } = require('./local-workspace-test-helpers.cjs')
 
@@ -33,6 +35,42 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(kimi.credentialState, 'unknown')
   assert.equal(kimi.showInSidebar, false)
   assert.equal(readinessAgents.find(agent => agent.kind === 'kimi').executable, '/tmp/kimi')
+})
+
+test('workspace startup rejects orphaned Human Gates after restoring interrupted Runs', (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const privateRoot = path.join(directory, 'roundrelay-private')
+  const contentBlobStore = new ContentBlobStore({
+    rootPath: path.join(privateRoot, 'content-blobs'),
+  })
+  const humanGateStore = new HumanGateStore({
+    storagePath: path.join(privateRoot, 'human-gates.json'),
+    contentBlobStore,
+  })
+  const pending = humanGateStore.create({
+    type: 'permission',
+    runId: 'run-orphaned',
+    agentRunId: 'agent-run-orphaned',
+    agentKind: 'codex',
+    summary: 'Agent requests permission to edit the workspace.',
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+    ],
+    createdAt: '2026-07-28T00:00:00.000Z',
+    request: { tool: 'write_file' },
+  })
+
+  const workspace = new LocalWorkspace({ ...options, contentBlobStore, humanGateStore })
+
+  assert.equal(workspace.listHumanGates({ pendingOnly: true }).length, 0)
+  assert.deepEqual(workspace.listHumanGates().find(gate => gate.gateId === pending.gateId)?.decision, {
+    status: 'rejected',
+    optionId: 'reject-once',
+    actorId: 'meldwork-system',
+    decidedAt: '2026-07-28T00:00:00.000Z',
+  })
 })
 
 test('review-only Agents cannot join ordinary direct or group conversations', async (t) => {
@@ -100,8 +138,22 @@ test('an explicit internal code-review task runs once and remains read-only', as
     createdAt: '2026-07-28T00:00:00.000Z', updatedAt: '2026-07-28T00:00:00.000Z',
   }
   workspace.state.groups.push(group)
+  const task = workspace.addMessage(group.id, 'user', 'Review the current workspace')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['opencodereview'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(
+    group.id, 'manual', ['opencodereview'], task.id,
+  )
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
   const controller = workspace.beginRun(
-    group.id, 'manual', ['opencodereview'], '',
+    group.id, 'manual', ['opencodereview'], task.id, reservation,
   )
   controller.currentKind = 'opencodereview'
 
@@ -423,7 +475,7 @@ test('Skills are validated and injected only into their selected target Agent', 
   assert.match(calls[1].prompt, /research\/sources: Find sources/)
   assert.doesNotMatch(calls[1].prompt, /quality\/review|Review code/)
   assert.equal(calls[0].runOptions.skills, undefined)
-  assert.deepEqual(calls[1].runOptions.skills, ['sources'])
+  assert.equal(calls[1].runOptions.skills, undefined)
   assert.deepEqual(workspace.snapshot().messages[0].skillHints, [review, research])
 
   await assert.rejects(
@@ -746,12 +798,22 @@ test('a failed run-start notification does not leave an active run behind', (t) 
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
-  workspace.on('changed', () => { throw new Error('listener failed') })
+  const reservation = workspace.reserveRun('group-id', 'manual', ['codex'])
+  reservation.taskId = 'thread-id'
+  reservation.threadRootId = 'thread-id'
+  reservation.contextPackId = `context-pack-${'a'.repeat(64)}`
+  reservation.taskBound = true
+  const failChanged = () => { throw new Error('listener failed') }
+  workspace.on('changed', failChanged)
 
   assert.throws(
-    () => workspace.beginRun('group-id', 'manual', ['codex'], 'thread-id'),
+    () => workspace.beginRun(
+      'group-id', 'manual', ['codex'], 'thread-id', reservation,
+    ),
     { message: 'listener failed' },
   )
+  workspace.off('changed', failChanged)
+  workspace.releasePreparation('group-id', reservation)
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
 })
 
@@ -780,7 +842,8 @@ test('manual send reserves its group throughout asynchronous attachment prefligh
     }],
   })
 
-  assert.equal(workspace.snapshot().runs[0].phase, 'preparing')
+  assert.deepEqual(workspace.snapshot().runningGroupIds, [group.id])
+  assert.deepEqual(workspace.snapshot().runs, [])
   await assert.rejects(
     workspace.sendMessage({ groupId: group.id, text: 'Second', targetKinds: ['codex'] }),
     { message: 'LOCAL_GROUP_RUNNING' },
@@ -845,7 +908,7 @@ test('automatic discussion cannot overtake a manual send in preflight', async (t
   )), false)
 })
 
-test('stopAll waits for an in-flight preflight and prevents it from launching an Agent', async (t) => {
+test('stopAll aborts an in-flight preflight and prevents it from launching an Agent', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const attachmentEntered = deferred()
@@ -876,16 +939,91 @@ test('stopAll waits for an in-flight preflight and prevents it from launching an
 
   let shutdownComplete = false
   const shutdown = workspace.stopAll().then(() => { shutdownComplete = true })
-  await new Promise(resolve => setImmediate(resolve))
-  assert.equal(shutdownComplete, false)
-
-  attachmentGate.resolve()
   await Promise.all([stoppedSend, shutdown])
 
   assert.equal(shutdownComplete, true)
   assert.equal(calls.length, 0)
   assert.equal(workspace.snapshot().messages.length, 0)
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
+
+  attachmentGate.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+})
+
+test('stop and stopAll bound preflight resolvers that ignore cancellation', async (t) => {
+  const stages = ['attachment', 'skill', 'knowledge']
+  const actions = ['stop', 'stopAll']
+  for (const stage of stages) {
+    for (const action of actions) {
+      await t.test(`${action} during ${stage} preflight`, async (t) => {
+        const { directory, calls, options } = fixture()
+        t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+        const entered = deferred()
+        const blocked = deferred()
+        options.runAbortGraceMs = 100
+        if (stage === 'attachment') {
+          options.resolveAttachments = async () => {
+            entered.resolve()
+            return await blocked.promise
+          }
+        } else if (stage === 'skill') {
+          options.validateSkillSelections = async () => {
+            entered.resolve()
+            return await blocked.promise
+          }
+        } else {
+          options.validateKnowledgeBaseSelections = async () => {
+            entered.resolve()
+            return await blocked.promise
+          }
+        }
+        const workspace = new LocalWorkspace(options)
+        await workspace.refreshAgents()
+        const group = workspace.createGroup({
+          name: `${action} ${stage}`, agentKinds: ['codex'], workdir: directory,
+        })
+        const input = {
+          groupId: group.id,
+          text: 'Do not leave this Run preparing',
+          targetKinds: ['codex'],
+          ...(stage === 'attachment' ? {
+            attachments: [{
+              id: 'attachment-stuck', name: 'stuck.png', mimeType: 'image/png', size: 10,
+            }],
+          } : {}),
+        }
+        const send = workspace.sendMessage(input).then(
+          value => ({ status: 'fulfilled', value }),
+          error => ({ status: 'rejected', error }),
+        )
+        await entered.promise
+        const controller = workspace.preparingRuns.get(group.id)
+        assert.ok(controller)
+
+        let stopPromise = Promise.resolve()
+        if (action === 'stopAll') stopPromise = workspace.stopAll()
+        else assert.equal(workspace.stop(group.id, controller.runId), true)
+        let timer
+        const completed = await Promise.race([
+          Promise.all([send, controller.done, stopPromise]).then(([sendResult]) => sendResult),
+          new Promise(resolve => {
+            timer = setTimeout(() => resolve(null), options.runAbortGraceMs)
+          }),
+        ])
+        if (timer) clearTimeout(timer)
+
+        assert.ok(completed, `${action} did not settle ${stage} preflight within abort grace`)
+        assert.equal(completed.status, 'rejected')
+        assert.equal(completed.error?.message, 'LOCAL_AGENT_EXECUTION_STOPPED')
+        assert.equal(workspace.preparingRuns.size, 0)
+        assert.equal(workspace.activeRuns.size, 0)
+        assert.equal(calls.length, 0)
+        assert.equal(workspace.snapshot().messages.length, 0)
+      })
+    }
+  }
 })
 
 test('stopAll records an in-flight Agent and its ledger checkpoint as interrupted', async (t) => {
@@ -939,8 +1077,9 @@ test('a stale controller cannot clear a newer active run for the same group', (t
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
-  const first = workspace.beginRun('group-id', 'manual', ['codex'], '')
+  const first = workspace.createRunController('manual', ['codex'], '')
   const second = workspace.createRunController('manual', ['hermes'], '')
+  workspace.activeRuns.set('group-id', first)
   workspace.activeRuns.set('group-id', second)
 
   workspace.finishRun('group-id', first, 'completed')
@@ -1162,7 +1301,7 @@ test('Gemini and OpenCode messages keep their Agent names', async (t) => {
   )
 })
 
-test('group messages create distinct visual roots while native sessions stay group scoped', async (t) => {
+test('group messages create distinct task roots and task-scoped native sessions', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1182,14 +1321,15 @@ test('group messages create distinct visual roots while native sessions stay gro
   assert.equal(userMessages.every(message => !message.threadRootId), true)
   assert.notEqual(userMessages[0].id, userMessages[1].id)
   assert.deepEqual(agentMessages.map(message => message.threadRootId), userMessages.map(message => message.id))
-  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
-  assert.equal(
-    workspace.sessionKey(group.id, 'codex', userMessages[0].id),
-    workspace.sessionKey(group.id, 'codex', userMessages[1].id),
-  )
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', ''])
+  const firstKey = workspace.sessionKey(group.id, 'codex', userMessages[0].id)
+  const secondKey = workspace.sessionKey(group.id, 'codex', userMessages[1].id)
+  assert.notEqual(firstKey, secondKey)
+  assert.equal(workspace.state.sessions[firstKey], 'codex-session')
+  assert.equal(workspace.state.sessions[secondKey], 'codex-session')
 })
 
-test('group-scoped sessions migrate the exact root or the most recently active legacy root', async (t) => {
+test('task sessions migrate only their exact legacy root without guessing another task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1219,23 +1359,29 @@ test('group-scoped sessions migrate the exact root or the most recently active l
   await workspace.activeRuns.get(group.id).promise
 
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    'codex-current-root', 'hermes-recent-root',
+    'codex-current-root', '',
   ])
   assert.equal(calls.every(call => call.prompt.includes('最近活跃话题结论')), true)
-  assert.equal(workspace.state.sessions[`${group.id}:codex`], 'codex-current-root')
-  assert.equal(workspace.state.sessions[`${group.id}:hermes`], 'hermes-recent-root')
-  assert.equal(Object.keys(workspace.state.sessions).some(key => (
-    key.startsWith(`${group.id}:codex:thread:`)
-      || key.startsWith(`${group.id}:hermes:thread:`)
-  )), false)
-  delete workspace.state.sessions[`${group.id}:codex`]
-  delete workspace.state.sessions[`${group.id}:hermes`]
-  assert.equal(workspace.sessionRef(group, 'codex', currentRoot.id), '')
-  assert.equal(workspace.sessionRef(group, 'hermes', recentRoot.id), '')
+  assert.equal(
+    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', currentRoot.id)],
+    'codex-current-root',
+  )
+  assert.equal(
+    workspace.state.sessions[workspace.sessionKey(group.id, 'hermes', currentRoot.id)],
+    'hermes-session',
+  )
+  assert.equal(
+    Object.hasOwn(workspace.state.sessions, `${group.id}:codex:thread:${currentRoot.id}`),
+    false,
+  )
+  assert.equal(
+    workspace.state.sessions[`${group.id}:hermes:thread:${recentRoot.id}`],
+    'hermes-recent-root',
+  )
   assert.doesNotMatch(JSON.stringify(workspace.snapshot()), /sessionRef|codex-current-root|hermes-recent-root/)
 })
 
-test('legacy GEO conversations keep their task and reuse one session per Agent', async (t) => {
+test('legacy GEO context survives without cross-task native session reuse', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1292,17 +1438,21 @@ test('legacy GEO conversations keep their task and reuse one session per Agent',
   assert.ok(second.threadRootId)
   assert.notEqual(first.threadRootId, second.threadRootId)
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    'codex-old-scope',
-    'hermes-old-scope',
-    'codex-old-scope',
-    'hermes-old-scope',
+    '', '', '', '',
   ])
   assert.equal(calls.every(call => call.prompt.includes('GEO 调研任务')), true)
   assert.equal(calls.every(call => call.prompt.includes('海外为主')), true)
   assert.equal(calls.every(call => call.prompt.includes('商业和市场洞悉力')), true)
-  assert.equal(Object.keys(workspace.state.sessions).some(key => key.includes(':thread:')), false)
-  assert.equal(workspace.state.sessions[`${group.id}:codex`], 'codex-old-scope')
-  assert.equal(workspace.state.sessions[`${group.id}:hermes`], 'hermes-old-scope')
+  assert.equal(
+    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', first.threadRootId)],
+    'codex-group-session',
+  )
+  assert.equal(
+    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', second.threadRootId)],
+    'codex-group-session',
+  )
+  assert.equal(workspace.state.sessions[`${group.id}:codex:thread:${scope.id}`], 'codex-old-scope')
+  assert.equal(workspace.state.sessions[`${group.id}:hermes:thread:${scope.id}`], 'hermes-old-scope')
 })
 
 test('prompts retain bounded topic and stable user turns plus group-wide final messages', async (t) => {
@@ -1352,7 +1502,7 @@ test('prompts retain bounded topic and stable user turns plus group-wide final m
   assert.doesNotMatch(prompt, /PROCESS_METADATA_SHOULD_NOT_REACH_AGENT|write_file|elapsedMs/)
 })
 
-test('resumed group sessions receive only transcript messages after their own final reply', async (t) => {
+test('fresh group task sessions receive bounded shared conclusions from earlier tasks', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1378,26 +1528,23 @@ test('resumed group sessions receive only transcript messages after their own fi
     groupId: group.id, text: '第三条继续任务', targetKinds: ['codex'],
   })
 
-  const recentSection = prompt => prompt.split('Recent conversation across the group:\n')[1] || ''
-  const secondCodexRecent = recentSection(calls[2].prompt)
-  const thirdCodexRecent = recentSection(calls[3].prompt)
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    '', '', 'codex-session', 'codex-session',
+    '', '', '', '',
   ])
   assert.match(calls[1].prompt, /User: 第一条稳定约束/)
   assert.match(calls[1].prompt, /Codex: codex final 1/)
-  assert.match(secondCodexRecent, /Hermes: hermes final 2/)
-  assert.doesNotMatch(secondCodexRecent, /第一条稳定约束|第二条当前任务|codex final 1/)
+  assert.match(calls[2].prompt, /Hermes: hermes final 2/)
+  assert.match(calls[2].prompt, /Codex: codex final 1/)
   assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第一条稳定约束/)
   assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第二条当前任务/)
   assert.equal(calls[2].prompt.match(/第二条当前任务/g)?.length, 1)
   assert.match(calls[3].prompt, /Stable user instructions and constraints:\n[\s\S]*第三条继续任务/)
   assert.equal(calls[3].prompt.match(/第三条继续任务/g)?.length, 1)
-  assert.doesNotMatch(thirdCodexRecent, /第二条当前任务|第三条继续任务|codex final 3|hermes final 2/)
-  assert.ok(thirdCodexRecent.length < secondCodexRecent.length)
+  assert.match(calls[3].prompt, /Hermes: hermes final 2/)
+  assert.match(calls[3].prompt, /Codex: codex final 3/)
 })
 
-test('Kimi and OpenClaw keep stable group-scoped native sessions', async (t) => {
+test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1426,12 +1573,13 @@ test('Kimi and OpenClaw keep stable group-scoped native sessions', async (t) => 
   await workspace.sendMessage({ groupId: second.id, text: 'OpenClaw B', targetKinds: ['openclaw'] })
 
   const sessionRefs = calls.map(call => call.runOptions.sessionRef)
-  assert.deepEqual(sessionRefs.slice(0, 2), ['', 'kimi-session'])
-  assert.match(sessionRefs[2], /^agent:main:desktop-roundrelay-[a-zA-Z0-9-]+-openclaw$/)
-  assert.equal(sessionRefs[3], sessionRefs[2])
+  assert.deepEqual(sessionRefs.slice(0, 2), ['', ''])
+  assert.match(sessionRefs[2], /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
+  assert.match(sessionRefs[3], /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
+  assert.notEqual(sessionRefs[3], sessionRefs[2])
   assert.notEqual(sessionRefs[4], sessionRefs[2])
   assert.notEqual(workspace.state.sessions[openClawKey], 'explicit:roundrelay-legacy-openclaw')
-  assert.equal(workspace.sessionKey(first.id, 'openclaw', firstRoot), openClawKey)
+  assert.notEqual(workspace.sessionKey(first.id, 'openclaw', firstRoot), openClawKey)
   assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
   assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
 })
@@ -1503,7 +1651,7 @@ test('group settings cannot change execution context during an active run', asyn
   assert.equal(workspace.getGroup(group.id).allowWrite, true)
 })
 
-test('changing a group workdir clears native sessions while equivalent paths retain them', async (t) => {
+test('changing a direct conversation workdir clears its continuous native session', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const firstWorkdir = path.join(directory, 'workspace-a')
@@ -1513,7 +1661,11 @@ test('changing a group workdir clears native sessions while equivalent paths ret
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: '工作区会话隔离', agentKinds: ['codex'], workdir: firstWorkdir,
+    name: '工作区会话隔离',
+    conversationType: 'direct',
+    directAgentKind: 'codex',
+    agentKinds: ['codex'],
+    workdir: firstWorkdir,
   })
 
   await workspace.sendMessage({ groupId: group.id, text: 'A1', targetKinds: ['codex'] })

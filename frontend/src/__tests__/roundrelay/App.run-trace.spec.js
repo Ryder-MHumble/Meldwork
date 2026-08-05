@@ -119,6 +119,126 @@ describe('RoundRelay workbench', () => {
     expect(removeMediaListener).toHaveBeenCalledTimes(1)
   })
 
+  it('renders group Gates, budget state, and per-Agent runtime controls in the trace panel', async () => {
+    const gateId = `human-gate-${'d'.repeat(64)}`
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-runtime-controls',
+        conversationType: 'group',
+        name: 'Runtime controls',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-08-04T08:00:00.000Z',
+        updatedAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.messages.push({
+        id: 'runtime-controls-root',
+        groupId: 'group-runtime-controls',
+        role: 'user',
+        content: 'Coordinate the runtime',
+        targetKinds: ['codex', 'hermes'],
+        createdAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.runningGroupIds = ['group-runtime-controls']
+      state.runs = [{
+        runId: 'run-runtime-controls',
+        groupId: 'group-runtime-controls',
+        threadRootId: 'runtime-controls-root',
+        targetKinds: ['codex', 'hermes'],
+        currentKind: 'codex',
+        waitingGateIds: [gateId],
+        budget: {
+          limits: {
+            inputTokens: 4000, outputTokens: null, costMicros: null,
+            toolCalls: 20, outboundBytes: null, elapsedMs: null,
+          },
+          used: {
+            inputTokens: 750, outputTokens: 120, costMicros: 0,
+            toolCalls: 3, outboundBytes: 2048, elapsedMs: 2500,
+          },
+          source: {
+            inputTokens: 'estimated', outputTokens: 'reported', costMicros: 'unknown',
+            toolCalls: 'estimated', outboundBytes: 'reported', elapsedMs: 'reported',
+          },
+          enforcement: {
+            inputTokens: 'hard', outputTokens: 'soft', costMicros: 'hard',
+            toolCalls: 'hard', outboundBytes: 'soft', elapsedMs: 'soft',
+          },
+          startedAt: 1000,
+        },
+        agentRuns: [{
+          agentRunId: 'agent-runtime-codex',
+          kind: 'codex',
+          round: 1,
+          status: 'waiting',
+          output: 'Waiting for approval',
+          events: [{
+            seq: 1, type: 'warning', status: 'waiting', title: 'Permission required',
+          }],
+        }],
+      }]
+      state.humanGates = [{
+        gateId,
+        type: 'decision',
+        runId: 'run-runtime-controls',
+        agentRunId: 'agent-runtime-codex',
+        agentKind: 'codex',
+        summary: 'Role review requires a human decision.',
+        options: [
+          { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
+          { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
+          { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+        ],
+        status: 'pending',
+        createdAt: '2026-08-04T08:00:00.000Z',
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.run-agent-row').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.trace-waiting-state').text()).toBe('Waiting for your decision')
+    expect(wrapper.get('.trace-human-gate-section').text())
+      .toContain('The independent review requires your decision')
+    expect(wrapper.get('.trace-budget-section').text()).toContain('Input tokens')
+    expect(wrapper.get('.trace-budget-section').text()).toContain('750 / 4,000')
+    expect(wrapper.get('.trace-agent-control-section').text()).toContain('Agent controls')
+
+    await wrapper.findAll('.trace-agent-control-actions button')
+      .find(button => button.text() === 'Retry Agent')
+      .trigger('click')
+    await wrapper.findAll('.trace-agent-control-actions button')
+      .find(button => button.text() === 'Cancel Agent')
+      .trigger('click')
+    await wrapper.get('.trace-agent-replace-control select').setValue('hermes')
+    await wrapper.get('.trace-agent-replace-control button').trigger('click')
+    const gateButtons = wrapper.findAll('.trace-human-gate-options button')
+    expect(gateButtons.find(button => button.text() === 'Accept Artifact').classes())
+      .toContain('primary-button')
+    expect(gateButtons.find(button => button.text() === 'Reopen Task').classes())
+      .toContain('secondary-button')
+    await gateButtons.find(button => button.text() === 'Reopen Task').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.controlAgent).toHaveBeenNthCalledWith(
+      1, 'group-runtime-controls', 'run-runtime-controls', 'codex', 'retry', '',
+    )
+    expect(bridge.localWorkspace.controlAgent).toHaveBeenNthCalledWith(
+      2, 'group-runtime-controls', 'run-runtime-controls', 'codex', 'cancel', '',
+    )
+    expect(bridge.localWorkspace.controlAgent).toHaveBeenNthCalledWith(
+      3, 'group-runtime-controls', 'run-runtime-controls', 'codex', 'replace', 'hermes',
+    )
+    expect(bridge.localWorkspace.decideHumanGate).toHaveBeenCalledWith(
+      gateId,
+      { optionId: 'reopen-task' },
+    )
+    wrapper.unmount()
+  })
+
   it('keeps historical message traces open when an unrelated active run finishes', async () => {
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
@@ -290,6 +410,11 @@ describe('RoundRelay workbench', () => {
   })
 
   it('opens a retained group trace with no events and keeps its context statistics visible', async () => {
+    const contextPackId = `context-pack-${'a'.repeat(64)}`
+    const deliveryRecordIds = [
+      `delivery-record-${'b'.repeat(64)}`,
+      `delivery-record-${'c'.repeat(64)}`,
+    ]
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'group-empty-retained-trace',
@@ -330,6 +455,16 @@ describe('RoundRelay workbench', () => {
               omittedCount: 2,
               charCount: 480,
               sessionRotated: true,
+              contextPackId,
+              deliveryRecordIds,
+              sessionProvenance: {
+                scope: 'task',
+                reuse: true,
+                origin: 'resumed',
+                originTaskId: 'task-empty-retained',
+                inheritedTaskIds: [],
+                completeness: 'complete',
+              },
             },
           },
           createdAt: '2026-07-29T08:02:00Z',
@@ -346,15 +481,87 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-event-section .trace-empty-state').text())
       .toBe('No detailed events were retained.')
     expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 4 / Completed')
-    expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages included')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages injected for this attempt')
     expect(wrapper.get('.trace-context-stats').text()).toContain('2 messages compacted')
     expect(wrapper.get('.trace-context-stats').text()).toContain('480 context characters')
     expect(wrapper.get('.trace-context-stats').text()).toContain('Session context rotated')
+    expect(wrapper.get('[data-context-section="attempt"]').text()).toContain(contextPackId)
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('Actual outbound')
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain(deliveryRecordIds[0])
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain(deliveryRecordIds[1])
+    expect(wrapper.get('[data-context-section="session"]').attributes('data-session-reuse')).toBe('reused')
+    expect(wrapper.get('[data-context-section="session"]').text())
+      .toContain('Earlier native Session context may exist')
 
     setLocale('zh')
     await flushPromises()
     expect(wrapper.get('.trace-event-section .trace-empty-state').text()).toBe('没有保留详细过程事件。')
-    expect(wrapper.get('.trace-context-stats').text()).toContain('纳入 3 条消息')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('本次尝试注入 3 条消息')
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('实际外发')
+    expect(wrapper.get('[data-context-section="session"]').text()).toContain('Session 中可能还存在更早的上下文')
+    wrapper.unmount()
+  })
+
+  it('warns that unknown legacy Session history is outside injected message ids', () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-legacy',
+          agentRunId: 'agent-run-legacy',
+          agentKind: 'codex',
+          status: 'completed',
+          events: [],
+          context: {
+            includedCount: 2,
+            omittedCount: 0,
+            charCount: 320,
+            contextPackId: `context-pack-${'d'.repeat(64)}`,
+            deliveryRecordIds: [`delivery-record-${'e'.repeat(64)}`],
+            sessionProvenance: {
+              scope: 'unknown-legacy',
+              reuse: true,
+              origin: 'unknown-legacy',
+              originTaskId: null,
+              inheritedTaskIds: [],
+              completeness: 'unknown-legacy',
+            },
+          },
+        }],
+        selectedAgentRunId: 'agent-run-legacy',
+      },
+    })
+
+    expect(wrapper.get('[data-context-section="session"]').attributes('data-provenance-completeness'))
+      .toBe('unknown-legacy')
+    expect(wrapper.get('.trace-session-warning').text())
+      .toBe('Legacy native Session history is unknown. The injected message IDs for this attempt are not the complete context.')
+    wrapper.unmount()
+  })
+
+  it('warns when a historical Run has no captured Context Pack', () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-legacy-context',
+          agentRunId: 'agent-run-legacy-context',
+          agentKind: 'codex',
+          status: 'interrupted',
+          events: [],
+          context: {
+            includedCount: 0,
+            omittedCount: 0,
+            charCount: 0,
+            contextPackState: 'legacy-unavailable',
+          },
+        }],
+        selectedAgentRunId: 'agent-run-legacy-context',
+      },
+    })
+
+    expect(wrapper.get('[data-context-section="context-pack-legacy"]').text())
+      .toBe('This historical Run did not record a Context Pack, so its complete input cannot be reconstructed.')
     wrapper.unmount()
   })
 

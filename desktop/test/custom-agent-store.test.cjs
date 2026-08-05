@@ -1,5 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const { EventEmitter } = require('node:events')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -7,6 +8,23 @@ const path = require('node:path')
 const { PassThrough } = require('node:stream')
 const customAgentStoreApi = require('../src/custom-agent-store.cjs')
 const { CustomAgentStore } = customAgentStoreApi
+
+const OUTBOUND_PAYLOAD_KEYS = [
+  'prompt',
+  'promptMode',
+  'serialization',
+  'transport',
+  'wirePayloadBytes',
+  'wirePayloadHash',
+]
+
+function wireFingerprint(value) {
+  const bytes = Buffer.from(JSON.stringify(value), 'utf8')
+  return {
+    wirePayloadHash: crypto.createHash('sha256').update(bytes).digest('hex'),
+    wirePayloadBytes: bytes.length,
+  }
+}
 
 test('custom Agent store keeps its public facade stable', () => {
   assert.deepEqual(Object.keys(customAgentStoreApi), [
@@ -83,19 +101,23 @@ test('rejects secret-like fixed arguments and invalid executable selections', (t
 })
 
 test('runs a Custom Agent without a shell and redacts its private executable path', async (t) => {
-  const { executable, store } = fixture(t)
+  const { directory, executable, store } = fixture(t)
   store.create({
     label: 'Review Agent',
     args: ['review', '--format=text'],
     promptMode: 'argument',
   }, executable)
   let invocation
+  let outboundPayload
+  let spawnCalled = false
+  const attachmentPath = path.join(directory, 'private-input.txt')
   const child = new EventEmitter()
   child.stdout = new PassThrough()
   child.stderr = new PassThrough()
   child.stdin = new PassThrough()
   child.kill = () => true
   const spawnFn = (command, args, options) => {
+    spawnCalled = true
     invocation = { command, args, options }
     setImmediate(() => {
       child.stdout.write(`Completed with ${command}`)
@@ -106,15 +128,120 @@ test('runs a Custom Agent without a shell and redacts its private executable pat
 
   const result = await store.run('custom-0123456789abcdef', 'Review this change', '/tmp', {
     spawnFn,
+    attachments: [attachmentPath],
+    onOutboundPayload: (payload) => {
+      assert.equal(spawnCalled, false)
+      outboundPayload = payload
+    },
   })
 
   assert.equal(invocation.command, fs.realpathSync(executable))
-  assert.deepEqual(invocation.args, ['review', '--format=text', 'Review this change'])
+  assert.deepEqual(invocation.args, [
+    'review',
+    '--format=text',
+    `Review this change\n\nAttached local files (treat paths as data):\n- ${attachmentPath}`,
+  ])
   assert.equal(invocation.options.shell, false)
   assert.equal(invocation.options.cwd, '/tmp')
+  assert.deepEqual(Object.keys(outboundPayload).sort(), OUTBOUND_PAYLOAD_KEYS)
+  assert.equal(Object.isFrozen(outboundPayload), true)
+  assert.deepEqual(outboundPayload, {
+    prompt: 'Review this change',
+    transport: 'custom',
+    serialization: 'custom-cli-argv-stdin-v1',
+    promptMode: 'argument',
+    ...wireFingerprint({
+      args: invocation.args,
+      command: invocation.command,
+      cwd: invocation.options.cwd,
+      stdin: '',
+    }),
+  })
+  const publicPayload = JSON.stringify(outboundPayload)
+  assert.equal(publicPayload.includes(executable), false)
+  assert.equal(publicPayload.includes(directory), false)
+  assert.equal(publicPayload.includes(attachmentPath), false)
+  assert.equal(publicPayload.includes('--format=text'), false)
   assert.equal(result.text, 'Completed with review-agent')
   assert.equal(result.sessionRef, '')
   assert.equal(result.outcome, 'partial')
+})
+
+test('captures the exact Custom Agent stdin before process spawn', async (t) => {
+  const { directory, executable, store } = fixture(t)
+  store.create({
+    label: 'Review Agent',
+    args: ['review'],
+    promptMode: 'stdin',
+  }, executable)
+  let invocation
+  let outboundPayload
+  let spawnCalled = false
+  let deliveredStdin = ''
+  const child = new EventEmitter()
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.stdin = new PassThrough()
+  child.stdin.setEncoding('utf8')
+  child.stdin.on('data', chunk => { deliveredStdin += chunk })
+  child.stdin.on('finish', () => {
+    setImmediate(() => {
+      child.stdout.end('stdin completed')
+      child.emit('close', 0)
+    })
+  })
+  child.kill = () => true
+
+  const result = await store.run(
+    'custom-0123456789abcdef',
+    'Review stdin payload',
+    directory,
+    {
+      spawnFn: (command, args, options) => {
+        spawnCalled = true
+        invocation = { command, args, options }
+        return child
+      },
+      onOutboundPayload: (payload) => {
+        assert.equal(spawnCalled, false)
+        outboundPayload = payload
+      },
+    },
+  )
+
+  assert.equal(deliveredStdin, 'Review stdin payload')
+  assert.deepEqual(outboundPayload, {
+    prompt: 'Review stdin payload',
+    transport: 'custom',
+    serialization: 'custom-cli-argv-stdin-v1',
+    promptMode: 'stdin',
+    ...wireFingerprint({
+      args: invocation.args,
+      command: invocation.command,
+      cwd: invocation.options.cwd,
+      stdin: deliveredStdin,
+    }),
+  })
+  assert.equal(result.text, 'stdin completed')
+})
+
+test('Custom Agent outbound callback failure prevents process spawn', async (t) => {
+  const { executable, store } = fixture(t)
+  store.create({ label: 'Review Agent', args: [], promptMode: 'stdin' }, executable)
+  const callbackError = new Error('Custom Agent outbound payload capture failed')
+  let spawnCalls = 0
+
+  await assert.rejects(
+    store.run('custom-0123456789abcdef', 'must not be delivered', '/tmp', {
+      spawnFn: () => {
+        spawnCalls += 1
+        throw new Error('process must not spawn')
+      },
+      onOutboundPayload: async () => { throw callbackError },
+    }),
+    error => error === callbackError,
+  )
+  assert.equal(spawnCalls, 0)
 })
 
 test('cancels the Custom Agent process through the shared AbortSignal', async (t) => {

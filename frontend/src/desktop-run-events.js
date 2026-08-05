@@ -30,26 +30,10 @@ export function mergeRunEvent(snapshot, value) {
   const event = normalizeRunEvent(value)
   if (!event || !record(snapshot)) return snapshot
   const existingRuns = Array.isArray(snapshot.runs) ? snapshot.runs : []
-  let runIndex = existingRuns.findIndex(run => run?.runId === event.runId)
-  if (runIndex < 0 && Array.isArray(snapshot.messages) && snapshot.messages.some(message => (
-    message?.trace?.runId === event.runId && message?.trace?.agentRunId === event.agentRunId
-  ))) {
-    return snapshot
-  }
+  const runIndex = existingRuns.findIndex(run => run?.runId === event.runId)
+  if (runIndex < 0) return snapshot
 
-  const existingRun = runIndex >= 0 ? existingRuns[runIndex] : {
-    runId: event.runId,
-    groupId: event.groupId,
-    threadRootId: event.threadRootId || '',
-    phase: 'running',
-    targetKinds: [event.agentKind],
-    completedKinds: [],
-    failedKinds: [],
-    currentKind: event.agentKind,
-    currentRound: event.round,
-    progress: [],
-    agentRuns: [],
-  }
+  const existingRun = existingRuns[runIndex]
   const existingTargetKinds = normalizedAgentKinds(existingRun.targetKinds)
   if (existingTargetKinds.length && !existingTargetKinds.includes(event.agentKind)) return snapshot
   const existingAgents = Array.isArray(existingRun.agentRuns)
@@ -84,8 +68,7 @@ export function mergeRunEvent(snapshot, value) {
     agents[agentIndex] = nextAgent
     const run = { ...existingRun, agentRuns: agents }
     const runs = [...existingRuns]
-    if (runIndex >= 0) runs[runIndex] = run
-    else runs.push(run)
+    runs[runIndex] = run
     return { ...snapshot, runs }
   }
 
@@ -151,8 +134,7 @@ export function mergeRunEvent(snapshot, value) {
   if (allTargetKindsTerminal && run.mode !== 'auto') runningGroupIds.delete(event.groupId)
   else runningGroupIds.add(event.groupId)
   const runs = [...existingRuns]
-  if (runIndex >= 0) runs[runIndex] = run
-  else runs.push(run)
+  runs[runIndex] = run
   return {
     ...snapshot,
     runningGroupIds: [...runningGroupIds],

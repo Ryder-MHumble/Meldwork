@@ -351,6 +351,56 @@
         </article>
 
         <section
+          v-if="activeGroup.conversationType === 'direct' && directHumanGates.length"
+          class="direct-human-gate-list"
+          :aria-label="t('humanGate.pendingTitle')"
+          aria-live="polite"
+        >
+          <article v-for="gate in directHumanGates" :key="gate.gateId" class="human-gate-card">
+            <header>
+              <span class="human-gate-agent">
+                <img :src="agentLogo(gate.agentKind, theme)" alt="" />
+                <strong>{{ agentLabel(gate.agentKind) }}</strong>
+              </span>
+              <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
+            </header>
+            <p>{{ humanGateSummary(gate) }}</p>
+            <div class="human-gate-options">
+              <button
+                v-for="option in gate.options"
+                :key="option.optionId"
+                class="compact"
+                :class="optionApprovesHumanGate(option) ? 'primary-button' : 'secondary-button'"
+                type="button"
+                :disabled="humanGateDecisionPending(gate.gateId)"
+                @click="decideHumanGate({ gateId: gate.gateId, optionId: option.optionId })"
+              >
+                <CheckmarkCircleOutline v-if="optionApprovesHumanGate(option)" />
+                <CloseCircleOutline v-else />
+                {{ humanGateOptionLabel(option) }}
+              </button>
+            </div>
+          </article>
+        </section>
+
+        <details
+          v-if="activeGroup.conversationType === 'direct' && directBudgetRows.length"
+          class="execution-details direct-budget-details"
+        >
+          <summary>
+            <span>{{ t('trace.budgetTitle') }}</span>
+            <small>{{ directBudgetRows.length }}</small>
+          </summary>
+          <dl>
+            <div v-for="row in directBudgetRows" :key="row.dimension">
+              <dt>{{ row.label }}</dt>
+              <dd>{{ row.usage }}</dd>
+              <small>{{ row.meta }}</small>
+            </div>
+          </dl>
+        </details>
+
+        <section
           v-if="displayedRun && (activeGroup.conversationType !== 'direct' || !provisionalMessages.length)"
           class="run-status-panel"
           :class="{
@@ -462,6 +512,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import {
   AttachOutline,
   CheckmarkCircleOutline,
@@ -475,6 +526,7 @@ import {
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
 import { skillKey } from '../composables/useComposerContext.js'
+import { locale } from '../i18n.js'
 import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
 import MarkdownMessage from './MarkdownMessage.vue'
 
@@ -565,4 +617,168 @@ const {
   turnRailLabel,
   vAttachmentPreview,
 } = props.controller
+
+const BUDGET_DIMENSIONS = [
+  'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
+]
+const directHumanGates = computed(() => props.controller.directHumanGates?.value || [])
+const directRunBudget = computed(() => props.controller.directRunBudget?.value || null)
+const humanGateDecisionPendingIds = computed(() => (
+  props.controller.humanGateDecisionPendingIds?.value || []
+))
+const directBudgetRows = computed(() => budgetRows(directRunBudget.value))
+
+function decideHumanGate(payload) {
+  return props.controller.decideHumanGate?.(payload)
+}
+
+function optionApprovesHumanGate(option) {
+  return ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+}
+
+function humanGateDecisionPending(gateId) {
+  return humanGateDecisionPendingIds.value.includes(gateId)
+}
+
+function humanGateSummary(gate) {
+  const key = {
+    'Agent requests permission to continue a tool action.': 'humanGate.summary.permission',
+    'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
+    'Role review requires a human decision.': 'humanGate.summary.decision',
+  }[gate?.summary]
+  return key ? t(key) : gate?.summary || ''
+}
+
+function humanGateOptionLabel(option) {
+  const key = {
+    allow_once: 'humanGate.option.allowOnce',
+    allow_always: 'humanGate.option.allowAlways',
+    reject_once: 'humanGate.option.reject',
+    reject_always: 'humanGate.option.rejectAlways',
+    accept: 'humanGate.option.acceptArtifact',
+    reject: 'humanGate.option.rejectArtifact',
+    reopen: 'humanGate.option.reopenTask',
+  }[option?.kind]
+  return key ? t(key) : option?.name || ''
+}
+
+function budgetRows(budget) {
+  if (!budget) return []
+  return BUDGET_DIMENSIONS.map((dimension) => {
+    const used = budget.used[dimension]
+    const limit = budget.limits[dimension]
+    return {
+      dimension,
+      label: t(`trace.budgetDimension.${dimension}`),
+      usage: t('trace.budgetUsage', {
+        used: formatBudgetNumber(used),
+        limit: limit === null ? t('trace.budgetUnlimited') : formatBudgetNumber(limit),
+      }),
+      meta: `${t(`trace.budgetSource.${budget.source[dimension]}`)} / ${t(`trace.budgetEnforcement.${budget.enforcement[dimension]}`)}`,
+      meaningful: used > 0 || limit !== null || budget.source[dimension] !== 'unknown'
+        || budget.enforcement[dimension] === 'hard',
+    }
+  }).filter(row => row.meaningful)
+}
+
+function formatBudgetNumber(value) {
+  return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(value)
+}
 </script>
+
+<style scoped>
+.direct-human-gate-list {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0;
+}
+
+.human-gate-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.human-gate-card header,
+.human-gate-agent,
+.human-gate-options {
+  display: flex;
+  align-items: center;
+}
+
+.human-gate-card header {
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.human-gate-card header small {
+  color: var(--accent-hover);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.human-gate-agent {
+  min-width: 0;
+  gap: 7px;
+}
+
+.human-gate-agent img {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+}
+
+.human-gate-card p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.human-gate-options {
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.human-gate-options button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.direct-budget-details {
+  margin-top: 8px;
+}
+
+.direct-budget-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.direct-budget-details dl {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+}
+
+.direct-budget-details dl div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 10px;
+  color: var(--text-soft);
+  font-size: 11px;
+}
+
+.direct-budget-details dd {
+  margin: 0;
+}
+
+.direct-budget-details dl small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 9px;
+}
+</style>

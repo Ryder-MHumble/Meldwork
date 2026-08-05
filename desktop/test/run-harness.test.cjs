@@ -5,6 +5,7 @@ const {
   RunHarness,
   evidenceCapsuleText,
   nextSessionMeta,
+  normalizeOutcomeRefs,
   normalizeRawEvent,
   normalizeRunEvent,
   normalizeTraceCapsule,
@@ -26,6 +27,37 @@ function fixture(options = {}) {
     ...options,
   })
 }
+
+test('normalizes bounded Outcome references independently from trace events', () => {
+  const artifactId = `artifact-${'a'.repeat(64)}`
+  const evidenceId = `evidence-${'b'.repeat(64)}`
+  const findingId = `reviewer-finding-${'c'.repeat(64)}`
+  const adoptionId = `adoption-${'d'.repeat(64)}`
+  assert.deepEqual(normalizeOutcomeRefs({
+    artifactIds: [artifactId, artifactId, '../artifact'],
+    evidenceIds: [evidenceId],
+    findingIds: [findingId, 'reviewer-finding-invalid'],
+    adoptionIds: [adoptionId],
+  }), {
+    artifactIds: [artifactId],
+    evidenceIds: [evidenceId],
+    findingIds: [findingId],
+    adoptionIds: [adoptionId],
+  })
+
+  const harness = fixture()
+  const started = harness.beginAgent('codex', 0, ['message-root'])
+  const finished = harness.finishAgent('codex', 0, 'completed', 'Done', {
+    outcomeRefs: { artifactIds: [artifactId], evidenceIds: [evidenceId] },
+  }, started.agentRunId)
+
+  assert.deepEqual(finished.capsule.context.outcomeRefs, {
+    artifactIds: [artifactId],
+    evidenceIds: [evidenceId],
+  })
+  assert.deepEqual(harness.snapshot()[0].context.outcomeRefs, finished.capsule.context.outcomeRefs)
+  assert.equal(finished.capsule.events.length, 0)
+})
 
 test('normalizes public events through an allowlist and redacts private diagnostics', () => {
   assert.deepEqual(normalizeRawEvent({
@@ -229,6 +261,18 @@ test('rejects Agent activity outside the declared target kinds', () => {
   }, codex.agentRunId), null)
   assert.deepEqual(harness.snapshot().map(run => run.kind), ['codex'])
   assert.equal(harness.snapshot()[0].events.some(event => event.id === 'cross-target-tool'), false)
+})
+
+test('admits a replacement Agent only after an explicit target extension', () => {
+  const harness = fixture({ targetKinds: ['codex'] })
+
+  assert.equal(harness.addTargetKind('kimi'), true)
+  assert.equal(harness.addTargetKind('kimi'), false)
+  const started = harness.beginAgent('kimi', 1)
+
+  assert.equal(started.agentKind, 'kimi')
+  assert.deepEqual(harness.targetKinds, ['codex', 'kimi'])
+  assert.equal(Object.isFrozen(harness.targetKinds), true)
 })
 
 test('deduplicates identical live tool events without dropping lifecycle updates', () => {

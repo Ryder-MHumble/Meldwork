@@ -1,7 +1,10 @@
 <template>
   <main
     class="app-shell"
-    :class="{ 'sidebar-collapsed': sidebarCollapsed, 'trace-panel-open': tracePanelOpen }"
+    :class="{
+      'sidebar-collapsed': sidebarCollapsed,
+      'trace-panel-open': tracePanelOpen && activeGroup?.conversationType !== 'direct',
+    }"
     :data-theme="theme"
     :data-platform="desktopPlatform"
   >
@@ -57,19 +60,42 @@
 
           <ConversationTimelineView :controller="timelineController" />
 
-          <ConversationComposer :controller="composerController" />
+          <div class="conversation-composer-stack">
+            <div v-if="activeGroup?.conversationType !== 'direct'" class="role-review-entry-row">
+              <button
+                class="secondary-button compact role-review-entry-button"
+                type="button"
+                :title="roleReviewEntryTitle"
+                :disabled="!canOpenRoleReview || Boolean(activeRun) || sending || importingAttachment"
+                @click="openRoleReview"
+              >
+                <GitCompareOutline aria-hidden="true" />
+                {{ t('roleReview.open') }}
+              </button>
+            </div>
+            <ConversationComposer :controller="composerController" />
+          </div>
         </section>
       </section>
 
       <RunTracePanel
-        v-if="tracePanelOpen"
+        v-if="tracePanelOpen && activeGroup?.conversationType !== 'direct'"
         ref="tracePanel"
         :open="tracePanelOpen"
         :drawer="tracePanelDrawer"
+        :agent-control-pending-agent-run-id="agentControlPendingAgentRunId"
+        :budget="tracePanelBudget"
+        :controllable-agent-run-id="traceControllableAgentRunId"
+        :human-gate-decision-pending-ids="humanGateDecisionPendingIds"
+        :human-gates="tracePanelHumanGates"
         :items="tracePanelItems"
+        :replacement-agent-kinds="traceReplacementAgentKinds"
         :selected-agent-run-id="selectedTraceAgentRunId"
         :theme="theme"
+        :waiting="tracePanelWaiting"
         @close="closeTracePanel"
+        @control-agent="controlGroupAgent"
+        @decide-human-gate="decideHumanGate"
         @select="selectTraceAgentRun"
         @jump-source="jumpToTraceSource"
       />
@@ -87,7 +113,7 @@
               ref="modalDialog"
               class="modal"
               :class="{
-                medium: modal === 'new-group' || modal === 'settings' || modal === 'custom-agent',
+                medium: ['new-group', 'settings', 'custom-agent', 'role-review'].includes(modal),
                 'agent-detail-modal': modal === 'agent-detail',
                 'unlimited-confirm-modal': modal === 'unlimited-confirm',
               }"
@@ -106,7 +132,101 @@
                 </button>
               </header>
 
-              <WorkspaceModalContent ref="workspaceModalContent" :controller="workspaceModalController" />
+              <form
+                v-if="modal === 'role-review'"
+                class="modal-body form-stack role-review-form"
+                @submit.prevent="startRoleReview"
+              >
+                <label>
+                  <span>{{ t('roleReview.task') }}</span>
+                  <textarea
+                    v-model="roleReviewForm.task"
+                    rows="3"
+                    maxlength="8000"
+                    :placeholder="t('roleReview.taskPlaceholder')"
+                    :disabled="sending"
+                  />
+                </label>
+
+                <fieldset :disabled="sending">
+                  <legend class="agent-choice-legend">
+                    <span>{{ t('roleReview.primaryAgents') }}</span>
+                    <small>{{ t('group.selectedCount', { count: roleReviewForm.primaryKinds.length }) }}</small>
+                  </legend>
+                  <div class="agent-choice-grid">
+                    <label
+                      v-for="agent in roleReviewAgents"
+                      :key="agent.kind"
+                      class="agent-choice"
+                      :class="{ selected: roleReviewForm.primaryKinds.includes(agent.kind) }"
+                      :title="agent.label"
+                    >
+                      <input
+                        v-model="roleReviewForm.primaryKinds"
+                        type="checkbox"
+                        :value="agent.kind"
+                        :disabled="roleReviewPrimaryDisabled(agent.kind)"
+                      />
+                      <img :src="agent.logo" alt="" />
+                      <span>{{ agent.label }}</span>
+                      <CheckmarkCircleOutline />
+                    </label>
+                  </div>
+                </fieldset>
+
+                <div class="settings-primary-grid">
+                  <label>
+                    <span>{{ t('roleReview.reviewer') }}</span>
+                    <select v-model="roleReviewForm.reviewerKind" :disabled="sending">
+                      <option
+                        v-for="agent in roleReviewReviewerAgents"
+                        :key="agent.kind"
+                        :value="agent.kind"
+                      >
+                        {{ agent.label }}
+                      </option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{{ t('roleReview.arbiter') }}</span>
+                    <select v-model="roleReviewForm.arbiterKind" :disabled="sending">
+                      <option value="">{{ t('roleReview.noArbiter') }}</option>
+                      <option
+                        v-for="agent in roleReviewArbiterAgents"
+                        :key="agent.kind"
+                        :value="agent.kind"
+                      >
+                        {{ agent.label }}
+                      </option>
+                    </select>
+                  </label>
+                </div>
+
+                <label>
+                  <span>{{ t('roleReview.criteria') }}</span>
+                  <textarea
+                    v-model="roleReviewForm.criteriaText"
+                    rows="3"
+                    maxlength="4000"
+                    :placeholder="t('roleReview.criteriaPlaceholder')"
+                    :disabled="sending"
+                  />
+                </label>
+
+                <footer class="modal-footer">
+                  <button class="secondary-button" type="button" :disabled="sending" @click="closeModal">
+                    {{ t('common.cancel') }}
+                  </button>
+                  <button class="primary-button" type="submit" :disabled="!roleReviewCanSubmit || sending">
+                    {{ t('roleReview.start') }}
+                  </button>
+                </footer>
+              </form>
+              <WorkspaceModalContent
+                v-else
+                ref="workspaceModalContent"
+                :controller="workspaceModalController"
+              />
             </section>
           </transition>
         </div>
@@ -142,6 +262,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   CheckmarkCircleOutline,
   CloseOutline,
+  GitCompareOutline,
   WarningOutline,
 } from '@vicons/ionicons5'
 import ConversationComposer from './components/ConversationComposer.vue'
@@ -206,7 +327,16 @@ const sidebarCollapsed = ref(false)
 const refreshing = ref(false)
 const sending = ref(false)
 const saving = ref(false)
+const agentControlPendingAgentRunId = ref('')
+const humanGateDecisionPendingIds = ref([])
 const modal = ref('')
+const roleReviewForm = ref({
+  task: '',
+  primaryKinds: [],
+  reviewerKind: '',
+  arbiterKind: '',
+  criteriaText: '',
+})
 const composerContextVersion = ref(0)
 const maxRounds = ref(6)
 const unlimitedRounds = ref(false)
@@ -439,7 +569,57 @@ const {
   tracePanelDrawer,
   tracePanelItems,
   tracePanelOpen,
+  tracePanelRunId,
 } = conversationTimeline
+const pendingHumanGates = computed(() => (
+  snapshot.value.humanGates.filter(gate => gate.status === 'pending')
+))
+const activeRunHumanGates = computed(() => (
+  activeRun.value
+    ? pendingHumanGates.value.filter(gate => gate.runId === activeRun.value.runId)
+    : []
+))
+const directHumanGates = computed(() => (
+  activeGroup.value?.conversationType === 'direct' ? activeRunHumanGates.value : []
+))
+const directRunBudget = computed(() => (
+  activeGroup.value?.conversationType === 'direct' ? activeRun.value?.budget || null : null
+))
+const tracePanelRun = computed(() => (
+  snapshot.value.runs.find(run => (
+    run.runId === tracePanelRunId.value && run.groupId === activeGroup.value?.id
+  )) || null
+))
+const tracePanelHumanGates = computed(() => (
+  activeGroup.value?.conversationType !== 'direct' && tracePanelRun.value
+    ? pendingHumanGates.value.filter(gate => gate.runId === tracePanelRun.value.runId)
+    : []
+))
+const tracePanelBudget = computed(() => tracePanelRun.value?.budget || null)
+const tracePanelWaiting = computed(() => (
+  tracePanelHumanGates.value.length > 0
+  && tracePanelHumanGates.value.every(gate => tracePanelRun.value?.waitingGateIds.includes(gate.gateId))
+))
+const traceControllableAgent = computed(() => {
+  const run = tracePanelRun.value
+  if (!run || run.runId !== activeRun.value?.runId || !run.currentKind) return null
+  const candidate = run.agentRuns.filter(agent => agent.kind === run.currentKind).at(-1) || null
+  return ['in_progress', 'running', 'streaming', 'waiting'].includes(candidate?.status)
+    ? candidate
+    : null
+})
+const traceControllableAgentRunId = computed(() => traceControllableAgent.value?.agentRunId || '')
+const traceReplacementAgentKinds = computed(() => {
+  const run = tracePanelRun.value
+  const group = activeGroup.value
+  if (!run || run.runId !== activeRun.value?.runId || group?.conversationType === 'direct') return []
+  const groupKinds = new Set(group.agentKinds || [])
+  return (run.targetKinds || []).filter(kind => (
+    kind !== traceControllableAgent.value?.kind
+    && groupKinds.has(kind)
+    && readyAgentKinds.value.has(kind)
+  ))
+})
 const {
   handleMessageScroll,
   messageScroller,
@@ -552,6 +732,41 @@ const composerTargetsReady = computed(() => (
   composerTargetKinds.value.length > 0
   && composerTargetKinds.value.every(kind => readyAgentKinds.value.has(kind))
 ))
+const roleReviewAgents = computed(() => {
+  const readyByKind = new Map(readyAgents.value.map(agent => [agent.kind, agent]))
+  return (activeGroup.value?.agentKinds || []).map(kind => readyByKind.get(kind)).filter(Boolean)
+})
+const canOpenRoleReview = computed(() => roleReviewAgents.value.length >= 2)
+const roleReviewEntryTitle = computed(() => (
+  canOpenRoleReview.value ? t('roleReview.open') : t('roleReview.unavailable')
+))
+const roleReviewReviewerAgents = computed(() => {
+  const primaryKinds = new Set(roleReviewForm.value.primaryKinds)
+  return roleReviewAgents.value.filter(agent => (
+    !primaryKinds.has(agent.kind) && agent.kind !== roleReviewForm.value.arbiterKind
+  ))
+})
+const roleReviewArbiterAgents = computed(() => {
+  const primaryKinds = new Set(roleReviewForm.value.primaryKinds)
+  return roleReviewAgents.value.filter(agent => (
+    !primaryKinds.has(agent.kind) && agent.kind !== roleReviewForm.value.reviewerKind
+  ))
+})
+const roleReviewCriteria = computed(() => roleReviewForm.value.criteriaText
+  .split(/\r?\n/u)
+  .map(value => value.trim())
+  .filter(Boolean))
+const roleReviewCanSubmit = computed(() => {
+  const form = roleReviewForm.value
+  const participants = [...form.primaryKinds, form.reviewerKind, form.arbiterKind].filter(Boolean)
+  return Boolean(form.task.trim())
+    && form.primaryKinds.length > 0
+    && Boolean(form.reviewerKind)
+    && new Set(participants).size === participants.length
+    && roleReviewCriteria.value.length > 0
+    && roleReviewCriteria.value.length <= 32
+    && roleReviewCriteria.value.every(description => description.length <= 1200)
+})
 const attachmentController = useComposerAttachments({
   activeGroup,
   attachmentsApi,
@@ -607,8 +822,97 @@ function sendMessage(...args) {
   return conversationExecution.sendMessage(...args)
 }
 
+function roleReviewPrimaryDisabled(kind) {
+  return kind === roleReviewForm.value.reviewerKind || kind === roleReviewForm.value.arbiterKind
+}
+
+function openRoleReview() {
+  if (!canOpenRoleReview.value || activeRun.value || sending.value || importingAttachment.value) return
+  const [primary, reviewer] = roleReviewAgents.value
+  roleReviewForm.value = {
+    task: draft.value,
+    primaryKinds: [primary.kind],
+    reviewerKind: reviewer.kind,
+    arbiterKind: '',
+    criteriaText: t('roleReview.defaultCriterion'),
+  }
+  modal.value = 'role-review'
+}
+
+async function startRoleReview() {
+  if (!roleReviewCanSubmit.value) return
+  const input = {
+    text: roleReviewForm.value.task,
+    primaryKinds: [...roleReviewForm.value.primaryKinds],
+    reviewerKind: roleReviewForm.value.reviewerKind,
+    arbiterKind: roleReviewForm.value.arbiterKind,
+    criteria: [...roleReviewCriteria.value],
+  }
+  draft.value = input.text
+  closeModal()
+  await conversationExecution.sendRoleReview(input)
+}
+
 function stopRun(...args) {
   return conversationExecution.stopRun(...args)
+}
+
+async function decideHumanGate(payload = {}) {
+  const gate = pendingHumanGates.value.find(item => item.gateId === payload.gateId)
+  const option = gate?.options.find(item => item.optionId === payload.optionId)
+  if (!gate || !option || humanGateDecisionPendingIds.value.includes(gate.gateId)) return false
+  const bridge = workspace.value
+  if (!bridge?.decideHumanGate) return false
+  humanGateDecisionPendingIds.value = [...humanGateDecisionPendingIds.value, gate.gateId]
+  try {
+    const result = await bridge.decideHumanGate(gate.gateId, { optionId: option.optionId })
+    if (!['approved', 'rejected'].includes(result?.status)
+        || result?.decision?.optionId !== option.optionId) {
+      throw new Error('HUMAN_GATE_DECISION_FAILED')
+    }
+    return true
+  } catch (error) {
+    showError(error)
+    return false
+  } finally {
+    humanGateDecisionPendingIds.value = humanGateDecisionPendingIds.value
+      .filter(gateId => gateId !== gate.gateId)
+  }
+}
+
+async function controlGroupAgent(payload = {}) {
+  const group = activeGroup.value
+  const run = activeRun.value
+  const candidate = traceControllableAgent.value
+  const action = String(payload.action || '')
+  const replacementKind = String(payload.replacementKind || '')
+  if (group?.conversationType === 'direct'
+      || !run
+      || candidate?.agentRunId !== payload.agentRunId
+      || candidate?.kind !== payload.kind
+      || !['cancel', 'retry', 'replace'].includes(action)
+      || (action === 'replace' && !traceReplacementAgentKinds.value.includes(replacementKind))
+      || (action !== 'replace' && replacementKind)
+      || agentControlPendingAgentRunId.value) return false
+  const bridge = workspace.value
+  if (!bridge?.controlAgent) return false
+  agentControlPendingAgentRunId.value = candidate.agentRunId
+  try {
+    const controlled = await bridge.controlAgent(
+      group.id,
+      run.runId,
+      candidate.kind,
+      action,
+      replacementKind,
+    )
+    if (controlled !== true) notify(t('trace.agentControlUnavailable'))
+    return controlled === true
+  } catch (error) {
+    showError(error)
+    return false
+  } finally {
+    agentControlPendingAgentRunId.value = ''
+  }
 }
 const roundProgressPercent = computed(() => {
   const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
@@ -693,6 +997,12 @@ const {
   messageActions,
   timeline: conversationTimeline,
 })
+Object.assign(timelineController, {
+  decideHumanGate,
+  directHumanGates,
+  directRunBudget,
+  humanGateDecisionPendingIds,
+})
 
 const modalTitle = computed(() => ({
   'new-group': t('group.newTitle'),
@@ -702,11 +1012,13 @@ const modalTitle = computed(() => ({
   'custom-agent': t('customAgent.title'),
   'unlimited-confirm': t('composer.unlimitedConfirmTitle'),
   'agent-detail': selectedAgentDetail.value?.label || t('systemSettings.openAgentDetailDefault'),
+  'role-review': t('roleReview.title'),
 })[modal.value] || '')
 const modalSubtitle = computed(() => ({
   settings: groupName(activeGroup.value),
   'custom-agent': t('customAgent.subtitle'),
   'agent-detail': agentDetailSkillSummary.value,
+  'role-review': groupName(activeGroup.value),
 })[modal.value] || '')
 
 const {
@@ -924,3 +1236,44 @@ onBeforeUnmount(() => {
   clearPendingRunFinishedEvents()
 })
 </script>
+
+<style scoped>
+.conversation-composer-stack {
+  min-width: 0;
+}
+
+.role-review-entry-row {
+  width: min(var(--conversation-content-width), 100%);
+  box-sizing: border-box;
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 auto -5px;
+  padding: 6px clamp(18px, 4vw, 44px) 0;
+}
+
+.role-review-entry-button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.role-review-form select {
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.role-review-form .agent-choice:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+@media (max-width: 620px) {
+  .role-review-entry-row {
+    padding-inline: 10px;
+  }
+}
+</style>

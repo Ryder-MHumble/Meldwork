@@ -1,7 +1,15 @@
 const MAX_CAPSULE_EVENTS = 12
 
 const { redactSecrets } = require('./secret-redaction.cjs')
+const { normalizeContentBlobRef } = require('./content-blob-store.cjs')
 const { normalizeExternalRunRef } = require('./agent-runtime-contract.cjs')
+const {
+  normalizeContextPackId,
+  normalizeDeliveryRecordId,
+  normalizeSessionProvenance,
+} = require('./context-pack-records.cjs')
+const { parseConnectorRunSnapshot } = require('./agent-connector-registry.cjs')
+const { parseRunEventState } = require('./run-event-protocol.cjs')
 
 const EVENT_TYPES = new Set([
   'status',
@@ -27,6 +35,14 @@ const INCOMPLETE_TOOL_EVENT_TYPES = new Set(['tool_start', 'tool_update'])
 const FAILED_TOOL_STATUSES = new Set(['failed', 'stopped', 'timeout', 'interrupted'])
 const PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const PUBLIC_GROUP_ID = /^[^\u0000-\u001f\u007f]{1,100}$/u
+const MAX_OUTCOME_REFS = 64
+const OUTCOME_REF_PATTERNS = Object.freeze({
+  artifactIds: /^artifact-[a-f0-9]{64}$/,
+  evidenceIds: /^evidence-[a-f0-9]{64}$/,
+  findingIds: /^reviewer-finding-[a-f0-9]{64}$/,
+  reviewerFindingIds: /^reviewer-finding-[a-f0-9]{64}$/,
+  adoptionIds: /^adoption-[a-f0-9]{64}$/,
+})
 
 function boundedNumber(value, fallback = 0, max = Number.MAX_SAFE_INTEGER) {
   const number = Number(value)
@@ -146,6 +162,61 @@ function normalizeSourceMessageIds(value) {
     .slice(0, 32)
 }
 
+function normalizeOutcomeRefs(input) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  const refs = {}
+  let remaining = MAX_OUTCOME_REFS
+  for (const [field, pattern] of Object.entries(OUTCOME_REF_PATTERNS)) {
+    if (!remaining) break
+    const values = [...new Set((Array.isArray(input[field]) ? input[field] : [])
+      .map(value => String(value || ''))
+      .filter(value => pattern.test(value)))]
+      .slice(0, remaining)
+    if (values.length) refs[field] = values
+    remaining -= values.length
+  }
+  const workflowOutcomeRefs = []
+  const seenWorkflowOutcomeRefs = new Set()
+  for (const value of Array.isArray(input.workflowOutcomeRefs)
+    ? input.workflowOutcomeRefs
+    : []) {
+    if (!remaining) break
+    let ref
+    try {
+      ref = normalizeContentBlobRef(value)
+    } catch {
+      continue
+    }
+    const key = `${ref.algorithm}:${ref.hash}:${ref.size}:${ref.mediaType || ''}`
+    if (seenWorkflowOutcomeRefs.has(key)) continue
+    seenWorkflowOutcomeRefs.add(key)
+    workflowOutcomeRefs.push(ref)
+    remaining -= 1
+  }
+  if (workflowOutcomeRefs.length) refs.workflowOutcomeRefs = workflowOutcomeRefs
+  return refs
+}
+
+function normalizeConnectorContext(input) {
+  let connector
+  let connectorEventState
+  try {
+    connector = parseConnectorRunSnapshot(input.connector)
+    connectorEventState = parseRunEventState(input.connectorEventState)
+  } catch {
+    return null
+  }
+  const fields = [
+    'connectorId', 'connectorVersion', 'manifestId', 'instanceId',
+    'upstreamId', 'upstreamVersion',
+  ]
+  if (fields.some(field => connector[field] !== connectorEventState[field])
+      || connector.capabilities.eventProtocolVersion !== connectorEventState.protocolVersion) {
+    return null
+  }
+  return { connector, connectorEventState }
+}
+
 function normalizeContextStats(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
   const context = {
@@ -154,8 +225,23 @@ function normalizeContextStats(input) {
     charCount: boundedNumber(input.charCount, 0, 1000000),
   }
   if (input.sessionRotated === true) context.sessionRotated = true
+  const contextPackId = normalizeContextPackId(input.contextPackId)
+  if (contextPackId) context.contextPackId = contextPackId
+  if (input.contextPackState === 'legacy-unavailable' && !contextPackId) {
+    context.contextPackState = 'legacy-unavailable'
+  } else if (contextPackId) context.contextPackState = 'captured'
+  const deliveryRecordIds = [...new Set((Array.isArray(input.deliveryRecordIds)
+    ? input.deliveryRecordIds
+    : []).map(normalizeDeliveryRecordId).filter(Boolean))].slice(-8)
+  if (deliveryRecordIds.length) context.deliveryRecordIds = deliveryRecordIds
+  const sessionProvenance = normalizeSessionProvenance(input.sessionProvenance)
+  if (sessionProvenance) context.sessionProvenance = sessionProvenance
   const externalRunRef = normalizeExternalRunRef(redactSecrets(input.externalRunRef))
   if (externalRunRef) context.externalRunRef = externalRunRef
+  const outcomeRefs = normalizeOutcomeRefs(input.outcomeRefs)
+  if (Object.keys(outcomeRefs).length) context.outcomeRefs = outcomeRefs
+  const connectorContext = normalizeConnectorContext(input)
+  if (connectorContext) Object.assign(context, connectorContext)
   return context
 }
 
@@ -296,6 +382,7 @@ module.exports = {
   cleanText,
   lifecycleEventKey,
   normalizeContextStats,
+  normalizeOutcomeRefs,
   normalizeRawEvent,
   normalizeRunEvent,
   normalizeSourceMessageIds,

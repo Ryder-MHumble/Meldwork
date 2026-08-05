@@ -21,6 +21,40 @@ describe('RoundRelay i18n', () => {
     expect(t('home.readyCount', { ready: 3, installed: 5 })).toBe('3 个可用，5 个已安装')
   })
 
+  it('states attempt injection and Session provenance limits in both languages', () => {
+    setLocale('en')
+    expect(t('trace.contextIncluded', { count: 3 }))
+      .toBe('3 messages injected for this attempt')
+    expect(t('trace.sessionReuseWarning')).toContain('Earlier native Session context may exist')
+    expect(t('trace.sessionUnknownLegacyWarning'))
+      .toContain('injected message IDs for this attempt are not the complete context')
+    expect(t('trace.contextPackLegacyUnavailable')).toContain('cannot be reconstructed')
+
+    setLocale('zh')
+    expect(t('trace.contextIncluded', { count: 3 })).toBe('本次尝试注入 3 条消息')
+    expect(t('trace.sessionReuseWarning')).toContain('Session 中可能还存在更早的上下文')
+    expect(t('trace.sessionUnknownLegacyWarning')).toContain('消息 ID 并不代表完整上下文')
+    expect(t('trace.contextPackLegacyUnavailable')).toContain('无法还原完整输入')
+  })
+
+  it('localizes Human Gates, Agent controls, and budget metadata', () => {
+    setLocale('en')
+    expect(t('humanGate.waiting')).toBe('Waiting for your decision')
+    expect(t('humanGate.option.allowOnce')).toBe('Allow once')
+    expect(t('humanGate.summary.decision')).toBe('The independent review requires your decision.')
+    expect(t('humanGate.option.acceptArtifact')).toBe('Accept Artifact')
+    expect(t('trace.retryAgent')).toBe('Retry Agent')
+    expect(t('trace.budgetDimension.toolCalls')).toBe('Tool calls')
+
+    setLocale('zh')
+    expect(t('humanGate.waiting')).toBe('等待你的决定')
+    expect(t('humanGate.option.allowOnce')).toBe('允许一次')
+    expect(t('humanGate.summary.decision')).toBe('独立评审需要你做出决定。')
+    expect(t('humanGate.option.acceptArtifact')).toBe('接受产物')
+    expect(t('trace.retryAgent')).toBe('重试 Agent')
+    expect(t('trace.budgetDimension.toolCalls')).toBe('工具调用')
+  })
+
   it('maps every stable desktop error code from direct and wrapped errors', () => {
     for (const language of ['en', 'zh']) {
       setLocale(language)
@@ -122,12 +156,14 @@ describe('RoundRelay i18n', () => {
     expect(translateSystemMessage(roundLimit))
       .toBe('Automatic discussion reached the 3-round limit without reaching consensus.')
     expect(translateSystemMessage(timeout))
-      .toBe('Automatic discussion reached the 30-minute safety timeout before consensus.')
+      .toBe('Automatic discussion stopped after a runtime timeout before consensus.')
+    expect(translateSystemMessage(timeout)).not.toContain('30')
     expect(translateSystemMessage(unknown)).toBe(unknown.content)
 
     setLocale('zh')
     expect(translateSystemMessage(roundLimit)).toBe('自动讨论已达到 3 轮上限，尚未达成共识。')
-    expect(translateSystemMessage(timeout)).toBe('自动讨论在达成共识前已达到 30 分钟安全超时。')
+    expect(translateSystemMessage(timeout)).toBe('自动讨论在达成共识前因运行超时而停止。')
+    expect(translateSystemMessage(timeout)).not.toContain('30')
     expect(translateSystemMessage(unknown)).toBe(unknown.content)
   })
 })

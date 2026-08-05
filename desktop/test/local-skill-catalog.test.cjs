@@ -124,6 +124,23 @@ test('selection validation accepts only current skills for the requested Agent',
   )
 })
 
+test('main-only selection resolution returns the current source without leaking it from list', (t) => {
+  const home = fixture(t)
+  const sourceDirectory = writeSkill(
+    path.join(home, '.codex', 'skills'),
+    'review',
+    '---\nname: Review code\n---\n',
+  )
+  const catalog = new LocalSkillCatalog({ home })
+  const selection = catalog.list('codex').skills[0]
+
+  assert.equal(JSON.stringify(catalog.list('codex')).includes(sourceDirectory), false)
+  assert.deepEqual(catalog.resolveSelections('codex', [selection]), [{
+    ...selection,
+    sourceDirectory: fs.realpathSync(sourceDirectory),
+  }])
+})
+
 test('catalog caches each Agent scan until TTL expiry without exposing cached objects', (t) => {
   const home = fixture(t)
   const root = path.join(home, '.codex', 'skills')
@@ -282,5 +299,37 @@ test('symbolic-link cycles, aliases, and broken links do not duplicate or stall 
   assert.equal(result.total, 1)
   assert.deepEqual(result.skills, [{
     targetKind: 'openclaw', namespace: 'global', slug: 'cycle-safe', name: 'cycle-safe',
+  }])
+})
+
+test('catalog links cannot escape approved global or plugin roots', (t) => {
+  const home = fixture(t)
+  const globalRoot = path.join(home, '.codex', 'skills')
+  const pluginCache = path.join(home, '.codex', 'plugins', 'cache')
+  const outsideGlobal = writeSkill(path.join(home, 'private-global'), 'escaped-global')
+  const outsidePlugin = path.join(home, 'private-plugin')
+  writeSkill(path.join(outsidePlugin, 'skills'), 'escaped-plugin')
+  writeSkill(globalRoot, 'inside')
+  fs.mkdirSync(pluginCache, { recursive: true })
+  try {
+    fs.symlinkSync(
+      outsideGlobal,
+      path.join(globalRoot, 'escaped'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+    fs.symlinkSync(
+      outsidePlugin,
+      path.join(pluginCache, 'escaped-plugin'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    )
+  } catch (error) {
+    t.skip(`symbolic links unavailable: ${error.code || error.message}`)
+    return
+  }
+
+  const result = listLocalAgentSkills('codex', { home })
+
+  assert.deepEqual(result.skills, [{
+    targetKind: 'codex', namespace: 'global', slug: 'inside', name: 'inside',
   }])
 })

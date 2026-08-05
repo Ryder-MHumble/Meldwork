@@ -757,7 +757,7 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
     expect(pushState).toHaveBeenCalledWith({ roundrelayTracePanel: true }, '', window.location.href)
-    expect(wrapper.get('.trace-context-stats').text()).toContain('4 messages included')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('4 messages injected for this attempt')
     expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages compacted')
     expect(wrapper.get('.trace-context-stats').text()).toContain('720 context characters')
     expect(wrapper.get('.trace-context-stats').text()).toContain('Session context rotated')
@@ -795,7 +795,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-event-time').text()).not.toBe('2026-07-29T08:02:00Z')
     expect(wrapper.get('.trace-event-live-status').text()).toBe('Codex / Reasoning summary / Reviewing files / Running')
     expect(wrapper.get('.trace-panel-summary').attributes('aria-live')).toBeUndefined()
-    expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('Context used')
+    expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('Messages injected for this attempt')
     const sourceButtons = wrapper.findAll('.trace-source-list button')
     expect(sourceButtons).toHaveLength(2)
     expect(sourceButtons[0].text()).toContain('You: Inspect the implementation')
@@ -895,7 +895,7 @@ describe('RoundRelay workbench', () => {
     const localizedEventTitles = wrapper.findAll('.trace-event-title').map(item => item.text())
     expect(localizedEventTitles).toContain('连接器只提供最终答案，未暴露结构化工具过程。')
     expect(localizedEventTitles).toContain('结构化连接失败，已在提交任务前切换兼容模式。')
-    expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('本次使用的上下文')
+    expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('本次尝试注入的消息')
     expect(wrapper.findAll('.trace-source-list button')[1].text()).toContain('来源不可用')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))

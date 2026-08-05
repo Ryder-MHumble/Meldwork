@@ -80,8 +80,11 @@
               <strong>{{ agentLabel(selectedItem.agentKind) }}</strong>
               <span>{{ roundLabel(selectedItem) }}</span>
             </div>
-            <span class="trace-status" :data-status="statusTone(selectedItem.status)">
-              {{ statusLabel(selectedItem.status) }}
+            <span class="trace-summary-statuses">
+              <span v-if="waiting" class="trace-waiting-state">{{ t('humanGate.waiting') }}</span>
+              <span class="trace-status" :data-status="statusTone(selectedItem.status)">
+                {{ statusLabel(selectedItem.status) }}
+              </span>
             </span>
           </div>
           <p v-if="selectedItem.summary" class="trace-summary-copy">{{ selectedItem.summary }}</p>
@@ -89,16 +92,167 @@
             <span>{{ t('trace.conclusion') }}</span>
             <MarkdownMessage :content="selectedItem.output" />
           </div>
-          <div v-if="selectedItem.context && hasContextStats(selectedItem.context)" class="trace-context-stats">
-            <span>{{ t('trace.contextIncluded', { count: selectedItem.context.includedCount }) }}</span>
-            <span>{{ t('trace.contextOmitted', { count: selectedItem.context.omittedCount }) }}</span>
-            <span>{{ t('trace.contextChars', { count: selectedItem.context.charCount }) }}</span>
-            <span v-if="selectedItem.context.sessionRotated">{{ t('trace.contextRotated') }}</span>
+          <div v-if="selectedItem.context && hasTraceContext(selectedItem.context)" class="trace-context-disclosure">
+            <div class="trace-context-stats" data-context-section="attempt">
+              <span>{{ t('trace.attemptInjection') }}</span>
+              <span>{{ t('trace.contextIncluded', { count: selectedItem.context.includedCount }) }}</span>
+              <span>{{ t('trace.contextOmitted', { count: selectedItem.context.omittedCount }) }}</span>
+              <span>{{ t('trace.contextChars', { count: selectedItem.context.charCount }) }}</span>
+              <span v-if="selectedItem.context.sessionRotated">{{ t('trace.contextRotated') }}</span>
+              <span v-if="selectedItem.context.contextPackId" class="trace-context-record">
+                {{ t('trace.contextPackId') }}
+                <code>{{ selectedItem.context.contextPackId }}</code>
+              </span>
+            </div>
+            <p
+              v-if="selectedItem.context.contextPackState === 'legacy-unavailable'"
+              class="trace-detail-unavailable trace-context-record trace-session-warning"
+              data-context-section="context-pack-legacy"
+            >
+              {{ t('trace.contextPackLegacyUnavailable') }}
+            </p>
+            <p
+              v-if="selectedItem.context.deliveryRecordIds?.length"
+              class="trace-detail-unavailable trace-context-record"
+              data-context-section="outbound"
+            >
+              <strong>{{ t('trace.actualOutbound') }}</strong><br />
+              <span>{{ t('trace.deliveryRecordIds', { count: selectedItem.context.deliveryRecordIds.length }) }}</span>
+              <template v-for="(id, index) in selectedItem.context.deliveryRecordIds" :key="id">
+                <br v-if="index === 0" />
+                <span v-else>, </span>
+                <code>{{ id }}</code>
+              </template>
+            </p>
+            <p
+              v-if="selectedItem.context.sessionProvenance"
+              class="trace-detail-unavailable trace-context-record"
+              data-context-section="session"
+              :data-session-reuse="selectedItem.context.sessionProvenance.reuse ? 'reused' : 'new'"
+              :data-provenance-completeness="selectedItem.context.sessionProvenance.completeness"
+            >
+              <strong>{{ t('trace.sessionProvenance') }}</strong><br />
+              <span>{{ sessionProvenanceSummary(selectedItem.context.sessionProvenance) }}</span>
+              <template v-if="selectedItem.context.sessionProvenance.originTaskId">
+                <br />
+                <span>{{ t('trace.sessionOriginTask') }} </span>
+                <code>{{ selectedItem.context.sessionProvenance.originTaskId }}</code>
+              </template>
+              <template v-if="selectedItem.context.sessionProvenance.inheritedTaskIds.length">
+                <br />
+                <span>{{ t('trace.sessionInheritedTasks') }} </span>
+                <template
+                  v-for="(taskId, index) in selectedItem.context.sessionProvenance.inheritedTaskIds"
+                  :key="taskId"
+                >
+                  <span v-if="index">, </span><code>{{ taskId }}</code>
+                </template>
+              </template>
+              <template v-if="sessionProvenanceWarning(selectedItem.context.sessionProvenance)">
+                <br />
+                <span class="trace-session-warning">
+                  {{ sessionProvenanceWarning(selectedItem.context.sessionProvenance) }}
+                </span>
+              </template>
+            </p>
           </div>
           <p v-if="hasOnlyBareEvents(selectedItem)" class="trace-detail-unavailable">
             {{ t('trace.detailUnavailable') }}
           </p>
           <p v-if="selectedItem.truncated" class="trace-truncated">{{ t('trace.truncated') }}</p>
+        </section>
+
+        <section v-if="orderedHumanGates.length" class="trace-human-gate-section" aria-live="polite">
+          <header class="trace-section-heading">
+            <strong>{{ t('humanGate.pendingTitle') }}</strong>
+            <small>{{ orderedHumanGates.length }}</small>
+          </header>
+          <article v-for="gate in orderedHumanGates" :key="gate.gateId" class="trace-human-gate-card">
+            <header>
+              <span>
+                <img :src="agentLogo(gate.agentKind, theme)" alt="" />
+                <strong>{{ agentLabel(gate.agentKind) }}</strong>
+              </span>
+              <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
+            </header>
+            <p>{{ humanGateSummary(gate) }}</p>
+            <div class="trace-human-gate-options">
+              <button
+                v-for="option in gate.options"
+                :key="option.optionId"
+                class="compact"
+                :class="optionApprovesHumanGate(option) ? 'primary-button' : 'secondary-button'"
+                type="button"
+                :disabled="humanGateDecisionPending(gate.gateId)"
+                @click="emit('decide-human-gate', { gateId: gate.gateId, optionId: option.optionId })"
+              >
+                <CheckmarkCircleOutline v-if="optionApprovesHumanGate(option)" />
+                <CloseCircleOutline v-else />
+                {{ humanGateOptionLabel(option) }}
+              </button>
+            </div>
+          </article>
+        </section>
+
+        <section v-if="agentControlsVisible" class="trace-agent-control-section">
+          <header class="trace-section-heading">
+            <strong>{{ t('trace.agentControls') }}</strong>
+            <small>{{ agentLabel(selectedItem.agentKind) }}</small>
+          </header>
+          <div class="trace-agent-control-actions">
+            <button
+              class="secondary-button compact"
+              type="button"
+              :disabled="agentControlPending"
+              @click="emitAgentControl('retry')"
+            >
+              <RefreshOutline />
+              {{ t('trace.retryAgent') }}
+            </button>
+            <button
+              class="secondary-button compact"
+              type="button"
+              :disabled="agentControlPending"
+              @click="emitAgentControl('cancel')"
+            >
+              <CloseCircleOutline />
+              {{ t('trace.cancelAgent') }}
+            </button>
+          </div>
+          <div v-if="replacementAgentKinds.length" class="trace-agent-replace-control">
+            <label>
+              <span>{{ t('trace.replacementAgent') }}</span>
+              <select v-model="replacementKind" :disabled="agentControlPending">
+                <option value="" disabled>{{ t('trace.selectReplacementAgent') }}</option>
+                <option v-for="kind in replacementAgentKinds" :key="kind" :value="kind">
+                  {{ agentLabel(kind) }}
+                </option>
+              </select>
+            </label>
+            <button
+              class="secondary-button compact"
+              type="button"
+              :disabled="agentControlPending || !replacementKind"
+              @click="emitAgentControl('replace', replacementKind)"
+            >
+              <SwapHorizontalOutline />
+              {{ t('trace.replaceAgent') }}
+            </button>
+          </div>
+        </section>
+
+        <section v-if="budgetRows.length" class="trace-budget-section">
+          <header class="trace-section-heading">
+            <strong>{{ t('trace.budgetTitle') }}</strong>
+            <small>{{ budgetRows.length }}</small>
+          </header>
+          <dl>
+            <div v-for="row in budgetRows" :key="row.dimension">
+              <dt>{{ row.label }}</dt>
+              <dd>{{ row.usage }}</dd>
+              <small>{{ row.meta }}</small>
+            </div>
+          </dl>
         </section>
 
         <section class="trace-event-section" :aria-label="t('trace.events')">
@@ -162,11 +316,15 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
+  CheckmarkCircleOutline,
   ChevronDownOutline,
   ChevronForwardOutline,
+  CloseCircleOutline,
   CloseOutline,
+  RefreshOutline,
+  SwapHorizontalOutline,
 } from '@vicons/ionicons5'
 import MarkdownMessage from './MarkdownMessage.vue'
 import { agentLabel, agentLogo } from '../catalog.js'
@@ -175,13 +333,24 @@ import { locale, t } from '../i18n.js'
 const props = defineProps({
   open: { type: Boolean, default: false },
   drawer: { type: Boolean, default: false },
+  agentControlPendingAgentRunId: { type: String, default: '' },
+  budget: { type: Object, default: null },
+  controllableAgentRunId: { type: String, default: '' },
+  humanGateDecisionPendingIds: { type: Array, default: () => [] },
+  humanGates: { type: Array, default: () => [] },
   items: { type: Array, default: () => [] },
+  replacementAgentKinds: { type: Array, default: () => [] },
   selectedAgentRunId: { type: String, default: '' },
   theme: { type: String, default: 'light' },
+  waiting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['close', 'select', 'jump-source'])
+const emit = defineEmits(['close', 'control-agent', 'decide-human-gate', 'select', 'jump-source'])
 const panelElement = ref(null)
+const replacementKind = ref('')
+const BUDGET_DIMENSIONS = [
+  'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
+]
 const selectedItem = computed(() => props.items.find(item => item.agentRunId === props.selectedAgentRunId) || props.items.at(-1) || null)
 const agentGroups = computed(() => {
   const groups = new Map()
@@ -197,6 +366,18 @@ const agentGroups = computed(() => {
 const selectedAgentRuns = computed(() => (
   agentGroups.value.find(group => group.agentKind === selectedItem.value?.agentKind)?.items || []
 ))
+const orderedHumanGates = computed(() => [...props.humanGates].sort((left, right) => (
+  Number(right.agentRunId === selectedItem.value?.agentRunId)
+  - Number(left.agentRunId === selectedItem.value?.agentRunId)
+)))
+const agentControlsVisible = computed(() => (
+  Boolean(selectedItem.value?.agentRunId)
+  && selectedItem.value.agentRunId === props.controllableAgentRunId
+))
+const agentControlPending = computed(() => (
+  props.agentControlPendingAgentRunId === selectedItem.value?.agentRunId
+))
+const budgetRows = computed(() => normalizedBudgetRows(props.budget))
 const selectedSources = computed(() => {
   const item = selectedItem.value
   const sources = Array.isArray(item?.sources) ? item.sources : []
@@ -225,6 +406,13 @@ const eventLiveStatus = computed(() => {
   ].filter(Boolean))].join(' / ')
 })
 
+watch(
+  [() => selectedItem.value?.agentRunId, () => props.replacementAgentKinds.join('\u0000')],
+  () => {
+    if (!props.replacementAgentKinds.includes(replacementKind.value)) replacementKind.value = ''
+  },
+)
+
 function focus() {
   void nextTick(() => panelElement.value?.focus())
 }
@@ -243,6 +431,69 @@ function selectAgentGroup(group) {
 function selectRound(event) {
   const agentRunId = String(event?.target?.value || '')
   if (agentRunId) emit('select', agentRunId)
+}
+
+function emitAgentControl(action, nextReplacementKind = '') {
+  if (!agentControlsVisible.value || agentControlPending.value) return
+  emit('control-agent', {
+    agentRunId: selectedItem.value.agentRunId,
+    kind: selectedItem.value.agentKind,
+    action,
+    replacementKind: action === 'replace' ? nextReplacementKind : '',
+  })
+}
+
+function optionApprovesHumanGate(option) {
+  return ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+}
+
+function humanGateDecisionPending(gateId) {
+  return props.humanGateDecisionPendingIds.includes(gateId)
+}
+
+function humanGateSummary(gate) {
+  const key = {
+    'Agent requests permission to continue a tool action.': 'humanGate.summary.permission',
+    'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
+    'Role review requires a human decision.': 'humanGate.summary.decision',
+  }[gate?.summary]
+  return key ? t(key) : gate?.summary || ''
+}
+
+function humanGateOptionLabel(option) {
+  const key = {
+    allow_once: 'humanGate.option.allowOnce',
+    allow_always: 'humanGate.option.allowAlways',
+    reject_once: 'humanGate.option.reject',
+    reject_always: 'humanGate.option.rejectAlways',
+    accept: 'humanGate.option.acceptArtifact',
+    reject: 'humanGate.option.rejectArtifact',
+    reopen: 'humanGate.option.reopenTask',
+  }[option?.kind]
+  return key ? t(key) : option?.name || ''
+}
+
+function normalizedBudgetRows(budget) {
+  if (!budget) return []
+  return BUDGET_DIMENSIONS.map((dimension) => {
+    const used = budget.used[dimension]
+    const limit = budget.limits[dimension]
+    return {
+      dimension,
+      label: t(`trace.budgetDimension.${dimension}`),
+      usage: t('trace.budgetUsage', {
+        used: formatBudgetNumber(used),
+        limit: limit === null ? t('trace.budgetUnlimited') : formatBudgetNumber(limit),
+      }),
+      meta: `${t(`trace.budgetSource.${budget.source[dimension]}`)} / ${t(`trace.budgetEnforcement.${budget.enforcement[dimension]}`)}`,
+      meaningful: used > 0 || limit !== null || budget.source[dimension] !== 'unknown'
+        || budget.enforcement[dimension] === 'hard',
+    }
+  }).filter(row => row.meaningful)
+}
+
+function formatBudgetNumber(value) {
+  return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(value)
 }
 
 function trapFocus(event) {
@@ -349,11 +600,32 @@ function roundLabel(item) {
     : t('trace.singleResponse')
 }
 
-function hasContextStats(context) {
+function hasTraceContext(context) {
   return Number(context?.includedCount) > 0
     || Number(context?.omittedCount) > 0
     || Number(context?.charCount) > 0
     || context?.sessionRotated === true
+    || Boolean(context?.contextPackId)
+    || context?.contextPackState === 'legacy-unavailable'
+    || Boolean(context?.deliveryRecordIds?.length)
+    || Boolean(context?.sessionProvenance)
+}
+
+function sessionProvenanceSummary(provenance) {
+  return t('trace.sessionProvenanceSummary', {
+    scope: t(`trace.sessionScope.${provenance?.scope || 'none'}`),
+    origin: t(`trace.sessionOrigin.${provenance?.origin || 'none'}`),
+    completeness: t(`trace.sessionCompleteness.${provenance?.completeness || 'complete'}`),
+  })
+}
+
+function sessionProvenanceWarning(provenance) {
+  if (
+    provenance?.scope === 'unknown-legacy'
+    || provenance?.origin === 'unknown-legacy'
+    || provenance?.completeness === 'unknown-legacy'
+  ) return t('trace.sessionUnknownLegacyWarning')
+  return provenance?.reuse ? t('trace.sessionReuseWarning') : ''
 }
 
 function formatEventTime(value) {
@@ -369,3 +641,154 @@ function formatEventTime(value) {
 
 defineExpose({ focus })
 </script>
+
+<style scoped>
+.trace-context-disclosure {
+  display: grid;
+  gap: 6px;
+}
+
+.trace-context-record code {
+  overflow-wrap: anywhere;
+}
+
+.trace-summary-statuses,
+.trace-human-gate-card header,
+.trace-human-gate-card header span,
+.trace-human-gate-options,
+.trace-agent-control-actions,
+.trace-agent-replace-control {
+  display: flex;
+  align-items: center;
+}
+
+.trace-summary-statuses {
+  gap: 7px;
+}
+
+.trace-waiting-state {
+  color: var(--accent-hover);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.trace-human-gate-section,
+.trace-agent-control-section,
+.trace-budget-section {
+  display: grid;
+  gap: 8px;
+  padding-top: 18px;
+}
+
+.trace-human-gate-card {
+  display: grid;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.trace-human-gate-card header {
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trace-human-gate-card header span {
+  min-width: 0;
+  gap: 6px;
+}
+
+.trace-human-gate-card header img {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+}
+
+.trace-human-gate-card header strong {
+  overflow: hidden;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-human-gate-card header small {
+  color: var(--accent-hover);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.trace-human-gate-card p {
+  margin: 0;
+  color: var(--text-soft);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.trace-human-gate-options,
+.trace-agent-control-actions {
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.trace-human-gate-options button svg,
+.trace-agent-control-actions button svg,
+.trace-agent-replace-control button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.trace-agent-replace-control {
+  align-items: end;
+  gap: 6px;
+}
+
+.trace-agent-replace-control label {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  flex: 1;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+.trace-agent-replace-control select {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font: inherit;
+  font-size: 11px;
+}
+
+.trace-budget-section dl {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+}
+
+.trace-budget-section dl div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px 8px;
+  padding: 7px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.trace-budget-section dd {
+  margin: 0;
+}
+
+.trace-budget-section dl small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 9px;
+}
+</style>

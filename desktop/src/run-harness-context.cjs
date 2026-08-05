@@ -11,6 +11,9 @@ const {
 } = require('./run-harness-normalization.cjs')
 
 const SESSION_TRANSPORTS = new Set(['legacy', 'acp'])
+const SESSION_SCOPES = new Set(['task', 'conversation', 'unknown-legacy'])
+const SESSION_PROVENANCE_COMPLETENESS = new Set(['complete', 'partial', 'unknown-legacy'])
+const MAX_SESSION_INHERITED_TASKS = 64
 
 function evidenceCapsuleText(message, label = '') {
   if (!message || typeof message !== 'object' || Array.isArray(message)) return ''
@@ -78,6 +81,9 @@ function packContextEntries(entries, options = {}) {
   return {
     text,
     sourceMessageIds: selected.map(entry => entry.id).filter(Boolean),
+    sourceEntries: selected
+      .filter(entry => entry.id)
+      .map(entry => ({ id: entry.id, text: entry.body })),
     omittedCount: Math.max(0, normalized.length - selected.length),
     charCount: text.length,
   }
@@ -93,6 +99,29 @@ function normalizeSessionMeta(input) {
   }
   const transport = String(input.transport || '').toLowerCase()
   if (SESSION_TRANSPORTS.has(transport)) meta.transport = transport
+  const sessionScope = String(input.sessionScope || '').toLowerCase()
+  const provenanceCompleteness = String(input.provenanceCompleteness || '').toLowerCase()
+  const originTaskId = cleanId(input.originTaskId)
+  const inheritedTaskIds = [...new Set((Array.isArray(input.inheritedTaskIds)
+    ? input.inheritedTaskIds
+    : []).map(cleanId).filter(Boolean))]
+    .filter(taskId => taskId !== originTaskId)
+    .slice(-MAX_SESSION_INHERITED_TASKS)
+  if (sessionScope === 'unknown-legacy'
+      && provenanceCompleteness === 'unknown-legacy') {
+    meta.sessionScope = 'unknown-legacy'
+    meta.originTaskId = ''
+    meta.inheritedTaskIds = []
+    meta.provenanceCompleteness = 'unknown-legacy'
+  } else if (SESSION_SCOPES.has(sessionScope) && sessionScope !== 'unknown-legacy'
+      && originTaskId && SESSION_PROVENANCE_COMPLETENESS.has(provenanceCompleteness)
+      && provenanceCompleteness !== 'unknown-legacy'
+      && (sessionScope !== 'task' || inheritedTaskIds.length === 0)) {
+    meta.sessionScope = sessionScope
+    meta.originTaskId = originTaskId
+    meta.inheritedTaskIds = inheritedTaskIds
+    meta.provenanceCompleteness = provenanceCompleteness
+  }
   return meta
 }
 
@@ -122,7 +151,13 @@ function nextSessionMeta(meta, usage = {}) {
   }
   const transport = String(usage.transport || previous.transport || '').toLowerCase()
   if (SESSION_TRANSPORTS.has(transport)) next.transport = transport
-  return next
+  for (const field of [
+    'sessionScope', 'originTaskId', 'inheritedTaskIds', 'provenanceCompleteness',
+  ]) {
+    if (Object.hasOwn(usage, field)) next[field] = usage[field]
+    else if (Object.hasOwn(previous, field)) next[field] = previous[field]
+  }
+  return normalizeSessionMeta(next)
 }
 
 module.exports = {

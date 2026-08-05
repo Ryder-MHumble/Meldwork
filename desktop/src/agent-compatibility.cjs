@@ -9,10 +9,10 @@ const AGENT_COMPATIBILITY = Object.freeze({
     probe('codex-resume', ['exec', 'resume', '--help'], [
       '--json', '--skip-git-repo-check',
     ]),
-  ]),
+  ], ['0.146.0-alpha.9.2']),
   hermes: profile('0.19.1', '0.20.0', [
     probe('hermes-chat', ['chat', '--help'], [
-      '--quiet', '--query', '--provider', '--model', '--skills', '--resume',
+      '--quiet', '--query', '--provider', '--model', '--resume',
       '--image', '--yolo',
     ]),
   ]),
@@ -75,12 +75,13 @@ function probe(id, args, requiredText) {
   })
 }
 
-function profile(minVersion, maxVersion, probes) {
+function profile(minVersion, maxVersion, probes, prereleaseVersions = []) {
   return Object.freeze({
     minVersion,
     maxVersion,
     supportedVersionRange: `${minVersion}..${maxVersion}`,
     probes: Object.freeze(probes),
+    prereleaseVersions: Object.freeze([...prereleaseVersions]),
   })
 }
 
@@ -128,9 +129,10 @@ function assessAgentVersion(kind, rawVersion) {
   }
   const supported = contract.exactVersion
     ? resolvedVersion === contract.exactVersion
-    : !resolvedVersion.includes('-')
-      && compareReleaseVersions(resolvedVersion, contract.minVersion) >= 0
-      && compareReleaseVersions(resolvedVersion, contract.maxVersion) <= 0
+    : contract.prereleaseVersions.includes(resolvedVersion)
+      || (!resolvedVersion.includes('-')
+        && compareReleaseVersions(resolvedVersion, contract.minVersion) >= 0
+        && compareReleaseVersions(resolvedVersion, contract.maxVersion) <= 0)
   return supported
     ? {
         ...base,

@@ -25,6 +25,7 @@ const {
   publicProfile,
   redactExecutable,
 } = require('./custom-agent-contract.cjs')
+const { createCustomOutboundPayload } = require('./outbound-payload.cjs')
 
 const execFileAsync = promisify(execFile)
 
@@ -190,12 +191,24 @@ class CustomAgentStore {
     const spawnFn = options.spawnFn || spawn
     const args = [...definition.args]
     if (definition.promptMode === 'argument') args.push(promptText)
+    const resolvedWorkdir = path.resolve(workdir)
+    const stdin = definition.promptMode === 'stdin' ? promptText : ''
+    if (typeof options.onOutboundPayload === 'function') {
+      await options.onOutboundPayload(createCustomOutboundPayload({
+        prompt: String(prompt || ''),
+        command: executable,
+        args,
+        cwd: resolvedWorkdir,
+        stdin,
+        promptMode: definition.promptMode,
+      }))
+    }
     const env = childEnvironment(options.env || process.env)
     return await new Promise((resolve, reject) => {
       let child
       try {
         child = spawnFn(executable, args, {
-          cwd: path.resolve(workdir),
+          cwd: resolvedWorkdir,
           env,
           stdio: ['pipe', 'pipe', 'pipe'],
           detached: this.platform !== 'win32',
@@ -315,7 +328,7 @@ class CustomAgentStore {
         resolve({ text, sessionRef: '', outcome: 'partial' })
       }))
 
-      if (definition.promptMode === 'stdin') child.stdin.end(promptText)
+      if (definition.promptMode === 'stdin') child.stdin.end(stdin)
       else child.stdin.end()
     })
   }

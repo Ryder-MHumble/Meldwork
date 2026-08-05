@@ -1,13 +1,18 @@
-const { randomUUID } = require('node:crypto')
+const { createHash, randomUUID } = require('node:crypto')
 const {
   isReviewOnlyAgentKind,
   requireTerminalAgentResult,
 } = require('./agent-runtime-contract.cjs')
 const {
   nextSessionMeta,
+  normalizeOutcomeRefs,
   normalizeSessionMeta,
   shouldRotateSession,
 } = require('./run-harness.cjs')
+const {
+  canonicalJson,
+  normalizeContextPackId,
+} = require('./context-pack-records.cjs')
 const {
   HERMES_WORKSPACE_ACP_ENABLED,
   MAX_MESSAGE_ATTACHMENTS,
@@ -20,6 +25,91 @@ const {
   parseAutoReply,
   settleWithin,
 } = require('./local-workspace-inputs.cjs')
+const { outboundWirePayloadBytes } = require('./outbound-payload.cjs')
+const { processRunScheduler } = require('./run-scheduler.cjs')
+
+const MAX_INHERITED_TASK_IDS = 64
+const MAX_ISOLATED_PROMPT_BYTES = 4 * 1024 * 1024
+
+function isolatedInvocationContext(context) {
+  if (context?.sessionPolicy !== 'isolated') return null
+  const promptOverride = typeof context.promptOverride === 'string'
+    ? context.promptOverride
+    : ''
+  const contextPackId = normalizeContextPackId(context.contextPackId)
+  if (!promptOverride || promptOverride.includes('\u0000')
+      || Buffer.byteLength(promptOverride) > MAX_ISOLATED_PROMPT_BYTES
+      || !contextPackId) {
+    throw new Error('LOCAL_RUN_ISOLATED_CONTEXT_INVALID')
+  }
+  return { promptOverride, contextPackId }
+}
+
+function createdSessionProvenance(group, taskId, stateless = false) {
+  if (stateless) {
+    return {
+      scope: 'none', reuse: false, origin: 'none', originTaskId: null,
+      inheritedTaskIds: [], completeness: 'complete',
+    }
+  }
+  return {
+    scope: group.conversationType === 'direct' ? 'conversation' : 'task',
+    reuse: false,
+    origin: 'created',
+    originTaskId: taskId || null,
+    inheritedTaskIds: [],
+    completeness: 'complete',
+  }
+}
+
+function provenanceMeta(provenance) {
+  if (provenance.scope === 'unknown-legacy') {
+    return {
+      sessionScope: 'unknown-legacy',
+      originTaskId: '',
+      inheritedTaskIds: [],
+      provenanceCompleteness: 'unknown-legacy',
+    }
+  }
+  if (provenance.scope === 'none') return {}
+  return {
+    sessionScope: provenance.scope,
+    originTaskId: provenance.originTaskId || '',
+    inheritedTaskIds: provenance.inheritedTaskIds || [],
+    provenanceCompleteness: provenance.completeness,
+  }
+}
+
+function completedSessionMeta(meta, provenance, taskId, usage) {
+  let inheritedTaskIds = [...(provenance.inheritedTaskIds || [])]
+  let completeness = provenance.completeness
+  if (provenance.scope === 'conversation' && taskId
+      && taskId !== provenance.originTaskId && !inheritedTaskIds.includes(taskId)) {
+    inheritedTaskIds.push(taskId)
+    if (inheritedTaskIds.length > MAX_INHERITED_TASK_IDS) {
+      inheritedTaskIds = inheritedTaskIds.slice(-MAX_INHERITED_TASK_IDS)
+      completeness = 'partial'
+    }
+  }
+  return nextSessionMeta(meta, {
+    ...usage,
+    ...provenanceMeta({ ...provenance, inheritedTaskIds, completeness }),
+  })
+}
+
+function matchesResumedPermission(request, resumedGate) {
+  if (!request || !resumedGate?.request) return false
+  try {
+    if (canonicalJson(request) !== canonicalJson(resumedGate.request)) return false
+  } catch {
+    return false
+  }
+  const selected = request.options?.find(option => option.optionId === resumedGate.optionId)
+  if (!selected) return false
+  return resumedGate.status === 'approved'
+    ? selected.kind.startsWith('allow_')
+    : selected.kind.startsWith('reject_')
+}
 
 class LocalWorkspaceAgentInvocation {
   constructor(options) {
@@ -29,10 +119,13 @@ class LocalWorkspaceAgentInvocation {
     this.runAgentTimeoutMs = options.runAgentTimeoutMs
     this.runAbortGraceMs = options.runAbortGraceMs
     this.captureAgentOutputs = options.captureAgentOutputs
+    this.captureArtifactOutputs = options.captureArtifactOutputs
+    this.captureAgentOutcomeDescriptors = options.captureAgentOutcomeDescriptors
     this.runAgent = options.runAgent
     this.importAgentOutputs = options.importAgentOutputs
+    this.recordAgentOutcomes = options.recordAgentOutcomes
     this.sessionKey = options.sessionKey
-    this.sessionRef = options.sessionRef
+    this.sessionState = options.sessionState
     this.openClawSessionRef = options.openClawSessionRef
     this.save = options.save
     this.packedPromptContext = options.packedPromptContext
@@ -44,72 +137,211 @@ class LocalWorkspaceAgentInvocation {
     this.scheduleRunCheckpoint = options.scheduleRunCheckpoint
     this.emitChanged = options.emitChanged
     this.promptFor = options.promptFor
-    this.persistSessionRef = options.persistSessionRef
-    this.persistSessionMeta = options.persistSessionMeta
+    this.persistSessionState = options.persistSessionState
+    this.createAttemptContextPack = options.createAttemptContextPack
+    this.recordContextDelivery = options.recordContextDelivery
     this.markRuntimeCredential = options.markRuntimeCredential
     this.addMessage = options.addMessage
+    this.runScheduler = options.runScheduler || processRunScheduler
+    this.registerAgentController = options.registerAgentController
+    this.unregisterAgentController = options.unregisterAgentController
+    this.requestHumanGate = options.requestHumanGate
+    this.completeHumanGateContinuation = options.completeHumanGateContinuation
+    this.connectorRuntime = options.connectorRuntime || null
+  }
+
+  commitSessionState(mutator) {
+    const state = this.state()
+    const previousSessions = { ...state.sessions }
+    const previousSessionMeta = { ...state.sessionMeta }
+    try {
+      const result = mutator(state)
+      if (result !== false) this.save()
+      return result
+    } catch (error) {
+      state.sessions = previousSessions
+      state.sessionMeta = previousSessionMeta
+      throw error
+    }
   }
 
   async invoke(group, kind, mode, signal, threadRootId = '', context = {}) {
+    if (isReviewOnlyAgentKind(kind) && context.taskType !== 'code_review') {
+      throw new Error('LOCAL_AGENT_REVIEW_ONLY')
+    }
+    const activeRun = this.activeRuns.get(group.id)
+    const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
+    if (!taskId) throw new Error('LOCAL_RUN_TASK_INVALID')
+    const workspaceKey = createHash('sha256')
+      .update(String(group.workdir || group.id))
+      .digest('hex')
+    const agentController = new AbortController()
+    const registration = { agentRunId: '' }
+    let queuedAbortHandler = null
+    this.registerAgentController?.(activeRun, kind, registration.agentRunId, agentController)
+    if (signal) {
+      queuedAbortHandler = () => agentController.abort()
+      if (signal.aborted) queuedAbortHandler()
+      else signal.addEventListener('abort', queuedAbortHandler, { once: true })
+    }
+    try {
+      return await this.runScheduler.withLease({
+        taskId,
+        workspaceKey,
+        signal: agentController.signal,
+      }, () => {
+        if (signal && queuedAbortHandler) {
+          signal.removeEventListener('abort', queuedAbortHandler)
+          queuedAbortHandler = null
+        }
+        return this.invokeLeased(
+          group,
+          kind,
+          mode,
+          signal,
+          threadRootId,
+          context,
+          { agentController, registration },
+        )
+      })
+    } finally {
+      if (signal && queuedAbortHandler) {
+        signal.removeEventListener('abort', queuedAbortHandler)
+      }
+      this.unregisterAgentController?.(
+        activeRun, kind, registration.agentRunId, agentController,
+      )
+    }
+  }
+
+  async invokeLeased(
+    group, kind, mode, signal, threadRootId = '', context = {}, invocation = {},
+  ) {
     const agent = this.detectedAgents().find(item => item.kind === kind && item.available)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const reviewOnly = isReviewOnlyAgentKind(kind)
     if (reviewOnly && context.taskType !== 'code_review') {
       throw new Error('LOCAL_AGENT_REVIEW_ONLY')
     }
-    const allowWrite = group.allowWrite === true && !reviewOnly
-    const key = this.sessionKey(group.id, kind)
+    const isolated = isolatedInvocationContext(context)
+    const internal = context.internal === true
+    if (internal && !isolated) throw new Error('LOCAL_RUN_INTERNAL_CONTEXT_INVALID')
+    const allowWrite = group.allowWrite === true && !reviewOnly && !isolated
     const state = this.state()
-    const storedSessionRef = String(state.sessions[key] || '')
     const activeRun = this.activeRuns.get(group.id)
+    const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
-    let sessionRef = reviewOnly
-      ? ''
-      : this.sessionRef(group, kind, context.sessionThreadRootId || threadRootId)
-    const sessionMeta = normalizeSessionMeta(state.sessionMeta[key])
+    const resolvedSession = reviewOnly || isolated
+      ? {
+          key: this.sessionKey(group.id, kind, group.conversationType === 'direct' ? '' : taskId),
+          sessionRef: '',
+          sessionMeta: {},
+          provenance: createdSessionProvenance(group, taskId, true),
+        }
+      : this.sessionState(
+          group, kind, context.sessionThreadRootId || threadRootId, taskId,
+        )
+    const key = resolvedSession.key
+    const storedSessionRef = String(resolvedSession.sessionRef || '')
+    let sessionRef = storedSessionRef
+    let sessionMeta = normalizeSessionMeta(resolvedSession.sessionMeta)
+    let sessionProvenance = resolvedSession.provenance
     let sessionRotated = false
-    if (sessionRef && shouldRotateSession(sessionMeta)) {
-      delete state.sessions[key]
-      if (kind === 'openclaw') {
-        const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
-        sessionRef = this.openClawSessionRef(group, generation)
-        state.sessions[key] = sessionRef
-      } else {
-        sessionRef = ''
-      }
+    const resumedPermission = context.resumedGate?.type === 'permission'
+      ? context.resumedGate
+      : null
+    const sessionNeedsRotation = sessionRef && shouldRotateSession(sessionMeta)
+    if (resumedPermission && (!sessionRef || sessionNeedsRotation)) {
+      throw new Error('LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE')
+    }
+    if (sessionNeedsRotation) {
+      sessionMeta = {}
+      sessionProvenance = createdSessionProvenance(group, taskId)
+      this.commitSessionState((nextState) => {
+        delete nextState.sessions[key]
+        delete nextState.sessionMeta[key]
+        if (kind === 'openclaw') {
+          const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
+          sessionRef = this.openClawSessionRef(
+            group, generation, group.conversationType === 'direct' ? '' : taskId,
+          )
+          nextState.sessions[key] = sessionRef
+          nextState.sessionMeta[key] = normalizeSessionMeta(
+            provenanceMeta(sessionProvenance),
+          )
+        } else {
+          sessionRef = ''
+        }
+      })
       sessionRotated = true
-      this.save()
     }
     let sessionTransport = sessionRef ? String(sessionMeta.transport || '') : ''
     const hermesNeedsLegacy = kind === 'hermes' && sessionTransport === 'acp'
       && (!HERMES_WORKSPACE_ACP_ENABLED
         || agent.acpAvailable === false
-        || (context.attachments || []).length > 0
-        || (context.skillHints || []).length > 0)
+        || (context.attachments || []).length > 0)
+    if (resumedPermission && hermesNeedsLegacy) {
+      throw new Error('LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE')
+    }
     if (sessionRef && hermesNeedsLegacy) {
-      delete state.sessions[key]
+      this.commitSessionState((nextState) => {
+        delete nextState.sessions[key]
+        delete nextState.sessionMeta[key]
+      })
       sessionRef = ''
+      sessionMeta = {}
+      sessionProvenance = createdSessionProvenance(group, taskId)
       sessionTransport = ''
       sessionRotated = true
-      this.save()
     }
     let transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
       ? kind
       : ''
-    let packedContext = this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
+    let packedContext = isolated
+      ? {
+          text: '',
+          sourceMessageIds: [],
+          sourceEntries: [],
+          omittedCount: 0,
+          charCount: isolated.promptOverride.length,
+          context: {
+            includedCount: 0,
+            omittedCount: 0,
+            charCount: isolated.promptOverride.length,
+            contextPackId: isolated.contextPackId,
+            contextPackState: 'captured',
+          },
+        }
+      : this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
     const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
+    let deliveryContext = {
+      contextPackId: isolated?.contextPackId || activeRun?.contextPackId || '',
+      deliveryRecordIds: [],
+      sessionProvenance,
+    }
     if (harnessRun) {
       const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
       if (liveHarnessRun) {
-        liveHarnessRun.context = { ...packedContext.context, sessionRotated }
+        liveHarnessRun.context = {
+          ...packedContext.context,
+          sessionRotated,
+          ...deliveryContext,
+        }
       }
       this.emitRunEvent(harnessRun)
       this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       this.checkpointRun(group.id, activeRun)
       this.emitChanged()
     }
-    const agentController = new AbortController()
+    const agentController = invocation.agentController instanceof AbortController
+      ? invocation.agentController
+      : new AbortController()
+    const registration = invocation.registration || { agentRunId: '' }
+    registration.agentRunId = harnessRun?.agentRunId || ''
+    this.registerAgentController?.(
+      activeRun, kind, registration.agentRunId, agentController,
+    )
     let watchdogTimedOut = false
     let watchdogError = null
     let parentAbortObserved = false
@@ -119,8 +351,14 @@ class LocalWorkspaceAgentInvocation {
     let parentAbortHandler = null
     let parentAbortPromise = null
     let capturePromise = null
+    let artifactCapturePromise = null
     let runPromise = null
     let importPromise = null
+    let outcomeCapturePromise = null
+    let attemptProgress = []
+    const resolvedGateIds = []
+    let resumedPermissionUsed = false
+    let resumedPermissionError = null
     const startedAt = Date.now()
     if (signal) {
       parentAbortPromise = new Promise((_, reject) => {
@@ -146,9 +384,8 @@ class LocalWorkspaceAgentInvocation {
     watchdogPromise.catch(() => {})
     const onProgress = (step) => {
       if (agentCallbacksClosed || agentController.signal.aborted
-          || !activeRun || this.activeRuns.get(group.id) !== activeRun
-          || activeRun.currentKind !== kind) return
-      const next = [...(activeRun.progress || [])]
+          || !activeRun || this.activeRuns.get(group.id) !== activeRun) return
+      const next = [...attemptProgress]
       const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
         ? step.id
         : ''
@@ -157,7 +394,8 @@ class LocalWorkspaceAgentInvocation {
         : -1
       if (existingIndex >= 0) next[existingIndex] = { ...step, id: progressId }
       else next.push(progressId ? { ...step, id: progressId } : step)
-      activeRun.progress = next.slice(-8)
+      attemptProgress = next.slice(-8)
+      if (activeRun.currentKind === kind) activeRun.progress = attemptProgress
       this.armAgentSilence(activeRun, kind, round, harnessRun?.agentRunId)
     }
     let autoDeltaBuffer = ''
@@ -212,8 +450,10 @@ class LocalWorkspaceAgentInvocation {
       if (safe) emitHarnessEvent({ type: 'answer_delta', status: 'running', delta: safe })
     }
     let outputBaseline = null
+    let artifactOutputBaseline = null
     let result
     let harnessFinished = false
+    let connectorContext = {}
     const finishHarness = (status, finalText = '', runtimeContext = {}) => {
       if (!harness || !harnessRun || harnessFinished) return null
       flushRuntimeEvent()
@@ -222,6 +462,8 @@ class LocalWorkspaceAgentInvocation {
       const finished = harness.finishAgent(kind, round, status, finalText, {
         ...packedContext.context,
         sessionRotated,
+        ...deliveryContext,
+        ...connectorContext,
         ...runtimeContext,
       }, harnessRun.agentRunId)
       harnessFinished = true
@@ -232,6 +474,11 @@ class LocalWorkspaceAgentInvocation {
     }
     try {
       if (allowWrite) {
+        artifactCapturePromise = Promise.resolve().then(() => this.captureArtifactOutputs(
+          group.workdir,
+          { signal: agentController.signal },
+        ))
+        artifactCapturePromise.catch(() => {})
         try {
           capturePromise = Promise.resolve().then(() => this.captureAgentOutputs(
             group.workdir,
@@ -246,26 +493,101 @@ class LocalWorkspaceAgentInvocation {
           if (agentController.signal.aborted) throw error
           /* output capture is best effort */
         }
+        try {
+          artifactOutputBaseline = await abortableOperation(
+            () => artifactCapturePromise,
+            agentController.signal,
+          )
+        } catch (error) {
+          if (agentController.signal.aborted) throw error
+          /* artifact output capture is best effort */
+        }
       }
       const runtimeInstruction = cleanText(context.runtimeInstruction, 3000)
-      const buildPrompt = (afterKind, contextPackage) => [
-        this.promptFor(
-          group, kind, mode, threadRootId, context.skillHints || [],
-          context.knowledgeBaseHints || [], afterKind, contextPackage,
-        ),
-        runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
-      ].filter(Boolean).join('\n')
+      const buildPrompt = (afterKind, contextPackage) => isolated
+        ? isolated.promptOverride
+        : [
+            this.promptFor(
+              group, kind, mode, threadRootId, context.skillHints || [],
+              context.knowledgeBaseHints || [], afterKind, contextPackage,
+            ),
+            runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
+          ].filter(Boolean).join('\n')
       let prompt = buildPrompt(transcriptAfterKind, packedContext)
-      const rebuildFreshSession = () => {
-        delete state.sessions[key]
-        delete state.sessionMeta[key]
-        if (kind === 'openclaw') {
-          const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
-          sessionRef = this.openClawSessionRef(group, generation)
-          state.sessions[key] = sessionRef
-        } else {
-          sessionRef = ''
+      const recordOutboundPayload = (outbound = {}) => {
+        if (activeRun?.budget) {
+          const bytes = outboundWirePayloadBytes(outbound)
+          activeRun.budget.addUsage('outboundBytes', bytes.length, { source: 'reported' })
+          activeRun.budget.addUsage('inputTokens', Math.ceil(bytes.length / 4), {
+            source: 'estimated',
+          })
         }
+        const baseContextPackId = isolated?.contextPackId || activeRun?.contextPackId || ''
+        if (!baseContextPackId || !harness || !harnessRun) return
+        const attempt = this.createAttemptContextPack({
+          baseContextPackId,
+          group,
+          taskId,
+          mode: group.conversationType === 'direct' ? 'direct' : mode,
+          kind,
+          packedContext,
+          attachments: isolated ? [] : (context.attachmentSnapshots || []),
+          skillHints: isolated ? [] : (context.skillHints || []),
+          knowledgeBaseHints: isolated ? [] : (context.knowledgeBaseHints || []),
+          approvedPrompt: isolated?.promptOverride || '',
+          forceReadOnly: Boolean(isolated),
+        })
+        const delivery = this.recordContextDelivery({
+          contextPackId: attempt.record.contextPackId,
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          kind,
+          outbound,
+          permissionMode: allowWrite ? 'workspace-write' : 'read-only',
+          skills: isolated ? [] : (context.skillHints || []),
+          runtimeAdditions: attempt.runtimeAdditions,
+          sessionProvenance,
+        })
+        deliveryContext = {
+          contextPackId: attempt.record.contextPackId,
+          deliveryRecordIds: [
+            ...deliveryContext.deliveryRecordIds,
+            delivery.deliveryRecordId,
+          ].slice(-8),
+          sessionProvenance,
+        }
+        const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
+        if (liveHarnessRun) {
+          liveHarnessRun.context = {
+            ...packedContext.context,
+            sessionRotated,
+            ...deliveryContext,
+            ...connectorContext,
+          }
+        }
+        this.checkpointRun(group.id, activeRun)
+        this.emitChanged()
+      }
+      const rebuildFreshSession = () => {
+        sessionMeta = {}
+        sessionProvenance = createdSessionProvenance(group, taskId)
+        deliveryContext = { ...deliveryContext, sessionProvenance }
+        this.commitSessionState((nextState) => {
+          delete nextState.sessions[key]
+          delete nextState.sessionMeta[key]
+          if (kind === 'openclaw') {
+            const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
+            sessionRef = this.openClawSessionRef(
+              group, generation, group.conversationType === 'direct' ? '' : taskId,
+            )
+            nextState.sessions[key] = sessionRef
+            nextState.sessionMeta[key] = normalizeSessionMeta(
+              provenanceMeta(sessionProvenance),
+            )
+          } else {
+            sessionRef = ''
+          }
+        })
         sessionTransport = ''
         transcriptAfterKind = ''
         sessionRotated = true
@@ -275,53 +597,145 @@ class LocalWorkspaceAgentInvocation {
         )
         if (liveHarnessRun) {
           liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
-          liveHarnessRun.context = { ...packedContext.context, sessionRotated }
+          liveHarnessRun.context = {
+            ...packedContext.context,
+            sessionRotated,
+            ...deliveryContext,
+            ...connectorContext,
+          }
         }
         prompt = buildPrompt('', packedContext)
-        this.save()
         this.scheduleRunCheckpoint(group.id, activeRun)
         this.emitChanged()
         return prompt
       }
-      const runCurrentSession = () => this.runAgent(
-        agent,
-        prompt,
-        group.workdir,
-        {
-          sessionRef,
-          onSessionRef: (nextSessionRef, metadata = {}) => {
-            if (agentCallbacksClosed || agentController.signal.aborted) return
-            if (reviewOnly) return
-            this.persistSessionRef(key, nextSessionRef)
-            const transport = ['legacy', 'acp'].includes(metadata?.transport)
-              ? metadata.transport
-              : ''
-            if (transport) {
-              sessionTransport = transport
-              this.persistSessionMeta(key, {
-                ...normalizeSessionMeta(state.sessionMeta[key]),
-                transport,
-              })
-            }
-          },
-          onSessionInvalidated: () => {
-            if (kind !== 'hermes') return null
-            return { prompt: rebuildFreshSession() }
-          },
-          signal: agentController.signal,
-          sandbox: allowWrite ? 'workspace-write' : 'read-only',
-          onProgress,
-          onEvent: emitRuntimeEvent,
-          sessionTransport,
-          attachments: context.attachments || [],
-          ...(kind === 'hermes'
-            ? {
-                hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false,
-                skills: (context.skillHints || []).map(skill => skill.slug),
-              }
-            : {}),
+      const runOptions = {
+        sessionRef,
+        onSessionRef: (nextSessionRef, metadata = {}) => {
+          if (agentCallbacksClosed || agentController.signal.aborted) return
+          if (reviewOnly || isolated) return
+          const transport = ['legacy', 'acp'].includes(metadata?.transport)
+            ? metadata.transport
+            : ''
+          if (transport) sessionTransport = transport
+          this.persistSessionState(key, nextSessionRef, normalizeSessionMeta({
+            ...sessionMeta,
+            ...provenanceMeta(sessionProvenance),
+            ...(sessionTransport ? { transport: sessionTransport } : {}),
+          }))
         },
-      )
+        onSessionInvalidated: () => {
+          if (kind !== 'hermes' || isolated || resumedPermission) return null
+          return { prompt: rebuildFreshSession() }
+        },
+        signal: agentController.signal,
+        sandbox: allowWrite ? 'workspace-write' : 'read-only',
+        onProgress,
+        onEvent: emitRuntimeEvent,
+        onOutboundPayload: recordOutboundPayload,
+        onPermissionRequest: async (request, permissionContext = {}) => {
+          if (resumedPermission && !resumedPermissionUsed) {
+            if (!matchesResumedPermission(request, resumedPermission)) {
+              resumedPermissionError = new Error('LOCAL_RUN_PERMISSION_REQUEST_MISMATCH')
+              throw resumedPermissionError
+            }
+            resumedPermissionUsed = true
+            return {
+              status: resumedPermission.status,
+              optionId: resumedPermission.optionId,
+            }
+          }
+          const decision = await this.requestHumanGate({
+            type: 'permission',
+            runId: activeRun.runId,
+            agentRunId: harnessRun.agentRunId,
+            agentKind: kind,
+            summary: 'Agent requests permission to continue a tool action.',
+            options: request.options,
+            request,
+          }, {
+            signal: permissionContext.signal || agentController.signal,
+            preserveOnAbort: () => activeRun.stopReason === 'shutdown',
+            continuation: {
+              resumeKind: 'agent_slot',
+              agentRunId: harnessRun.agentRunId,
+              agentKind: kind,
+              round,
+            },
+          })
+          if (decision.gateId) resolvedGateIds.push(decision.gateId)
+          return { status: decision.status, optionId: decision.optionId }
+        },
+        sessionTransport,
+        attachments: isolated ? [] : (context.attachments || []),
+        ...(kind === 'hermes'
+          ? {
+              hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false,
+            }
+          : {}),
+      }
+      const runCurrentSession = () => {
+        const currentRunOptions = { ...runOptions, sessionRef, sessionTransport }
+        if (!agent.connectorInstanceId) {
+          return this.runAgent(agent, prompt, group.workdir, currentRunOptions)
+        }
+        if (!this.connectorRuntime || typeof this.connectorRuntime.run !== 'function') {
+          throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+        }
+        if (!activeRun?.runId || !harnessRun?.agentRunId) {
+          throw new Error('AGENT_CONNECTOR_RUN_ID_INVALID')
+        }
+        return this.connectorRuntime.run(agent, prompt, group.workdir, {
+          ...currentRunOptions,
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          onConnectorState: (nextContext) => {
+            connectorContext = nextContext
+            const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
+            if (liveHarnessRun) {
+              liveHarnessRun.context = {
+                ...packedContext.context,
+                sessionRotated,
+                ...deliveryContext,
+                ...connectorContext,
+              }
+            }
+            this.checkpointRun(group.id, activeRun)
+            this.emitChanged()
+          },
+        })
+      }
+      const costDecision = activeRun?.budget?.check('costMicros')
+      if (costDecision?.action === 'human_gate') {
+        const resumed = context.resumedGate
+        const decision = resumed?.type === 'budget'
+          ? resumed
+          : await this.requestHumanGate({
+          type: 'budget',
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          agentKind: kind,
+          summary: 'Cost usage is unavailable for this Agent attempt.',
+          options: [
+            { optionId: 'continue-unmetered', name: 'Continue', kind: 'allow_once' },
+            { optionId: 'cancel-attempt', name: 'Cancel', kind: 'reject_once' },
+          ],
+          request: costDecision,
+          }, {
+            signal: agentController.signal,
+            preserveOnAbort: () => activeRun.stopReason === 'shutdown',
+            continuation: {
+              resumeKind: 'agent_slot',
+              agentRunId: harnessRun.agentRunId,
+              agentKind: kind,
+              round,
+            },
+          })
+        if (decision.gateId && resumed?.type !== 'budget') resolvedGateIds.push(decision.gateId)
+        if (decision.status !== 'approved') throw new Error('LOCAL_BUDGET_REJECTED')
+        activeRun.budget.approveUnobservable('costMicros')
+        this.checkpointRun(group.id, activeRun)
+      }
       if (agentController.signal.aborted) throw agentStoppedError()
       runPromise = Promise.resolve().then(async () => {
         const reusedSessionRef = sessionRef
@@ -329,6 +743,7 @@ class LocalWorkspaceAgentInvocation {
           return await runCurrentSession()
         } catch (error) {
           if (agentController.signal.aborted || !reusedSessionRef
+              || resumedPermission
               || error?.message !== 'LOCAL_AGENT_SESSION_INVALID') throw error
           rebuildFreshSession()
           return await runCurrentSession()
@@ -339,22 +754,40 @@ class LocalWorkspaceAgentInvocation {
       if (parentAbortPromise) pending.push(parentAbortPromise)
       result = await Promise.race(pending)
       if (agentController.signal.aborted) throw agentStoppedError()
+      if (resumedPermissionError) throw resumedPermissionError
+      if (resumedPermission && !resumedPermissionUsed) {
+        throw new Error('LOCAL_RUN_PERMISSION_REQUEST_NOT_REISSUED')
+      }
       result = requireTerminalAgentResult(result)
       this.markRuntimeCredential(kind, 'ready')
 
-      if (!reviewOnly && !watchdogTimedOut && !agentController.signal.aborted) {
-        this.persistSessionRef(key, result.sessionRef)
-      }
       const reply = mode === 'auto'
         ? parseAutoReply(result.text)
         : { text: result.text, consensus: false }
       if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')
-      const progress = activeRun?.progress?.length ? activeRun.progress : result.progress
+      const progress = attemptProgress.length ? attemptProgress : result.progress
       const toolCalls = cleanProgressSteps(progress).map(step => ({
         ...step,
         status: step.status === 'in_progress' ? 'completed' : step.status,
       }))
       if (activeRun) activeRun.progress = toolCalls
+      if (activeRun?.budget) {
+        const reportedOutputTokens = Number(result.usage?.outputTokens)
+        const hasReportedOutputTokens = Number.isSafeInteger(reportedOutputTokens)
+          && reportedOutputTokens >= 0
+        activeRun.budget.addUsage(
+          'outputTokens',
+          hasReportedOutputTokens ? reportedOutputTokens : Math.ceil(reply.text.length / 4),
+          { source: hasReportedOutputTokens ? 'reported' : 'estimated' },
+        )
+        activeRun.budget.addUsage('toolCalls', toolCalls.length, { source: 'estimated' })
+        const reportedCostMicros = Number(result.usage?.costMicros)
+        if (Number.isSafeInteger(reportedCostMicros) && reportedCostMicros >= 0) {
+          activeRun.budget.addUsage('costMicros', reportedCostMicros, { source: 'reported' })
+        }
+        activeRun.budget.updateElapsed()
+        this.checkpointRun(group.id, activeRun)
+      }
       let attachments = []
       if (allowWrite) {
         try {
@@ -380,34 +813,108 @@ class LocalWorkspaceAgentInvocation {
         }
       }
       if (agentController.signal.aborted) throw agentStoppedError()
+      let descriptors = []
+      if (allowWrite && artifactOutputBaseline) {
+        try {
+          outcomeCapturePromise = Promise.resolve().then(() => (
+            this.captureAgentOutcomeDescriptors({
+              workdir: group.workdir,
+              baseline: artifactOutputBaseline,
+              startedAt,
+              agentKind: kind,
+              runId: activeRun?.runId,
+              agentRunId: harnessRun?.agentRunId,
+              signal: agentController.signal,
+            })
+          ))
+          outcomeCapturePromise.catch(() => {})
+          const captured = await abortableOperation(
+            () => outcomeCapturePromise,
+            agentController.signal,
+          )
+          descriptors = Array.isArray(captured) ? captured : []
+        } catch (error) {
+          if (agentController.signal.aborted) throw error
+          /* the conclusion remains durable when explicit outputs cannot be captured */
+        }
+      }
+      if (agentController.signal.aborted) throw agentStoppedError()
+      const capturedOutcomeRefs = internal
+        ? { artifactIds: [], evidenceIds: [] }
+        : this.recordAgentOutcomes({
+            groupId: group.id,
+            runId: activeRun?.runId,
+            agentRunId: harnessRun?.agentRunId,
+            agentKind: kind,
+            round,
+            conclusion: reply.text,
+            descriptors,
+          })
+      const requestedOutcomeRefs = !internal && context.outcomeRefs
+        && typeof context.outcomeRefs === 'object'
+        && !Array.isArray(context.outcomeRefs)
+        ? context.outcomeRefs
+        : {}
+      const outcomeRefs = normalizeOutcomeRefs({
+        ...requestedOutcomeRefs,
+        artifactIds: [
+          ...(Array.isArray(requestedOutcomeRefs.artifactIds)
+            ? requestedOutcomeRefs.artifactIds
+            : []),
+          ...(capturedOutcomeRefs.artifactIds || []),
+        ],
+        evidenceIds: [
+          ...(Array.isArray(requestedOutcomeRefs.evidenceIds)
+            ? requestedOutcomeRefs.evidenceIds
+            : []),
+          ...(capturedOutcomeRefs.evidenceIds || []),
+        ],
+      })
       const finalStatus = result.outcome
       const trace = finishHarness(finalStatus, reply.text, {
         externalRunRef: result.externalRunRef,
+        outcomeRefs,
       })
-      const message = this.addMessage(
-        group.id,
-        'agent',
-        reply.text,
-        kind,
-        threadRootId,
-        null,
-        { elapsedMs: Date.now() - startedAt, toolCalls, attachments, trace },
-      )
-      if (!reviewOnly) {
-        this.persistSessionMeta(key, nextSessionMeta(sessionMeta, {
-          promptChars: buildPrompt(transcriptAfterKind, packedContext).length,
+      const message = internal
+        ? null
+        : this.addMessage(
+            group.id,
+            'agent',
+            reply.text,
+            kind,
+            threadRootId,
+            null,
+            { elapsedMs: Date.now() - startedAt, toolCalls, attachments, trace },
+          )
+      if (!reviewOnly && !isolated) {
+        this.persistSessionState(key, result.sessionRef || sessionRef, completedSessionMeta(
+          sessionMeta, sessionProvenance, taskId, {
+          promptChars: prompt.length,
           replyChars: reply.text.length,
           rotated: sessionRotated,
           transport: sessionTransport,
-        }))
+          },
+        ))
       }
-      return { message, consensus: reply.consensus && result.outcome === 'completed' }
+      return {
+        message,
+        outcomeRefs,
+        consensus: reply.consensus && result.outcome === 'completed',
+      }
     } catch (caughtError) {
       const parentTimedOut = Boolean(signal?.aborted && activeRun?.stopReason === 'timeout')
       const parentStopped = Boolean(signal?.aborted || parentAbortObserved)
       const parentInterrupted = parentStopped && activeRun?.stopReason === 'shutdown'
-      if (parentStopped || watchdogTimedOut) {
-        const cleanupPromises = [capturePromise, runPromise, importPromise].filter(Boolean)
+      const agentCancelled = agentController.signal.aborted
+        && !parentStopped && !watchdogTimedOut
+      if (parentStopped || watchdogTimedOut || agentCancelled) {
+        const cleanupPromises = [
+          capturePromise,
+          artifactCapturePromise,
+          runPromise,
+          importPromise,
+          outcomeCapturePromise,
+        ].filter(Boolean)
         if (cleanupPromises.length) {
           await settleWithin(Promise.allSettled(cleanupPromises), this.runAbortGraceMs)
         }
@@ -420,7 +927,9 @@ class LocalWorkspaceAgentInvocation {
               : agentStoppedError())
           : watchdogTimedOut
             ? (watchdogError || new Error('LOCAL_AGENT_TIMEOUT'))
-            : caughtError
+            : agentCancelled
+              ? agentStoppedError()
+              : caughtError
       if (credentialFailure(error) && context.deferCredentialFailure !== true) {
         this.markRuntimeCredential(kind, 'missing')
       }
@@ -432,7 +941,9 @@ class LocalWorkspaceAgentInvocation {
             ? 'stopped'
             : watchdogTimedOut
               ? 'timeout'
-              : 'failed'
+              : agentCancelled
+                ? 'stopped'
+                : 'failed'
       const trace = finishHarness(status)
       if (trace && error && (typeof error === 'object' || typeof error === 'function')) {
         Object.defineProperty(error, 'runTrace', {
@@ -449,31 +960,42 @@ class LocalWorkspaceAgentInvocation {
       if (signal && parentAbortHandler) {
         signal.removeEventListener('abort', parentAbortHandler)
       }
+      this.unregisterAgentController?.(
+        activeRun, kind, registration.agentRunId, agentController,
+      )
+      if (activeRun?.stopReason !== 'shutdown') {
+        for (const gateId of resolvedGateIds) {
+          this.completeHumanGateContinuation?.(activeRun.runId, gateId, 'completed')
+        }
+      }
     }
   }
 
-  resetSession(group, kind, rotateOpenClaw = true) {
-    const state = this.state()
-    const key = this.sessionKey(group.id, kind)
+  resetSession(group, kind, rotateOpenClaw = true, taskId = '') {
+    const scopedTaskId = group.conversationType === 'direct' ? '' : cleanText(taskId, 120)
+    const key = this.sessionKey(group.id, kind, scopedTaskId)
     const legacyPrefix = `${group.id}:${kind}:thread:`
-    let changed = false
-    for (const candidate of Object.keys(state.sessions)) {
-      if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
-      delete state.sessions[candidate]
-      changed = true
-    }
-    for (const candidate of Object.keys(state.sessionMeta)) {
-      if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
-      delete state.sessionMeta[candidate]
-      changed = true
-    }
-    if (kind === 'openclaw' && rotateOpenClaw) {
-      const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
-      state.sessions[key] = this.openClawSessionRef(group, generation)
-      changed = true
-    }
-    if (changed) this.save()
-    return changed
+    return this.commitSessionState((state) => {
+      let changed = false
+      for (const candidate of Object.keys(state.sessions)) {
+        if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
+        delete state.sessions[candidate]
+        changed = true
+      }
+      for (const candidate of Object.keys(state.sessionMeta)) {
+        if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
+        delete state.sessionMeta[candidate]
+        changed = true
+      }
+      if (kind === 'openclaw' && rotateOpenClaw) {
+        const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
+        const provenance = createdSessionProvenance(group, cleanText(taskId, 120))
+        state.sessions[key] = this.openClawSessionRef(group, generation, scopedTaskId)
+        state.sessionMeta[key] = normalizeSessionMeta(provenanceMeta(provenance))
+        changed = true
+      }
+      return changed
+    })
   }
 }
 
