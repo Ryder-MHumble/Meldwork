@@ -134,7 +134,7 @@ function publicProfile(definition, version = '') {
     installSupported: false,
     installErrorCode: '',
     imageAttachmentLimit: MAX_ATTACHMENTS,
-    attachmentTypes: ['image', 'audio', 'video'],
+    attachmentTypes: ['image', 'audio', 'video', 'file'],
     version: String(version || '').slice(0, VERSION_LINE_LIMIT),
   }
 }

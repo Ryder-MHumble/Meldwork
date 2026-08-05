@@ -23,6 +23,11 @@ const USER_ATTACHMENT_MIME_TYPES = new Set([
   'image/png', 'image/jpeg',
   'audio/mpeg', 'audio/wav', 'audio/mp4',
   'video/mp4', 'video/quicktime', 'video/webm',
+  'application/pdf', 'text/plain', 'text/markdown', 'text/csv', 'application/json',
+  'application/rtf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ])
 const ATTACHMENT_MIME_TYPES = new Set([
   ...USER_ATTACHMENT_MIME_TYPES,
@@ -79,11 +84,12 @@ function attachmentType(mimeType) {
   if (normalized.startsWith('image/')) return 'image'
   if (normalized.startsWith('audio/')) return 'audio'
   if (normalized.startsWith('video/')) return 'video'
-  return ''
+  return USER_ATTACHMENT_MIME_TYPES.has(normalized) ? 'file' : ''
 }
 
 function attachmentLimitError(type, limited = false) {
   if (type === 'image') return limited ? 'LOCAL_AGENT_IMAGE_LIMIT' : 'LOCAL_AGENT_IMAGE_UNSUPPORTED'
+  if (type === 'file') return limited ? 'LOCAL_AGENT_FILE_LIMIT' : 'LOCAL_AGENT_FILE_UNSUPPORTED'
   return limited ? 'LOCAL_AGENT_MEDIA_LIMIT' : 'LOCAL_AGENT_MEDIA_UNSUPPORTED'
 }
 

@@ -28,6 +28,8 @@ const MOV = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypqt  '), Buffer.allo
 const WEBM_VIDEO = Buffer.concat([
   Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(8), Buffer.from('webm'),
 ])
+const PDF = Buffer.from('%PDF-1.7\n')
+const DOCX = Buffer.from('PK\u0003\u0004[Content_Types].xml word/document.xml')
 
 function fixture(t, createId) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachments-'))
@@ -114,6 +116,33 @@ test('imports validated audio and video while preserving controlled storage path
     const [resolved] = store.resolve([metadata.id])
     assert.equal(path.basename(resolved.path), storedName)
     assert.deepEqual(store.read(metadata.id), bytes)
+    assert.equal(path.dirname(path.dirname(resolved.path)), rootPath)
+  }
+})
+
+test('imports validated documents with controlled names and storage paths', (t) => {
+  const { rootPath, store } = fixture(t)
+  const fixtures = [
+    [PDF, 'report.pdf', 'application/pdf', 'document.pdf'],
+    [Buffer.from('plain text'), 'notes.txt', 'text/plain', 'document.txt'],
+    [Buffer.from('# Notes\n'), 'notes.md', 'text/markdown', 'document.md'],
+    [Buffer.from('name,value\na,1\n'), 'data.csv', 'text/csv', 'document.csv'],
+    [Buffer.from('{"ok":true}'), 'data.json', 'application/json', 'document.json'],
+    [Buffer.from('{\\rtf1 report}'), 'report.rtf', 'application/rtf', 'document.rtf'],
+    [
+      DOCX,
+      'report.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'document.docx',
+    ],
+  ]
+
+  for (const [bytes, name, mimeType, storedName] of fixtures) {
+    const metadata = store.importBuffer({ bytes, name, mimeType })
+    const [resolved] = store.resolve([metadata.id])
+    assert.equal(metadata.name, name)
+    assert.equal(metadata.mimeType, mimeType)
+    assert.equal(path.basename(resolved.path), storedName)
     assert.equal(path.dirname(path.dirname(resolved.path)), rootPath)
   }
 })

@@ -55,6 +55,7 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-attachments:pick',
   'local-attachments:import',
   'local-attachments:preview',
+  'local-attachments:open',
   'local-attachments:discard',
   'local-agent-provider:status',
   'local-agent-provider:probe',
@@ -119,6 +120,7 @@ function loadMain(userData, options = {}) {
   const runAgentCalls = []
   const customAgentRunCalls = []
   const externalUrls = []
+  const openPathCalls = []
   const dialogCalls = []
   const permissionHandlers = {}
   const nativeImageCalls = []
@@ -715,6 +717,10 @@ function loadMain(userData, options = {}) {
         externalUrls.push(url)
         return Promise.resolve()
       },
+      openPath: filename => {
+        openPathCalls.push(filename)
+        return Promise.resolve(options.openPathResult || '')
+      },
     },
     nativeImage: {
       createFromPath: filename => {
@@ -853,6 +859,7 @@ function loadMain(userData, options = {}) {
         knowledgeBaseStoreInstances,
         dialogCalls,
         externalUrls,
+        openPathCalls,
         permissionHandlers,
         protocolHandlers,
         registeredSchemes,

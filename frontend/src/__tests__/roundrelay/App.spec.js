@@ -389,7 +389,7 @@ describe('RoundRelay workbench', () => {
 
     const conversationLink = wrapper.get('.conversation-link')
     await conversationLink.trigger('click')
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('.composer-attachment').exists()).toBe(true)
 

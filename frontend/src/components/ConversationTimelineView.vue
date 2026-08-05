@@ -340,10 +340,24 @@
                     preload="metadata"
                     playsinline
                   />
-                  <div v-else class="message-attachment-placeholder" aria-hidden="true">
-                    <AttachOutline />
-                  </div>
-                  <figcaption :title="attachment.name">{{ attachment.name }}</figcaption>
+                  <button
+                    v-else
+                    class="message-document-attachment"
+                    type="button"
+                    :title="t('attachment.open', { name: attachment.name })"
+                    :aria-label="t('attachment.open', { name: attachment.name })"
+                    @click="openAttachment(attachment)"
+                  >
+                    <DocumentTextOutline aria-hidden="true" />
+                    <span>
+                      <strong>{{ attachment.name }}</strong>
+                      <small>{{ attachmentTypeLabel(attachment) }} · {{ formatAttachmentSize(attachment) }}</small>
+                    </span>
+                    <OpenOutline aria-hidden="true" />
+                  </button>
+                  <figcaption v-if="attachmentKind(attachment) !== 'file'" :title="attachment.name">
+                    {{ attachment.name }}
+                  </figcaption>
                 </figure>
               </div>
             </div>
@@ -520,6 +534,8 @@ import {
   CloseCircleOutline,
   CloseOutline,
   CopyOutline,
+  DocumentTextOutline,
+  OpenOutline,
   TerminalOutline,
   TrashOutline,
   WarningOutline,
@@ -543,6 +559,7 @@ const {
   attachmentKind,
   attachmentMediaUrl,
   attachmentPreviewUrl,
+  attachmentTypeLabel,
   conversationEmptyVisible,
   copyMessageContent,
   deletingMessageId,
@@ -564,6 +581,7 @@ const {
   emptyShowcaseIndex,
   focusTurn,
   formatTime,
+  formatAttachmentSize,
   handleMessageScroll,
   isActiveRunTopic,
   isDirectTraceOpen,
@@ -592,6 +610,7 @@ const {
   messageTraceStatus,
   messageTraceSummary,
   openDisplayedRunTrace,
+  openAttachment,
   openDisplayedTraceForAgent,
   openTraceForMessage,
   productWordmark,

@@ -424,6 +424,7 @@ class LocalAgentConnectors {
       image: snapshot.capabilities.inputTypes.includes('image') ? 4 : 0,
       audio: snapshot.capabilities.inputTypes.includes('audio') ? 4 : 0,
       video: snapshot.capabilities.inputTypes.includes('video') ? 4 : 0,
+      file: 4,
     }
   }
 

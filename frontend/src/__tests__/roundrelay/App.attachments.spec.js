@@ -97,6 +97,81 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('imports a document dropped onto a direct-chat composer and infers its MIME type', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+    await wrapper.get('.direct-session-open').trigger('click')
+    const file = {
+      name: 'report.pdf',
+      type: '',
+      size: 9,
+      lastModified: 1,
+      arrayBuffer: vi.fn(async () => Uint8Array.from([37, 80, 68, 70, 45, 49, 46, 55, 10]).buffer),
+    }
+    const dataTransfer = { types: ['Files'], files: [file], dropEffect: 'none' }
+    const composer = wrapper.get('.composer-box')
+
+    await composer.trigger('dragenter', { dataTransfer })
+    expect(wrapper.get('.composer-drop-overlay').text()).toContain('Add these files')
+    await composer.trigger('drop', { dataTransfer })
+    await flushPromises()
+
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith({
+      name: 'report.pdf',
+      mimeType: 'application/pdf',
+      bytes: Uint8Array.from([37, 80, 68, 70, 45, 49, 46, 55, 10]),
+    })
+    expect(wrapper.get('.composer-attachment').text()).toContain('report.pdf')
+    expect(wrapper.find('.composer-drop-overlay').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('imports a dropped document in a group conversation', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-documents',
+        conversationType: 'group',
+        name: 'Document review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+    await wrapper.get('.conversation-link').trigger('click')
+    const file = {
+      name: 'brief.md',
+      type: 'text/markdown',
+      size: 8,
+      lastModified: 1,
+      arrayBuffer: vi.fn(async () => new TextEncoder().encode('# Brief\n').buffer),
+    }
+    const dataTransfer = { types: ['Files'], files: [file], dropEffect: 'none' }
+
+    await wrapper.get('.composer-box').trigger('drop', { dataTransfer })
+    await flushPromises()
+
+    expect(bridge.localAttachments.importAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'brief.md',
+      mimeType: 'text/markdown',
+    }))
+    expect(wrapper.get('.composer-attachment').text()).toContain('brief.md')
+    wrapper.unmount()
+  })
+
   it('keeps an all-failed accepted image message out of the composer', async () => {
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -241,7 +316,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
     await wrapper.get('[aria-label="Remove attachment"]').trigger('click')
     await flushPromises()
@@ -272,9 +347,9 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.findAll('.composer-attachment')).toHaveLength(4)
@@ -305,13 +380,13 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.findAll('.composer-attachment')).toHaveLength(1)
-    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(1)
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(4)
     expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
-    expect(wrapper.get('[aria-label="Attach media"]').attributes()).not.toHaveProperty('disabled')
+    expect(wrapper.get('[aria-label="Attach files"]').attributes()).not.toHaveProperty('disabled')
 
     await wrapper.get('.composer-box textarea').trigger('paste', {
       clipboardData: {
@@ -336,18 +411,18 @@ describe('RoundRelay workbench', () => {
   it('keeps the attachment action clickable when support is unavailable', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.agents.push({
-        kind: 'workbuddy',
+        kind: 'opencodereview',
         installed: true,
         available: true,
         credentialState: 'ready',
         version: '1.0.0',
       })
       state.groups.push({
-        id: 'direct-workbuddy',
+        id: 'direct-opencodereview',
         conversationType: 'direct',
-        directAgentKind: 'workbuddy',
-        name: 'WorkBuddy',
-        agentKinds: ['workbuddy'],
+        directAgentKind: 'opencodereview',
+        name: 'OpenCodeReview',
+        agentKinds: ['opencodereview'],
         workdir: '/tmp/roundrelay-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
@@ -401,7 +476,7 @@ describe('RoundRelay workbench', () => {
     const alphaLink = links.find(link => link.text().includes('Alpha review'))
     const betaLink = links.find(link => link.text().includes('Beta review'))
     await alphaLink.trigger('click')
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
     await betaLink.trigger('click')
     await flushPromises()
@@ -483,6 +558,42 @@ describe('RoundRelay workbench', () => {
       .toBe('meldwork-media://attachment/demo-video')
     expect(wrapper.findAll('.message-attachment-grid figcaption').map(item => item.text()))
       .toEqual(['poster.png', 'briefing.mp3', 'demo.mp4'])
+    wrapper.unmount()
+  })
+
+  it('renders and opens an Agent-generated document without exposing a path', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'agent-document',
+        groupId: 'direct-codex',
+        role: 'agent',
+        agentKind: 'codex',
+        content: 'The report is ready.',
+        attachments: [{ id: 'generated-report', name: 'report.pdf', mimeType: 'application/pdf', size: 2048 }],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const documentCard = wrapper.get('.message-document-attachment')
+    expect(documentCard.text()).toContain('report.pdf')
+    expect(documentCard.text()).toContain('PDF · 2 KB')
+    expect(documentCard.html()).not.toContain('/tmp/')
+    await documentCard.trigger('click')
+
+    expect(bridge.localAttachments.open).toHaveBeenCalledWith('generated-report')
     wrapper.unmount()
   })
 

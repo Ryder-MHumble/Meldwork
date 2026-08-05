@@ -25,7 +25,7 @@ export function useAgentCatalog({
         logo: agentLogo(agent.kind, theme.value),
         providerMode: 'custom',
         imageLimit: MAX_ATTACHMENTS,
-        attachmentTypes: ['image', 'audio', 'video'],
+        attachmentTypes: ['image', 'audio', 'video', 'file'],
         custom: true,
         description: agent.description || '',
         commandName: agent.commandName || '',

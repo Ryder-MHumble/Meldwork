@@ -10,6 +10,15 @@ const ATTACHMENT_LIMITS = new Map([
   ['video/mp4', MAX_ATTACHMENT_BYTES],
   ['video/quicktime', MAX_ATTACHMENT_BYTES],
   ['video/webm', MAX_ATTACHMENT_BYTES],
+  ['application/pdf', 32 * 1024 * 1024],
+  ['text/plain', 8 * 1024 * 1024],
+  ['text/markdown', 8 * 1024 * 1024],
+  ['text/csv', 8 * 1024 * 1024],
+  ['application/json', 8 * 1024 * 1024],
+  ['application/rtf', 8 * 1024 * 1024],
+  ['application/vnd.openxmlformats-officedocument.wordprocessingml.document', 32 * 1024 * 1024],
+  ['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 32 * 1024 * 1024],
+  ['application/vnd.openxmlformats-officedocument.presentationml.presentation', 32 * 1024 * 1024],
 ])
 
 function attachmentError(code) {
@@ -134,6 +143,7 @@ if (isLocalDocument) Object.assign(desktopApi, {
       'local-attachments:import', normalizeAttachmentImport(input),
     ),
     preview: id => ipcRenderer.invoke('local-attachments:preview', id),
+    open: id => ipcRenderer.invoke('local-attachments:open', id),
     discard: ids => ipcRenderer.invoke('local-attachments:discard', ids),
   }),
   localAgentProvider: Object.freeze({

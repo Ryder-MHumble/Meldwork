@@ -26,7 +26,7 @@ function attachmentIdsFromSnapshot(snapshot, groupId = '') {
 function persistedAttachmentReferences(storagePath) {
   try {
     const parsed = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
-    if (![1, 2].includes(parsed?.version) || !Array.isArray(parsed.groups)
+    if (![1, 2, 3].includes(parsed?.version) || !Array.isArray(parsed.groups)
         || !Array.isArray(parsed.messages) || typeof parsed.sessions !== 'object') {
       return null
     }
@@ -90,7 +90,7 @@ function normalizeAttachmentPickLimit(value) {
   return Math.max(1, Math.min(MAX_ATTACHMENT_PICK_REQUEST, Math.floor(limit)))
 }
 
-function createAttachmentService({ getStore, getSnapshot, nativeImage }) {
+function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath }) {
   function availableStore() {
     const store = getStore()
     if (!store) throw new Error('LOCAL_ATTACHMENT_STORAGE_UNAVAILABLE')
@@ -115,7 +115,7 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage }) {
       mimeType: metadata.mimeType,
       size: metadata.size,
     }
-    if (/^(?:audio|video)\//.test(metadata.mimeType)) return attachment
+    if (!metadata.mimeType.startsWith('image/')) return attachment
     if (metadata.mimeType !== 'image/png' && metadata.mimeType !== 'image/jpeg') {
       throw new Error('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
     }
@@ -199,12 +199,21 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage }) {
     }
   }
 
+  async function open(id) {
+    if (typeof openPath !== 'function') throw new Error('LOCAL_ATTACHMENT_OPEN_UNAVAILABLE')
+    const [entry] = availableStore().resolve([String(id || '')])
+    const result = await openPath(entry.path)
+    if (result) throw new Error('LOCAL_ATTACHMENT_OPEN_FAILED')
+    return true
+  }
+
   return {
     availableStore,
     discardUnreferenced,
     importBuffer,
     importFiles,
     normalizePickLimit: normalizeAttachmentPickLimit,
+    open,
     preview,
     registerProtocol: protocol => protocol?.handle?.(MEDIA_SCHEME, request => mediaResponse(request)),
   }

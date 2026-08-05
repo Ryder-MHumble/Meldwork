@@ -5,11 +5,24 @@ import { useAttachmentPreviews } from './useAttachmentPreviews.js'
 export const MAX_ATTACHMENTS = 4
 
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
-const ATTACHMENT_TYPES = new Set(['image', 'audio', 'video'])
+const ATTACHMENT_TYPES = new Set(['image', 'audio', 'video', 'file'])
+const MIME_BY_EXTENSION = new Map([
+  ['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'],
+  ['mp3', 'audio/mpeg'], ['wav', 'audio/wav'], ['m4a', 'audio/mp4'],
+  ['mp4', 'video/mp4'], ['mov', 'video/quicktime'], ['webm', 'video/webm'],
+  ['pdf', 'application/pdf'], ['txt', 'text/plain'], ['md', 'text/markdown'],
+  ['markdown', 'text/markdown'], ['csv', 'text/csv'], ['json', 'application/json'],
+  ['rtf', 'application/rtf'],
+  ['docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'],
+  ['xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
+  ['pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation'],
+])
+const SUPPORTED_MIME_TYPES = new Set(MIME_BY_EXTENSION.values())
 
 export function useComposerAttachments({
   activeGroup,
   attachmentsApi,
+  composerDisabled,
   composerContextVersion,
   composerTargetKinds,
   composerTargetsReady,
@@ -20,7 +33,9 @@ export function useComposerAttachments({
 }) {
   const composerAttachments = ref([])
   const attachmentImportOperations = ref([])
+  const composerDropActive = ref(false)
   let attachmentImportSequence = 0
+  let composerDragDepth = 0
 
   function attachmentKind(attachment) {
     const mimeType = String(attachment?.mimeType || '').toLowerCase()
@@ -45,6 +60,16 @@ export function useComposerAttachments({
       size: Number.isFinite(size) ? size : 0,
       ...(previewDataUrl ? { previewDataUrl } : {}),
     }
+  }
+
+  function fileMimeType(file) {
+    const declared = String(file?.type || '').split(';', 1)[0].trim().toLowerCase()
+    const normalized = declared === 'image/jpg'
+      ? 'image/jpeg'
+      : (['text/rtf', 'application/x-rtf'].includes(declared) ? 'application/rtf' : declared)
+    if (SUPPORTED_MIME_TYPES.has(normalized)) return normalized
+    const extension = String(file?.name || '').split('.').pop()?.toLowerCase() || ''
+    return MIME_BY_EXTENSION.get(extension) || normalized
   }
 
   const {
@@ -114,6 +139,28 @@ export function useComposerAttachments({
     return `meldwork-media://attachment/${id}`
   }
 
+  function attachmentTypeLabel(attachment) {
+    const extension = String(attachment?.name || '').split('.').pop()?.toUpperCase() || ''
+    if (/^[A-Z0-9]{1,8}$/.test(extension)) return extension
+    return String(attachment?.mimeType || 'FILE').split('/').pop()?.toUpperCase() || 'FILE'
+  }
+
+  function formatAttachmentSize(attachment) {
+    const size = Math.max(0, Number(attachment?.size) || 0)
+    if (size < 1024) return `${size} B`
+    if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`
+    return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`
+  }
+
+  async function openAttachment(attachment) {
+    const open = attachmentsApi.value?.open
+    if (typeof open !== 'function') {
+      notify(t('composer.attachmentsUnavailable'))
+      return
+    }
+    try { await open(String(attachment?.id || '')) } catch (error) { showError(error) }
+  }
+
   async function discardAttachments(values) {
     if (typeof attachmentsApi.value?.discard !== 'function') return
     const ids = [...new Set(values
@@ -128,9 +175,14 @@ export function useComposerAttachments({
     }
   }
 
-  function attachmentLimitMessage() {
-    if (composerAttachmentLimit.value <= 0) return t('composer.attachmentsUnsupported')
-    return composerAttachmentLimit.value < MAX_ATTACHMENTS
+  function attachmentLimitMessage(type = '') {
+    const limit = ATTACHMENT_TYPES.has(type)
+      ? attachmentLimitFor(type)
+      : composerAttachmentLimit.value
+    if (limit <= 0 && composerAttachmentLimit.value <= 0) {
+      return t('composer.attachmentsUnsupported')
+    }
+    return limit < MAX_ATTACHMENTS
       ? t('composer.attachmentTypeLimit')
       : t('composer.attachmentLimit')
   }
@@ -158,7 +210,7 @@ export function useComposerAttachments({
     }
     composerAttachments.value = [...composerAttachments.value, ...accepted]
     if (overflow.length) {
-      notify(attachmentLimitMessage())
+      notify(attachmentLimitMessage(attachmentKind(overflow[0])))
       void discardAttachments(overflow)
     }
   }
@@ -233,18 +285,13 @@ export function useComposerAttachments({
     }
   }
 
-  async function handleComposerPaste(event) {
+  async function importFiles(inputFiles) {
     const importAttachment = attachmentsApi.value?.importAttachment
     if (typeof importAttachment !== 'function') return
-    const files = [...new Map([
-      ...Array.from(event.clipboardData?.files || []),
-      ...Array.from(event.clipboardData?.items || [])
-        .filter(item => item.kind === 'file')
-        .map(item => item.getAsFile?.())
-        .filter(Boolean),
-    ].map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
+    const files = [...new Map(Array.from(inputFiles || [])
+      .filter(Boolean)
+      .map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
     if (!files.length) return
-    event.preventDefault()
     if (importingAttachment.value) {
       notify(t('composer.attachmentImporting'))
       return
@@ -274,9 +321,10 @@ export function useComposerAttachments({
       for (const file of files.slice(0, room)) {
         if (!attachmentImportIsCurrent(operation)) break
         try {
-          const type = attachmentKind({ mimeType: file.type })
+          const mimeType = fileMimeType(file)
+          const type = attachmentKind({ mimeType })
           if (!ATTACHMENT_TYPES.has(type) || (attachmentCounts.get(type) || 0) >= attachmentLimitFor(type)) {
-            notify(attachmentLimitMessage())
+            notify(attachmentLimitMessage(type))
             continue
           }
           if (Number(file.size) > MAX_ATTACHMENT_BYTES) {
@@ -287,7 +335,7 @@ export function useComposerAttachments({
           const bytes = new Uint8Array(await file.arrayBuffer())
           const attachment = await importAttachment({
             name: String(file.name || t('composer.pastedAttachment')),
-            mimeType: String(file.type || 'application/octet-stream'),
+            mimeType,
             bytes,
           })
           if (!attachmentImportIsCurrent(operation)) {
@@ -307,20 +355,75 @@ export function useComposerAttachments({
     }
   }
 
+  async function handleComposerPaste(event) {
+    const files = [...new Map([
+      ...Array.from(event.clipboardData?.files || []),
+      ...Array.from(event.clipboardData?.items || [])
+        .filter(item => item.kind === 'file')
+        .map(item => item.getAsFile?.())
+        .filter(Boolean),
+    ].map(file => [`${file.name}:${file.size}:${file.lastModified}:${file.type}`, file])).values()]
+    if (!files.length) return
+    event.preventDefault()
+    await importFiles(files)
+  }
+
+  function hasDraggedFiles(event) {
+    return Array.from(event?.dataTransfer?.types || []).includes('Files')
+      || Array.from(event?.dataTransfer?.files || []).length > 0
+  }
+
+  function handleComposerDragEnter(event) {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    composerDragDepth += 1
+    if (!composerDisabled?.value) composerDropActive.value = true
+  }
+
+  function handleComposerDragOver(event) {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+  }
+
+  function handleComposerDragLeave(event) {
+    if (!composerDragDepth) return
+    event.preventDefault()
+    composerDragDepth = Math.max(0, composerDragDepth - 1)
+    if (!composerDragDepth) composerDropActive.value = false
+  }
+
+  async function handleComposerDrop(event) {
+    if (!hasDraggedFiles(event)) return
+    event.preventDefault()
+    composerDragDepth = 0
+    composerDropActive.value = false
+    if (composerDisabled?.value) return
+    await importFiles(event.dataTransfer?.files || [])
+  }
+
   return {
     attachmentActionLabel,
     attachmentKind,
     attachmentLimitMessage,
     attachmentMediaUrl,
     attachmentPreviewUrl,
+    attachmentTypeLabel,
     composerAttachmentLimit,
     composerAttachmentSupported,
     composerAttachments,
+    composerDropActive,
     discardAttachments,
+    formatAttachmentSize,
+    handleComposerDragEnter,
+    handleComposerDragLeave,
+    handleComposerDragOver,
+    handleComposerDrop,
     handleComposerPaste,
     importingAttachment,
     isImageAttachment,
     messageAttachments,
+    openAttachment,
     pickAttachments,
     removeAttachment,
     safeAttachmentPayload,

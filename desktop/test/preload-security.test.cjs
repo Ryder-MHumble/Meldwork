@@ -366,13 +366,13 @@ test('local preload exposes only create and delete for Custom Agents', async () 
   ])
 })
 
-test('local preload exposes image import without filesystem read or path resolution methods', async () => {
+test('local preload exposes attachment import and open without filesystem read or path resolution', async () => {
   const { api, invocations } = loadPreload('file:')
 
   assert.equal(Object.isFrozen(api.localAttachments), true)
   assert.deepEqual(
     Object.keys(api.localAttachments).sort(),
-    ['discard', 'importAttachment', 'pickAttachments', 'preview'],
+    ['discard', 'importAttachment', 'open', 'pickAttachments', 'preview'],
   )
   assert.equal('read' in api.localAttachments, false)
   assert.equal('resolve' in api.localAttachments, false)
@@ -382,7 +382,13 @@ test('local preload exposes image import without filesystem read or path resolut
     name: 'diagram.png', mimeType: 'image/png', bytes,
   })
   bytes[0] = 9
+  const documentBytes = Uint8Array.from(Buffer.from('%PDF-1.7'))
+  await api.localAttachments.importAttachment({
+    name: 'brief.pdf', mimeType: 'application/pdf', bytes: documentBytes,
+  })
+  documentBytes[0] = 0
   await api.localAttachments.preview('attachment-1')
+  await api.localAttachments.open('attachment-1')
   await api.localAttachments.discard(['attachment-1'])
   assert.deepEqual(invocations, [
     { channel: 'local-attachments:pick', args: [2] },
@@ -390,12 +396,21 @@ test('local preload exposes image import without filesystem read or path resolut
       channel: 'local-attachments:import',
       args: [{ name: 'diagram.png', mimeType: 'image/png', bytes: Uint8Array.from([1, 2, 3]) }],
     },
+    {
+      channel: 'local-attachments:import',
+      args: [{
+        name: 'brief.pdf',
+        mimeType: 'application/pdf',
+        bytes: Uint8Array.from(Buffer.from('%PDF-1.7')),
+      }],
+    },
     { channel: 'local-attachments:preview', args: ['attachment-1'] },
+    { channel: 'local-attachments:open', args: ['attachment-1'] },
     { channel: 'local-attachments:discard', args: [['attachment-1']] },
   ])
 })
 
-test('local preload rejects unbounded or unsupported renderer image payloads before IPC', async () => {
+test('local preload rejects unbounded or unsupported renderer attachment payloads before IPC', async () => {
   const { api, invocations } = loadPreload('file:')
 
   assert.throws(

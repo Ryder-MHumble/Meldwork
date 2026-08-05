@@ -5,6 +5,8 @@ const STORE_VERSION = 1
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const MAX_ATTACHMENTS = 4
 const MAX_METADATA_BYTES = 64 * 1024
+const MAX_DOCUMENT_BYTES = 32 * 1024 * 1024
+const MAX_TEXT_BYTES = 8 * 1024 * 1024
 
 const ATTACHMENT_TYPES = Object.freeze([
   Object.freeze({ mimeType: 'image/png', extension: 'png', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
@@ -15,6 +17,24 @@ const ATTACHMENT_TYPES = Object.freeze([
   Object.freeze({ mimeType: 'video/mp4', extension: 'mp4', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
   Object.freeze({ mimeType: 'video/quicktime', extension: 'mov', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
   Object.freeze({ mimeType: 'video/webm', extension: 'webm', maxBytes: MAX_ATTACHMENT_BYTES, storageBase: 'media' }),
+  Object.freeze({ mimeType: 'application/pdf', extension: 'pdf', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'text/plain', extension: 'txt', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'text/markdown', extension: 'md', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'text/csv', extension: 'csv', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'application/json', extension: 'json', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({ mimeType: 'application/rtf', extension: 'rtf', maxBytes: MAX_TEXT_BYTES, storageBase: 'document' }),
+  Object.freeze({
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    extension: 'docx', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document',
+  }),
+  Object.freeze({
+    mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    extension: 'xlsx', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document',
+  }),
+  Object.freeze({
+    mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    extension: 'pptx', maxBytes: MAX_DOCUMENT_BYTES, storageBase: 'document',
+  }),
 ])
 const TYPE_BY_MIME = new Map(ATTACHMENT_TYPES.map(type => [type.mimeType, type]))
 const TYPE_BY_EXTENSION = new Map([
@@ -27,7 +47,18 @@ const TYPE_BY_EXTENSION = new Map([
   ['mp4', TYPE_BY_MIME.get('video/mp4')],
   ['mov', TYPE_BY_MIME.get('video/quicktime')],
   ['webm', TYPE_BY_MIME.get('video/webm')],
+  ['pdf', TYPE_BY_MIME.get('application/pdf')],
+  ['txt', TYPE_BY_MIME.get('text/plain')],
+  ['md', TYPE_BY_MIME.get('text/markdown')],
+  ['markdown', TYPE_BY_MIME.get('text/markdown')],
+  ['csv', TYPE_BY_MIME.get('text/csv')],
+  ['json', TYPE_BY_MIME.get('application/json')],
+  ['rtf', TYPE_BY_MIME.get('application/rtf')],
+  ['docx', TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.wordprocessingml.document')],
+  ['xlsx', TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')],
+  ['pptx', TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.presentationml.presentation')],
 ])
+const TEXT_MIME_TYPES = new Set(['text/plain', 'text/markdown', 'text/csv', 'application/json'])
 
 function attachmentError(code) {
   const error = new Error(code)
@@ -80,7 +111,32 @@ function normalizeReferencedIds(value) {
   return new Set([...value].map(normalizeId))
 }
 
-function detectAttachmentType(bytes) {
+function validUtf8Text(bytes) {
+  if (bytes.includes(0x00)) return false
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function detectedOoxmlType(bytes) {
+  if (bytes.length < 4 || !bytes.subarray(0, 4).equals(Buffer.from([0x50, 0x4b, 0x03, 0x04]))
+      || !bytes.includes(Buffer.from('[Content_Types].xml'))) return null
+  if (bytes.includes(Buffer.from('word/'))) {
+    return TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  }
+  if (bytes.includes(Buffer.from('xl/'))) {
+    return TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  }
+  if (bytes.includes(Buffer.from('ppt/'))) {
+    return TYPE_BY_MIME.get('application/vnd.openxmlformats-officedocument.presentationml.presentation')
+  }
+  return null
+}
+
+function detectAttachmentType(bytes, nameType = null, declaredMime = '') {
   if (bytes.length >= 8
       && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
     return TYPE_BY_MIME.get('image/png')
@@ -108,12 +164,31 @@ function detectAttachmentType(bytes) {
       && bytes.subarray(0, Math.min(bytes.length, 128)).includes(Buffer.from('webm'))) {
     return TYPE_BY_MIME.get('video/webm')
   }
+  if (bytes.length >= 5 && bytes.subarray(0, 5).toString('ascii') === '%PDF-') {
+    return TYPE_BY_MIME.get('application/pdf')
+  }
+  if (bytes.length >= 5 && bytes.subarray(0, 5).toString('ascii') === '{\\rtf') {
+    return TYPE_BY_MIME.get('application/rtf')
+  }
+  const ooxml = detectedOoxmlType(bytes)
+  if (ooxml) return ooxml
+  const textType = nameType && TEXT_MIME_TYPES.has(nameType.mimeType)
+    ? nameType
+    : (TEXT_MIME_TYPES.has(declaredMime) ? TYPE_BY_MIME.get(declaredMime) : null)
+  if (textType && validUtf8Text(bytes)) {
+    if (textType.mimeType === 'application/json') {
+      try { JSON.parse(bytes.toString('utf8')) } catch { return null }
+    }
+    return textType
+  }
   return null
 }
 
 function declaredMimeType(value) {
   const mimeType = String(value || '').split(';', 1)[0].trim().toLowerCase()
-  return mimeType === 'image/jpg' ? 'image/jpeg' : mimeType
+  if (mimeType === 'image/jpg') return 'image/jpeg'
+  if (['text/rtf', 'application/x-rtf'].includes(mimeType)) return 'application/rtf'
+  return mimeType
 }
 
 function declaredNameType(name) {
@@ -129,7 +204,7 @@ function sanitizeName(value, type) {
     .replace(/[<>:"|?*]/g, '_')
     .trim()
   let stem = basename.replace(/\.[^.]*$/, '').replace(/^\.+/, '').replace(/[. ]+$/, '').trim()
-  stem = stem.slice(0, 120).replace(/[. ]+$/, '') || 'image'
+  stem = stem.slice(0, 120).replace(/[. ]+$/, '') || 'attachment'
   return `${stem}.${type.extension}`
 }
 
@@ -155,16 +230,19 @@ function toBuffer(value) {
 }
 
 function validateAttachment(bytes, name, mimeType, requireMimeType) {
-  const actual = detectAttachmentType(bytes)
-  if (!actual) fail('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
   const declaredMime = declaredMimeType(mimeType)
   if (requireMimeType && !TYPE_BY_MIME.has(declaredMime)) {
     fail('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
   }
+  const nameType = declaredNameType(name)
+  if (declaredMime && nameType && declaredMime !== nameType.mimeType) {
+    fail('LOCAL_ATTACHMENT_TYPE_MISMATCH')
+  }
+  const actual = detectAttachmentType(bytes, nameType, declaredMime)
+  if (!actual) fail('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
   if (declaredMime && declaredMime !== actual.mimeType) {
     fail('LOCAL_ATTACHMENT_TYPE_MISMATCH')
   }
-  const nameType = declaredNameType(name)
   if (nameType && nameType.mimeType !== actual.mimeType) {
     fail('LOCAL_ATTACHMENT_TYPE_MISMATCH')
   }
@@ -218,7 +296,9 @@ function parseAttachmentRecord(metadataBytes, id) {
 
 function validateStoredAttachment(bytes, document) {
   if (bytes.length !== document.size
-      || detectAttachmentType(bytes)?.mimeType !== document.mimeType
+      || detectAttachmentType(
+        bytes, declaredNameType(document.name), declaredMimeType(document.mimeType),
+      )?.mimeType !== document.mimeType
       || crypto.createHash('sha256').update(bytes).digest('hex') !== document.checksum) {
     fail('LOCAL_ATTACHMENT_TAMPERED')
   }

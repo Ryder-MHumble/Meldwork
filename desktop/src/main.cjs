@@ -96,6 +96,7 @@ const attachments = createAttachmentService({
   getStore: () => attachmentStore,
   getSnapshot: () => workspace?.snapshot(),
   nativeImage: electron.nativeImage,
+  openPath: filename => shell.openPath(filename),
 })
 
 protocol?.registerSchemesAsPrivileged?.([{
@@ -306,6 +307,18 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
   })
 }
 
+function localAttachmentSupport(kind) {
+  if (customAgentStore?.has(kind)) {
+    return { image: 4, audio: 4, video: 4, file: 4 }
+  }
+  const connectorSupport = agentConnectors?.attachmentSupport(kind)
+  if (connectorSupport) return { ...connectorSupport, file: 4 }
+  return {
+    image: imageAttachmentLimit(kind),
+    file: kind === 'opencodereview' ? 0 : 4,
+  }
+}
+
 function createWorkspace() {
   cloudAgentStartRetry?.cancel()
   const privateRoot = path.join(app.getPath('userData'), 'roundrelay-private')
@@ -385,10 +398,7 @@ function createWorkspace() {
     validateSkillSelections: (kind, selections) => skillSnapshotSelections.prepare(kind, selections),
     validateKnowledgeBaseSelections,
     imageAttachmentLimit,
-    attachmentSupport: kind => {
-      if (customAgentStore.has(kind)) return { image: 4, audio: 4, video: 4 }
-      return agentConnectors.attachmentSupport(kind) || { image: imageAttachmentLimit(kind) }
-    },
+    attachmentSupport: localAttachmentSupport,
     credentialState: (kind, agent) => {
       if (customAgentStore.has(kind)) return { state: 'ready', source: 'custom-agent' }
       if (agentConnectors.has(kind)) return { state: 'ready', source: 'agent-connector' }
@@ -432,12 +442,16 @@ async function localAgentCatalog() {
     ...catalog,
     agents: [...catalog.agents, ...customAgents, ...connectorAgents].map((agent) => {
       const state = states.get(agent.kind)
+      const support = localAttachmentSupport(agent.kind)
       return {
         ...agent,
         available: Boolean(agent.installed && state?.available),
         credentialState: agent.installed ? (state?.credentialState || 'unknown') : 'missing',
         availabilitySource: agent.installed ? (state?.availabilitySource || 'unverified') : 'none',
         showInSidebar: Boolean(agent.installed && state?.showInSidebar),
+        attachmentTypes: Object.entries(support)
+          .filter(([, limit]) => Number(limit) > 0)
+          .map(([type]) => type),
       }
     }),
   }

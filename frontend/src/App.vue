@@ -619,9 +619,11 @@ const composerTargetsReady = computed(() => (
   composerTargetKinds.value.length > 0
   && composerTargetKinds.value.every(kind => readyAgentKinds.value.has(kind))
 ))
+const composerDisabled = computed(() => Boolean(activeRun.value) || sending.value)
 const attachmentController = useComposerAttachments({
   activeGroup,
   attachmentsApi,
+  composerDisabled,
   composerContextVersion,
   composerTargetKinds,
   composerTargetsReady,

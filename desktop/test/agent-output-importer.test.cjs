@@ -39,7 +39,7 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex')
 }
 
-test('imports only new or changed top-level media from the controlled output directory', (t) => {
+test('imports only new or changed top-level attachments from the controlled output directory', (t) => {
   const { directory, workdir, output, store } = fixture(t)
   fs.writeFileSync(path.join(output, 'old.png'), PNG)
   fs.writeFileSync(path.join(output, 'ignore.txt'), 'not media')
@@ -49,6 +49,7 @@ test('imports only new or changed top-level media from the controlled output dir
   fs.writeFileSync(path.join(output, 'poster.png'), PNG)
   fs.writeFileSync(path.join(output, 'voice.mp3'), MP3)
   fs.writeFileSync(path.join(output, 'demo.mp4'), MP4)
+  fs.writeFileSync(path.join(output, 'report.pdf'), '%PDF-1.7\n')
   fs.writeFileSync(path.join(output, 'renamed.jpg'), PNG)
   fs.mkdirSync(path.join(output, 'nested'))
   fs.writeFileSync(path.join(output, 'nested', 'hidden.png'), PNG)
@@ -61,9 +62,9 @@ test('imports only new or changed top-level media from the controlled output dir
   const imported = importAgentOutputs({ workdir, baseline, startedAt }, store)
 
   assert.deepEqual(imported.map(item => item.name).sort(), [
-    'demo.mp4', 'poster.png', 'voice.mp3',
+    'demo.mp4', 'poster.png', 'report.pdf', 'voice.mp3',
   ])
-  assert.equal(imported.length, 3)
+  assert.equal(imported.length, 4)
   assert.equal(imported.some(item => item.name === 'old.png'), false)
   assert.equal(imported.some(item => item.name === 'hidden.png'), false)
   assert.equal(imported.some(item => item.name === 'linked.png'), false)

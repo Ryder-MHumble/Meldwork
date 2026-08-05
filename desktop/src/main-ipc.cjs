@@ -427,7 +427,13 @@ function registerDesktopIpc(options) {
     const limit = attachments.normalizePickLimit(remainingCapacity)
     const result = await dialog.showOpenDialog(getMainWindow(), {
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'Media', extensions: ['png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm'] }],
+      filters: [{
+        name: 'Files',
+        extensions: [
+          'png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm',
+          'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'rtf', 'docx', 'xlsx', 'pptx',
+        ],
+      }],
     })
     if (isShutdownStarted()) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
     if (result.canceled) return { attachments: [], truncated: false }
@@ -439,6 +445,7 @@ function registerDesktopIpc(options) {
   })
   registerTrustedHandle('local-attachments:import', input => attachments.importBuffer(input))
   registerTrustedHandle('local-attachments:preview', id => attachments.preview(String(id || '')))
+  registerTrustedHandle('local-attachments:open', id => attachments.open(String(id || '')))
   registerTrustedHandle('local-attachments:discard', ids => attachments.discardUnreferenced(ids))
   registerTrustedHandle('local-agent-provider:status', kind => (
     providerStore.status(providerAgentKind(kind))

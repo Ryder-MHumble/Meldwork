@@ -27,6 +27,11 @@ const {
 } = require('./local-workspace-inputs.cjs')
 const { outboundWirePayloadBytes } = require('./outbound-payload.cjs')
 const { processRunScheduler } = require('./run-scheduler.cjs')
+const {
+  cleanupStagedAgentInputs,
+  stageAgentInputs,
+  stagedAgentInputPrompt,
+} = require('./agent-input-staging.cjs')
 
 const MAX_INHERITED_TASK_IDS = 64
 const MAX_ISOLATED_PROMPT_BYTES = 4 * 1024 * 1024
@@ -451,6 +456,7 @@ class LocalWorkspaceAgentInvocation {
     }
     let outputBaseline = null
     let artifactOutputBaseline = null
+    let stagedInputs = null
     let result
     let harnessFinished = false
     let connectorContext = {}
@@ -503,6 +509,9 @@ class LocalWorkspaceAgentInvocation {
           /* artifact output capture is best effort */
         }
       }
+      stagedInputs = isolated
+        ? null
+        : stageAgentInputs(group.workdir, context.attachmentSnapshots || [])
       const runtimeInstruction = cleanText(context.runtimeInstruction, 3000)
       const buildPrompt = (afterKind, contextPackage) => isolated
         ? isolated.promptOverride
@@ -511,6 +520,7 @@ class LocalWorkspaceAgentInvocation {
               group, kind, mode, threadRootId, context.skillHints || [],
               context.knowledgeBaseHints || [], afterKind, contextPackage,
             ),
+            stagedAgentInputPrompt(stagedInputs),
             runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
           ].filter(Boolean).join('\n')
       let prompt = buildPrompt(transcriptAfterKind, packedContext)
@@ -667,7 +677,7 @@ class LocalWorkspaceAgentInvocation {
           return { status: decision.status, optionId: decision.optionId }
         },
         sessionTransport,
-        attachments: isolated ? [] : (context.attachments || []),
+        attachments: isolated ? [] : (stagedInputs?.nativeImagePaths || []),
         ...(kind === 'hermes'
           ? {
               hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false,
@@ -968,6 +978,7 @@ class LocalWorkspaceAgentInvocation {
           this.completeHumanGateContinuation?.(activeRun.runId, gateId, 'completed')
         }
       }
+      cleanupStagedAgentInputs(stagedInputs)
     }
   }
 

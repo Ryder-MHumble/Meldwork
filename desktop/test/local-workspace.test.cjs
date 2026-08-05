@@ -635,6 +635,41 @@ test('image-only messages persist safe metadata and pass resolved paths to suppo
   assert.deepEqual(restored.snapshot().messages[0].attachments, [attachment])
 })
 
+test('document messages use temporary relative Agent inputs without exposing private paths', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const sourceRoot = path.join(directory, 'attachments')
+  const sourcePath = path.join(sourceRoot, 'report.pdf')
+  fs.mkdirSync(sourceRoot)
+  fs.writeFileSync(sourcePath, '%PDF-1.7\n')
+  options.attachmentSupport = kind => ({
+    image: options.imageAttachmentLimit(kind),
+    file: 4,
+  })
+  options.resolveAttachments = async refs => refs.map(ref => ({ ...ref, path: sourcePath }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Document review', agentKinds: ['codex'], workdir: directory,
+  })
+  const attachment = {
+    id: 'document-1', name: 'report.pdf', mimeType: 'application/pdf', size: 9,
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Review the report',
+    targetKinds: ['codex'],
+    attachments: [attachment],
+  })
+
+  assert.deepEqual(calls[0].runOptions.attachments, [])
+  assert.match(calls[0].prompt, /\.meldwork-input\/\.run-[^/]+\/1-report\.pdf/)
+  assert.equal(calls[0].prompt.includes(sourceRoot), false)
+  assert.equal(fs.existsSync(path.join(directory, '.meldwork-input')), false)
+  assert.deepEqual(workspace.snapshot().messages[0].attachments, [attachment])
+})
+
 test('message deletion persists replies individually and removes a whole group topic from history', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

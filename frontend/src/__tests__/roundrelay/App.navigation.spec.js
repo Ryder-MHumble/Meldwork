@@ -299,7 +299,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.find('#message-plan-warning').exists()).toBe(false)
     expect(wrapper.findAll('.message-dismiss-button')).toHaveLength(0)
 
-    await wrapper.get('[aria-label="Attach media"]').trigger('click')
+    await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('.toast-message').attributes('role')).toBe('status')
     expect(wrapper.get('.toast-dismiss-button').attributes('aria-label')).toBe('Dismiss')

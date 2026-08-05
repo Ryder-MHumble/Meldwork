@@ -716,6 +716,7 @@ test('attachment storage initialization failure does not block text chat startup
     ['local-attachments:pick', []],
     ['local-attachments:import', [{ name: 'x.png', mimeType: 'image/png', bytes: [1] }]],
     ['local-attachments:preview', ['attachment-1']],
+    ['local-attachments:open', ['attachment-1']],
     ['local-attachments:discard', [['attachment-1']]],
   ]) {
     await assert.rejects(
@@ -1457,7 +1458,7 @@ test('Skills IPC uses the installed-Agent gate and the shared local catalog', as
   assert.deepEqual(harness.skillCatalogInstances[0].listCalls, ['codex'])
 })
 
-test('image IPC returns bounded previews and never exposes imported file paths', async (t) => {
+test('attachment IPC returns bounded metadata, opens private files, and never exposes paths', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-image-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const first = path.join(directory, 'diagram.png')
@@ -1476,7 +1477,13 @@ test('image IPC returns bounded previews and never exposes imported file paths',
   assert.deepEqual(harness.attachmentInstances[0].importedFiles, [first, second])
   assert.deepEqual(harness.dialogCalls[0][1], {
     properties: ['openFile', 'multiSelections'],
-    filters: [{ name: 'Media', extensions: ['png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm'] }],
+    filters: [{
+      name: 'Files',
+      extensions: [
+        'png', 'jpg', 'jpeg', 'mp3', 'wav', 'm4a', 'mp4', 'mov', 'webm',
+        'pdf', 'txt', 'md', 'markdown', 'csv', 'json', 'rtf', 'docx', 'xlsx', 'pptx',
+      ],
+    }],
   })
   for (const attachment of picked.attachments) {
     assert.deepEqual(Object.keys(attachment).sort(), [
@@ -1508,6 +1515,16 @@ test('image IPC returns bounded previews and never exposes imported file paths',
   ])
   assert.deepEqual(harness.attachmentInstances[0].resolved, [])
   assert.equal('path' in previewed, false)
+
+  const opened = await harness.ipcHandlers.get('local-attachments:open')(
+    harness.event(), picked.attachments[0].id,
+  )
+  assert.equal(opened, true)
+  assert.deepEqual(harness.attachmentInstances[0].resolved, [[picked.attachments[0].id]])
+  assert.deepEqual(harness.openPathCalls, [
+    path.join(directory, 'attachments', picked.attachments[0].id, 'image.png'),
+  ])
+  assert.equal(JSON.stringify(opened).includes(directory), false)
 })
 
 test('image picker does not import files after application shutdown starts', async (t) => {

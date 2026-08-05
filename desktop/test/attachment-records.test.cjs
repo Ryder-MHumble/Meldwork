@@ -65,3 +65,32 @@ test('keeps reference count and duplicate validation in the record layer', () =>
     { message: 'LOCAL_ATTACHMENT_COUNT_LIMIT' },
   )
 })
+
+test('roundtrips validated text and document attachment records', () => {
+  const fixtures = [
+    [Buffer.from('%PDF-1.7\n'), 'report.pdf', 'application/pdf'],
+    [Buffer.from('# Notes\n', 'utf8'), 'notes.md', 'text/markdown'],
+    [Buffer.from('{"ok":true}', 'utf8'), 'data.json', 'application/json'],
+    [Buffer.from('{\\rtf1 report}', 'ascii'), 'report.rtf', 'application/rtf'],
+    [
+      Buffer.from('PK\u0003\u0004[Content_Types].xml word/document.xml'),
+      'report.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ],
+  ]
+
+  fixtures.forEach(([bytes, name, mimeType], index) => {
+    const type = validateAttachment(bytes, name, mimeType, true)
+    const { metadata, document } = createAttachmentRecord(
+      `document-${index + 1}`, name, bytes, type,
+    )
+    assert.equal(metadata.name, name)
+    assert.equal(metadata.mimeType, mimeType)
+    assert.doesNotThrow(() => validateStoredAttachment(bytes, document))
+  })
+
+  assert.throws(
+    () => validateAttachment(Buffer.from('{not-json}'), 'data.json', 'application/json', true),
+    { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
+  )
+})

@@ -440,6 +440,10 @@
   width: min(180px, 100%);
 }
 
+.message-attachment-grid figure.media-file {
+  width: min(300px, 100%);
+}
+
 .message-attachment-grid img {
   width: 100%;
   aspect-ratio: 4 / 3;
@@ -474,6 +478,60 @@
 .message-attachment-placeholder svg {
   width: 22px;
   height: 22px;
+}
+
+.message-document-attachment {
+  width: 100%;
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.message-document-attachment:hover {
+  background: var(--surface-hover);
+}
+
+.message-document-attachment > svg:first-child {
+  width: 28px;
+  height: 28px;
+  color: var(--accent);
+}
+
+.message-document-attachment > svg:last-child {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.message-document-attachment span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.message-document-attachment strong,
+.message-document-attachment small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-document-attachment strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.message-document-attachment small {
+  color: var(--muted);
+  font-size: 10px;
 }
 
 .message-attachment-grid figcaption {

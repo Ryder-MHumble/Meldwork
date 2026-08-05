@@ -53,7 +53,18 @@
         </p>
       </section>
 
-      <div class="composer-box">
+      <div
+        class="composer-box"
+        :class="{ 'is-dragging-files': composerDropActive }"
+        @dragenter="handleComposerDragEnter"
+        @dragover="handleComposerDragOver"
+        @dragleave="handleComposerDragLeave"
+        @drop="handleComposerDrop"
+      >
+        <div v-if="composerDropActive" class="composer-drop-overlay" aria-hidden="true">
+          <AttachOutline />
+          <span>{{ t('composer.dropFiles') }}</span>
+        </div>
         <div v-if="activeGroup.conversationType !== 'direct'" class="composer-context-row">
           <div class="mode-segmented" role="group" :aria-label="t('composer.responseMode')">
             <button
@@ -177,7 +188,10 @@
         <div v-if="composerAttachments.length" class="composer-attachment-list">
           <article v-for="attachment in composerAttachments" :key="attachment.id" class="composer-attachment">
             <img v-if="isImageAttachment(attachment)" :src="attachment.previewDataUrl" :alt="attachment.name" />
-            <span v-else class="composer-attachment-media-icon" aria-hidden="true"><AttachOutline /></span>
+            <span v-else class="composer-attachment-media-icon" aria-hidden="true">
+              <DocumentTextOutline v-if="attachmentKind(attachment) === 'file'" />
+              <AttachOutline v-else />
+            </span>
             <span :title="attachment.name">{{ attachment.name }}</span>
             <button
               type="button"
@@ -329,6 +343,7 @@ import {
   ChevronDownOutline,
   CloseCircleOutline,
   CloseOutline,
+  DocumentTextOutline,
   LibraryOutline,
   RefreshOutline,
   SendOutline,
@@ -346,9 +361,11 @@ const {
   activeRun,
   activeSkillOptionId,
   attachmentActionLabel,
+  attachmentKind,
   canSendMessage,
   composerAttachmentSupported,
   composerAttachments,
+  composerDropActive,
   composerInput,
   composerMenuGroups,
   composerMenuOptionDescription,
@@ -362,6 +379,10 @@ const {
   discussionMode,
   draft,
   groupName,
+  handleComposerDragEnter,
+  handleComposerDragLeave,
+  handleComposerDragOver,
+  handleComposerDrop,
   handleComposerInput,
   handleComposerKeydown,
   handleComposerPaste,
