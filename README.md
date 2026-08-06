@@ -13,21 +13,21 @@
 Start with one Agent. Bring in others when the work needs a different capability, a second opinion, or an adversarial review. Meldwork keeps the conversation, participants, permissions, outputs, and sanitized run evidence together on your computer.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>Download the private macOS preview</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>Download the macOS DMG</strong></a>
   · <a href="LICENSE">AGPL-3.0 license</a>
   · <a href="COMMERCIAL_USE.md">Commercial use</a>
 </p>
 
 ## Install the desktop client
 
-The current private preview is built for Apple silicon Macs.
+The current desktop build is for Apple silicon Macs.
 
 1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/latest).
 2. Download `Meldwork-0.1.0-arm64.dmg`.
 3. Drag Meldwork into Applications and open it.
 4. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
 
-The private preview is ad-hoc signed and not yet Apple-notarized. A public distribution build will require Developer ID signing and notarization; see [the macOS signing guide](docs/macos-signing.md).
+If the latest Release includes a DMG, it can be downloaded and installed locally. Developers can also run Meldwork from source with the commands below.
 
 ## Start with one repeatable workflow
 
@@ -91,7 +91,7 @@ Each Agent keeps its own capabilities, provider configuration, permission model,
 
 ## Private MVP status
 
-This repository and its Releases are currently private while the public MVP release gates are completed. The macOS Apple silicon client is the only release-validated target in this preview. Windows, Intel Mac, Apple notarization, and broad third-party Agent certification are not yet claimed. The remaining release gates are tracked in [the public MVP checklist](docs/public-mvp-release.md).
+This repository and its Releases are currently private while the public MVP release gates are completed. The macOS Apple silicon client is the only release-validated target in this preview. Windows, Intel Mac, and broad third-party Agent certification are not yet claimed. The remaining release gates are tracked in [the public MVP checklist](docs/public-mvp-release.md).
 
 <details>
 <summary><strong>Build from source for development</strong></summary>

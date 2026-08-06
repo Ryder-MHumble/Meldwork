@@ -13,21 +13,21 @@
 它解决的不是“同时打开更多 AI”，而是让一项复杂工作能够在不同 Agent 之间真正接力：前一个 Agent 留下的结论和证据，后一个可以继续使用；所有人的回答仍然回到同一条任务脉络里，由你决定哪些结果值得接受。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>下载 macOS 私有预览版</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>下载 macOS DMG 安装包</strong></a>
   · <a href="LICENSE">AGPL-3.0 开源许可证</a>
   · <a href="COMMERCIAL_USE.md">商业使用说明</a>
 </p>
 
 ## 先装客户端，再开始工作
 
-当前私有预览版面向 Apple 芯片 Mac：
+当前桌面客户端面向 Apple 芯片 Mac：
 
 1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/latest)。
 2. 下载 `Meldwork-0.1.0-arm64.dmg`。
 3. 将 Meldwork 拖入“应用程序”并打开。
 4. 连接电脑上已经安装的 Agent CLI，或为某个 Agent 单独配置 Provider。
 
-当前内测包采用临时签名，尚未完成 Apple Developer ID 签名与公证。申请与配置步骤见 [macOS 签名与公证指南](docs/macos-signing.md)。
+如果最新 Release 中包含 DMG 文件，就可以直接下载到本地安装。开发者也可以使用下方命令从源码运行。
 
 ## 先跑通一个可重复的工作流
 
@@ -89,7 +89,7 @@ Meldwork 不鼓励为了“看起来智能”而堆叠 Agent。一个 Agent 足�
 
 ## 当前仍是私有 MVP
 
-仓库和 Release 暂时保持 private，直到公开发布门禁完成。目前经过发布验证的目标只有 Apple 芯片 Mac；Windows、Intel Mac、Apple 公证以及所有第三方 Agent 的广泛兼容性还不属于本版本承诺。剩余门禁见 [公开 MVP 发布清单](docs/public-mvp-release.md)。
+仓库和 Release 暂时保持 private，直到公开发布门禁完成。目前经过发布验证的目标只有 Apple 芯片 Mac；Windows、Intel Mac 以及所有第三方 Agent 的广泛兼容性还不属于本版本承诺。剩余门禁见 [公开 MVP 发布清单](docs/public-mvp-release.md)。
 
 <details>
 <summary><strong>开发者从源码运行</strong></summary>
