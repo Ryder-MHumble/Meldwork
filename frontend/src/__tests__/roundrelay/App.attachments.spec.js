@@ -79,6 +79,8 @@ describe('RoundRelay workbench', () => {
       bytes: Uint8Array.from([1, 2, 3]),
     })
     expect(wrapper.get('.composer-attachment img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.composer-attachment').classes()).toContain('is-image')
+    expect(wrapper.get('.composer-attachment').text()).toBe('')
     expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
 
     await wrapper.get('.send-button').trigger('click')
@@ -168,8 +170,11 @@ describe('RoundRelay workbench', () => {
         bytes: Array.from(new TextEncoder().encode('<h1>Preview</h1>')),
       },
     ])
-    expect(wrapper.findAll('.composer-attachment').map(item => item.text())).toEqual([
+    expect(wrapper.findAll('.composer-attachment strong').map(item => item.text())).toEqual([
       'report.pdf', 'notes.md', 'preview.html',
+    ])
+    expect(wrapper.findAll('.composer-attachment small').map(item => item.text())).toEqual([
+      'PDF', 'MD', 'HTML',
     ])
     expect(wrapper.find('.composer-drop-overlay').exists()).toBe(false)
     expect(wrapper.find('.toast-message').exists()).toBe(false)
@@ -207,7 +212,8 @@ describe('RoundRelay workbench', () => {
       name: 'diagram.png',
       mimeType: 'image/png',
     }))
-    expect(wrapper.get('.composer-attachment').text()).toContain('diagram.png')
+    expect(wrapper.get('.composer-attachment').text()).toBe('')
+    expect(wrapper.get('.composer-attachment').classes()).toContain('is-image')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
   })

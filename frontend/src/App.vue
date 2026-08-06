@@ -7,6 +7,7 @@
     }"
     :data-theme="theme"
     :data-platform="desktopPlatform"
+    :aria-busy="agentDiscoveryPending ? 'true' : undefined"
   >
     <section v-if="booting" class="boot-state" aria-live="polite">
       <img class="boot-logo" :src="productAppIcon" alt="Meldwork" />
@@ -21,6 +22,35 @@
     </section>
 
     <template v-else>
+      <transition name="agent-discovery" appear>
+        <section
+          v-if="agentDiscoveryPending"
+          class="agent-discovery-overlay"
+          role="status"
+          aria-live="polite"
+          :aria-label="t('agentDiscovery.title')"
+        >
+          <div class="agent-discovery-orbit" aria-hidden="true">
+            <span class="agent-discovery-orbit-ring ring-one" />
+            <span class="agent-discovery-orbit-ring ring-two" />
+            <span class="agent-discovery-orbit-scan" />
+            <img :src="productMark" alt="" />
+          </div>
+          <div class="agent-discovery-copy">
+            <p class="agent-discovery-kicker">{{ t('agentDiscovery.kicker') }}</p>
+            <h1>{{ t('agentDiscovery.title') }}</h1>
+            <p>{{ t('agentDiscovery.body') }}</p>
+            <div class="agent-discovery-progress" aria-hidden="true">
+              <span />
+            </div>
+            <div class="agent-discovery-status">
+              <span class="agent-discovery-status-dot" aria-hidden="true" />
+              <span>{{ t('agentDiscovery.status') }}</span>
+            </div>
+          </div>
+        </section>
+      </transition>
+
       <WorkspaceSidebar :controller="workspaceSidebarController" />
 
       <section
@@ -219,6 +249,7 @@ const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: fal
 const systemSettingsSection = ref('agents')
 const sidebarCollapsed = ref(false)
 const refreshing = ref(false)
+const agentDiscoveryPending = ref(false)
 const sending = ref(false)
 const saving = ref(false)
 const agentControlPendingAgentRunId = ref('')
@@ -553,7 +584,9 @@ const {
   snapshot,
 })
 const { messageDeleteArmedId } = messageActions
-const contentInteractionBlocked = computed(() => blockingOverlayOpen.value || traceDrawerBlocking.value)
+const contentInteractionBlocked = computed(() => (
+  blockingOverlayOpen.value || traceDrawerBlocking.value || agentDiscoveryPending.value
+))
 const providerSettings = useProviderSettings({
   agents: mergedCatalog,
   provider,
@@ -930,7 +963,8 @@ const { booting, bridgeMissing } = useDesktopWorkspaceLifecycle({
     if (!onboardingCompleted.value) {
       openOnboarding()
     } else {
-      void refreshAgents()
+      agentDiscoveryPending.value = true
+      void refreshAgents().finally(() => { agentDiscoveryPending.value = false })
     }
     void loadProviderWorkspace()
     void loadKnowledgeBaseStatuses()

@@ -3,9 +3,10 @@ import { resolve } from 'node:path'
 import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AGENTS } from '../../catalog.js'
+import App from '../../App.vue'
 import RunTracePanel from '../../components/RunTracePanel.vue'
 import { setLocale } from '../../i18n.js'
-import { deferred, imageAttachment, mountApp } from './app-test-harness.js'
+import { createBridge, deferred, imageAttachment, mountApp } from './app-test-harness.js'
 import { readStylesSource } from './style-test-helpers.js'
 
 function readFileSync(filename, encoding) {
@@ -44,6 +45,26 @@ afterEach(() => {
 })
 
 describe('RoundRelay workbench', () => {
+  it('shows a calm full-screen Agent discovery state until the first refresh completes', async () => {
+    const fixture = createBridge()
+    const pendingRefresh = deferred()
+    fixture.bridge.localWorkspace.refreshAgents.mockReturnValueOnce(pendingRefresh.promise)
+    window.roundrelayDesktop = fixture.bridge
+
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+
+    expect(wrapper.find('.agent-discovery-overlay').exists()).toBe(true)
+    expect(wrapper.get('.agent-discovery-overlay').attributes('role')).toBe('status')
+    expect(wrapper.get('.agent-discovery-copy h1').text()).toBe('Finding your local Agents')
+
+    pendingRefresh.resolve(structuredClone(fixture.state))
+    await flushPromises()
+
+    expect(wrapper.find('.agent-discovery-overlay').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
   it('shows the workspace home, keeps full Agent management in Settings, and switches language and theme', async () => {
     const { wrapper } = await mountApp()
 

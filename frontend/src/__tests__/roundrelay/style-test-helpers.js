@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-export const STYLE_FILES = ['base.css', 'workspace.css', 'conversation.css', 'overlays.css', 'responsive.css']
+export const STYLE_FILES = ['base.css', 'agent-discovery.css', 'workspace.css', 'conversation.css', 'overlays.css', 'responsive.css']
 
 export function readStylesSource(filename = resolve(process.cwd(), 'src/styles.css'), visited = new Set()) {
   const absolutePath = resolve(filename)

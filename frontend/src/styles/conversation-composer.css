@@ -524,32 +524,44 @@
 
 .composer-attachment-list {
   display: flex;
+  align-items: center;
   gap: 7px;
   overflow-x: auto;
-  padding: 9px 10px;
+  padding: 9px 12px 4px;
   border-bottom: 0;
-  background: color-mix(in srgb, var(--surface) 82%, var(--surface-active) 18%);
+  background: transparent;
 }
 
 .composer-attachment {
-  width: 168px;
+  position: relative;
+  width: 56px;
+  height: 56px;
   min-width: 0;
-  flex: 0 0 168px;
+  flex: 0 0 56px;
   display: grid;
-  grid-template-columns: 38px minmax(0, 1fr) 26px;
   align-items: center;
-  gap: 7px;
-  padding: 5px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-raised);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
 }
 
 .composer-attachment > img {
-  width: 38px;
-  height: 38px;
-  border-radius: 4px;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
   object-fit: cover;
+}
+
+.composer-attachment.is-file,
+.composer-attachment.is-audio,
+.composer-attachment.is-video {
+  width: 184px;
+  min-width: 184px;
+  flex-basis: 184px;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 9px;
+  padding: 6px 28px 6px 7px;
+  background: color-mix(in srgb, var(--surface-hover) 70%, transparent);
 }
 
 .composer-attachment-media-icon {
@@ -558,7 +570,7 @@
   display: grid;
   place-items: center;
   border-radius: 4px;
-  background: var(--surface-hover);
+  background: color-mix(in srgb, var(--surface-raised) 78%, var(--surface-active) 22%);
   color: var(--accent);
 }
 
@@ -567,12 +579,29 @@
   height: 18px;
 }
 
-.composer-attachment > span {
+.composer-attachment-file-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.composer-attachment-file-copy strong,
+.composer-attachment-file-copy small {
   overflow: hidden;
-  color: var(--text-soft);
-  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.composer-attachment-file-copy strong {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.composer-attachment-file-copy small {
+  color: var(--muted);
+  font-size: 10px;
+  text-transform: uppercase;
 }
 
 .composer-attachment > button,
@@ -589,8 +618,16 @@
 }
 
 .composer-attachment > button {
+  position: absolute;
+  top: 3px;
+  right: 3px;
   width: 26px;
   height: 26px;
+}
+
+.composer-attachment-remove svg {
+  width: 17px;
+  height: 17px;
 }
 
 .composer-attachment > button:hover,

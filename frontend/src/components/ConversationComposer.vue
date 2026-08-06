@@ -186,14 +186,29 @@
         </div>
 
         <div v-if="composerAttachments.length" class="composer-attachment-list">
-          <article v-for="attachment in composerAttachments" :key="attachment.id" class="composer-attachment">
-            <img v-if="isImageAttachment(attachment)" :src="attachment.previewDataUrl" :alt="attachment.name" />
-            <span v-else class="composer-attachment-media-icon" aria-hidden="true">
-              <DocumentTextOutline v-if="attachmentKind(attachment) === 'file'" />
-              <AttachOutline v-else />
-            </span>
-            <span :title="attachment.name">{{ attachment.name }}</span>
+          <article
+            v-for="attachment in composerAttachments"
+            :key="attachment.id"
+            class="composer-attachment"
+            :class="`is-${attachmentKind(attachment)}`"
+          >
+            <img
+              v-if="isImageAttachment(attachment)"
+              :src="attachment.previewDataUrl"
+              :alt="attachment.name"
+            />
+            <template v-else>
+              <span class="composer-attachment-media-icon" aria-hidden="true">
+                <DocumentTextOutline v-if="attachmentKind(attachment) === 'file'" />
+                <AttachOutline v-else />
+              </span>
+              <span class="composer-attachment-file-copy">
+                <strong :title="attachment.name">{{ attachment.name }}</strong>
+                <small>{{ attachmentTypeLabel(attachment) }}</small>
+              </span>
+            </template>
             <button
+              class="composer-attachment-remove"
               type="button"
               :title="t('composer.removeAttachment')"
               :aria-label="t('composer.removeAttachment')"
@@ -362,6 +377,7 @@ const {
   activeSkillOptionId,
   attachmentActionLabel,
   attachmentKind,
+  attachmentTypeLabel,
   canSendMessage,
   composerAttachmentSupported,
   composerAttachments,
