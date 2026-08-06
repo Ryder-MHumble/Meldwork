@@ -36,7 +36,8 @@ const REMOTE_JOB_FIELDS = new Set([
 ])
 const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
-  'contextPackId', 'contextPackState', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+  'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
+  'sessionProvenance', 'outcomeRefs',
   'connector', 'connectorEventState',
 ])
 const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
@@ -208,7 +209,7 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
   })
   const hasContext = isRecord(input.context) && [
     'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
-    'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+    'contextMode', 'promptChars', 'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
     'connector', 'connectorEventState',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
@@ -440,6 +441,12 @@ function hasValidStoredRecordShape(input) {
       if (!hasStoredBoundedInteger(agentRun.context, 'omittedCount', 0, 100000)) return false
       if (!hasStoredBoundedInteger(agentRun.context, 'charCount', 0, 1000000)) return false
       if (!hasStoredFieldTypes(agentRun.context, ['sessionRotated'], 'boolean')) return false
+      if (hasOwn(agentRun.context, 'contextMode')
+          && !['bootstrap', 'continuation'].includes(agentRun.context.contextMode)) return false
+      if (hasOwn(agentRun.context, 'promptChars')
+          && !hasStoredBoundedInteger(agentRun.context, 'promptChars', 0, 10000000)) {
+        return false
+      }
       if (hasOwn(agentRun.context, 'contextPackId')
           && normalizeContextPackId(agentRun.context.contextPackId)
             !== agentRun.context.contextPackId) return false

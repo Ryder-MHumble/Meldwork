@@ -303,6 +303,15 @@ class LocalWorkspaceAgentInvocation {
     let transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
       ? kind
       : ''
+    // Group Sessions already contain the immutable bootstrap instructions after
+    // a successful turn. Keep direct chat unchanged and send only the compact
+    // Harness context on later group turns.
+    let promptMode = group.conversationType !== 'direct'
+      && Boolean(sessionRef)
+      && !sessionRotated
+      && sessionMeta.turns > 0
+      ? 'continuation'
+      : 'bootstrap'
     let packedContext = isolated
       ? {
           text: '',
@@ -331,6 +340,7 @@ class LocalWorkspaceAgentInvocation {
       if (liveHarnessRun) {
         liveHarnessRun.context = {
           ...packedContext.context,
+          contextMode: promptMode,
           sessionRotated,
           ...deliveryContext,
         }
@@ -468,6 +478,7 @@ class LocalWorkspaceAgentInvocation {
       this.clearAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       const finished = harness.finishAgent(kind, round, status, finalText, {
         ...packedContext.context,
+        contextMode: promptMode,
         sessionRotated,
         ...deliveryContext,
         ...connectorContext,
@@ -523,7 +534,7 @@ class LocalWorkspaceAgentInvocation {
         : [
             this.promptFor(
               group, kind, mode, threadRootId, context.skillHints || [],
-              context.knowledgeBaseHints || [], afterKind, contextPackage,
+              context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
             ),
             stagedAgentInputPrompt(stagedInputs),
             runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
@@ -575,6 +586,7 @@ class LocalWorkspaceAgentInvocation {
         if (liveHarnessRun) {
           liveHarnessRun.context = {
             ...packedContext.context,
+            contextMode: promptMode,
             sessionRotated,
             ...deliveryContext,
             ...connectorContext,
@@ -586,6 +598,7 @@ class LocalWorkspaceAgentInvocation {
       const rebuildFreshSession = () => {
         sessionMeta = {}
         sessionProvenance = createdSessionProvenance(group, taskId)
+        promptMode = 'bootstrap'
         deliveryContext = { ...deliveryContext, sessionProvenance }
         this.commitSessionState((nextState) => {
           delete nextState.sessions[key]
@@ -614,6 +627,7 @@ class LocalWorkspaceAgentInvocation {
           liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
           liveHarnessRun.context = {
             ...packedContext.context,
+            contextMode: promptMode,
             sessionRotated,
             ...deliveryContext,
             ...connectorContext,
@@ -710,6 +724,7 @@ class LocalWorkspaceAgentInvocation {
             if (liveHarnessRun) {
               liveHarnessRun.context = {
                 ...packedContext.context,
+                contextMode: promptMode,
                 sessionRotated,
                 ...deliveryContext,
                 ...connectorContext,
@@ -887,6 +902,7 @@ class LocalWorkspaceAgentInvocation {
       })
       const finalStatus = result.outcome
       const trace = finishHarness(finalStatus, reply.text, {
+        promptChars: prompt.length,
         externalRunRef: result.externalRunRef,
         outcomeRefs,
       })

@@ -155,6 +155,55 @@ test('unlimited automatic discussion continues past a finite cap until consensus
   )), false)
 })
 
+test('later group rounds use a compact Harness continuation instead of the bootstrap template', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const consensus = calls.length > 2 ? 'agree' : 'continue'
+    return {
+      text: `${agent.kind} round ${calls.length}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '续接上下文',
+    topic: '固定主题不应在每一轮重复发送',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: '请围绕这个主题进行两轮讨论',
+    mode: 'auto',
+    maxRounds: 2,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
+  assert.match(calls[0].prompt, /You are participating in the local/)
+  assert.match(calls[0].prompt, /Group topic: 固定主题/)
+  assert.match(calls[2].prompt, /Harness-compressed shared context/)
+  assert.doesNotMatch(calls[2].prompt, /You are participating in the local|Group topic:/)
+  assert.doesNotMatch(calls[2].prompt, /Deliverable capture contract|Stable user instructions and constraints:/)
+  assert.match(calls[2].prompt, /Hermes: hermes round 2/)
+  assert.match(calls[2].prompt, /请围绕这个主题进行两轮讨论/)
+  assert.ok(calls[2].prompt.length < calls[0].prompt.length)
+  assert.equal(calls[2].runOptions.sessionRef, 'codex-session')
+  assert.equal(calls[3].runOptions.sessionRef, 'hermes-session')
+
+  const root = workspace.snapshot().messages.find(message => message.id === started.threadRootId)
+  const codexReplies = workspace.snapshot().messages.filter(message => (
+    message.role === 'agent' && message.agentKind === 'codex'
+  ))
+  assert.equal(root.content, '请围绕这个主题进行两轮讨论')
+  assert.equal(codexReplies.at(-1).trace.context.contextMode, 'continuation')
+  assert.equal(codexReplies.at(-1).trace.context.promptChars, calls[2].prompt.length)
+})
+
 test('auto send rejects failed preflight without persisting a root or starting an Agent', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

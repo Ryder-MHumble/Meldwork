@@ -430,6 +430,8 @@ test('finishes with the authoritative answer and persists only a compact capsule
     includedCount: 5,
     omittedCount: 2,
     charCount: 9000,
+    contextMode: 'continuation',
+    promptChars: 4200,
     sessionRotated: true,
     externalRunRef: `ocr+${'a'.repeat(180)}`,
   })
@@ -441,6 +443,8 @@ test('finishes with the authoritative answer and persists only a compact capsule
   assert.equal(capsule.summary, 'Compared the two implementations.')
   assert.deepEqual(capsule.sourceMessageIds, ['message-a', 'message-b'])
   assert.equal(capsule.context.sessionRotated, true)
+  assert.equal(capsule.context.contextMode, 'continuation')
+  assert.equal(capsule.context.promptChars, 4200)
   assert.equal(capsule.context.externalRunRef, `ocr+${'a'.repeat(180)}`)
   assert.equal(capsule.events.at(-1).detail, 'Exit code: 0\nOutput: 16 lines, 160 bytes')
 })

@@ -224,6 +224,13 @@ function normalizeContextStats(input) {
     omittedCount: boundedNumber(input.omittedCount, 0, 100000),
     charCount: boundedNumber(input.charCount, 0, 1000000),
   }
+  if (input.contextMode === 'bootstrap' || input.contextMode === 'continuation') {
+    context.contextMode = input.contextMode
+  }
+  const promptChars = Number(input.promptChars)
+  if (Number.isSafeInteger(promptChars) && promptChars >= 0 && promptChars <= 10000000) {
+    context.promptChars = promptChars
+  }
   if (input.sessionRotated === true) context.sessionRotated = true
   const contextPackId = normalizeContextPackId(input.contextPackId)
   if (contextPackId) context.contextPackId = contextPackId

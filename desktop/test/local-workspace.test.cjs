@@ -1594,6 +1594,33 @@ test('fresh group task sessions receive bounded shared conclusions from earlier 
   assert.match(calls[3].prompt, /Codex: codex final 3/)
 })
 
+test('Harness continuation context stays bounded while retaining the latest shared conclusion', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '上下文预算', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', '稳定约束：必须保留最新结论')
+  for (let index = 0; index < 30; index += 1) {
+    workspace.addMessage(
+      group.id,
+      'agent',
+      `共享结论 ${index} ${'x'.repeat(1500)}`,
+      index % 2 ? 'hermes' : 'codex',
+      'budget-root',
+    )
+  }
+
+  const packed = workspace.packedPromptContext(group.id)
+
+  assert.ok(packed.continuationText.length <= 6100)
+  assert.match(packed.continuationText, /共享结论 29/)
+  assert.match(packed.continuationText, /稳定约束：必须保留最新结论/)
+  assert.doesNotMatch(packed.continuationText, /共享结论 0 /)
+})
+
 test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

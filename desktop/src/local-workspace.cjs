@@ -959,7 +959,7 @@ class LocalWorkspace extends EventEmitter {
 
   promptFor(
     group, kind, mode, threadRootId = '', skillHints = [], knowledgeBaseHints = [],
-    transcriptAfterKind = '', contextPackage = null,
+    transcriptAfterKind = '', contextPackage = null, promptMode = 'bootstrap',
   ) {
     const packed = contextPackage || this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
     return promptFor({
@@ -970,6 +970,7 @@ class LocalWorkspace extends EventEmitter {
       knowledgeBaseHints,
       packed,
       agentLabel: agentKind => this.agentLabel(agentKind),
+      promptMode,
     })
   }
 

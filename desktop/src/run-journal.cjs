@@ -24,7 +24,8 @@ const REMOTE_JOB_FIELDS = new Set([
 ])
 const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
-  'contextPackId', 'contextPackState', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+  'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
+  'sessionProvenance', 'outcomeRefs',
   'connector', 'connectorEventState',
 ])
 
