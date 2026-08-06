@@ -103,9 +103,21 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('adds and removes a sanitized Custom Agent through the desktop bridge', async () => {
-    let customProfile = null
-    const { wrapper, bridge, state } = await mountApp(({ bridge: configuredBridge, state: configuredState }) => {
+  it('hides Custom Agent setup while the connector surface is not production-ready', async () => {
+    const customProfile = {
+      kind: 'custom-0123456789abcdef',
+      label: 'Repository Reviewer',
+      description: 'Reviews the current repository diff.',
+      commandName: 'review-agent',
+      promptMode: 'argument',
+      custom: true,
+      installed: true,
+      installSupported: false,
+      providerMode: 'custom',
+      imageAttachmentLimit: 0,
+      version: 'review-agent 1.0.0',
+    }
+    const { wrapper, bridge } = await mountApp(({ bridge: configuredBridge, state: configuredState }) => {
       configuredBridge.agentInstaller.catalog.mockImplementation(async () => ({
         platform: 'darwin',
         agents: [
@@ -114,83 +126,33 @@ describe('RoundRelay workbench', () => {
             installed: true,
             installSupported: true,
           })),
-          ...(customProfile ? [customProfile] : []),
+          customProfile,
         ],
       }))
-      configuredBridge.customAgent.create.mockImplementation(async (input) => {
-        customProfile = {
-          kind: 'custom-0123456789abcdef',
-          label: input.label,
-          description: input.description,
-          commandName: 'review-agent',
-          promptMode: input.promptMode,
-          custom: true,
-          installed: true,
-          installSupported: false,
-          providerMode: 'custom',
-          imageAttachmentLimit: 0,
-          version: 'review-agent 1.0.0',
-        }
-        configuredState.agents.push({
-          kind: customProfile.kind,
-          label: customProfile.label,
-          description: customProfile.description,
-          commandName: customProfile.commandName,
-          promptMode: customProfile.promptMode,
-          custom: true,
-          installed: true,
-          available: true,
-          credentialState: 'ready',
-          availabilitySource: 'custom-agent',
-          showInSidebar: true,
-          version: customProfile.version,
-        })
-        return { canceled: false, agent: structuredClone(customProfile) }
-      })
-      configuredBridge.customAgent.delete.mockImplementation(async (kind) => {
-        customProfile = null
-        configuredState.agents = configuredState.agents.filter(agent => agent.kind !== kind)
-        return { deleted: true, kind }
+      configuredState.agents.push({
+        kind: customProfile.kind,
+        label: customProfile.label,
+        description: customProfile.description,
+        commandName: customProfile.commandName,
+        promptMode: customProfile.promptMode,
+        custom: true,
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        availabilitySource: 'custom-agent',
+        showInSidebar: true,
+        version: customProfile.version,
       })
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.findAll('.agent-catalog-category').map(category => category.get('h2').text()))
-      .toEqual(['Official Agents', 'Custom Agents'])
-    await wrapper.get('.manager-toolbar-actions button').trigger('click')
-    const form = wrapper.get('.custom-agent-form')
-    await form.get('input[type="text"], input:not([type])').setValue('Repository Reviewer')
-    const textareas = form.findAll('textarea')
-    await textareas[0].setValue('Reviews the current repository diff.')
-    await textareas[1].setValue('review\n--format=text')
-    await form.find('input[value="argument"]').setValue(true)
-    expect(form.text()).not.toContain('/private/')
-
-    await form.trigger('submit')
-    await flushPromises()
-
-    expect(bridge.customAgent.create).toHaveBeenCalledWith({
-      label: 'Repository Reviewer',
-      description: 'Reviews the current repository diff.',
-      args: ['review', '--format=text'],
-      promptMode: 'argument',
-    })
-    const customCard = wrapper.findAll('.agent-card').find(card => card.text().includes('Repository Reviewer'))
-    expect(customCard.exists()).toBe(true)
-    expect(customCard.get('img').attributes('src')).toBe('./agent-logos/custom-agent.svg')
-    expect(customCard.text()).toContain('Reviews the current repository diff.')
-
-    await customCard.get('.agent-card-main').trigger('click')
-    expect(wrapper.get('.agent-detail-modal').text()).toContain('Managed by the selected CLI')
-    expect(wrapper.get('.sidebar-visibility-control').text()).toContain('Show in sidebar')
-    const remove = wrapper.get('.agent-detail-footer .danger-button')
-    await remove.trigger('click')
-    expect(remove.text()).toContain('Confirm removal')
-    await remove.trigger('click')
-    await flushPromises()
-
-    expect(bridge.customAgent.delete).toHaveBeenCalledWith('custom-0123456789abcdef')
+      .toEqual(['Official Agents'])
+    expect(wrapper.get('.manager-toolbar-actions').text()).not.toContain('Add custom Agent')
+    expect(wrapper.find('.custom-agent-form').exists()).toBe(false)
     expect(wrapper.findAll('.agent-card').some(card => card.text().includes('Repository Reviewer'))).toBe(false)
+    expect(bridge.customAgent.create).not.toHaveBeenCalled()
+    expect(bridge.customAgent.delete).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

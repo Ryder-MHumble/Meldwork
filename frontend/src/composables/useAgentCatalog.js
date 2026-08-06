@@ -5,7 +5,6 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import { AGENTS, agentLogo } from '../catalog.js'
-import { MAX_ATTACHMENTS } from './useComposerAttachments.js'
 
 export function useAgentCatalog({
   activeGroup,
@@ -15,23 +14,7 @@ export function useAgentCatalog({
   t,
   theme,
 }) {
-  const mergedCatalog = computed(() => [
-    ...AGENTS,
-    ...(installCatalog.value.agents || [])
-      .filter(agent => agent?.custom === true)
-      .map(agent => ({
-        kind: agent.kind,
-        label: agent.label,
-        logo: agentLogo(agent.kind, theme.value),
-        providerMode: 'custom',
-        imageLimit: MAX_ATTACHMENTS,
-        attachmentTypes: ['image', 'audio', 'video', 'file'],
-        custom: true,
-        description: agent.description || '',
-        commandName: agent.commandName || '',
-        promptMode: agent.promptMode || 'stdin',
-      })),
-  ].map((profile) => {
+  const mergedCatalog = computed(() => AGENTS.map((profile) => {
     const installedProfile = installCatalog.value.agents?.find(agent => agent.kind === profile.kind) || {}
     const detected = snapshot.value.agents.find(agent => agent.kind === profile.kind) || {}
     return {
@@ -55,12 +38,6 @@ export function useAgentCatalog({
       titleKey: 'systemSettings.officialAgents',
       subtitleKey: 'systemSettings.officialAgentsHint',
       agents: mergedCatalog.value.filter(agent => !agent.custom),
-    },
-    {
-      id: 'custom',
-      titleKey: 'systemSettings.customAgents',
-      subtitleKey: 'systemSettings.customAgentsHint',
-      agents: mergedCatalog.value.filter(agent => agent.custom),
     },
   ])
   const readyAgents = computed(() => mergedCatalog.value.filter(

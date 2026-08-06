@@ -58,11 +58,9 @@
         :provider-summary-label="providerSummaryLabel"
         :ready-count="readyCount"
         :refreshing="refreshing"
-        :saving="saving"
         :supports-external-provider="supportsExternalProvider"
         @cancel-install="cancelInstall"
         @open-agent-detail="openAgentDetail"
-        @open-custom-agent="openCustomAgentModal"
         @open-direct="openDirect"
         @open-provider="openProvider"
         @refresh-agents="refreshAgents"
@@ -134,7 +132,6 @@ const {
   localKnowledgeBaseEntries,
   openAgentDetail,
   openAgentManager,
-  openCustomAgentModal,
   openDirect,
   openProvider,
   plannedKnowledgeBaseEntries,

@@ -3,10 +3,6 @@
     <div class="manager-toolbar">
       <span>{{ t('home.readyCount', { ready: readyCount, installed: installedCount }) }}</span>
       <div class="manager-toolbar-actions">
-        <button class="secondary-button" type="button" :disabled="saving" @click="$emit('open-custom-agent')">
-          <AddOutline />
-          {{ t('customAgent.add') }}
-        </button>
         <button class="secondary-button" type="button" :disabled="refreshing" @click="$emit('refresh-agents')">
           <RefreshOutline :class="{ spinning: refreshing }" />
           {{ t('installer.refresh') }}
@@ -114,10 +110,6 @@
       </div>
       <div v-else class="custom-agent-empty">
         <span>{{ t('customAgent.empty') }}</span>
-        <button class="secondary-button compact" type="button" :disabled="saving" @click="$emit('open-custom-agent')">
-          <AddOutline />
-          {{ t('customAgent.add') }}
-        </button>
       </div>
     </section>
   </section>
@@ -125,7 +117,6 @@
 
 <script setup>
 import {
-  AddOutline,
   ChatbubbleEllipsesOutline,
   ChevronForwardOutline,
   DownloadOutline,
@@ -150,14 +141,12 @@ defineProps({
   providerSummaryLabel: { type: Function, required: true },
   readyCount: { type: Number, required: true },
   refreshing: { type: Boolean, required: true },
-  saving: { type: Boolean, required: true },
   supportsExternalProvider: { type: Function, required: true },
 })
 
 defineEmits([
   'cancel-install',
   'open-agent-detail',
-  'open-custom-agent',
   'open-direct',
   'open-provider',
   'refresh-agents',

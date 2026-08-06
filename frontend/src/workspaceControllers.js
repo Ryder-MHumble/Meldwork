@@ -89,7 +89,6 @@ export function createWorkspaceControllers({
     localKnowledgeBaseEntries: knowledgeBase.localKnowledgeBaseEntries,
     openAgentDetail: agentManagement.openAgentDetail,
     openAgentManager: app.openAgentManager,
-    openCustomAgentModal: agentManagement.openCustomAgentModal,
     openDirect: conversationActions.openDirect,
     openProvider: app.openProvider,
     plannedKnowledgeBaseEntries: knowledgeBase.plannedKnowledgeBaseEntries,
