@@ -1,48 +1,48 @@
-# macOS Developer ID Signing And Notarization
+# macOS Developer ID 签名与 Apple 公证
 
-The current private preview is ad-hoc signed. Public DMG and ZIP distribution should use a Developer ID Application certificate and Apple notarization so Gatekeeper accepts the app on a clean Mac.
+当前内测版本采用临时签名（ad-hoc signing）。面向公众分发 DMG 和 ZIP 时，必须使用 `Developer ID Application` 证书完成签名，并提交 Apple 公证，确保应用能够在全新 Mac 上通过 Gatekeeper 检查。
 
-## 1. Enroll With Apple
+## 1. 加入 Apple Developer Program
 
-1. Sign in at [developer.apple.com/programs/](https://developer.apple.com/programs/) with the Apple ID that will own the release.
-2. Enable two-factor authentication and enroll in the Apple Developer Program. Apple currently charges an annual membership fee; confirm the current local price and organization-verification requirements on Apple's enrollment page.
-3. If publishing as an organization, enroll the legal entity rather than a personal account. Apple may request a D-U-N-S number and authority to bind the organization.
-4. Record the ten-character Apple Team ID from the Membership page.
+1. 使用将来负责发布 Meldwork 的 Apple ID 登录 [Apple Developer Program](https://developer.apple.com/programs/)。
+2. 为 Apple ID 开启双重认证，然后加入 Apple Developer Program。Apple 会收取年度会员费，具体人民币价格和身份验证要求以申请页面为准。
+3. 如果未来由公司或机构发布，建议使用法人主体加入，而不是个人账号。Apple 可能要求提供 D-U-N-S 编号，并验证申请人是否有权代表该组织签署协议。
+4. 申请通过后，在 Membership 页面记录十位字符的 Apple Team ID。
 
-Approval may take from hours to several business days depending on identity or organization verification. This repository cannot automate enrollment.
+审核时间可能从几小时到数个工作日不等，取决于个人身份或组织资质验证。这个申请过程无法通过本仓库自动完成。
 
-## 2. Choose The Permanent App Identity
+## 2. 注册固定的应用标识
 
-The public Bundle ID is `com.rydersun.meldwork`. Register this exact identifier before the first notarized Release and keep it stable afterward; changing it later can affect macOS identity, permissions, Keychain access, and update continuity.
+Meldwork 的正式 Bundle ID 是 `com.rydersun.meldwork`。必须在第一次签名并公证发布前注册这个标识，之后保持不变。后续修改 Bundle ID 可能影响 macOS 应用身份、系统权限、钥匙串数据访问和升级连续性。
 
-Register the chosen identifier under Certificates, Identifiers & Profiles. Use one stable reverse-DNS value and keep it unchanged after public release.
+进入 Apple Developer 网站的 Certificates, Identifiers & Profiles，在 Identifiers 中注册 `com.rydersun.meldwork`。首次公开发布后不要更换这个标识。
 
-## 3. Create The Signing Certificate
+## 3. 创建签名证书
 
-Recommended local setup:
+推荐在发布用 Mac 上通过 Xcode 创建证书：
 
-1. Install the latest stable Xcode supported by the release Mac.
-2. Open Xcode Settings, select Accounts, add the enrolled Apple ID, and choose the correct Team.
-3. Open Manage Certificates and create a `Developer ID Application` certificate.
-4. Confirm the certificate and private key exist in the login Keychain:
+1. 安装发布 Mac 所支持的最新稳定版 Xcode。
+2. 打开 Xcode 设置，进入 Accounts，添加已经加入 Apple Developer Program 的 Apple ID，并选择正确的 Team。
+3. 打开 Manage Certificates，创建 `Developer ID Application` 证书。
+4. 确认登录钥匙串中同时存在证书和对应私钥：
 
 ```bash
 security find-identity -v -p codesigning
 ```
 
-DMG and ZIP distribution needs `Developer ID Application`. `Developer ID Installer` is only needed when distributing a signed `.pkg` installer.
+分发 DMG 和 ZIP 需要的是 `Developer ID Application`。只有分发签名 `.pkg` 安装包时才需要 `Developer ID Installer`。
 
-Back up the certificate and private key as an encrypted `.p12` stored outside the repository. Never commit certificates, passwords, API keys, or notarization profiles.
+将证书和私钥导出为加密的 `.p12` 文件，并保存在仓库之外的安全位置。不要把证书、私钥、密码、API Key 或公证配置提交到 Git。
 
-## 4. Create Notarization Credentials
+## 4. 创建 Apple 公证凭据
 
-The preferred CI path is an App Store Connect API key:
+CI/CD 推荐使用 App Store Connect API Key：
 
-1. Open App Store Connect, then Users and Access, Integrations, App Store Connect API.
-2. Create a key with the minimum role that can submit notarization jobs for the Team.
-3. Download the `.p8` file once and record its Key ID and Issuer ID.
+1. 打开 App Store Connect，依次进入 Users and Access、Integrations、App Store Connect API。
+2. 创建一个能够代表当前 Team 提交公证任务、但权限尽可能小的 API Key。
+3. 下载只能获取一次的 `.p8` 私钥文件，同时记录 Key ID 和 Issuer ID。
 
-For local-only use, `notarytool` can store credentials in Keychain:
+如果只在本机发布，可以让 `notarytool` 把 Apple ID 凭据保存到钥匙串：
 
 ```bash
 xcrun notarytool store-credentials "meldwork-notary" \
@@ -51,13 +51,13 @@ xcrun notarytool store-credentials "meldwork-notary" \
   --password "YOUR_APP_SPECIFIC_PASSWORD"
 ```
 
-Create the app-specific password at appleid.apple.com. Do not use the normal Apple ID password.
+需要在 [Apple ID 账户页面](https://appleid.apple.com/) 创建 App 专用密码。这里不能使用 Apple ID 的普通登录密码。
 
-## 5. Configure electron-builder
+## 5. 配置 electron-builder
 
-The repository now uses `com.rydersun.meldwork` and AGPL-3.0-only for the Community Edition. The public release configuration must keep hardened runtime enabled and allow electron-builder to sign and notarize after the existing `afterPack` fuse hardening.
+当前仓库已经使用 Bundle ID `com.rydersun.meldwork`，社区版许可证为 `AGPL-3.0-only`。公开发布配置必须保持 Hardened Runtime 开启，并在现有 `afterPack` Electron Fuses 加固完成后，由 electron-builder 执行签名和公证。
 
-For a local Keychain certificate, electron-builder can discover the valid `Developer ID Application` identity. In CI, export the certificate as an encrypted `.p12` and provide secrets such as:
+使用本机钥匙串证书时，electron-builder 可以自动发现有效的 `Developer ID Application` 身份。在 CI 中，需要把证书导出为加密的 `.p12`，并配置以下 Secrets：
 
 ```text
 CSC_LINK
@@ -67,17 +67,29 @@ APPLE_API_KEY_ID
 APPLE_API_ISSUER
 ```
 
-`APPLE_API_KEY` must point to the private `.p8` file in the runner. An Apple ID alternative uses `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`.
+`CSC_LINK` 指向 `.p12` 证书或其安全编码内容，`CSC_KEY_PASSWORD` 是 `.p12` 密码。`APPLE_API_KEY` 必须指向 CI 运行环境中的 `.p8` 私钥文件。
 
-For a local Keychain profile, set `APPLE_KEYCHAIN_PROFILE=meldwork-notary`; `APPLE_KEYCHAIN` is optional when the profile is stored in the default Keychain.
+如果不使用 App Store Connect API Key，也可以配置 Apple ID 方案：
 
-The `dist:public` command runs `scripts/public-release-preflight.cjs`, uses `electron-builder.public.cjs` with `forceCodeSigning: true` and `mac.notarize: true`, and then runs `scripts/after-sign.cjs`. The post-sign hook rejects ad-hoc identities, a missing Team ID, a missing hardened-runtime flag, or any Bundle ID other than `com.rydersun.meldwork`.
+```text
+APPLE_ID
+APPLE_APP_SPECIFIC_PASSWORD
+APPLE_TEAM_ID
+```
 
-Do not add plaintext fallbacks. A public release without signing or notarization credentials fails before packaging instead of publishing an ad-hoc artifact.
+如果使用本机钥匙串中的 `notarytool` Profile，设置 `APPLE_KEYCHAIN_PROFILE=meldwork-notary`。Profile 位于默认钥匙串时，通常不需要设置 `APPLE_KEYCHAIN`。
 
-## 6. Build And Verify
+公开发布命令 `dist:public` 会依次执行以下保护：
 
-Build the distribution artifacts:
+1. `scripts/public-release-preflight.cjs` 检查签名身份和完整的公证凭据。
+2. `electron-builder.public.cjs` 强制启用 `forceCodeSigning: true` 和 `mac.notarize: true`。
+3. `scripts/after-sign.cjs` 拒绝临时签名、缺失 Team ID、未开启 Hardened Runtime，或者 Bundle ID 不是 `com.rydersun.meldwork` 的产物。
+
+不要增加任何明文凭据降级方案。缺少签名或公证凭据时，公开发布必须在打包前失败，不能生成可能被误发布的临时签名产物。
+
+## 6. 构建并验证正式产物
+
+安装锁定依赖并构建公开分发包：
 
 ```bash
 npm --prefix frontend ci
@@ -85,9 +97,9 @@ npm --prefix desktop ci
 npm --prefix desktop run dist:public
 ```
 
-Use `npm --prefix desktop run dist` only for local package validation. It is intentionally not a public-release command.
+`npm --prefix desktop run dist` 只用于本地打包验证，不是正式公开发布命令。
 
-Verify the exact output before publishing:
+发布前检查实际生成的应用和 DMG：
 
 ```bash
 codesign --verify --deep --strict --verbose=2 \
@@ -100,9 +112,9 @@ xcrun stapler validate desktop/dist/mac-arm64/Meldwork.app
 xcrun stapler validate desktop/dist/Meldwork-0.1.0-arm64.dmg
 ```
 
-Install the DMG on a clean Apple silicon Mac user account and launch it normally, without right-click bypasses or `xattr` removal. Gatekeeper acceptance on that clean account is the release gate.
+必须在没有安装过 Meldwork、没有历史应用数据的全新 Apple 芯片 Mac 用户账户中安装 DMG，并通过正常双击启动。不能使用右键绕过、删除隔离属性或执行 `xattr` 的方式通过测试。只有 Gatekeeper 正常接受应用，才算满足公开发布门槛。
 
-Generate checksums only after signing, notarization, and stapling are complete:
+签名、公证和 Stapling 全部完成后，再生成最终校验值：
 
 ```bash
 shasum -a 256 \
@@ -110,10 +122,20 @@ shasum -a 256 \
   desktop/dist/Meldwork-0.1.0-arm64.zip
 ```
 
-## 7. Common Failures
+发布到 GitHub Release 的 DMG、ZIP 和 `SHA256SUMS.txt` 必须来自同一个干净的 Git 标签和同一次正式构建。
 
-- `CSSMERR_TP_NOT_TRUSTED`: the certificate chain is invalid, expired, missing its private key, or not trusted in the active Keychain.
-- `no identity found`: the Developer ID certificate is not installed or electron-builder cannot access its Keychain.
-- Notarization rejects the binary: inspect the `notarytool` log for unsigned nested code, missing hardened runtime, invalid entitlements, or bundled executable content.
-- `spctl` rejects an otherwise signed app: notarization or stapling is missing, the ticket is invalid, or the tested app differs from the submitted artifact.
-- A signed release opens with a fresh data directory: the Bundle ID or product identity changed after the preview; stop and define an explicit migration before publishing.
+## 7. 常见错误
+
+- `CSSMERR_TP_NOT_TRUSTED`：证书链无效、证书已过期、缺少对应私钥，或者证书在当前钥匙串中不受信任。
+- `no identity found`：没有安装有效的 Developer ID 证书，或者 electron-builder 无法访问证书所在的钥匙串。
+- 公证拒绝二进制文件：使用 `notarytool` 查看详细日志，重点检查未签名的嵌套可执行文件、缺失 Hardened Runtime、无效 Entitlements 或额外打包的可执行内容。
+- `spctl` 拒绝已经签名的应用：通常是没有完成公证或 Stapling、公证票据无效，或者本地验证的应用并不是提交给 Apple 的同一份产物。
+- 签名版本启动后出现全新数据目录：Bundle ID 或产品身份可能在内测后发生了变化。应停止发布并先设计明确的数据迁移方案。
+
+## 8. 当前项目状态
+
+- Bundle ID 已固定为 `com.rydersun.meldwork`。
+- `dist:public` 已配置为缺少正式签名或公证凭据时安全失败。
+- 当前 Mac 上没有有效的 `Developer ID Application` 证书。
+- 当前检测到的 `www.dingtalkcs.com` 身份无效且与 Meldwork 无关，不能用于发布，也不应由项目脚本自动删除。
+- 在完成 Apple Developer Program 申请、证书安装和公证凭据配置之前，只能生成供本地验证使用的临时签名包。
