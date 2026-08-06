@@ -11,6 +11,7 @@
 - Completed Agent, Knowledge, mock Cloud, and Channel framework contracts while keeping production Cloud and Channel connectors disabled by default.
 - Changed the Community Edition license from PolyForm Noncommercial 1.0.0 to AGPL-3.0-only, with separate commercial licensing available for proprietary use cases.
 - Set the permanent macOS Bundle ID to `com.rydersun.meldwork` before the first public release.
+- Upgraded Electron from 39.8.5 to 39.8.10 and refreshed vulnerable development-only transitive dependencies; complete frontend and desktop dependency audits now report zero known vulnerabilities.
 
 ### Verification
 
