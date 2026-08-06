@@ -1,6 +1,6 @@
 # Security Policy
 
-Meldwork is a local-first desktop application that invokes local Agent CLIs, stores local conversations, imports image attachments, and manages Provider credentials through the Electron main process.
+Meldwork is a local-first desktop application that invokes local Agent CLIs, stores local conversations, imports validated image, media, document, code, and archive attachments, and manages Provider credentials through the Electron main process.
 
 ## Reporting
 

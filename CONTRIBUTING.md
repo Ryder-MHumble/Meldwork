@@ -1,8 +1,8 @@
 # Contributing
 
-Meldwork is currently a source-available, non-commercial project. Contributions are welcome when they improve the local-first desktop product, documentation, tests, or security posture.
+Meldwork Community Edition is open source under the [GNU Affero General Public License v3.0 only](LICENSE). Contributions are welcome when they improve the local-first desktop product, documentation, tests, or security posture.
 
-By submitting a contribution, you agree that your contribution is licensed under the same license as this repository unless a separate written agreement says otherwise.
+Unless a separate written agreement applies, a contribution accepted into this repository is available under AGPL-3.0-only. The project may also offer separately licensed commercial editions. Before external code is incorporated into a separately licensed commercial build, the maintainer will require a reviewed contributor-license agreement that grants the necessary relicensing rights. Opening a pull request by itself does not transfer copyright or silently grant those additional rights.
 
 ## Ground Rules
 
@@ -11,7 +11,8 @@ By submitting a contribution, you agree that your contribution is licensed under
 - Do not add remote services, telemetry, credential collection, or server dependencies without explicit project approval.
 - Preserve the local-first boundary: renderer code must not gain unrestricted filesystem, shell, Provider credential, or executable-path access.
 - Include focused tests for behavior, security boundary, storage, or IPC changes.
+- Confirm that all submitted code and assets are yours to license and do not introduce incompatible license obligations.
 
-## Commercial Rights
+## Commercial Editions
 
-Submitting a contribution does not grant commercial-use rights to this repository. Commercial use requires a separate written agreement; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md).
+The AGPL Community Edition remains available under its open-source terms. Commercial editions, proprietary integrations, support, and other paid offerings may use separate terms; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md).

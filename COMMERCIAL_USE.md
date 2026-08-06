@@ -1,16 +1,16 @@
-# Commercial Use Policy
+# Commercial Use And Licensing
 
-Meldwork is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is not licensed under Apache 2.0, because Apache 2.0 permits commercial use.
+Meldwork Community Edition is open source under the [GNU Affero General Public License v3.0 only](LICENSE). The AGPL permits commercial use. You do not need a separate commercial license merely to use an unmodified copy, including inside a company, as long as your use complies with the AGPL.
 
-You may use, study, modify, and share Meldwork only for purposes permitted by the PolyForm Noncommercial license. Commercial use requires a separate written agreement from the copyright holder.
+The AGPL also permits modification and redistribution, but it requires covered source code to remain available in circumstances defined by the license, including distribution of modified versions and remote network interaction with a modified version.
 
-Examples that require prior written permission include:
+The copyright holder may offer a separate commercial license for organizations that need terms outside the AGPL, including:
 
-- using Meldwork in a for-profit company's internal workflow, commercial evaluation, or client delivery;
-- offering Meldwork as a paid product, hosted service, consulting service, integration, training, or managed deployment;
-- redistributing Meldwork as part of a commercial product, bundle, or appliance;
-- using Meldwork branding, product assets, or documentation in commercial marketing.
+- proprietary redistribution or resale of Meldwork or a modified version;
+- embedding Meldwork code in a closed-source product;
+- offering a modified hosted or network-accessible version without the AGPL source obligations;
+- separately licensed commercial features, enterprise integrations, support, or managed deployment.
 
-This page is a practical summary and does not replace or modify the license terms. When the classification of a use is unclear, obtain written permission before using Meldwork in a commercial context.
+A commercial license does not change the licenses of third-party dependencies, Agent products, names, or logos. The AGPL also does not grant trademark rights to the Meldwork name, logo, or other brand assets.
 
-For commercial licensing, contact the repository owner through GitHub.
+This page is a practical summary and does not replace the license text or legal advice. When a planned use does not fit the AGPL, contact the repository owner through GitHub before distributing or offering the product.

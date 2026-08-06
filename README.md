@@ -8,13 +8,13 @@
 
 # AI agents are interchangeable. Your work should not be.
 
-**Meldwork is a local-first desktop workspace where one task can move between direct Agent conversations, multi-Agent working groups, and independent review without losing its context or execution history.**
+**Meldwork is a local-first desktop workspace for persistent direct Agent conversations and bounded multi-Agent review. Each conversation keeps its own context, permissions, attachments, compatible native sessions, and sanitized execution history on your computer.**
 
 Start with one Agent. Bring in others when the work needs a different capability, a second opinion, or an adversarial review. Meldwork keeps the conversation, participants, permissions, outputs, and sanitized run evidence together on your computer.
 
 <p align="center">
   <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>Download the private macOS preview</strong></a>
-  · <a href="LICENSE">Noncommercial license</a>
+  · <a href="LICENSE">AGPL-3.0 license</a>
   · <a href="COMMERCIAL_USE.md">Commercial use</a>
 </p>
 
@@ -27,13 +27,24 @@ The current private preview is built for Apple silicon Macs.
 3. Drag Meldwork into Applications and open it.
 4. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
 
-The private preview is ad-hoc signed and not yet Apple-notarized. A public distribution build will require Developer ID signing and notarization.
+The private preview is ad-hoc signed and not yet Apple-notarized. A public distribution build will require Developer ID signing and notarization; see [the macOS signing guide](docs/macos-signing.md).
+
+## Start with one repeatable workflow
+
+The public MVP is built around one workflow: produce a deliverable, have a second Agent challenge it, and let the human decide what to keep.
+
+1. Create a group with two locally ready Agents.
+2. Attach only the files needed for the task and keep workspace write access off unless the task requires it.
+3. Ask one Agent to produce the deliverable and the other to check assumptions, omissions, and evidence in a bounded discussion.
+4. Inspect the final replies and sanitized run trace before accepting, revising, or discarding the result.
+
+Other domains are examples, not separate MVP promises. The release is successful when this two-Agent review loop works predictably on a clean Apple silicon Mac.
 
 ## One place to see the work
 
 ![Meldwork workspace overview](docs/assets/meldwork-workspace-overview.png)
 
-Direct conversations and working groups live in the same desktop workspace. A task can begin as a focused conversation and become a group review without turning into a trail of disconnected windows.
+Direct conversations and working groups live in the same desktop workspace. Start directly when one Agent is enough; create a group when the task needs an independent check. Meldwork does not currently merge separate conversation histories automatically, so attach or restate the context the group must share.
 
 ## From a first answer to a reviewed decision
 
@@ -65,7 +76,7 @@ The goal is not to maximize Agent count. It is to use the right Agent at the rig
 - Compatible native-session continuity for each conversation and Agent.
 - Sanitized run traces, completion state, and compact evidence capsules.
 - Agent-specific Provider profiles and operating-system-backed credential storage where supported.
-- Skills, images, approved knowledge sources, and opt-in workspace access.
+- Skills, validated images, media, documents, code, archives, approved knowledge sources, and opt-in workspace access.
 - Local conversation and orchestration state with no Meldwork cloud account or remote conversation store.
 
 Model requests still follow the Agent and Provider you choose. Local-first describes Meldwork's workspace and orchestration state; it does not make third-party models offline.
@@ -80,7 +91,7 @@ Each Agent keeps its own capabilities, provider configuration, permission model,
 
 ## Private MVP status
 
-This repository and its Releases are currently private while the MVP is being completed. The macOS Apple silicon client is the only release-validated target in this preview. Windows, Intel Mac, Apple notarization, and broad third-party Agent certification are not yet claimed.
+This repository and its Releases are currently private while the public MVP release gates are completed. The macOS Apple silicon client is the only release-validated target in this preview. Windows, Intel Mac, Apple notarization, and broad third-party Agent certification are not yet claimed. The remaining release gates are tracked in [the public MVP checklist](docs/public-mvp-release.md).
 
 <details>
 <summary><strong>Build from source for development</strong></summary>
@@ -99,6 +110,6 @@ Verification commands are documented in [docs/tests.md](docs/tests.md).
 
 ## License
 
-Meldwork is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). It is not Apache-2.0 licensed: Apache 2.0 permits commercial use, while this project currently does not.
+Meldwork Community Edition is open source under the [GNU Affero General Public License v3.0 only](LICENSE). The AGPL permits commercial use, modification, and redistribution while requiring covered source to remain available when modified versions are distributed or offered over a network.
 
-Noncommercial use is permitted only under the license terms. Commercial use requires a separate written agreement; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md). Third-party attribution is recorded in [NOTICE](NOTICE).
+Organizations that need proprietary redistribution, closed-source embedding, or a separately licensed commercial edition can request a commercial license; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md). Third-party attribution is recorded in [NOTICE](NOTICE).

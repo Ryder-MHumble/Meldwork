@@ -20,7 +20,7 @@ The supported product surface is the packaged Electron application. The frontend
 | Human Gate store | Persists permission, budget, and decision requests and their terminal user/system decisions without exposing raw request payloads to the renderer | `desktop/src/human-gate-store.cjs`, `desktop/src/human-gate-coordinator.cjs` |
 | Scheduling and failure policy | Enforces run budgets, retry policy, per-Agent controls, and global/workspace scheduling | `desktop/src/run-scheduler.cjs`, `desktop/src/failure-policy.cjs` |
 | Agent Connector registry/runtime | Validates approved manifests and instances, separates CredentialRefs, records Connector/upstream versions, and reduces versioned idempotent Run Events | `desktop/src/agent-connector-manifest.cjs`, `desktop/src/agent-connector-registry.cjs`, `desktop/src/agent-connector-runtime.cjs` |
-| Attachment store | Imports validated local images into private app-owned storage, verifies metadata/checksums on read, and removes unreferenced entries | `desktop/src/attachment-store.cjs`, `desktop/src/image-dimensions.cjs` |
+| Attachment store | Imports validated local images, media, documents, code/configuration files, Office files, and archives into private app-owned storage, verifies metadata/checksums on read, and removes unreferenced entries | `desktop/src/attachment-store.cjs`, `desktop/src/image-dimensions.cjs` |
 | Local Skill catalog | Scans bounded known roots per Agent and returns sanitized Skill coordinates without exposing paths or contents | `desktop/src/local-skill-catalog.cjs` |
 | Local knowledge-source catalog | Detects and probes code-defined Feishu, DingTalk, and Obsidian access modes, returns sanitized readiness, validates task selections, and exposes reference-only future sources | `desktop/src/local-knowledge-base.cjs` |
 | Knowledge Connector runtime | Executes main-owned bounded search/fetch/snapshot/citation operations for explicit source selections; the renderer receives only sanitized discovery and selection records | `desktop/src/local-knowledge-connectors.cjs`, `desktop/src/knowledge-connector-filesystem.cjs` |
@@ -49,7 +49,7 @@ The supported product surface is the packaged Electron application. The frontend
 | Bounded run checkpoints | Electron user data: `roundrelay-run-ledger.json` | Atomic private writes; `0600` file, with new parent directories created as `0700`; at most 64 sanitized runs with bounded Agent output/events/source IDs; no raw commands, paths, credentials, or native session references |
 | Immutable Context Packs, delivery records, content blobs, typed outcomes, and Human Gates | Electron user data under `roundrelay-private/` | Content-addressed or atomically written main-only records; renderer snapshots expose only bounded IDs, provenance summaries, budgets, and pending Gate choices |
 | Cloud operations and Channel Inbox | Electron user data under `roundrelay-private/` | Private `0600` stores keep opaque remote references, idempotency state, signed-event-derived Task data, delivery cursors, Task mappings, and outbound audit records; raw signatures, headers, credentials, and complete IM history are not exposed to the renderer |
-| Imported image attachments | Electron user data under `attachments/` | App-owned copy; `0700` directories, `0600` files, magic/MIME/size/dimension validation, metadata checksum, ID-only renderer access |
+| Imported attachments | Electron user data under `attachments/` | App-owned copy; `0700` directories, `0600` files, type/MIME/size validation, image-dimension checks where applicable, metadata checksum, ID-only renderer access |
 | Provider metadata and encrypted key | Electron user data: `roundrelay-provider.json` | API key encrypted with `safeStorage`; file written atomically with mode `0600` |
 | Knowledge-source preference | Electron user data: `roundrelay-knowledge-base.json` | Stores the selected absolute Obsidian Vault path only; written atomically as a private file |
 | Managed OpenClaw state/config | Electron user data under `openclaw-managed/` | Per-scope directories, mode `0700`; config mode `0600`; API key passed by child environment |
@@ -62,7 +62,7 @@ There is no Meldwork-hosted remote data store or application account namespace. 
 ## Network Surface
 
 - Agent CLIs may call their own configured model providers.
-- Selected images and Skill-influenced prompts may be sent by an Agent CLI to its configured model provider after local validation.
+- Selected attachments and Skill-influenced prompts may be sent by an Agent CLI to its configured model provider after local validation and capability checks.
 - Compatible Agents may receive the user-configured Provider URL/model/key from main.
 - Feishu and DingTalk readiness probes may invoke their configured local CLIs; a selected Agent may then use those CLI connections with read-only instructions.
 - An explicit Obsidian selection is searched and fetched through the main-owned read-only filesystem Connector, then captured as an immutable snapshot or explicit live reference before Agent invocation.
@@ -101,3 +101,5 @@ There is no Meldwork-hosted remote data store or application account namespace. 
 - [Variables And Secrets](variables.md)
 - [Test Coverage](tests.md)
 - [Automation](automation.md)
+- [Public MVP Release Checklist](public-mvp-release.md)
+- [macOS Signing And Notarization](macos-signing.md)

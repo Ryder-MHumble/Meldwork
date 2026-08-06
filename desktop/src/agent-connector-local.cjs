@@ -39,7 +39,7 @@ const SAMPLE_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest({
   },
   outboundDestinations: [],
   credentials: { mode: 'none', slots: [] },
-  license: 'PolyForm-Noncommercial-1.0.0',
+  license: 'AGPL-3.0-only',
 })
 const SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest({
   connectorId: 'external.codex-provider-sample',
@@ -72,7 +72,7 @@ const SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest(
     mode: 'credential-ref',
     slots: [{ slotId: 'openai-api-key', type: 'api-key', required: true }],
   },
-  license: 'PolyForm-Noncommercial-1.0.0',
+  license: 'AGPL-3.0-only',
 })
 const APPROVED_AGENT_CONNECTOR_MANIFESTS = Object.freeze([
   SAMPLE_AGENT_CONNECTOR_MANIFEST,

@@ -1,48 +1,48 @@
 # Meldwork Launch Kit
 
-This document contains draft public-relations and repository-launch copy for the current MVP. `Meldwork` still requires trademark, domain, and user-understanding checks. Publish only copy that matches the repository's non-commercial license and policy docs.
+This document contains draft public-relations and repository-launch copy for the current MVP. `Meldwork` still requires trademark, domain, and user-understanding checks. Publish only copy that matches the repository's AGPL Community Edition and commercial-license policy docs.
 
 ## Positioning
 
-**Current MVP category:** Local-first desktop workspace for supported general-purpose Agent CLIs
+**Current MVP category:** Local-first desktop workspace for a bounded two-Agent produce-and-review loop
 
 **Current product line:** Agents change. Work continues.
 
 **Chinese:** Agent 可切换，工作不断线。
 
-**Current one sentence:** Meldwork brings supported local Agent CLIs and explicitly selected knowledge sources into one persistent workspace, so conversations, compatible native sessions, and task context can continue when work moves between Agents.
+**Current one sentence:** Meldwork lets two supported local Agents produce and challenge one deliverable in a persistent local workspace, with explicit context, permissions, and reviewable execution state.
 
-**Chinese:** Meldwork 把已支持的本地 Agent CLI 和用户明确选择的知识来源带进一个持续工作空间，让工作在不同 Agent 之间流转时，对话、兼容条件下的原生 Session 和任务上下文仍然保留。
+**Chinese:** Meldwork 让两个已支持的本地 Agent 在同一个持续存在的本地工作空间里产出并复核一份交付物，同时保留明确的上下文、权限和可复盘运行状态。
 
 **Target product category:** An open, local-first work system for compatible Agents and knowledge sources across vendors.
 
 **Target architecture line:** Agents and knowledge sources should join through explicit capabilities, permissions, events, and egress declarations.
 
-The target category and architecture line describe product direction. The current MVP still uses a fixed set of local CLI adapters.
+The target category and architecture line describe product direction. The current MVP still uses a fixed set of local CLI adapters and does not automatically merge separate direct and group conversation histories.
 
 ## Launch headline
 
 Introducing Meldwork: a persistent workspace for the Agents you already use
 
-After a license and public connector contract are added, use:
+After the public connector contract is added, use:
 
 Introducing Meldwork: an open, local-first workspace for Agents and knowledge
 
 ## Short announcement
 
-Meldwork is a local-first desktop workspace for general-purpose AI agents. The current MVP discovers supported local Agent CLIs, keeps direct and group conversations persistent, resumes compatible native sessions, runs bounded discussions, and lets users explicitly select ready Feishu, DingTalk, or Obsidian knowledge sources. It is not a coding-only Agent aggregator or a knowledge-base engine: coding, research, planning, creation, operations, and review share one cross-Agent workspace, while source access and Provider traffic still follow the selected local tools and Agent configuration.
+Meldwork is a local-first desktop workspace for a bounded two-Agent review loop. The current MVP discovers supported local Agent CLIs, keeps direct and group conversations persistent, resumes compatible native sessions, accepts validated task files, and records sanitized execution state. Its first public workflow is simple: one Agent produces a deliverable, a second challenges assumptions and evidence, and the human decides what to adopt. Other domains and future Connector capabilities remain examples or roadmap items.
 
 ## Chinese announcement
 
-Meldwork 是面向通用 AI Agent 的本地优先桌面工作空间。当前 MVP 可以发现已支持的本地 Agent CLI、持久保存直接与群组会话、在兼容条件下恢复原生 Session、运行有界讨论，并让用户显式选择已就绪的飞书、钉钉或 Obsidian 知识来源。它既不是 Coding Agent 聚合器，也不是知识库引擎：开发、研究、规划、创作、运营和审查共享同一个跨 Agent 工作空间，知识访问和 Provider 流量仍遵循所选本地工具与 Agent 配置。
+Meldwork 是面向双 Agent 有界复核的本地优先桌面工作空间。当前 MVP 可以发现已支持的本地 Agent CLI、持久保存单聊与群组会话、在兼容条件下恢复原生 Session、接收经过验证的任务文件，并记录脱敏运行状态。公开首发只承诺一个闭环：一个 Agent 形成交付物，第二个检查假设与证据，最后由人决定是否采用。其他业务领域和未来 Connector 能力仍属于示例或路线图。
 
 ## Story structure
 
 1. People and teams increasingly use several capable Agents and many knowledge sources, but their context, sessions, permissions, and outputs remain fragmented.
 2. Meldwork gives supported local Agents and explicitly selected knowledge sources one persistent workspace without asking users to replace their Agent, Provider, or content platform relationships.
-3. The current MVP demo should show discovery, persistent conversations, compatible session continuity, Agent-specific capabilities, and bounded collaboration only where verified.
-4. The next architecture milestone is a public Agent and Knowledge Connector contract with capability, permission, event, and egress manifests.
-5. The next product milestone is an explicit Context Pack -> Task -> Run -> Artifact -> Evidence -> Human decision loop.
+3. The current MVP demo should show one clean-profile two-Agent produce-and-review task from Agent readiness through human review.
+4. Connector contracts, Cloud transport, and Channel ingress are platform capabilities, not required public-MVP demo claims until a production implementation is configured.
+5. Task, Context Pack, Run, Artifact, Evidence, and human Adoption records support durability and review, but the launch story should stay focused on the user-visible produce-and-review loop.
 6. The product difference must come from continuity, open connection, evidence, acceptance, and explicit permission boundaries, not from displaying more Agent avatars.
 7. Local-first does not mean every model is offline; selected Providers may still use the network.
 

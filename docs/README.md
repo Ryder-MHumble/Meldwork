@@ -17,6 +17,8 @@ Meldwork 是一个本地优先的 Agent 工作系统。当前仓库是一个 Ele
 
 - [品牌策略](brand-strategy.md)：工作名、阶段化 Slogan、Logo 和传播边界。
 - [发布与 PR 素材](launch-kit.md)：README、发布帖和演示口径。
+- [公开 MVP 发布清单](public-mvp-release.md)：首发范围、阻断项、验证和仓库公开步骤。
+- [macOS 签名与公证](macos-signing.md)：Apple Developer 申请、证书、electron-builder 配置和验收。
 - [架构](architecture.md)：Electron、Renderer、Main、Connector 边界。
 - [流程](flows.md)：工作流与状态流转。
 - [权限边界](permissions.md)：本地执行、Provider、Installer 和写入权限。

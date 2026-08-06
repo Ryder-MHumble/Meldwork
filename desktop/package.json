@@ -4,14 +4,15 @@
   "private": true,
   "description": "A local-first desktop workspace for multi-Agent collaboration",
   "author": "Ryder-MHumble",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "AGPL-3.0-only",
   "main": "src/main.cjs",
   "scripts": {
     "build:frontend": "npm --prefix ../frontend run build:desktop",
     "dev": "npm run build:frontend && electron .",
     "test": "node --test test/*.test.cjs",
     "pack": "npm run build:frontend && electron-builder --dir",
-    "dist": "npm run build:frontend && electron-builder --mac dmg zip"
+    "dist": "npm run build:frontend && electron-builder --mac dmg zip",
+    "dist:public": "node scripts/public-release-preflight.cjs && npm run build:frontend && electron-builder --config electron-builder.public.cjs --mac dmg zip"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "0.23.0",
@@ -23,7 +24,7 @@
     "electron-builder": "26.15.3"
   },
   "build": {
-    "appId": "com.roundrelay.desktop",
+    "appId": "com.rydersun.meldwork",
     "productName": "Meldwork",
     "artifactName": "Meldwork-${version}-${arch}.${ext}",
     "afterPack": "scripts/after-pack.cjs",
@@ -33,6 +34,20 @@
       {
         "from": "../frontend/dist",
         "to": "frontend"
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "../LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "../NOTICE",
+        "to": "NOTICE"
+      },
+      {
+        "from": "../COMMERCIAL_USE.md",
+        "to": "COMMERCIAL_USE.md"
       }
     ],
     "mac": {

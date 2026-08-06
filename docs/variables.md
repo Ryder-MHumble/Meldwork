@@ -50,6 +50,22 @@ Main derives these at invocation time; users should not set them as Meldwork con
 
 The API key is intentionally absent from generated OpenClaw JSON and supplied only through the child environment.
 
+## Release Signing And Notarization
+
+These variables are used only by `npm --prefix desktop run dist:public`. They must come from the local Keychain or the release system's encrypted secret store and must never reach the renderer or packaged application.
+
+| Name | Used by | Source and scope | Persistence / rotation | Risk and handling |
+| --- | --- | --- | --- | --- |
+| `CSC_LINK` | electron-builder signing | Encrypted CI secret containing or pointing to the Developer ID `.p12` | Replace when the certificate is renewed or revoked | Secret certificate material; must be paired with `CSC_KEY_PASSWORD` |
+| `CSC_KEY_PASSWORD` | electron-builder signing | Encrypted CI secret | Rotate with the exported `.p12` | Secret; never print or store in repository files |
+| `CSC_NAME` | Local Keychain signing | Optional local identity selector | Update when the certificate identity changes | Non-secret name, but `dist:public` accepts only a Developer ID Application identity |
+| `APPLE_API_KEY` | Apple notarization | Path to the private App Store Connect `.p8` key | Revoke and replace in App Store Connect | Secret file; `*.p8` is ignored by Git |
+| `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | Apple notarization | App Store Connect identifiers stored with release secrets | Replace when the API key changes | Treat as release metadata and keep out of renderer state |
+| `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` | Alternative Apple notarization | Encrypted release secrets | Rotate the app-specific password and update Team membership as needed | The app-specific password is secret; the normal Apple ID password must never be used |
+| `APPLE_KEYCHAIN_PROFILE`, `APPLE_KEYCHAIN` | Local `notarytool` profile | Local Keychain profile name and optional Keychain path | Recreate when Apple credentials rotate | References only; underlying credentials remain in Keychain |
+
+The public-release preflight requires one complete signing source and one complete notarization strategy. Partial credential groups fail before packaging, and the post-sign hook rejects ad-hoc or mismatched identities.
+
 ## Non-Secret System Environment
 
 Agent children receive an allowlist of operating-system identity/path/locale/temp/certificate variables plus a constructed `PATH`. Meldwork does not forward the entire Electron environment.
@@ -61,4 +77,6 @@ Agent children receive an allowlist of operating-system identity/path/locale/tem
 - Confirm Provider status never returns the API key and credential files remain mode `0600`.
 - Confirm child-process environment tests cover newly supported Agents or variables.
 - Confirm installer logs/state never expose command output or ambient secrets.
+- Confirm `dist:public` passes with the intended Developer ID and fails when signing or notarization credentials are removed.
+- Confirm no `.p8`, `.p12`, certificate password, or notarization profile is present in Git history or release archives.
 - Rotate any credential used during guarded live testing before distributing artifacts.
