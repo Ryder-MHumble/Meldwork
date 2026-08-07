@@ -446,6 +446,11 @@
   background: var(--surface-active);
 }
 
+.direct-session-row.active .direct-session-open {
+  color: var(--text);
+  font-weight: 600;
+}
+
 .direct-session-row.active::after {
   content: "";
   position: absolute;

@@ -1,5 +1,9 @@
 import { ref } from 'vue'
-import { isLiveDirectTrace, messageTraceKey } from '../conversationTimelineModel.js'
+import {
+  isLiveDirectTrace,
+  messageTraceKey,
+  responseVersionRootId,
+} from '../conversationTimelineModel.js'
 
 const DISMISSIBLE_PLAN_WARNING = 'error: Cannot combine --prompt with --plan.'
 
@@ -7,6 +11,7 @@ export function useConversationTimelineUiState() {
   const directTraceDisclosure = ref(new Map())
   const dismissedSystemMessageIds = ref(new Set())
   const finishedDirectGroupIds = ref(new Set())
+  const collapsedAgentReplyIds = ref(new Set())
 
   function directTraceDisclosureKey(message) {
     const key = messageTraceKey(message)
@@ -16,14 +21,14 @@ export function useConversationTimelineUiState() {
   function isDirectTraceOpen(message) {
     const key = directTraceDisclosureKey(message)
     if (directTraceDisclosure.value.has(key)) return directTraceDisclosure.value.get(key)
-    return isLiveDirectTrace(message)
+    return false
   }
 
   function syncDirectTraceDisclosure(message, event) {
     const key = directTraceDisclosureKey(message)
     if (!key) return
     const open = event?.target?.open === true
-    const defaultOpen = isLiveDirectTrace(message)
+    const defaultOpen = false
     const next = new Map(directTraceDisclosure.value)
     if (open === defaultOpen) next.delete(key)
     else next.set(key, open)
@@ -52,13 +57,29 @@ export function useConversationTimelineUiState() {
     finishedDirectGroupIds.value = next
   }
 
+  function isAgentReplyExpanded(message) {
+    const key = responseVersionRootId(message)
+    return !key || !collapsedAgentReplyIds.value.has(key)
+  }
+
+  function toggleAgentReply(message) {
+    const key = responseVersionRootId(message)
+    if (!key) return
+    const next = new Set(collapsedAgentReplyIds.value)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    collapsedAgentReplyIds.value = next
+  }
+
   return {
     dismissedSystemMessageIds,
     dismissSystemMessage,
     hasFinishedDirectRun,
+    isAgentReplyExpanded,
     isDirectTraceOpen,
     isDismissibleSystemWarning,
     setFinishedDirectRun,
     syncDirectTraceDisclosure,
+    toggleAgentReply,
   }
 }

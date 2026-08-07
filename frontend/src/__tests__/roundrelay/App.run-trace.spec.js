@@ -108,8 +108,7 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
     expect(wrapper.get('.trace-panel-header strong').text()).toBe('Hermes')
-    expect(wrapper.get('.trace-agent-tab.active strong').text()).toBe('Hermes')
-    expect(wrapper.get('.trace-agent-tab.active').attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('.trace-agent-selector .trace-select-trigger strong').text()).toBe('Hermes')
     expect(wrapper.get('.trace-conclusion').text()).toContain('Hermes conclusion')
     expect(wrapper.get('.trace-event-list').text()).toContain('Tool result')
     expect(document.body.classList.contains('trace-drawer-open')).toBe(true)
@@ -117,6 +116,47 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
     expect(document.body.classList.contains('trace-drawer-open')).toBe(false)
     expect(removeMediaListener).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens Run details when a direct Agent reply body is clicked', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-trace-click',
+        conversationType: 'direct',
+        directAgentKind: 'hermes',
+        name: 'Hermes trace',
+        topic: '',
+        agentKinds: ['hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:02:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'direct-trace-root', groupId: 'direct-trace-click', role: 'user',
+          content: 'Generate a preview', createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'direct-trace-reply', groupId: 'direct-trace-click', role: 'agent', agentKind: 'hermes',
+          content: 'Hermes generated the preview.', createdAt: '2026-07-29T08:02:00Z',
+          trace: {
+            runId: 'direct-trace-run', agentRunId: 'direct-trace-agent-run', round: 0,
+            status: 'completed', summary: 'Generated media',
+            events: [{ seq: 1, type: 'tool_result_summary', status: 'completed', title: 'video_generation' }],
+          },
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('.message-row.agent .message-trace-surface').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Hermes generated the preview.')
+    expect(wrapper.get('.trace-event-list').text()).toContain('video_generation')
+    expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
+    wrapper.unmount()
   })
 
   it('renders group Gates, budget state, and per-Agent runtime controls in the trace panel', async () => {
@@ -370,7 +410,8 @@ describe('RoundRelay workbench', () => {
     await currentClaudeMessage.get('.message-trace-button').trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text()))
+    await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
+    expect(wrapper.findAll('.trace-agent-selector .trace-select-option strong').map(item => item.text()))
       .toEqual(['Claude Code', 'Hermes'])
     expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
@@ -401,7 +442,8 @@ describe('RoundRelay workbench', () => {
     await activeClaudeRow.trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text()))
+    await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
+    expect(wrapper.findAll('.trace-agent-selector .trace-select-option strong').map(item => item.text()))
       .toEqual(['OpenClaw', 'Claude Code'])
     expect(wrapper.get('.trace-conclusion').text()).toContain('Active Claude work')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude answer')
@@ -480,7 +522,8 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.trace-event-section .trace-empty-state').text())
       .toBe('No detailed events were retained.')
-    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 4 / Completed')
+    expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
+      .toBe('Round 4 / Completed')
     expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages injected for this attempt')
     expect(wrapper.get('.trace-context-stats').text()).toContain('2 messages compacted')
     expect(wrapper.get('.trace-context-stats').text()).toContain('480 context characters')
@@ -857,7 +900,8 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-conclusion').text()).toContain('durable output')
     expect(wrapper.get('.trace-event-list').text()).toContain('live reasoning')
     expect(wrapper.get('.trace-event-list').text()).toContain('Bash')
-    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 1 / Completed')
+    expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
+      .toBe('Round 1 / Completed')
 
     state.runs = []
     state.runningGroupIds = []
@@ -872,7 +916,8 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(wrapper.get('.trace-event-list').text()).not.toContain('live reasoning')
-    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Round 1 / Completed')
+    expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
+      .toBe('Round 1 / Completed')
     const durableEventDetails = wrapper.get('.trace-event-list details')
     durableEventDetails.element.open = true
     await durableEventDetails.trigger('toggle')
@@ -962,14 +1007,14 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.find('.run-status-panel').exists()).toBe(false)
     expect(wrapper.findAll('.message-trace-button')).toHaveLength(2)
     expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
-    await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button').trigger('click')
+    await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface').trigger('click')
     await flushPromises()
     expect(wrapper.get('.run-trace-panel').text()).toContain('Codex retained conclusion')
     expect(wrapper.get('.trace-event-list').text()).toContain('Read 12 files')
     wrapper.unmount()
   })
 
-  it('groups trace tabs by Agent and selects individual rounds', async () => {
+  it('selects Agents and rounds from themed dropdown menus', async () => {
     const wrapper = mount(RunTracePanel, {
       props: {
         open: true,
@@ -1003,25 +1048,70 @@ describe('RoundRelay workbench', () => {
       },
     })
 
-    expect(wrapper.findAll('.trace-agent-tab strong').map(item => item.text())).toEqual(['Codex', 'Hermes'])
-    expect(wrapper.findAll('.trace-agent-tab')).toHaveLength(2)
+    expect(wrapper.get('.trace-agent-selector .trace-select-trigger strong').text()).toBe('Codex')
+    await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
+    expect(wrapper.findAll('.trace-agent-selector .trace-select-option strong').map(item => item.text()))
+      .toEqual(['Codex', 'Hermes'])
     const roundSelector = wrapper.get('.trace-round-selector')
-    expect(roundSelector.get('span').text()).toBe('Round')
-    expect(roundSelector.findAll('option').map(option => option.text()))
-      .toEqual(['Round 1 / Completed', 'Round 2 / Partially completed'])
+    expect(roundSelector.get('.trace-select-label').text()).toBe('Round')
+    await roundSelector.get('.trace-select-trigger').trigger('click')
+    expect(roundSelector.findAll('.trace-select-option').map(option => option.text()))
+      .toEqual(['Round 1Completed', 'Round 2Partially completed'])
 
-    await roundSelector.get('select').setValue('run-multi-round:2:codex')
+    await roundSelector.findAll('.trace-select-option')[1].trigger('click')
     expect(wrapper.emitted('select').at(-1)).toEqual(['run-multi-round:2:codex'])
     await wrapper.setProps({ selectedAgentRunId: 'run-multi-round:2:codex' })
     expect(wrapper.get('.trace-panel-summary-heading').text()).toContain('Round 2')
 
-    const hermesTab = wrapper.findAll('.trace-agent-tab').find(tab => tab.text().includes('Hermes'))
-    await hermesTab.trigger('click')
+    await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
+    const hermesOption = wrapper.findAll('.trace-agent-selector .trace-select-option')
+      .find(option => option.text().includes('Hermes'))
+    await hermesOption.trigger('click')
     expect(wrapper.emitted('select').at(-1)).toEqual(['run-multi-round:1:hermes'])
 
     setLocale('zh')
     await flushPromises()
-    expect(roundSelector.get('span').text()).toBe('轮次')
+    expect(roundSelector.get('.trace-select-label').text()).toBe('轮次')
+    wrapper.unmount()
+  })
+
+  it('supports keyboard navigation and outside-click dismissal for trace dropdowns', async () => {
+    const wrapper = mount(RunTracePanel, {
+      attachTo: document.body,
+      props: {
+        open: true,
+        items: [
+          {
+            runId: 'run-keyboard', agentRunId: 'run-keyboard:1:codex', agentKind: 'codex',
+            round: 1, status: 'completed', events: [],
+          },
+          {
+            runId: 'run-keyboard', agentRunId: 'run-keyboard:1:hermes', agentKind: 'hermes',
+            round: 1, status: 'completed', events: [],
+          },
+        ],
+        selectedAgentRunId: 'run-keyboard:1:codex',
+      },
+    })
+
+    const trigger = wrapper.get('.trace-agent-selector .trace-select-trigger')
+    await trigger.trigger('click')
+    await flushPromises()
+    const options = wrapper.findAll('.trace-agent-selector .trace-select-option')
+    expect(document.activeElement).toBe(options[0].element)
+
+    await options[0].trigger('keydown', { key: 'ArrowDown' })
+    expect(document.activeElement).toBe(options[1].element)
+    await options[1].trigger('keydown', { key: 'Escape' })
+    await flushPromises()
+    expect(wrapper.find('.trace-agent-selector .trace-select-menu').exists()).toBe(false)
+    expect(document.activeElement).toBe(trigger.element)
+
+    await trigger.trigger('click')
+    await flushPromises()
+    document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }))
+    await flushPromises()
+    expect(wrapper.find('.trace-agent-selector .trace-select-menu').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -1043,7 +1133,8 @@ describe('RoundRelay workbench', () => {
       },
     })
 
-    expect(wrapper.get('.trace-agent-tab.active small').text()).toBe('Single response / Completed')
+    expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
+      .toBe('Single response / Completed')
     wrapper.unmount()
   })
 

@@ -245,6 +245,7 @@ class LocalWorkspaceConversations {
     if (role === 'agent') {
       const elapsedMs = cleanElapsedMs(metadata.elapsedMs)
       const toolCalls = cleanProgressSteps(metadata.toolCalls)
+      const responseVersionRootId = cleanText(metadata.responseVersionRootId, 100)
       const attachments = (Array.isArray(metadata.attachments) ? metadata.attachments : [])
         .slice(0, MAX_MESSAGE_ATTACHMENTS)
         .map(normalizeAttachmentMetadata)
@@ -252,6 +253,7 @@ class LocalWorkspaceConversations {
       if (elapsedMs != null) message.elapsedMs = elapsedMs
       if (toolCalls.length) message.toolCalls = toolCalls
       if (attachments.length) message.attachments = attachments
+      if (responseVersionRootId) message.responseVersionRootId = responseVersionRootId
     }
     if (role === 'agent' || (role === 'system' && agentKind)) {
       const trace = normalizeTraceCapsule(metadata.trace)

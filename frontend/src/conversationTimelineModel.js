@@ -2,6 +2,11 @@ const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
   'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
 ])
 
+export function responseVersionRootId(message) {
+  if (message?.role !== 'agent') return ''
+  return String(message.responseVersionRootId || message.id || '')
+}
+
 export function traceRound(item) {
   const directRound = Number(item?.round)
   if (Number.isInteger(directRound) && directRound >= 0) return directRound

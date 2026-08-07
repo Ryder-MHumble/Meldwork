@@ -154,6 +154,7 @@ class LocalWorkspaceAgentInvocation {
     this.completeHumanGateContinuation = options.completeHumanGateContinuation
     this.connectorRuntime = options.connectorRuntime || null
     this.attachmentSupport = options.attachmentSupport || (() => ({}))
+    this.generateMedia = typeof options.generateMedia === 'function' ? options.generateMedia : null
   }
 
   commitSessionState(mutator) {
@@ -236,6 +237,7 @@ class LocalWorkspaceAgentInvocation {
     const state = this.state()
     const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
+    const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
     const resolvedSession = reviewOnly || isolated
       ? {
@@ -252,7 +254,7 @@ class LocalWorkspaceAgentInvocation {
     let sessionRef = storedSessionRef
     let sessionMeta = normalizeSessionMeta(resolvedSession.sessionMeta)
     let sessionProvenance = resolvedSession.provenance
-    let sessionRotated = false
+    let sessionRotated = resolvedSession.sessionReset === true
     const resumedPermission = context.resumedGate?.type === 'permission'
       ? context.resumedGate
       : null
@@ -327,7 +329,9 @@ class LocalWorkspaceAgentInvocation {
             contextPackState: 'captured',
           },
         }
-      : this.packedPromptContext(group.id, transcriptAfterKind, threadRootId)
+      : this.packedPromptContext(
+          group.id, transcriptAfterKind, threadRootId, context.contextOptions || {},
+        )
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
     const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
     let deliveryContext = {
@@ -468,6 +472,7 @@ class LocalWorkspaceAgentInvocation {
     let outputBaseline = null
     let artifactOutputBaseline = null
     let stagedInputs = null
+    let generatedMedia = null
     let result
     let harnessFinished = false
     let connectorContext = {}
@@ -521,6 +526,15 @@ class LocalWorkspaceAgentInvocation {
           /* artifact output capture is best effort */
         }
       }
+      if (allowWrite && context.mediaRequest && this.generateMedia) {
+        generatedMedia = await abortableOperation(() => this.generateMedia({
+          kind,
+          request: context.mediaRequest,
+          workdir: group.workdir,
+          signal: agentController.signal,
+          onEvent: emitRuntimeEvent,
+        }), agentController.signal)
+      }
       const nativeImageLimit = Math.max(
         0,
         Math.floor(Number(this.attachmentSupport(kind)?.image) || 0),
@@ -529,6 +543,16 @@ class LocalWorkspaceAgentInvocation {
         ? null
         : stageAgentInputs(group.workdir, context.attachmentSnapshots || [], nativeImageLimit)
       const runtimeInstruction = cleanText(context.runtimeInstruction, 3000)
+      const regenerationInstruction = cleanText(context.regenerationInstruction, 3000)
+      const responseScopeInstruction = group.conversationType === 'direct'
+        ? ''
+        : [
+            'Final response scope:',
+            'Answer only the current user task labeled authoritative above.',
+            'Use earlier messages only as supporting evidence when they help answer that current task.',
+            'Do not separately mention, summarize, continue, or complete any previous user task.',
+            'Do not append an answer to an older task after the current-task conclusion.',
+          ].join('\n')
       const buildPrompt = (afterKind, contextPackage) => isolated
         ? isolated.promptOverride
         : [
@@ -537,7 +561,14 @@ class LocalWorkspaceAgentInvocation {
               context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
             ),
             stagedAgentInputPrompt(stagedInputs),
+            generatedMedia
+              ? `Meldwork generated and will attach ${generatedMedia.filename}. Confirm the delivered media briefly; do not claim a different file was created.`
+              : '',
             runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
+            regenerationInstruction
+              ? `Fresh response instruction:\n${regenerationInstruction}`
+              : '',
+            responseScopeInstruction,
           ].filter(Boolean).join('\n')
       let prompt = buildPrompt(transcriptAfterKind, packedContext)
       const recordOutboundPayload = (outbound = {}) => {
@@ -624,7 +655,9 @@ class LocalWorkspaceAgentInvocation {
         sessionTransport = ''
         transcriptAfterKind = ''
         sessionRotated = true
-        packedContext = this.packedPromptContext(group.id, '', threadRootId)
+        packedContext = this.packedPromptContext(
+          group.id, '', threadRootId, context.contextOptions || {},
+        )
         const liveHarnessRun = harness?.current(
           kind, round, harnessRun?.agentRunId || '',
         )
@@ -920,7 +953,13 @@ class LocalWorkspaceAgentInvocation {
             kind,
             threadRootId,
             null,
-            { elapsedMs: Date.now() - startedAt, toolCalls, attachments, trace },
+            {
+              elapsedMs: Date.now() - startedAt,
+              toolCalls,
+              attachments,
+              trace,
+              responseVersionRootId,
+            },
           )
       if (!reviewOnly && !isolated) {
         this.persistSessionState(key, result.sessionRef || sessionRef, completedSessionMeta(

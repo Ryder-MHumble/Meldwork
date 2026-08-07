@@ -142,12 +142,15 @@ function normalizeRun(value) {
   const runId = identifier(input.runId)
   const groupId = groupIdentifier(input.groupId)
   const threadRootId = identifier(input.threadRootId)
+  const responseVersionRootId = identifier(input.responseVersionRootId)
   if (runId) run.runId = runId
   else delete run.runId
   if (groupId) run.groupId = groupId
   else delete run.groupId
   if (threadRootId) run.threadRootId = threadRootId
   else delete run.threadRootId
+  if (responseVersionRootId) run.responseVersionRootId = responseVersionRootId
+  else delete run.responseVersionRootId
   const rawAgentRuns = Array.isArray(input.agentRuns) ? input.agentRuns : input.agents
   run.agentRuns = Array.isArray(rawAgentRuns)
     ? rawAgentRuns.slice(0, MAX_RUN_AGENTS).map(agent => normalizeRunAgent(agent, run)).filter(Boolean)
@@ -176,6 +179,11 @@ function normalizeMessage(value) {
   const input = record(value)
   if (!input) return null
   const message = { ...input }
+  const responseVersionRootId = message.role === 'agent'
+    ? identifier(input.responseVersionRootId)
+    : ''
+  if (responseVersionRootId) message.responseVersionRootId = responseVersionRootId
+  else delete message.responseVersionRootId
   const targetKinds = normalizedAgentKinds(input.targetKinds)
   const mentionedAgentKinds = normalizedAgentKinds(input.mentionedAgentKinds)
   if (targetKinds.length) message.targetKinds = targetKinds

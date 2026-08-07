@@ -951,9 +951,11 @@ describe('RoundRelay workbench', () => {
         selectedAgentRunId: 'agent-run-codex',
       },
     })
-    const buttons = wrapper.findAll('.run-trace-panel button')
-    const first = buttons[0].element
-    const last = buttons.at(-1).element
+    const focusable = [...wrapper.get('.run-trace-panel').element.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    )]
+    const first = focusable[0]
+    const last = focusable.at(-1)
 
     last.focus()
     await wrapper.get('.run-trace-panel').trigger('keydown', { key: 'Tab' })
@@ -1339,7 +1341,7 @@ describe('RoundRelay workbench', () => {
       name: 'Codex',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: false,
+      allowWrite: true,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
     }
@@ -1366,15 +1368,16 @@ describe('RoundRelay workbench', () => {
       name: 'Codex',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: false,
+      allowWrite: true,
     })
-    expect(wrapper.get('.conversation-capabilities').text()).toContain('Read only')
+    expect(wrapper.get('.conversation-capabilities').text()).toContain('Write enabled')
 
     await wrapper.get('.new-group-button').trigger('click')
     await flushPromises()
     expect(wrapper.get('.modal.medium').attributes('aria-labelledby')).toBe('modal-title')
     expect(wrapper.get('#modal-title').text()).toBe('New Agent group')
     const groupInputs = wrapper.findAll('.form-stack input:not([type="checkbox"])')
+    expect(wrapper.get('.switch-row input[type="checkbox"]').element.checked).toBe(true)
     expect(document.activeElement).toBe(wrapper.get('.modal.medium').element)
     await groupInputs[0].setValue('Local review')
     await groupInputs[1].setValue('Review the implementation')
@@ -1386,7 +1389,7 @@ describe('RoundRelay workbench', () => {
       topic: 'Review the implementation',
       agentKinds: ['codex', 'hermes'],
       workdir: '/tmp/roundrelay-workspace',
-      allowWrite: false,
+      allowWrite: true,
     }))
     expect(() => structuredClone(bridge.localWorkspace.createGroup.mock.calls.at(-1)[0])).not.toThrow()
     wrapper.unmount()
