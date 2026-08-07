@@ -9,6 +9,7 @@ const {
   normalizeFailure,
   retryDecision,
 } = require('./failure-policy.cjs')
+const { mediaGenerationRequest } = require('./media-generation-request.cjs')
 
 function authenticationFailureText(error) {
   return [
@@ -352,10 +353,12 @@ class LocalWorkspaceAutoRunner {
         let rootAttachments = preparedContext?.attachments
         let rootSkillsByKind = preparedContext?.skillHintsByKind
         let rootKnowledgeBasesByKind = preparedContext?.knowledgeBaseHintsByKind
+        let rootMediaRequest = preparedContext?.mediaRequest || null
         if (!rootAttachments || !rootSkillsByKind || !rootKnowledgeBasesByKind) {
           const rootMessage = this.state().messages.find(message => (
             message.id === threadRootId && message.groupId === group.id && message.role === 'user'
           ))
+          rootMediaRequest = mediaGenerationRequest(rootMessage?.content || '')
           rootAttachments = await this.resolveAttachments(rootMessage?.attachments || [])
           rootSkillsByKind = new Map()
           for (const kind of controller.targetKinds) {
@@ -391,6 +394,7 @@ class LocalWorkspaceAutoRunner {
             storedKnowledgeBaseHints.filter(source => source.targetKinds.includes(kind)),
           ]))
         }
+        const mediaOwnerKind = rootMediaRequest ? controller.targetKinds[0] : ''
         const attachmentRecipients = new Set()
         let consensusReached = false
         let terminalFailureOccurred = false
@@ -430,6 +434,10 @@ class LocalWorkspaceAutoRunner {
                   skillHints: rootSkillsByKind.get(executionKind) || [],
                   knowledgeBaseHints: rootKnowledgeBasesByKind.get(executionKind) || [],
                   runtimeInstruction: replacementInstructions.get(executionKind) || '',
+                  mediaRequest: executionKind === mediaOwnerKind && round === 0
+                    ? rootMediaRequest
+                    : null,
+                  contextOptions: { focusUserMessageId: threadRootId },
                 },
                 reportedFailures,
               })

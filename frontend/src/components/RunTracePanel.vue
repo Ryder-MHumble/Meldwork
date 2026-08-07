@@ -16,6 +16,7 @@
       :aria-label="t('trace.title')"
       tabindex="-1"
       @keydown.tab="trapFocus"
+      @keydown.esc="handlePanelEscape"
     >
       <header class="trace-panel-header">
         <div>
@@ -33,36 +34,102 @@
         </button>
       </header>
 
-      <nav v-if="items.length" class="trace-panel-agent-switch" :aria-label="t('trace.agentRuns')">
-        <button
-          v-for="group in agentGroups"
-          :key="group.agentKind"
-          class="trace-agent-tab"
-          :class="{ active: group.agentKind === selectedItem?.agentKind }"
-          type="button"
-          :aria-pressed="group.agentKind === selectedItem?.agentKind ? 'true' : 'false'"
-          @click="selectAgentGroup(group)"
-        >
-          <img :src="agentLogo(group.agentKind, theme)" alt="" />
-          <span>
-            <strong>{{ agentLabel(group.agentKind) }}</strong>
-            <small>{{ roundLabel(agentTabItem(group)) }} / {{ statusLabel(agentTabItem(group).status) }}</small>
-          </span>
-        </button>
-      </nav>
+      <div
+        v-if="items.length"
+        class="trace-panel-selectors"
+        :class="{ 'single-selector': selectedAgentRuns.length <= 1 }"
+      >
+        <div ref="agentSelector" class="trace-select trace-agent-selector">
+          <span class="trace-select-label">{{ t('trace.agentSelector') }}</span>
+          <button
+            ref="agentSelectTrigger"
+            class="trace-select-trigger"
+            type="button"
+            :disabled="agentGroups.length <= 1"
+            :aria-expanded="String(openSelector === 'agent')"
+            :aria-haspopup="agentGroups.length > 1 ? 'listbox' : undefined"
+            :aria-label="t('trace.selectAgent')"
+            @click="toggleSelector('agent')"
+            @keydown.down.prevent="openSelectorMenu('agent')"
+          >
+            <img v-if="selectedItem" :src="agentLogo(selectedItem.agentKind, theme)" alt="" />
+            <span>
+              <strong>{{ selectedItem ? agentLabel(selectedItem.agentKind) : t('trace.noProcess') }}</strong>
+              <small v-if="selectedItem">{{ roundLabel(selectedItem) }} / {{ statusLabel(selectedItem.status) }}</small>
+            </span>
+            <ChevronDownOutline v-if="agentGroups.length > 1" :class="{ expanded: openSelector === 'agent' }" />
+          </button>
+          <div
+            v-if="openSelector === 'agent'"
+            class="trace-select-menu"
+            role="listbox"
+            :aria-label="t('trace.agentRuns')"
+            @keydown="navigateSelector"
+          >
+            <button
+              v-for="group in agentGroups"
+              :key="group.agentKind"
+              class="trace-select-option"
+              type="button"
+              role="option"
+              :aria-selected="String(group.agentKind === selectedItem?.agentKind)"
+              :data-selected="group.agentKind === selectedItem?.agentKind ? 'true' : undefined"
+              @click="selectAgentGroup(group)"
+            >
+              <img :src="agentLogo(group.agentKind, theme)" alt="" />
+              <span>
+                <strong>{{ agentLabel(group.agentKind) }}</strong>
+                <small>{{ roundLabel(agentTabItem(group)) }} / {{ statusLabel(agentTabItem(group).status) }}</small>
+              </span>
+              <CheckmarkCircleOutline v-if="group.agentKind === selectedItem?.agentKind" />
+            </button>
+          </div>
+        </div>
 
-      <label v-if="selectedAgentRuns.length > 1" class="trace-round-selector">
-        <span>{{ t('trace.roundSelector') }}</span>
-        <select
-          :value="selectedItem?.agentRunId"
-          :aria-label="t('trace.selectRound', { agent: agentLabel(selectedItem?.agentKind) })"
-          @change="selectRound"
-        >
-          <option v-for="item in selectedAgentRuns" :key="item.agentRunId" :value="item.agentRunId">
-            {{ roundLabel(item) }} / {{ statusLabel(item.status) }}
-          </option>
-        </select>
-      </label>
+        <div v-if="selectedAgentRuns.length > 1" ref="roundSelector" class="trace-select trace-round-selector">
+          <span class="trace-select-label">{{ t('trace.roundSelector') }}</span>
+          <button
+            ref="roundSelectTrigger"
+            class="trace-select-trigger trace-round-trigger"
+            type="button"
+            :aria-expanded="String(openSelector === 'round')"
+            aria-haspopup="listbox"
+            :aria-label="t('trace.selectRound', { agent: agentLabel(selectedItem?.agentKind) })"
+            @click="toggleSelector('round')"
+            @keydown.down.prevent="openSelectorMenu('round')"
+          >
+            <span>
+              <strong>{{ roundLabel(selectedItem) }}</strong>
+              <small>{{ statusLabel(selectedItem?.status) }}</small>
+            </span>
+            <ChevronDownOutline :class="{ expanded: openSelector === 'round' }" />
+          </button>
+          <div
+            v-if="openSelector === 'round'"
+            class="trace-select-menu trace-round-menu"
+            role="listbox"
+            :aria-label="t('trace.selectRound', { agent: agentLabel(selectedItem?.agentKind) })"
+            @keydown="navigateSelector"
+          >
+            <button
+              v-for="item in selectedAgentRuns"
+              :key="item.agentRunId"
+              class="trace-select-option trace-round-option"
+              type="button"
+              role="option"
+              :aria-selected="String(item.agentRunId === selectedItem?.agentRunId)"
+              :data-selected="item.agentRunId === selectedItem?.agentRunId ? 'true' : undefined"
+              @click="selectRound(item.agentRunId)"
+            >
+              <span>
+                <strong>{{ roundLabel(item) }}</strong>
+                <small>{{ statusLabel(item.status) }}</small>
+              </span>
+              <CheckmarkCircleOutline v-if="item.agentRunId === selectedItem?.agentRunId" />
+            </button>
+          </div>
+        </div>
+      </div>
 
       <p
         class="visually-hidden trace-event-live-status"
@@ -316,7 +383,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CheckmarkCircleOutline,
   ChevronDownOutline,
@@ -347,6 +414,11 @@ const props = defineProps({
 
 const emit = defineEmits(['close', 'control-agent', 'decide-human-gate', 'select', 'jump-source'])
 const panelElement = ref(null)
+const agentSelector = ref(null)
+const agentSelectTrigger = ref(null)
+const roundSelector = ref(null)
+const roundSelectTrigger = ref(null)
+const openSelector = ref('')
 const replacementKind = ref('')
 const BUDGET_DIMENSIONS = [
   'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
@@ -412,6 +484,9 @@ watch(
     if (!props.replacementAgentKinds.includes(replacementKind.value)) replacementKind.value = ''
   },
 )
+watch(() => props.open, (value) => {
+  if (!value) openSelector.value = ''
+})
 
 function focus() {
   void nextTick(() => panelElement.value?.focus())
@@ -425,13 +500,87 @@ function agentTabItem(group) {
 
 function selectAgentGroup(group) {
   const item = agentTabItem(group)
-  if (item?.agentRunId) emit('select', item.agentRunId)
+  if (item?.agentRunId) {
+    emit('select', item.agentRunId)
+    closeSelectorMenu(true)
+  }
 }
 
-function selectRound(event) {
-  const agentRunId = String(event?.target?.value || '')
-  if (agentRunId) emit('select', agentRunId)
+function selectRound(agentRunId) {
+  const selectedId = String(agentRunId || '')
+  if (selectedId) {
+    emit('select', selectedId)
+    closeSelectorMenu(true)
+  }
 }
+
+function selectorTrigger(name) {
+  return name === 'agent' ? agentSelectTrigger.value : roundSelectTrigger.value
+}
+
+function selectorElement(name) {
+  return name === 'agent' ? agentSelector.value : roundSelector.value
+}
+
+function focusSelectedOption() {
+  void nextTick(() => {
+    const selector = selectorElement(openSelector.value)
+    const selected = selector?.querySelector('.trace-select-option[data-selected="true"]')
+    const first = selector?.querySelector('.trace-select-option')
+    ;(selected || first)?.focus?.()
+  })
+}
+
+function openSelectorMenu(name) {
+  if (name === 'agent' && agentGroups.value.length <= 1) return
+  if (name === 'round' && selectedAgentRuns.value.length <= 1) return
+  openSelector.value = name
+  focusSelectedOption()
+}
+
+function toggleSelector(name) {
+  if (openSelector.value === name) closeSelectorMenu(false)
+  else openSelectorMenu(name)
+}
+
+function closeSelectorMenu(returnFocus = false) {
+  const name = openSelector.value
+  openSelector.value = ''
+  if (returnFocus && name) void nextTick(() => selectorTrigger(name)?.focus?.())
+}
+
+function navigateSelector(event) {
+  const options = [...event.currentTarget.querySelectorAll('.trace-select-option')]
+  const current = options.indexOf(document.activeElement)
+  if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    options[(current + 1 + options.length) % options.length]?.focus()
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    options[(current - 1 + options.length) % options.length]?.focus()
+  } else if (event.key === 'Home') {
+    event.preventDefault()
+    options[0]?.focus()
+  } else if (event.key === 'End') {
+    event.preventDefault()
+    options.at(-1)?.focus()
+  }
+}
+
+function handlePanelEscape(event) {
+  if (!openSelector.value) return
+  event.preventDefault()
+  event.stopPropagation()
+  closeSelectorMenu(true)
+}
+
+function handleDocumentPointerDown(event) {
+  const selector = selectorElement(openSelector.value)
+  if (selector && !selector.contains(event.target)) closeSelectorMenu(false)
+}
+
+onMounted(() => document.addEventListener('pointerdown', handleDocumentPointerDown))
+onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocumentPointerDown))
 
 function emitAgentControl(action, nextReplacementKind = '') {
   if (!agentControlsVisible.value || agentControlPending.value) return

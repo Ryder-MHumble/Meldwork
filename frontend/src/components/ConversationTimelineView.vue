@@ -61,6 +61,7 @@
               'topic-root': activeGroup.conversationType !== 'direct' && isTopicRoot(message),
               'topic-reply': activeGroup.conversationType !== 'direct' && Boolean(messageThreadRootId(message)),
               'active-topic': isActiveRunTopic(message),
+              'agent-reply-collapsed': message.role === 'agent' && !isAgentReplyExpanded(message),
               copied: isMessageCopied(message.id),
             },
           ]"
@@ -106,7 +107,7 @@
               >
                 <summary>
                   <TerminalOutline />
-                  <span>{{ t('trace.process') }}</span>
+                  <span>{{ agentLabel(message.agentKind) }} · {{ t('trace.process') }}</span>
                   <small>{{ messageTraceEvents(message).length }}</small>
                   <time v-if="messageTraceStatus(message)">{{ runStatusLabel(messageTraceStatus(message)) }}</time>
                 </summary>
@@ -119,15 +120,22 @@
                     :key="`${messageTraceKey(message)}-${index}`"
                     class="trace-inline-event"
                   >
-                    <div class="trace-inline-event-heading">
-                      <span>
-                        <strong>{{ traceEventTypeLabel(event.type) }}</strong>
-                        <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
-                      </span>
-                      <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
-                    </div>
-                    <p v-if="event.summary">{{ event.summary }}</p>
-                    <pre v-if="event.detail">{{ event.detail }}</pre>
+                    <details class="trace-inline-event-disclosure">
+                      <summary>
+                        <span>
+                          <strong>{{ traceEventTypeLabel(event.type) }}</strong>
+                          <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
+                        </span>
+                        <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
+                      </summary>
+                      <div class="trace-inline-event-body">
+                        <p v-if="event.summary">{{ event.summary }}</p>
+                        <pre v-if="event.detail">{{ event.detail }}</pre>
+                        <p v-if="!event.summary && !event.detail" class="trace-inline-empty">
+                          {{ t('trace.detailUnavailable') }}
+                        </p>
+                      </div>
+                    </details>
                   </li>
                 </ol>
                 <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
@@ -148,60 +156,89 @@
                 <span v-if="isActiveRunTopic(message)" class="active-topic-label">
                   {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
                 </span>
-                <button
-                  v-if="activeGroup.conversationType !== 'direct' && messageHasTrace(message)"
-                  class="message-trace-button"
-                  type="button"
-                  :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
-                  :title="t('trace.viewProcess')"
-                  :aria-label="t('trace.viewProcess')"
-                  @click.stop="openTraceForMessage(message, $event.currentTarget)"
-                >
-                  <TerminalOutline />
-                </button>
-                <button
-                  v-if="message.content"
-                  class="message-copy-button"
-                  type="button"
-                  :title="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                  :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                  @click.stop="copyMessageContent(message, $event, true)"
-                  @keydown.enter.prevent="copyMessageContent(message, $event, true)"
-                  @keydown.space.prevent="copyMessageContent(message, $event, true)"
-                >
-                  <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
-                  <CopyOutline v-else />
-                </button>
-                <button
-                  v-if="!message.provisional"
-                  class="message-delete-button"
-                  :class="{
-                    armed: messageDeleteArmedId === message.id,
-                    deleting: deletingMessageId === message.id,
-                  }"
-                  type="button"
-                  :disabled="messageDeleteDisabled(message)"
-                  :title="messageDeleteTitle(message)"
-                  :aria-label="messageDeleteTitle(message)"
-                  :aria-pressed="messageDeleteArmedId === message.id ? 'true' : 'false'"
-                  @click.stop="requestMessageDelete(message)"
-                >
-                  <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
-                  <TrashOutline v-else />
-                </button>
+                <div class="message-meta-actions">
+                  <button
+                    v-if="activeGroup.conversationType !== 'direct' && messageHasTrace(message)"
+                    class="message-trace-button"
+                    type="button"
+                    :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
+                    :title="t('trace.viewProcess')"
+                    :aria-label="t('trace.viewProcess')"
+                    @click.stop="openTraceForMessage(message, $event.currentTarget)"
+                  >
+                    <TerminalOutline />
+                  </button>
+                  <button
+                    v-if="message.role === 'agent' && activeGroup.conversationType !== 'direct'"
+                    class="message-reply-toggle"
+                    type="button"
+                    :title="t(isAgentReplyExpanded(message)
+                      ? 'conversation.collapseAgentResponse'
+                      : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
+                    :aria-label="t(isAgentReplyExpanded(message)
+                      ? 'conversation.collapseAgentResponse'
+                      : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
+                    :aria-expanded="String(isAgentReplyExpanded(message))"
+                    @click.stop="toggleAgentReply(message)"
+                  >
+                    <ChevronDownOutline :class="{ expanded: isAgentReplyExpanded(message) }" />
+                  </button>
+                  <button
+                    v-if="message.role === 'agent' && !message.provisional"
+                    class="message-regenerate-button"
+                    type="button"
+                    :disabled="messageRegenerateDisabled(message)"
+                    :title="messageRegenerateTitle(message)"
+                    :aria-label="messageRegenerateTitle(message)"
+                    @click.stop="regenerateMessage(message)"
+                  >
+                    <RefreshOutline :class="{ spinning: isMessageRegenerating(message) }" />
+                  </button>
+                  <button
+                    v-if="message.content"
+                    class="message-copy-button"
+                    type="button"
+                    :title="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    @click.stop="copyMessageContent(message, $event, true)"
+                    @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                    @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                  >
+                    <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                    <CopyOutline v-else />
+                  </button>
+                  <button
+                    v-if="!message.provisional"
+                    class="message-delete-button"
+                    :class="{
+                      armed: messageDeleteArmedId === message.id,
+                      deleting: deletingMessageId === message.id,
+                    }"
+                    type="button"
+                    :disabled="messageDeleteDisabled(message)"
+                    :title="messageDeleteTitle(message)"
+                    :aria-label="messageDeleteTitle(message)"
+                    :aria-pressed="messageDeleteArmedId === message.id ? 'true' : 'false'"
+                    @click.stop="requestMessageDelete(message)"
+                  >
+                    <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
+                    <TrashOutline v-else />
+                  </button>
+                </div>
               </div>
               <template v-if="message.role === 'agent'">
-                <div
-                  class="message-copy-surface"
-                  :class="{ copied: isMessageCopied(message.id) }"
-                  @click="copyMessageContent(message, $event)"
-                >
-                  <MarkdownMessage v-if="message.content" :content="message.content" />
-                  <span v-else class="trace-waiting-output">
-                    <span class="typing-bars" aria-hidden="true"><span /><span /><span /></span>
-                    {{ t('trace.waitingOutput') }}
-                  </span>
-                </div>
+                <template v-if="isAgentReplyExpanded(message)">
+                  <div
+                    class="message-copy-surface message-trace-surface"
+                    :class="{ copied: isMessageCopied(message.id) }"
+                    @click="openAgentMessageTrace(message, $event)"
+                  >
+                    <MarkdownMessage v-if="message.content" :content="message.content" />
+                    <span v-else class="trace-waiting-output">
+                      <span class="typing-bars" aria-hidden="true"><span /><span /><span /></span>
+                      {{ t('trace.waitingOutput') }}
+                    </span>
+                  </div>
                 <details
                   v-if="messageExecutionSteps(message).length && !messageHasTrace(message)"
                   class="execution-details"
@@ -219,15 +256,15 @@
                     </li>
                   </ol>
                 </details>
-                <details
-                  v-if="activeGroup.conversationType === 'direct' && messageHasTrace(message)"
-                  class="execution-details trace-inline-details"
-                  :open="isDirectTraceOpen(message)"
-                  @toggle="syncDirectTraceDisclosure(message, $event)"
-                >
+                  <details
+                    v-if="activeGroup.conversationType === 'direct' && messageHasTrace(message)"
+                    class="execution-details trace-inline-details"
+                    :open="isDirectTraceOpen(message)"
+                    @toggle="syncDirectTraceDisclosure(message, $event)"
+                  >
                   <summary>
                     <TerminalOutline />
-                    <span>{{ t('trace.process') }}</span>
+                    <span>{{ agentLabel(message.agentKind) }} · {{ t('trace.process') }}</span>
                     <small>{{ messageTraceEvents(message).length }}</small>
                     <time v-if="messageTraceStatus(message)">{{ runStatusLabel(messageTraceStatus(message)) }}</time>
                   </summary>
@@ -240,34 +277,35 @@
                       :key="`${messageTraceKey(message)}-${index}`"
                       class="trace-inline-event"
                     >
-                      <div class="trace-inline-event-heading">
-                        <span>
-                          <strong>{{ traceEventTypeLabel(event.type) }}</strong>
-                          <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
-                        </span>
-                        <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
-                      </div>
-                      <p v-if="event.summary">{{ event.summary }}</p>
-                      <pre v-if="event.detail">{{ event.detail }}</pre>
+                      <details class="trace-inline-event-disclosure">
+                        <summary>
+                          <span>
+                            <strong>{{ traceEventTypeLabel(event.type) }}</strong>
+                            <small v-if="traceEventTitle(event)">{{ traceEventTitle(event) }}</small>
+                          </span>
+                          <small :class="runStatusTone(event.status)">{{ runStatusLabel(event.status) }}</small>
+                        </summary>
+                        <div class="trace-inline-event-body">
+                          <p v-if="event.summary">{{ event.summary }}</p>
+                          <pre v-if="event.detail">{{ event.detail }}</pre>
+                          <p v-if="!event.summary && !event.detail" class="trace-inline-empty">
+                            {{ t('trace.detailUnavailable') }}
+                          </p>
+                        </div>
+                      </details>
                     </li>
                   </ol>
-                  <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
-                </details>
+                    <p v-else class="trace-inline-empty">{{ t('trace.noEvents') }}</p>
+                  </details>
+                </template>
               </template>
               <template v-else>
                 <div class="user-message-flow">
                   <div
-                    v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
-                    class="message-target-list"
-                    :aria-label="t('composer.mentionedAgents')"
-                  >
-                    <span v-for="kind in messageTargetKinds(message)" :key="kind">
-                      <img :src="agentLogo(kind, theme)" alt="" />
-                      {{ agentLabel(kind) }}
-                    </span>
-                  </div>
-                  <div
-                    v-if="message.content"
+                    v-if="message.content
+                      || (activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length)
+                      || messageSkills(message).length
+                      || messageKnowledgeBases(message).length"
                     :ref="element => setUserMessageContentElement(message.id, element)"
                     class="message-content plain-message message-copy-surface user-message-content"
                     :class="{
@@ -276,7 +314,28 @@
                     }"
                     @click="copyMessageContent(message, $event)"
                   >
-                    {{ message.content }}
+                    <span
+                      v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
+                      class="message-target-list"
+                      :aria-label="t('composer.mentionedAgents')"
+                    >
+                      <span v-for="kind in messageTargetKinds(message)" :key="kind">
+                        <img :src="agentLogo(kind, theme)" alt="" />
+                        {{ agentLabel(kind) }}
+                      </span>
+                    </span><span
+                      v-if="messageSkills(message).length || messageKnowledgeBases(message).length"
+                      class="message-skill-list"
+                    ><span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
+                        @{{ skill.name || skill.slug }}
+                      </span><span
+                        v-for="source in messageKnowledgeBases(message)"
+                        :key="`knowledge:${source.kind}`"
+                        class="message-knowledge-base"
+                      >
+                        <img :src="knowledgeBaseLogo(source.kind)" alt="" />
+                        @{{ knowledgeBaseName(source.kind) }}
+                      </span></span><span v-if="message.content" class="user-message-text">{{ message.content }}</span>
                   </div>
                   <button
                     v-if="isUserMessageCollapsible(message.id)"
@@ -309,37 +368,33 @@
                   <span>{{ topicReplyLabel(topicReplyCount(message.id)) }}</span>
                   <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
                 </button>
-                <div
-                  v-if="messageSkills(message).length || messageKnowledgeBases(message).length"
-                  class="message-skill-list"
-                >
-                  <span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
-                    @{{ skill.name || skill.slug }}
-                  </span>
-                  <span
-                    v-for="source in messageKnowledgeBases(message)"
-                    :key="`knowledge:${source.kind}`"
-                    class="message-knowledge-base"
-                  >
-                    <img :src="knowledgeBaseLogo(source.kind)" alt="" />
-                    @{{ knowledgeBaseName(source.kind) }}
-                  </span>
-                </div>
               </template>
-              <div v-if="messageAttachments(message).length" class="message-attachment-grid">
+              <div
+                v-if="messageAttachments(message).length
+                  && (message.role !== 'agent' || isAgentReplyExpanded(message))"
+                class="message-attachment-grid"
+              >
                 <figure
                   v-for="attachment in messageAttachments(message)"
                   :key="attachment.id"
                   v-attachment-preview="isImageAttachment(attachment) ? attachment : null"
                   :class="`media-${attachmentKind(attachment)}`"
                 >
-                  <img
+                  <button
                     v-if="isImageAttachment(attachment) && (attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment))"
-                    :src="attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment)"
-                    :alt="attachment.name"
-                    loading="lazy"
-                    decoding="async"
-                  />
+                    class="message-media-preview-trigger"
+                    type="button"
+                    :title="t('attachment.preview', { name: attachment.name })"
+                    :aria-label="t('attachment.preview', { name: attachment.name })"
+                    @click="openMediaPreview(attachment)"
+                  >
+                    <img
+                      :src="attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment)"
+                      :alt="attachment.name"
+                      loading="lazy"
+                      decoding="async"
+                    />
+                  </button>
                   <audio
                     v-else-if="attachmentKind(attachment) === 'audio'"
                     :src="attachmentMediaUrl(attachment)"
@@ -347,14 +402,22 @@
                     controls
                     preload="metadata"
                   />
-                  <video
+                  <button
                     v-else-if="attachmentKind(attachment) === 'video'"
-                    :src="attachmentMediaUrl(attachment)"
-                    :aria-label="attachment.name"
-                    controls
-                    preload="metadata"
-                    playsinline
-                  />
+                    class="message-media-preview-trigger"
+                    type="button"
+                    :title="t('attachment.preview', { name: attachment.name })"
+                    :aria-label="t('attachment.preview', { name: attachment.name })"
+                    @click="openMediaPreview(attachment)"
+                  >
+                    <video
+                      :src="attachmentMediaUrl(attachment)"
+                      :aria-label="attachment.name"
+                      muted
+                      preload="metadata"
+                      playsinline
+                    />
+                  </button>
                   <button
                     v-else
                     class="message-document-attachment"
@@ -363,17 +426,52 @@
                     :aria-label="t('attachment.open', { name: attachment.name })"
                     @click="openAttachment(attachment)"
                   >
-                    <DocumentTextOutline aria-hidden="true" />
+                    <component
+                      :is="attachmentDocumentIcon(attachment)"
+                      class="message-document-icon"
+                      :data-document-icon="attachmentDocumentIconName(attachment)"
+                      aria-hidden="true"
+                    />
                     <span>
                       <strong>{{ attachment.name }}</strong>
                       <small>{{ attachmentTypeLabel(attachment) }} · {{ formatAttachmentSize(attachment) }}</small>
                     </span>
                     <OpenOutline aria-hidden="true" />
                   </button>
-                  <figcaption v-if="attachmentKind(attachment) !== 'file'" :title="attachment.name">
+                  <figcaption
+                    v-if="attachmentKind(attachment) !== 'file' && message.role !== 'agent'"
+                    :title="attachment.name"
+                  >
                     {{ attachment.name }}
                   </figcaption>
                 </figure>
+              </div>
+              <div
+                v-if="message.role === 'agent' && responseVersionInfo(message).total > 1"
+                class="response-version-controls"
+                :aria-label="t('conversation.responseVersions')"
+              >
+                <button
+                  type="button"
+                  :disabled="!responseVersionInfo(message).hasPrevious"
+                  :title="t('conversation.previousResponseVersion')"
+                  :aria-label="t('conversation.previousResponseVersion')"
+                  @click.stop="selectResponseVersion(message, -1)"
+                >
+                  <ChevronBackOutline />
+                </button>
+                <span aria-live="polite">
+                  {{ t('conversation.responseVersion', responseVersionInfo(message)) }}
+                </span>
+                <button
+                  type="button"
+                  :disabled="!responseVersionInfo(message).hasNext"
+                  :title="t('conversation.nextResponseVersion')"
+                  :aria-label="t('conversation.nextResponseVersion')"
+                  @click.stop="selectResponseVersion(message, 1)"
+                >
+                  <ChevronForwardOutline />
+                </button>
               </div>
             </div>
           </template>
@@ -538,19 +636,36 @@
       </div>
     </div>
   </div>
+  <AttachmentMediaPreview
+    v-if="mediaPreviewAttachment"
+    :attachment="mediaPreviewAttachment"
+    :close-label="t('attachment.closePreview')"
+    :source="attachmentMediaUrl(mediaPreviewAttachment)"
+    :type="attachmentKind(mediaPreviewAttachment)"
+    @close="closeMediaPreview"
+  />
 </template>
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AttachOutline,
+  ArchiveOutline,
   CheckmarkCircleOutline,
+  ChevronBackOutline,
   ChevronDownOutline,
+  ChevronForwardOutline,
   CloseCircleOutline,
   CloseOutline,
+  CodeOutline,
   CopyOutline,
+  DocumentOutline,
   DocumentTextOutline,
+  EaselOutline,
+  GridOutline,
   OpenOutline,
+  ReaderOutline,
+  RefreshOutline,
   TerminalOutline,
   TrashOutline,
   WarningOutline,
@@ -559,6 +674,7 @@ import { agentLabel, agentLogo } from '../catalog.js'
 import { skillKey } from '../composables/useComposerContext.js'
 import { locale } from '../i18n.js'
 import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
+import AttachmentMediaPreview from './AttachmentMediaPreview.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
 
 const props = defineProps({
@@ -599,11 +715,13 @@ const {
   formatAttachmentSize,
   handleMessageScroll,
   isActiveRunTopic,
+  isAgentReplyExpanded,
   isDirectTraceOpen,
   isDismissibleSystemWarning,
   isDisplayedCoordinatedRun,
   isImageAttachment,
   isMessageCopied,
+  isMessageRegenerating,
   isTopicExpanded,
   isTopicRoot,
   knowledgeBaseLogo,
@@ -618,6 +736,8 @@ const {
   messageElementId,
   messageExecutionSteps,
   messageHasTrace,
+  messageRegenerateDisabled,
+  messageRegenerateTitle,
   messageScroller,
   messageThreadRootId,
   messageTraceEvents,
@@ -630,15 +750,19 @@ const {
   openTraceForMessage,
   productWordmark,
   provisionalMessages,
+  regenerateMessage,
   requestMessageDelete,
+  responseVersionInfo,
   runRoundProgress,
   runStatusLabel,
   runStatusTone,
+  selectResponseVersion,
   syncDirectTraceDisclosure,
   t,
   terminalSystemConclusion,
   theme,
   timelineMessages,
+  toggleAgentReply,
   toggleTopic,
   topicReplyAgentKinds,
   topicReplyCount,
@@ -667,6 +791,26 @@ const collapsibleUserMessageIds = ref(new Set())
 const expandedUserMessageIds = ref(new Set())
 let userMessageResizeObserver = null
 let userMessageMeasurementQueued = false
+const mediaPreviewAttachment = ref(null)
+const DOCUMENT_ICON_COMPONENTS = {
+  archive: ArchiveOutline,
+  code: CodeOutline,
+  document: DocumentOutline,
+  pdf: DocumentTextOutline,
+  presentation: EaselOutline,
+  spreadsheet: GridOutline,
+  text: ReaderOutline,
+}
+const DOCUMENT_ICON_BY_EXTENSION = {
+  '7z': 'archive', gz: 'archive', tar: 'archive', tgz: 'archive', zip: 'archive',
+  c: 'code', cc: 'code', cjs: 'code', cpp: 'code', css: 'code', go: 'code', h: 'code',
+  hpp: 'code', html: 'code', java: 'code', js: 'code', json: 'code', md: 'code', mjs: 'code',
+  py: 'code', rs: 'code', sh: 'code', ts: 'code', tsx: 'code', vue: 'code', xml: 'code', yaml: 'code', yml: 'code',
+  csv: 'spreadsheet', ods: 'spreadsheet', xls: 'spreadsheet', xlsx: 'spreadsheet',
+  doc: 'text', docx: 'text', odt: 'text', rtf: 'text', txt: 'text',
+  key: 'presentation', odp: 'presentation', ppt: 'presentation', pptx: 'presentation',
+  pdf: 'pdf',
+}
 
 function sameIds(left, right) {
   return left.size === right.size && [...left].every(id => right.has(id))
@@ -739,6 +883,35 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => userMessageResizeObserver?.disconnect())
+
+function openMediaPreview(attachment) {
+  if (!['image', 'video'].includes(attachmentKind(attachment)) || !attachmentMediaUrl(attachment)) return
+  mediaPreviewAttachment.value = attachment
+}
+
+function closeMediaPreview() {
+  mediaPreviewAttachment.value = null
+}
+
+function openAgentMessageTrace(message, event) {
+  if (!messageHasTrace(message)) return
+  const target = event?.target
+  if (target instanceof Element && target.closest(
+    'a, button, input, textarea, select, option, form, summary, [contenteditable="true"]',
+  )) return
+  const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
+  if (selection && String(selection).trim()) return
+  openTraceForMessage(message, event?.currentTarget || null)
+}
+
+function attachmentDocumentIconName(attachment) {
+  const extension = String(attachment?.name || '').split('.').pop()?.toLowerCase() || ''
+  return DOCUMENT_ICON_BY_EXTENSION[extension] || 'document'
+}
+
+function attachmentDocumentIcon(attachment) {
+  return DOCUMENT_ICON_COMPONENTS[attachmentDocumentIconName(attachment)] || DocumentOutline
+}
 
 function decideHumanGate(payload) {
   return props.controller.decideHumanGate?.(payload)

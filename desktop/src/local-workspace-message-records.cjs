@@ -239,6 +239,7 @@ function normalizeLoadedMessage(input) {
   if (role === 'agent') {
     const elapsedMs = cleanElapsedMs(input.elapsedMs)
     const toolCalls = cleanProgressSteps(input.toolCalls)
+    const responseVersionRootId = cleanText(input.responseVersionRootId, 100)
     const attachments = (Array.isArray(input.attachments) ? input.attachments : [])
       .slice(0, MAX_MESSAGE_ATTACHMENTS)
       .map(normalizeAttachmentMetadata)
@@ -246,6 +247,7 @@ function normalizeLoadedMessage(input) {
     if (elapsedMs != null) message.elapsedMs = elapsedMs
     if (toolCalls.length) message.toolCalls = toolCalls
     if (attachments.length) message.attachments = attachments
+    if (responseVersionRootId) message.responseVersionRootId = responseVersionRootId
   }
   if (role === 'agent' || (role === 'system' && agentKind)) {
     const trace = normalizeTraceCapsule(input.trace)

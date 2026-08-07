@@ -1307,34 +1307,142 @@ test('writable conversations persist validated Agent media outputs and enforce t
   assert.deepEqual(restoredReply.attachments, generated)
 })
 
-test('writable group conversations persist generated media on the Agent reply', async (t) => {
+test('every writable built-in conversational Agent can use the shared main-process media generator', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const kinds = [
+    'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi',
+    'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  ]
+  options.detectAgents = async () => kinds.map((kind, index) => ({
+    kind,
+    name: `${kind} CLI`,
+    executable: `/tmp/${kind}`,
+    version: String(index + 1),
+  }))
+  const requests = [
+    { type: 'image', prompt: '请生成一张日出山谷图片', extension: 'png', mimeType: 'image/png' },
+    { type: 'audio', prompt: '请生成一段日出山谷旁白音频', extension: 'wav', mimeType: 'audio/wav' },
+    { type: 'video', prompt: '请生成一段日出山谷短视频', extension: 'mp4', mimeType: 'video/mp4' },
+  ]
+  const generationCalls = []
+  let generated = null
+  options.generateMedia = async (input) => {
+    generationCalls.push(input)
+    const request = requests.find(item => item.type === input.request.type)
+    generated = {
+      id: `generated-${input.kind}-${request.type}`,
+      name: `generated-${request.type}-${input.kind}.${request.extension}`,
+      mimeType: request.mimeType,
+      size: 128,
+    }
+    input.onEvent({
+      id: 'media-test', type: 'tool_start', status: 'running', title: `${request.type}_generation`,
+    })
+    input.onEvent({
+      id: 'media-test', type: 'tool_result_summary', status: 'completed', title: `${request.type}_generation`,
+    })
+    return { type: request.type, filename: generated.name }
+  }
+  options.captureAgentOutputs = async () => ({ marker: 'before-media' })
+  options.importAgentOutputs = async () => generated ? [{ ...generated }] : []
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  for (const kind of kinds) {
+    const direct = workspace.createGroup({
+      name: `${kind} media`, workdir: directory, allowWrite: true,
+      conversationType: 'direct', directAgentKind: kind, agentKinds: [kind],
+    })
+    for (const request of requests) {
+      await workspace.sendMessage({ groupId: direct.id, text: request.prompt })
+    }
+  }
+
+  assert.deepEqual(generationCalls.map(call => call.kind), kinds.flatMap(kind => (
+    requests.map(() => kind)
+  )))
+  assert.deepEqual(generationCalls.map(call => call.request.type), kinds.flatMap(() => (
+    requests.map(request => request.type)
+  )))
+  assert.equal(generationCalls.every(call => (
+    requests.some(request => (
+      request.type === call.request.type && request.prompt === call.request.prompt
+    ))
+  )), true)
+  assert.equal(calls.every(call => /generated-(?:image|audio|video)-/.test(call.prompt)), true)
+  const replies = workspace.snapshot().messages.filter(message => message.role === 'agent')
+  assert.equal(replies.length, kinds.length * requests.length)
+  assert.deepEqual(replies.map(reply => reply.attachments?.[0]?.mimeType), kinds.flatMap(() => (
+    requests.map(request => request.mimeType)
+  )))
+})
+
+test('every built-in conversational Agent can generate each media type when targeted in a group', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  const generated = [
-    { id: 'group-image', name: 'group-poster.png', mimeType: 'image/png', size: 128 },
-    { id: 'group-audio', name: 'group-briefing.mp3', mimeType: 'audio/mpeg', size: 256 },
-    { id: 'group-video', name: 'group-demo.mp4', mimeType: 'video/mp4', size: 512 },
+  const kinds = [
+    'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi',
+    'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   ]
+  options.detectAgents = async () => kinds.map((kind, index) => ({
+    kind,
+    name: `${kind} CLI`,
+    executable: `/tmp/${kind}`,
+    version: String(index + 1),
+  }))
+  const requests = [
+    { type: 'image', prompt: 'Generate a group image preview', extension: 'png', mimeType: 'image/png' },
+    { type: 'audio', prompt: 'Generate a group audio preview', extension: 'wav', mimeType: 'audio/wav' },
+    { type: 'video', prompt: 'Generate a group video preview', extension: 'mp4', mimeType: 'video/mp4' },
+  ]
+  let generated = null
   options.captureAgentOutputs = async () => ({ marker: 'before-group-run' })
-  options.importAgentOutputs = async () => generated
+  options.importAgentOutputs = async () => generated ? [{ ...generated }] : []
+  const generationCalls = []
+  options.generateMedia = async (input) => {
+    generationCalls.push(input)
+    const request = requests.find(item => item.type === input.request.type)
+    generated = {
+      id: `group-${input.kind}-${request.type}`,
+      name: `group-${request.type}-${input.kind}.${request.extension}`,
+      mimeType: request.mimeType,
+      size: 128,
+    }
+    return { type: request.type, filename: generated.name }
+  }
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Media group', workdir: directory, allowWrite: true,
-    conversationType: 'group', agentKinds: ['codex', 'hermes'],
+    name: 'Media group', workdir: directory, allowWrite: true, conversationType: 'group',
+    agentKinds: kinds,
   })
 
-  await workspace.sendMessage({
-    groupId: group.id,
-    text: 'Generate image, audio, and video previews',
-    targetKinds: ['codex'],
-    mode: 'manual',
-  })
+  for (const kind of kinds) {
+    for (const request of requests) {
+      await workspace.sendMessage({
+        groupId: group.id,
+        text: request.prompt,
+        targetKinds: [kind],
+        mode: 'manual',
+      })
+    }
+  }
 
-  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
-  assert.equal(reply.agentKind, 'codex')
-  assert.deepEqual(reply.attachments, generated)
-  assert.equal(JSON.stringify(reply).includes(directory), false)
+  assert.deepEqual(generationCalls.map(call => call.kind), kinds.flatMap(kind => (
+    requests.map(() => kind)
+  )))
+  assert.deepEqual(generationCalls.map(call => call.request.type), kinds.flatMap(() => (
+    requests.map(request => request.type)
+  )))
+  const replies = workspace.snapshot().messages.filter(message => message.role === 'agent')
+  assert.equal(replies.length, kinds.length * requests.length)
+  assert.deepEqual(replies.map(reply => reply.agentKind), kinds.flatMap(kind => (
+    requests.map(() => kind)
+  )))
+  assert.deepEqual(replies.map(reply => reply.attachments?.[0]?.mimeType), kinds.flatMap(() => (
+    requests.map(request => request.mimeType)
+  )))
+  assert.equal(JSON.stringify(replies).includes(directory), false)
 })
 
 test('read-only conversations forbid false media claims and do not scan for generated files', async (t) => {
@@ -1342,8 +1450,10 @@ test('read-only conversations forbid false media claims and do not scan for gene
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   let captureCount = 0
   let importCount = 0
+  let generationCount = 0
   options.captureAgentOutputs = async () => { captureCount += 1; return {} }
   options.importAgentOutputs = async () => { importCount += 1; return [] }
+  options.generateMedia = async () => { generationCount += 1; return { filename: 'unexpected.png' } }
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const direct = workspace.createGroup({
@@ -1356,6 +1466,7 @@ test('read-only conversations forbid false media claims and do not scan for gene
 
   assert.equal(captureCount, 0)
   assert.equal(importCount, 0)
+  assert.equal(generationCount, 0)
   assert.match(calls[0].prompt, /read-only/i)
   assert.match(calls[0].prompt, /do not claim that a media file was generated/i)
 })
@@ -1404,6 +1515,142 @@ test('group messages create distinct task roots and task-scoped native sessions'
   assert.notEqual(firstKey, secondKey)
   assert.equal(workspace.state.sessions[firstKey], 'codex-session')
   assert.equal(workspace.state.sessions[secondKey], 'codex-session')
+})
+
+test('a new targeted group task discards a legacy conversation Session and stays authoritative', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Task isolation', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const oldRoot = workspace.addMessage(group.id, 'user', 'OLD_RESEARCH_TASK: 调研 GEO 市场并继续撰写报告')
+  workspace.addMessage(group.id, 'agent', 'OLD_RESEARCH_CONCLUSION', 'codex', oldRoot.id)
+  const globalKey = workspace.sessionKey(group.id, 'codex')
+  workspace.state.sessions[globalKey] = 'legacy-shared-session'
+  workspace.state.sessionMeta[globalKey] = { turns: 8, estimatedChars: 12000 }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'NEW_IMAGE_TASK: 请生成一张未来城市海报',
+    targetKinds: ['codex'],
+    mode: 'manual',
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.match(calls[0].prompt, /Current user task \(authoritative\):\nNEW_IMAGE_TASK/)
+  assert.match(calls[0].prompt, /older group messages and conclusions as reference only/i)
+  assert.match(calls[0].prompt, /Final response scope:[\s\S]*Do not append an answer to an older task/)
+  assert.ok(calls[0].prompt.lastIndexOf('Final response scope:') > calls[0].prompt.lastIndexOf('OLD_RESEARCH_TASK'))
+  assert.doesNotMatch(calls[0].prompt, /Continue this group Session/)
+  assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), false)
+})
+
+test('a targeted non-Codex group image task replaces legacy research context and returns media', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generationCalls = []
+  options.generateMedia = async (input) => {
+    generationCalls.push(input)
+    return { type: 'image', filename: 'new-city-poster.png' }
+  }
+  options.captureAgentOutputs = async () => ({ marker: 'before-targeted-image' })
+  options.importAgentOutputs = async () => ([
+    { id: 'new-city-poster', name: 'new-city-poster.png', mimeType: 'image/png', size: 128 },
+  ])
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Targeted media isolation', agentKinds: ['codex', 'hermes'], workdir: directory,
+    allowWrite: true,
+  })
+  const oldRoot = workspace.addMessage(group.id, 'user', 'OLD_RESEARCH_TASK: 调研 GEO 市场')
+  workspace.addMessage(group.id, 'agent', 'OLD_RESEARCH_CONCLUSION', 'codex', oldRoot.id)
+  const legacyKey = workspace.sessionKey(group.id, 'hermes')
+  workspace.state.sessions[legacyKey] = 'legacy-hermes-research-session'
+  workspace.state.sessionMeta[legacyKey] = { turns: 6, estimatedChars: 8000 }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'NEW_IMAGE_TASK: 请生成一张未来城市海报',
+    targetKinds: ['hermes'],
+    mode: 'manual',
+  })
+
+  assert.deepEqual(generationCalls.map(call => call.kind), ['hermes'])
+  assert.equal(generationCalls[0].request.type, 'image')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.kind, 'hermes')
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.match(calls[0].prompt, /Current user task \(authoritative\):\nNEW_IMAGE_TASK/)
+  assert.match(calls[0].prompt, /new-city-poster\.png/)
+  assert.match(calls[0].prompt, /Final response scope:[\s\S]*Do not append an answer to an older task/)
+  assert.ok(calls[0].prompt.lastIndexOf('Final response scope:') > calls[0].prompt.lastIndexOf('OLD_RESEARCH_TASK'))
+  assert.doesNotMatch(calls[0].prompt, /Continue this group Session/)
+  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), false)
+  const reply = workspace.snapshot().messages.find(message => (
+    message.role === 'agent' && message.threadRootId && message.agentKind === 'hermes'
+  ))
+  assert.deepEqual(reply.attachments, [
+    { id: 'new-city-poster', name: 'new-city-poster.png', mimeType: 'image/png', size: 128 },
+  ])
+})
+
+test('every built-in conversational Agent starts a newly targeted group task outside its legacy Session', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const kinds = [
+    'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi',
+    'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  ]
+  options.detectAgents = async () => kinds.map((kind, index) => ({
+    kind,
+    name: `${kind} CLI`,
+    executable: `/tmp/${kind}`,
+    version: String(index + 1),
+  }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'All Agent task isolation', agentKinds: kinds, workdir: directory,
+  })
+
+  for (const kind of kinds) {
+    const globalKey = workspace.sessionKey(group.id, kind)
+    workspace.state.sessions[globalKey] = `legacy-${kind}-session`
+    workspace.state.sessionMeta[globalKey] = { turns: 4, estimatedChars: 4000 }
+    await workspace.sendMessage({
+      groupId: group.id,
+      text: `NEW_${kind.toUpperCase()}_TASK: answer only this task`,
+      targetKinds: [kind],
+      mode: 'manual',
+    })
+    assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), false, kind)
+  }
+
+  assert.deepEqual(calls.map(call => call.agent.kind), kinds)
+  for (const call of calls) {
+    if (call.agent.kind === 'openclaw') {
+      assert.match(
+        call.runOptions.sessionRef,
+        /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/,
+      )
+    } else {
+      assert.equal(call.runOptions.sessionRef, '', call.agent.kind)
+    }
+    assert.notEqual(call.runOptions.sessionRef, `legacy-${call.agent.kind}-session`)
+  }
+  for (const [index, call] of calls.entries()) {
+    assert.match(
+      call.prompt,
+      new RegExp(`Current user task \\(authoritative\\):\\nNEW_${kinds[index].toUpperCase()}_TASK`),
+    )
+    assert.doesNotMatch(call.prompt, /Continue this group Session/)
+  }
 })
 
 test('task sessions migrate only their exact legacy root without guessing another task', async (t) => {
@@ -1608,14 +1855,14 @@ test('fresh group task sessions receive bounded shared conclusions from earlier 
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
     '', '', '', '',
   ])
-  assert.match(calls[1].prompt, /User: 第一条稳定约束/)
+  assert.match(calls[1].prompt, /Current user task \(authoritative\):\n第一条稳定约束/)
   assert.match(calls[1].prompt, /Codex: codex final 1/)
   assert.match(calls[2].prompt, /Hermes: hermes final 2/)
   assert.match(calls[2].prompt, /Codex: codex final 1/)
   assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第一条稳定约束/)
-  assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第二条当前任务/)
+  assert.match(calls[2].prompt, /Current user task \(authoritative\):\n第二条当前任务/)
   assert.equal(calls[2].prompt.match(/第二条当前任务/g)?.length, 1)
-  assert.match(calls[3].prompt, /Stable user instructions and constraints:\n[\s\S]*第三条继续任务/)
+  assert.match(calls[3].prompt, /Current user task \(authoritative\):\n第三条继续任务/)
   assert.equal(calls[3].prompt.match(/第三条继续任务/g)?.length, 1)
   assert.match(calls[3].prompt, /Hermes: hermes final 2/)
   assert.match(calls[3].prompt, /Codex: codex final 3/)
@@ -1644,7 +1891,7 @@ test('Harness continuation context stays bounded while retaining the latest shar
 
   assert.ok(packed.continuationText.length <= 6100)
   assert.match(packed.continuationText, /共享结论 29/)
-  assert.match(packed.continuationText, /稳定约束：必须保留最新结论/)
+  assert.equal(packed.currentTaskText, '稳定约束：必须保留最新结论')
   assert.doesNotMatch(packed.continuationText, /共享结论 0 /)
 })
 
@@ -2036,4 +2283,122 @@ test('all failed agents resolve after persisting one user message and recording 
   )
   assert.equal(finished.length, 1)
   assert.equal(finished[0].status, 'failed')
+})
+
+test('regenerating a group Agent reply preserves one user root and durable response versions', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const vaultPath = path.join(directory, 'Knowledge')
+  options.validateKnowledgeBaseSelections = (_targetKinds, selections) => selections.map(source => ({
+    ...source,
+    name: 'Obsidian',
+    accessMode: 'vault',
+    location: vaultPath,
+  }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Versioned response', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const attachment = {
+    id: 'regenerate-image', name: 'reference.png', mimeType: 'image/png', size: 128,
+  }
+  const skill = {
+    targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review carefully',
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'ORIGINAL_QUERY_REGENERATE',
+    targetKinds: ['codex'],
+    attachments: [attachment],
+    skillHints: [skill],
+    knowledgeBaseHints: [{ kind: 'obsidian', targetKinds: ['codex'] }],
+  })
+  const firstSnapshot = workspace.snapshot()
+  const originalUser = firstSnapshot.messages.find(message => message.role === 'user')
+  const originalReply = firstSnapshot.messages.find(message => message.role === 'agent')
+  await workspace.sendMessage({
+    groupId: group.id, text: 'LATER_QUERY_MUST_STAY_OUT', targetKinds: ['codex'],
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    targetKinds: ['hermes'],
+    mode: 'manual',
+    regenerateMessageId: originalReply.id,
+  }), { message: 'LOCAL_MESSAGE_REGENERATION_INVALID' })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    targetKinds: ['codex'],
+    mode: 'manual',
+    regenerateMessageId: originalReply.id,
+  })
+
+  const snapshot = workspace.snapshot()
+  const userMessages = snapshot.messages.filter(message => message.role === 'user')
+  const versionedReplies = snapshot.messages.filter(message => (
+    message.role === 'agent'
+      && (message.id === originalReply.id || message.responseVersionRootId === originalReply.id)
+  ))
+  const regeneratedReply = versionedReplies.at(-1)
+  assert.equal(userMessages.length, 2)
+  assert.equal(userMessages[0].id, originalUser.id)
+  assert.deepEqual(userMessages[0].attachments, [attachment])
+  assert.deepEqual(userMessages[0].skillHints, [skill])
+  assert.equal(versionedReplies.length, 2)
+  assert.equal(regeneratedReply.threadRootId, originalUser.id)
+  assert.equal(regeneratedReply.responseVersionRootId, originalReply.id)
+  assert.equal(calls.length, 3)
+  assert.equal(calls[2].runOptions.sessionRef, '')
+  assert.equal(calls[2].runOptions.attachments.length, 1)
+  assert.match(calls[2].prompt, /ORIGINAL_QUERY_REGENERATE/)
+  assert.match(calls[2].prompt, /quality\/review: Review carefully/)
+  assert.match(calls[2].prompt, new RegExp(vaultPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.match(calls[2].prompt, /Produce a fresh alternative response/)
+  assert.doesNotMatch(calls[2].prompt, /codex reply 1|LATER_QUERY_MUST_STAY_OUT/)
+
+  const packed = workspace.packedPromptContext(group.id)
+  assert.equal(packed.sourceMessageIds.includes(originalReply.id), false)
+  assert.equal(packed.sourceMessageIds.includes(regeneratedReply.id), true)
+  const restored = new LocalWorkspace(options)
+  assert.equal(
+    restored.snapshot().messages.find(message => message.id === regeneratedReply.id)?.responseVersionRootId,
+    originalReply.id,
+  )
+})
+
+test('regenerating a direct reply stays attached to its original user turn', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const direct = workspace.createGroup({
+    name: 'Codex', workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex', agentKinds: ['codex'],
+  })
+
+  await workspace.sendMessage({ groupId: direct.id, text: 'DIRECT_ORIGINAL_QUERY' })
+  const firstSnapshot = workspace.snapshot()
+  const originalUser = firstSnapshot.messages.find(message => message.role === 'user')
+  const originalReply = firstSnapshot.messages.find(message => message.role === 'agent')
+  await workspace.sendMessage({ groupId: direct.id, text: 'DIRECT_LATER_QUERY' })
+  await workspace.sendMessage({
+    groupId: direct.id,
+    targetKinds: ['codex'],
+    mode: 'manual',
+    regenerateMessageId: originalReply.id,
+  })
+
+  const snapshot = workspace.snapshot()
+  const regeneratedReply = snapshot.messages.filter(message => (
+    message.role === 'agent' && message.responseVersionRootId === originalReply.id
+  )).at(-1)
+  assert.equal(snapshot.messages.filter(message => message.role === 'user').length, 2)
+  assert.equal(regeneratedReply.threadRootId, originalUser.id)
+  assert.equal(regeneratedReply.responseVersionRootId, originalReply.id)
+  assert.equal(calls[2].runOptions.sessionRef, '')
+  assert.match(calls[2].prompt, /DIRECT_ORIGINAL_QUERY/)
+  assert.doesNotMatch(calls[2].prompt, /DIRECT_LATER_QUERY|codex reply 1/)
 })

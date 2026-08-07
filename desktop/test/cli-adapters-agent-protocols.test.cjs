@@ -1617,6 +1617,46 @@ test('supported local CLIs run in the selected workdir and return native session
   }
 })
 
+test('every conversational built-in Agent emits its answer through the shared runtime event contract', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-events-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const manifest = JSON.parse(fs.readFileSync(
+    path.join(OUTPUT_FIXTURE_DIRECTORY, 'manifest.json'),
+    'utf8',
+  ))
+
+  for (const fixture of manifest.fixtures) {
+    const raw = fs.readFileSync(path.join(OUTPUT_FIXTURE_DIRECTORY, fixture.file), 'utf8')
+    const cli = executable(directory, `${fixture.kind}-runtime-events.cjs`, `
+process.stdout.write(${JSON.stringify(raw)})
+`)
+    const events = []
+    const options = {
+      onEvent: event => events.push(event),
+      ...(fixture.kind === 'hermes' ? { hermesAcpAvailable: false } : {}),
+      ...(fixture.kind === 'kimi' ? { sandbox: 'workspace-write' } : {}),
+      ...(fixture.kind === 'openclaw'
+        ? signedOpenClawRuntime(directory, directory, 'agent:main:runtime-events')
+        : {}),
+    }
+
+    const result = await runAgent(
+      { kind: fixture.kind, executable: cli, name: fixture.kind },
+      'Return a concise answer',
+      directory,
+      options,
+    )
+    const answer = events
+      .filter(event => event.type === 'answer_delta')
+      .map(event => event.delta)
+      .join('')
+
+    assert.equal(answer, result.text, fixture.kind)
+    assert.equal(events.some(event => event.type === 'answer_delta'), true, fixture.kind)
+    assert.equal(events.every(event => !JSON.stringify(event).includes(directory)), true, fixture.kind)
+  }
+})
+
 test('runAgent retains final structured output after stdout exceeds its capture limit', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-long-output-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

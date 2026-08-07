@@ -39,7 +39,6 @@ export function useConversationTraceRuns({
   }
 
   const allTracePanelItems = computed(() => {
-    if (activeGroup.value?.conversationType === 'direct') return []
     const byRunAgentId = new Map()
     for (const agent of activeRunAgentRuns.value) {
       const runId = String(activeRun.value?.runId || '')

@@ -515,7 +515,7 @@ test('Harness rotates an over-budget native session while retaining compressed c
   const key = workspace.sessionKey(group.id, 'codex', currentUser.id)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
-  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
   assert.equal(workspace.state.sessions[key], 'new-session')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
@@ -613,7 +613,7 @@ test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays pr
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
-  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
@@ -667,11 +667,11 @@ test('Hermes migrates a stored ACP session to legacy with rebuilt context before
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
-  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
-test('Harness rotates an over-budget OpenClaw managed session to a new key', async (t) => {
+test('Harness discards an over-budget conversation OpenClaw Session for a new Task key', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -706,20 +706,17 @@ test('Harness rotates an over-budget OpenClaw managed session to a new key', asy
   const key = workspace.sessionKey(group.id, 'openclaw', currentUser.id)
   const currentTaskSessionRef = workspace.openClawSessionRef(group, '', currentUser.id)
   assert.notEqual(calls[0].runOptions.sessionRef, previousSessionRef)
-  assert.match(
-    calls[0].runOptions.sessionRef,
-    new RegExp(`^${currentTaskSessionRef}-[a-f0-9]{12}$`),
-  )
+  assert.equal(calls[0].runOptions.sessionRef, currentTaskSessionRef)
   assert.match(calls[0].prompt, /Prior OpenClaw conclusion/)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
-  assert.deepEqual(trace.sourceMessageIds, [oldUser.id, currentUser.id, previousAgent.id])
+  assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
   assert.equal(workspace.state.sessions[key], calls[0].runOptions.sessionRef)
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
 })
 
-test('legacy sessions resume once and initialize bounded session metadata', async (t) => {
+test('legacy conversation Sessions are not resumed by a new group Task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -737,12 +734,13 @@ test('legacy sessions resume once and initialize bounded session metadata', asyn
     message.role === 'user' && message.content === 'Resume safely'
   ))
   const key = workspace.sessionKey(group.id, 'codex', task.id)
-  assert.equal(calls[0].runOptions.sessionRef, 'legacy-codex-session')
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), false)
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > 0, true)
 })
 
-test('Harness rebuilds compressed context once when a reused legacy session is invalid', async (t) => {
+test('direct Harness rebuilds compressed context once when a reused legacy session is invalid', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -755,6 +753,7 @@ test('Harness rebuilds compressed context once when a reused legacy session is i
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Legacy session recovery', agentKinds: ['codex'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex',
   })
   const oldUser = workspace.addMessage(group.id, 'user', 'Keep the original requirement')
   const previousAgent = workspace.addMessage(
@@ -778,7 +777,7 @@ test('Harness rebuilds compressed context once when a reused legacy session is i
   const task = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue after session recovery'
   ))
-  const key = workspace.sessionKey(group.id, 'codex', task.id)
+  const key = workspace.sessionKey(group.id, 'codex')
   assert.equal(workspace.state.sessions[key], 'codex-fresh-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
@@ -786,10 +785,10 @@ test('Harness rebuilds compressed context once when a reused legacy session is i
   assert.equal(trace.status, 'completed')
   assert.equal(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [
-    oldUser.id,
     snapshot.messages.find(message => (
       message.role === 'user' && message.content === 'Continue after session recovery'
     )).id,
+    oldUser.id,
     previousAgent.id,
   ])
 })
@@ -834,7 +833,7 @@ test('invalid Session recovery restores the reused ref when saving the rebuild f
   assert.equal(calls[0].runOptions.sessionRef, 'codex-before-rebuild')
 })
 
-test('Harness retries a reused ACP session once with a fresh session', async (t) => {
+test('direct Harness retries a reused ACP session once with a fresh session', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -850,6 +849,7 @@ test('Harness retries a reused ACP session once with a fresh session', async (t)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'ACP session recovery', agentKinds: ['kimi'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'kimi',
   })
   const legacyKey = workspace.sessionKey(group.id, 'kimi')
   workspace.state.sessions[legacyKey] = 'kimi-stale-session'
@@ -865,14 +865,14 @@ test('Harness retries a reused ACP session once with a fresh session', async (t)
   const task = workspace.snapshot().messages.find(message => (
     message.role === 'user' && message.content === 'Recover the ACP session'
   ))
-  const key = workspace.sessionKey(group.id, 'kimi', task.id)
+  const key = workspace.sessionKey(group.id, 'kimi')
   assert.equal(workspace.state.sessions[key], 'kimi-fresh-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   assert.equal(workspace.snapshot().messages.at(-1).trace.context.sessionRotated, true)
 })
 
-test('Harness stops after one fresh-session retry when the Session remains invalid', async (t) => {
+test('direct Harness stops after one fresh-session retry when the Session remains invalid', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -883,6 +883,7 @@ test('Harness stops after one fresh-session retry when the Session remains inval
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Bounded session recovery', agentKinds: ['codex'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex',
   })
   const legacyKey = workspace.sessionKey(group.id, 'codex')
   workspace.state.sessions[legacyKey] = 'codex-stale-session'
@@ -898,7 +899,7 @@ test('Harness stops after one fresh-session retry when the Session remains inval
   const task = workspace.snapshot().messages.find(message => (
     message.role === 'user' && message.content === 'Do not loop recovery'
   ))
-  const key = workspace.sessionKey(group.id, 'codex', task.id)
+  const key = workspace.sessionKey(group.id, 'codex')
   assert.equal(Object.hasOwn(workspace.state.sessions, key), false)
   assert.equal(Object.hasOwn(workspace.state.sessionMeta, key), false)
   const failure = workspace.snapshot().messages.find(message => (

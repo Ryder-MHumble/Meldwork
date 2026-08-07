@@ -118,6 +118,8 @@ describe('RoundRelay i18n', () => {
       .toBe('Hermes failed: Sign in to this Agent or configure its credentials, then try again.')
     expect(translateSystemMessage(systemMessage('LOCAL_AGENT_PROCESS_FAILED')))
       .toBe('Hermes failed: The Agent process failed before completing the task.')
+    expect(translateSystemMessage(systemMessage('MEDIA_GENERATION_MODEL_UNAVAILABLE')))
+      .toContain('configured Providers do not offer the required media model')
 
     setLocale('zh')
     expect(translateError(new Error('PROVIDER_CREDENTIAL_REQUIRED')))
@@ -136,6 +138,8 @@ describe('RoundRelay i18n', () => {
       .toBe('Hermes 调用失败：请先登录该 Agent 或完成凭据配置后再试。')
     expect(translateSystemMessage(systemMessage('LOCAL_AGENT_PROCESS_FAILED')))
       .toBe('Hermes 调用失败：Agent 进程在任务完成前执行失败。')
+    expect(translateSystemMessage(systemMessage('MEDIA_GENERATION_MODEL_UNAVAILABLE')))
+      .toContain('当前配置的 Provider 未提供所需媒体模型')
   })
 
   it('localizes automatic discussion limits and falls back for unknown system keys', () => {

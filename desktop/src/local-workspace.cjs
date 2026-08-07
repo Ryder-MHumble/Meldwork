@@ -52,6 +52,7 @@ class LocalWorkspace extends EventEmitter {
     this.storagePath = options.storagePath
     this.detectAgentsFn = options.detectAgents
     this.runAgentFn = options.runAgent
+    this.generateMediaFn = options.generateMedia || null
     this.resolveAttachmentsFn = options.resolveAttachments || (async (attachments) => {
       if (attachments?.length) throw new Error('LOCAL_ATTACHMENT_STORAGE_UNAVAILABLE')
       return []
@@ -226,6 +227,7 @@ class LocalWorkspace extends EventEmitter {
       completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
       connectorRuntime: options.connectorRuntime,
       attachmentSupport: (...args) => this.attachmentSupportFn(...args),
+      generateMedia: (...args) => this.generateMediaFn?.(...args),
     })
     this.autoRunner = new LocalWorkspaceAutoRunner({
       state: () => this.state,
@@ -931,29 +933,30 @@ class LocalWorkspace extends EventEmitter {
     return promptMessageText(message, limit)
   }
 
-  stableUserInstructions(groupId, threadRootId = '') {
-    return stableUserInstructions(this.state, groupId, threadRootId)
+  stableUserInstructions(groupId, threadRootId = '', contextOptions = {}) {
+    return stableUserInstructions(this.state, groupId, threadRootId, contextOptions)
   }
 
-  stableUserMessages(groupId, threadRootId = '') {
-    return stableUserMessages(this.state, groupId, threadRootId)
+  stableUserMessages(groupId, threadRootId = '', contextOptions = {}) {
+    return stableUserMessages(this.state, groupId, threadRootId, contextOptions)
   }
 
-  recentTranscriptEntries(groupId, afterAgentKind = '') {
-    return recentTranscriptEntries(this.state, groupId, afterAgentKind)
+  recentTranscriptEntries(groupId, afterAgentKind = '', contextOptions = {}) {
+    return recentTranscriptEntries(this.state, groupId, afterAgentKind, contextOptions)
   }
 
   recentTranscript(groupId, afterAgentKind = '') {
     return this.packedPromptContext(groupId, afterAgentKind).recentText
   }
 
-  packedPromptContext(groupId, afterAgentKind = '', threadRootId = '') {
+  packedPromptContext(groupId, afterAgentKind = '', threadRootId = '', contextOptions = {}) {
     return packedPromptContext({
       state: this.state,
       groupId,
       afterAgentKind,
       threadRootId,
       agentLabel: kind => this.agentLabel(kind),
+      ...contextOptions,
     })
   }
 
