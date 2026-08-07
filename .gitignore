@@ -20,7 +20,9 @@ release/
 *.blockmap
 latest*.yml
 
-# Documentation is part of the public repository.
+# Local documentation drafts
+/docs/
+/documentation/
 .github/brand/
 
 # Test and coverage output
