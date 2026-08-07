@@ -99,6 +99,7 @@ describe('RoundRelay workbench', () => {
       conversationType: 'direct',
       directAgentKind: 'codex',
       name: 'Codex chat 3',
+      allowWrite: true,
     }))
     expect(wrapper.findAll('.direct-session-row')).toHaveLength(3)
     await wrapper.get('.sidebar-agent-main').trigger('click')
@@ -146,6 +147,7 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.direct-session-list::before\s*\{[^}]*border-left:\s*1px solid var\(--session-tree-line\);[^}]*border-bottom-left-radius:\s*7px;/s)
     expect(source).toMatch(/\.direct-session-list > :last-child::before\s*\{[^}]*content:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row\.active\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*var\(--surface-active\);/s)
+    expect(source).toMatch(/\.direct-session-row\.active \.direct-session-open\s*\{[^}]*font-weight:\s*600;/s)
     expect(source).toMatch(/\.direct-session-row\.active::after\s*\{[^}]*background:\s*var\(--accent\);/s)
     expect(source).toMatch(/\.direct-session-action:hover\s*\{[^}]*background:\s*var\(--surface-hover\);/s)
     expect(source).not.toMatch(/\.direct-session-action:hover\s*\{[^}]*border-color:/s)

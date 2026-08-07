@@ -1,4 +1,4 @@
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { agentLabel } from '../catalog.js'
 import {
   durableRunTurnStatus,
@@ -11,6 +11,7 @@ import {
   messageTraceStatus,
   messageTraceSummary,
   retainedTraceEvents,
+  responseVersionRootId,
   runStatusTone,
   terminalSystemConclusion,
   terminalSystemFallback,
@@ -41,11 +42,14 @@ export function useConversationTimeline({
     dismissedSystemMessageIds,
     dismissSystemMessage,
     hasFinishedDirectRun,
+    isAgentReplyExpanded,
     isDirectTraceOpen,
     isDismissibleSystemWarning,
     setFinishedDirectRun,
     syncDirectTraceDisclosure,
+    toggleAgentReply,
   } = useConversationTimelineUiState()
+  const selectedResponseVersionIds = ref(new Map())
 
   const activeMessages = computed(() => (
     snapshot.value.messages.filter(message => message.groupId === selectedGroupId.value)
@@ -200,6 +204,9 @@ export function useConversationTimeline({
         traceRunId: run.runId,
         liveAgentRun: agent,
         sourceMessageIds: agent.sourceMessageIds || [],
+        ...(run.responseVersionRootId
+          ? { responseVersionRootId: run.responseVersionRootId }
+          : {}),
       }))
   })
   const messagesWithLiveTrace = computed(() => {
@@ -314,7 +321,81 @@ export function useConversationTimeline({
     if (!activeRunTopicRootId.value) return ''
     return `${activeRun.value?.groupId || ''}\u0000${activeRunTopicRootId.value}`
   })
-  const timelineMessages = computed(() => [...messagesWithLiveTrace.value, ...provisionalMessages.value].filter((message) => {
+  const versionedTimelineMessages = computed(() => [
+    ...messagesWithLiveTrace.value,
+    ...provisionalMessages.value,
+  ])
+  const responseVersionGroups = computed(() => {
+    const groups = new Map()
+    for (const message of versionedTimelineMessages.value) {
+      const rootId = responseVersionRootId(message)
+      if (!rootId) continue
+      const versions = groups.get(rootId) || []
+      versions.push(message)
+      groups.set(rootId, versions)
+    }
+    return groups
+  })
+
+  function responseVersionInfo(message) {
+    const rootId = responseVersionRootId(message)
+    const versions = rootId ? responseVersionGroups.value.get(rootId) || [] : []
+    const current = Math.max(0, versions.findIndex(version => version.id === message?.id))
+    return {
+      current: current + 1,
+      total: versions.length,
+      hasPrevious: current > 0,
+      hasNext: current >= 0 && current < versions.length - 1,
+    }
+  }
+
+  function selectedResponseVersionId(rootId, versions) {
+    const selected = selectedResponseVersionIds.value.get(rootId)
+    return versions.some(message => message.id === selected)
+      ? selected
+      : versions.at(-1)?.id || ''
+  }
+
+  function selectResponseVersion(message, direction) {
+    const rootId = responseVersionRootId(message)
+    const versions = rootId ? responseVersionGroups.value.get(rootId) || [] : []
+    if (versions.length < 2) return
+    const selectedId = selectedResponseVersionId(rootId, versions)
+    const current = versions.findIndex(version => version.id === selectedId)
+    const nextIndex = Math.max(0, Math.min(versions.length - 1, current + direction))
+    const next = new Map(selectedResponseVersionIds.value)
+    next.set(rootId, versions[nextIndex].id)
+    selectedResponseVersionIds.value = next
+  }
+
+  function showLatestResponseVersion(message) {
+    const rootId = responseVersionRootId(message)
+    if (!rootId) return
+    const next = new Map(selectedResponseVersionIds.value)
+    next.delete(rootId)
+    selectedResponseVersionIds.value = next
+  }
+
+  function isSelectedResponseVersion(message) {
+    const rootId = responseVersionRootId(message)
+    if (!rootId) return true
+    const versions = responseVersionGroups.value.get(rootId) || []
+    return message.id === selectedResponseVersionId(rootId, versions)
+  }
+
+  const selectedVersionMessages = computed(() => {
+    const emittedRoots = new Set()
+    return versionedTimelineMessages.value.flatMap((message) => {
+      const rootId = responseVersionRootId(message)
+      if (!rootId) return [message]
+      if (emittedRoots.has(rootId)) return []
+      emittedRoots.add(rootId)
+      const versions = responseVersionGroups.value.get(rootId) || []
+      return versions.filter(isSelectedResponseVersion)
+    })
+  })
+
+  const timelineMessages = computed(() => selectedVersionMessages.value.filter((message) => {
     if (dismissedSystemMessageIds.value.has(message.id)) return false
     const rootId = messageThreadRootId(message)
     return !rootId || isTopicExpanded(rootId)
@@ -416,6 +497,7 @@ export function useConversationTimeline({
     formatTime,
     hasFinishedDirectRun,
     isActiveRunTopic,
+    isAgentReplyExpanded,
     isCoordinatedRun,
     isDirectTraceOpen,
     isDismissibleSystemWarning,
@@ -441,6 +523,7 @@ export function useConversationTimeline({
     openTracePanel,
     provisionalMessages,
     retainedTraceEvents,
+    responseVersionInfo,
     runCompletedKinds,
     runFailedKinds,
     rememberRunFinishedTurnStatus,
@@ -448,14 +531,17 @@ export function useConversationTimeline({
     runStatusLabel,
     runStatusTone,
     runTargetKinds,
+    selectResponseVersion,
     selectTraceAgentRun,
     selectedTraceAgentRunId,
     setFinishedDirectRun,
+    showLatestResponseVersion,
     syncDirectTraceDisclosure,
     terminalSystemConclusion,
     terminalSystemFallback,
     timelineMessages,
     toggleTopic,
+    toggleAgentReply,
     topLevelUserMessages,
     topicReplyAgentKinds,
     topicReplyCount,

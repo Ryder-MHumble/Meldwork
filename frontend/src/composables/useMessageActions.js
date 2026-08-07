@@ -1,4 +1,5 @@
 import { onScopeDispose, ref } from 'vue'
+import { responseVersionRootId } from '../conversationTimelineModel.js'
 import { normalizeSnapshot } from '../desktop.js'
 
 export function useMessageActions({
@@ -8,6 +9,7 @@ export function useMessageActions({
   notify,
   showCopyToast,
   showError,
+  showLatestResponseVersion,
   snapshot,
   t,
   workspace,
@@ -15,6 +17,7 @@ export function useMessageActions({
   const copiedMessageIds = ref(new Set())
   const messageDeleteArmedId = ref('')
   const deletingMessageId = ref('')
+  const regeneratingMessageId = ref('')
   const copiedMessageTimers = new Map()
 
   function isMessageCopied(id) {
@@ -109,6 +112,46 @@ export function useMessageActions({
     return t(confirming ? 'conversation.confirmDeleteMessage' : 'conversation.deleteMessage')
   }
 
+  function messageRegenerateDisabled(message) {
+    return message?.role !== 'agent'
+      || message.provisional === true
+      || typeof workspace.value?.send !== 'function'
+      || isGroupRunning(message?.groupId)
+      || Boolean(regeneratingMessageId.value)
+  }
+
+  function messageRegenerateTitle(message) {
+    if (isGroupRunning(message?.groupId)) return t('conversation.regenerateRunning')
+    if (isMessageRegenerating(message)) return t('conversation.regeneratingResponse')
+    return t('conversation.regenerateResponse')
+  }
+
+  function isMessageRegenerating(message) {
+    return Boolean(regeneratingMessageId.value)
+      && regeneratingMessageId.value === responseVersionRootId(message)
+  }
+
+  async function regenerateMessage(message) {
+    if (!message?.id || messageRegenerateDisabled(message)) return
+    const groupId = String(message.groupId || activeGroup.value?.id || '')
+    regeneratingMessageId.value = responseVersionRootId(message)
+    showLatestResponseVersion?.(message)
+    try {
+      const result = await workspace.value.send({
+        groupId,
+        targetKinds: [message.agentKind],
+        mode: 'manual',
+        regenerateMessageId: message.id,
+      })
+      snapshot.value = normalizeSnapshot(result?.messages ? result : await workspace.value.get())
+      showLatestResponseVersion?.(message)
+    } catch (error) {
+      showError(error)
+    } finally {
+      regeneratingMessageId.value = ''
+    }
+  }
+
   function clearDeletedMessageUi(snapshotValue, groupId, rootId = '') {
     const remainingIds = new Set(snapshotValue.messages.map(message => message.id))
     copiedMessageIds.value = new Set([...copiedMessageIds.value].filter(id => remainingIds.has(id)))
@@ -160,6 +203,11 @@ export function useMessageActions({
     messageDeleteArmedId,
     messageDeleteDisabled,
     messageDeleteTitle,
+    messageRegenerateDisabled,
+    messageRegenerateTitle,
+    isMessageRegenerating,
+    regenerateMessage,
+    regeneratingMessageId,
     requestMessageDelete,
   }
 }

@@ -46,7 +46,6 @@ export function useRunTracePanel({
   }
 
   function openTracePanel(agentRunId, opener = null, runId = '') {
-    if (activeGroup.value?.conversationType === 'direct') return
     const item = allTracePanelItems.value.find(candidate => (
       candidate.agentRunId === agentRunId && (!runId || candidate.runId === runId)
     ))

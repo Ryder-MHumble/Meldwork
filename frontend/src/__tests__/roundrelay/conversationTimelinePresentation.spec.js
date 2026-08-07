@@ -51,11 +51,11 @@ describe('conversation timeline UI state', () => {
     const liveMessage = { id: 'live-1', provisional: true }
     const durableMessage = { id: 'durable-1' }
 
-    expect(state.isDirectTraceOpen(liveMessage)).toBe(true)
-    state.syncDirectTraceDisclosure(liveMessage, { target: { open: false } })
     expect(state.isDirectTraceOpen(liveMessage)).toBe(false)
     state.syncDirectTraceDisclosure(liveMessage, { target: { open: true } })
     expect(state.isDirectTraceOpen(liveMessage)).toBe(true)
+    state.syncDirectTraceDisclosure(liveMessage, { target: { open: false } })
+    expect(state.isDirectTraceOpen(liveMessage)).toBe(false)
 
     expect(state.isDirectTraceOpen(durableMessage)).toBe(false)
     state.syncDirectTraceDisclosure(durableMessage, { target: { open: true } })

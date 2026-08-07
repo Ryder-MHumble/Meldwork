@@ -661,8 +661,68 @@ describe('RoundRelay workbench', () => {
       .toBe('meldwork-media://attachment/briefing-audio')
     expect(wrapper.get('.message-attachment-grid video').attributes('src'))
       .toBe('meldwork-media://attachment/demo-video')
-    expect(wrapper.findAll('.message-attachment-grid figcaption').map(item => item.text()))
-      .toEqual(['poster.png', 'briefing.mp3', 'demo.mp4'])
+    expect(wrapper.find('.message-attachment-grid figcaption').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('opens uploaded images and generated videos in the original-media preview', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'uploaded-image',
+          groupId: 'direct-codex',
+          role: 'user',
+          content: '',
+          attachments: [{ id: 'uploaded-image-id', name: 'upload.png', mimeType: 'image/png', size: 3 }],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'generated-video',
+          groupId: 'direct-codex',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Video complete.',
+          attachments: [{ id: 'generated-video-id', name: 'result.mp4', mimeType: 'video/mp4', size: 24 }],
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    const triggers = wrapper.findAll('.message-media-preview-trigger')
+    expect(triggers).toHaveLength(2)
+    await triggers[0].trigger('click')
+    await flushPromises()
+    expect(document.body.classList.contains('media-preview-open')).toBe(true)
+    expect(document.querySelector('.attachment-media-preview-dialog img')?.getAttribute('src'))
+      .toBe('meldwork-media://attachment/uploaded-image-id')
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    await flushPromises()
+    expect(document.querySelector('.attachment-media-preview-dialog')).toBeNull()
+
+    await triggers[1].trigger('click')
+    await flushPromises()
+    const previewVideo = document.querySelector('.attachment-media-preview-dialog video')
+    expect(previewVideo?.getAttribute('src')).toBe('meldwork-media://attachment/generated-video-id')
+    expect(previewVideo?.hasAttribute('autoplay')).toBe(true)
+
+    document.querySelector('.attachment-media-preview-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    await flushPromises()
+    expect(document.querySelector('.attachment-media-preview-dialog')).toBeNull()
     wrapper.unmount()
   })
 
@@ -771,10 +831,38 @@ describe('RoundRelay workbench', () => {
     const documentCard = wrapper.get('.message-document-attachment')
     expect(documentCard.text()).toContain('report.pdf')
     expect(documentCard.text()).toContain('PDF · 2 KB')
+    expect(documentCard.get('[data-document-icon]').attributes('data-document-icon')).toBe('pdf')
     expect(documentCard.html()).not.toContain('/tmp/')
     await documentCard.trigger('click')
 
     expect(bridge.localAttachments.open).toHaveBeenCalledWith('generated-report')
+    wrapper.unmount()
+  })
+
+  it('uses distinct document icons for code, spreadsheet, presentation, and archive attachments', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex', conversationType: 'direct', directAgentKind: 'codex', name: 'Codex',
+        agentKinds: ['codex'], workdir: '/tmp/roundrelay-workspace', allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z', updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'document-icons', groupId: 'direct-codex', role: 'agent', agentKind: 'codex', content: 'Files ready.',
+        attachments: [
+          { id: 'source-file', name: 'server.ts', mimeType: 'text/plain', size: 10 },
+          { id: 'sheet-file', name: 'budget.xlsx', mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: 10 },
+          { id: 'slides-file', name: 'review.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: 10 },
+          { id: 'archive-file', name: 'release.zip', mimeType: 'application/zip', size: 10 },
+        ],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-document-icon]').map(item => item.attributes('data-document-icon')))
+      .toEqual(['code', 'spreadsheet', 'presentation', 'archive'])
     wrapper.unmount()
   })
 

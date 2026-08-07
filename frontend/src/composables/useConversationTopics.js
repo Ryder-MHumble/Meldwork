@@ -6,6 +6,7 @@ import {
   isAgentFailureMessage,
   isAgentTerminalMessage,
   messageElementId,
+  responseVersionRootId,
   traceRound,
 } from '../conversationTimelineModel.js'
 
@@ -48,14 +49,16 @@ export function useConversationTopics({
   }
 
   const topicReplyCounts = computed(() => {
-    const counts = new Map()
+    const replies = new Map()
     for (const message of activeMessages.value) {
       if (message.role !== 'agent') continue
       const rootId = messageThreadRootId(message)
       if (!rootId) continue
-      counts.set(rootId, (counts.get(rootId) || 0) + 1)
+      const replyIds = replies.get(rootId) || new Set()
+      replyIds.add(responseVersionRootId(message))
+      replies.set(rootId, replyIds)
     }
-    return counts
+    return new Map([...replies].map(([rootId, replyIds]) => [rootId, replyIds.size]))
   })
   const failedTopicIds = computed(() => new Set(activeMessages.value
     .filter(isAgentFailureMessage)

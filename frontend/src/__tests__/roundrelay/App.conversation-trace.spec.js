@@ -361,6 +361,10 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.message-row.agent .message-copy-surface').trigger('click')
     await flushPromises()
+    expect(writeText).not.toHaveBeenCalled()
+
+    await wrapper.get('.message-row.agent .message-copy-button').trigger('click')
+    await flushPromises()
     expect(writeText).toHaveBeenCalledWith('[Open docs](https://example.com)\n\nCopy this answer.')
     expect(wrapper.get('.message-row.agent').classes()).toContain('copied')
     expect(wrapper.get('.message-row.agent .message-copy-button').attributes('aria-label')).toBe('Copied')
@@ -374,7 +378,7 @@ describe('RoundRelay workbench', () => {
     const execCommand = vi.fn(() => true)
     Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
     writeText.mockRejectedValueOnce(new Error('Clipboard permission denied'))
-    await wrapper.get('.message-row.agent .message-copy-surface').trigger('click')
+    await wrapper.get('.message-row.agent .message-copy-button').trigger('click')
     await flushPromises()
     expect(execCommand).toHaveBeenCalledWith('copy')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
@@ -626,7 +630,11 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.get('.message-target-list').text()).toBe('Codex')
-    expect(wrapper.get('.message-target-list').element.parentElement.className).toBe('user-message-flow')
+    expect(wrapper.get('.message-target-list').element.parentElement).toBe(
+      wrapper.get('.user-message-text').element.parentElement,
+    )
+    expect(wrapper.get('.message-target-list').element.parentElement.classList)
+      .toContain('user-message-content')
     expect(wrapper.get('.plain-message').element.parentElement.className).toBe('user-message-flow')
     expect(wrapper.get('.message-row.agent').classes()).toContain('group-message')
     expect(wrapper.get('.message-row.agent').classes()).toContain('topic-reply')
@@ -689,6 +697,89 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps skill context and consecutive user message content left-aligned inside direct and group bubbles', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'direct-codex',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Codex review',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'group-1',
+          conversationType: 'group',
+          name: 'Implementation review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+      )
+      state.messages.push(
+        {
+          id: 'direct-root-1',
+          groupId: 'direct-codex',
+          role: 'user',
+          content: 'Review this implementation',
+          skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'direct-root-2',
+          groupId: 'direct-codex',
+          role: 'user',
+          content: 'Continue with the next check',
+          skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-root-1',
+          groupId: 'group-1',
+          role: 'user',
+          content: 'Compare the internal references',
+          targetKinds: ['codex', 'hermes'],
+          skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
+          knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['codex', 'hermes'] }],
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const directContents = wrapper.findAll('.user-message-content')
+    expect(directContents).toHaveLength(2)
+    directContents.forEach((content) => {
+      expect(content.element.children[0].classList).toContain('message-skill-list')
+      expect(content.element.children[1].classList).toContain('user-message-text')
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+    const groupContent = wrapper.get('.user-message-content')
+    expect(Array.from(groupContent.element.children).map(element => element.className)).toEqual([
+      'message-target-list',
+      'message-skill-list',
+      'user-message-text',
+    ])
+    expect(groupContent.get('.message-skill-list').text()).toContain('@Review code')
+    expect(groupContent.get('.message-knowledge-base img').exists()).toBe(true)
+
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(styles).toMatch(/\.message-row\.user \.message-body\s*\{[^}]*text-align:\s*left;/s)
+    expect(styles).toMatch(/\.message-skill-list\s*\{[^}]*display:\s*inline;/s)
+    wrapper.unmount()
+  })
+
   it('streams direct Agent answer deltas inline without opening the group trace panel', async () => {
     const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
       state.groups.push({
@@ -740,14 +831,14 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.direct-conclusion-live-status').text()).not.toContain('First')
     const traceDetails = wrapper.get('.trace-inline-details')
     expect(traceDetails.exists()).toBe(true)
-    expect(traceDetails.element.open).toBe(true)
+    expect(traceDetails.element.open).toBe(false)
     expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
     expect(wrapper.find('.message-trace-button').exists()).toBe(false)
 
-    traceDetails.element.open = false
+    traceDetails.element.open = true
     await traceDetails.trigger('toggle')
     await flushPromises()
-    expect(traceDetails.element.open).toBe(false)
+    expect(traceDetails.element.open).toBe(true)
 
     emitRunEvent({
       runId: 'run-direct', agentRunId: 'agent-direct', groupId: 'direct-trace',
@@ -764,8 +855,8 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.direct-conclusion-live-status').text()).toBe('Codex / Conclusion / Streaming')
     expect(wrapper.get('.direct-trace-event-live-status').text()).toContain('Codex / Execution details / Warning')
     expect(wrapper.get('.direct-trace-event-live-status').text()).toContain('Waiting for output')
-    expect(wrapper.get('.trace-inline-details').element.open).toBe(false)
-    expect(wrapper.get('.trace-inline-event small').text())
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+    expect(wrapper.get('.trace-inline-event-disclosure summary small').text())
       .toBe('Connector provided only the final answer; structured tool activity was unavailable.')
     expect(wrapper.get('.trace-inline-details').text()).not.toContain('connector_limited')
     wrapper.unmount()
@@ -877,7 +968,7 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('keeps a live direct trace open by default and collapses its durable replacement', async () => {
+  it('keeps live and durable direct traces collapsed by default', async () => {
     const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
       nextState.groups.push({
         id: 'direct-live-durable',
@@ -918,7 +1009,7 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.direct-session-open').trigger('click')
     await flushPromises()
-    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(false)
 
     state.messages.push({
       id: 'direct-live-answer',
@@ -938,7 +1029,7 @@ describe('RoundRelay workbench', () => {
     })
     emitWorkspaceChanged()
     await flushPromises()
-    expect(wrapper.get('.trace-inline-details').element.open).toBe(true)
+    expect(wrapper.get('.trace-inline-details').element.open).toBe(false)
 
     state.runs = []
     state.runningGroupIds = []
@@ -1615,6 +1706,93 @@ describe('RoundRelay workbench', () => {
 
     expect(details.findAll('.trace-inline-event')).toHaveLength(0)
     expect(details.get('.trace-inline-empty').text()).toBe('No detailed events were retained.')
+    wrapper.unmount()
+  })
+
+  it('collapses Agent replies independently and keeps regenerated response versions in place', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-versioned-replies',
+        conversationType: 'group',
+        name: 'Versioned replies',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'version-root',
+          groupId: 'group-versioned-replies',
+          role: 'user',
+          content: 'Compare both approaches',
+          targetKinds: ['codex', 'hermes'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'codex-version-1',
+          groupId: 'group-versioned-replies',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Codex first response',
+          threadRootId: 'version-root',
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'hermes-response',
+          groupId: 'group-versioned-replies',
+          role: 'agent',
+          agentKind: 'hermes',
+          content: 'Hermes response remains visible',
+          threadRootId: 'version-root',
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+        {
+          id: 'codex-version-2',
+          groupId: 'group-versioned-replies',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Codex regenerated response',
+          threadRootId: 'version-root',
+          responseVersionRootId: 'codex-version-1',
+          createdAt: '2026-07-29T08:04:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const codexReply = () => wrapper.get('[data-agent-kind="codex"]')
+    const hermesReply = () => wrapper.get('[data-agent-kind="hermes"]')
+
+    expect(wrapper.get('.topic-toggle').text()).toContain('2 replies')
+    expect(wrapper.findAll('.message-row.agent')).toHaveLength(2)
+    expect(codexReply().text()).toContain('Codex regenerated response')
+    expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
+
+    await codexReply().get('.message-reply-toggle').trigger('click')
+    expect(codexReply().classes()).toContain('agent-reply-collapsed')
+    expect(codexReply().find('.message-copy-surface').exists()).toBe(false)
+    expect(hermesReply().text()).toContain('Hermes response remains visible')
+
+    await codexReply().get('.response-version-controls button').trigger('click')
+    expect(codexReply().classes()).toContain('agent-reply-collapsed')
+    expect(codexReply().get('.response-version-controls').text()).toContain('1/2')
+
+    await codexReply().get('.message-reply-toggle').trigger('click')
+    expect(codexReply().text()).toContain('Codex first response')
+    await codexReply().get('.message-regenerate-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-versioned-replies',
+      targetKinds: ['codex'],
+      mode: 'manual',
+      regenerateMessageId: 'codex-version-1',
+    })
+    expect(codexReply().text()).toContain('Codex regenerated response')
+    expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
     wrapper.unmount()
   })
 })

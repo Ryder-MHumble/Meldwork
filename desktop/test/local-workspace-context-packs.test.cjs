@@ -610,7 +610,7 @@ test('direct Session deliveries expose bounded Task ancestry across messages', a
   )
 })
 
-test('legacy group Sessions migrate once with explicit provenance limitations', async (t) => {
+test('legacy conversation Sessions are discarded before a new group Task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -633,15 +633,15 @@ test('legacy group Sessions migrate once with explicit provenance limitations', 
   await workspace.sendMessage({ groupId: group.id, text: 'Migrate once', targetKinds: ['codex'] })
   await workspace.sendMessage({ groupId: group.id, text: 'Do not reuse it again', targetKinds: ['codex'] })
 
-  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['codex-legacy-global', ''])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', ''])
   const results = workspace.snapshot().messages.filter(message => message.role === 'agent')
   assert.deepEqual(deliveryForMessage(workspace, results[0]).sessionProvenance, {
-    scope: 'unknown-legacy',
-    reuse: true,
-    origin: 'unknown-legacy',
-    originTaskId: null,
+    scope: 'task',
+    reuse: false,
+    origin: 'created',
+    originTaskId: results[0].threadRootId,
     inheritedTaskIds: [],
-    completeness: 'unknown-legacy',
+    completeness: 'complete',
   })
   assert.deepEqual(deliveryForMessage(workspace, results[1]).sessionProvenance, {
     scope: 'task',

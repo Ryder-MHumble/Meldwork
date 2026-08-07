@@ -16,6 +16,7 @@ const {
   normalizeSkillHint,
   normalizeTargetKinds,
 } = require('./local-workspace-inputs.cjs')
+const { mediaGenerationRequest } = require('./media-generation-request.cjs')
 
 class LocalWorkspaceMessageSubmission {
   constructor(options) {
@@ -157,6 +158,7 @@ class LocalWorkspaceMessageSubmission {
     ]))
     return {
       text,
+      mediaRequest: mediaGenerationRequest(text),
       attachments,
       skillHintsByKind,
       skillHints: targetKinds.flatMap(kind => publicSkillHintsByKind.get(kind) || []),
@@ -221,7 +223,85 @@ class LocalWorkspaceMessageSubmission {
       ? normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
       : 0
     const requestedThreadRootId = mode === 'manual' ? cleanText(input.threadRootId, 100) : ''
-    return { mode, targetKinds, unlimitedRounds, maxRounds, requestedThreadRootId }
+    const regenerateMessageId = cleanText(input.regenerateMessageId, 100)
+    if (input.regenerateMessageId != null && !regenerateMessageId) {
+      throw new Error('LOCAL_MESSAGE_REGENERATION_INVALID')
+    }
+    if (regenerateMessageId && (mode !== 'manual' || targetKinds.length !== 1)) {
+      throw new Error('LOCAL_MESSAGE_REGENERATION_INVALID')
+    }
+    return {
+      mode,
+      targetKinds,
+      unlimitedRounds,
+      maxRounds,
+      requestedThreadRootId,
+      regenerateMessageId,
+    }
+  }
+
+  resolveRegeneration(group, messageId, targetKinds) {
+    if (!messageId) return null
+    const messages = this.state().messages
+    const sourceIndex = messages.findIndex(message => (
+      message.id === messageId && message.groupId === group.id
+    ))
+    const sourceMessage = messages[sourceIndex]
+    const targetKind = targetKinds[0]
+    if (sourceIndex < 0 || sourceMessage?.role !== 'agent'
+        || sourceMessage.agentKind !== targetKind) {
+      throw new Error('LOCAL_MESSAGE_REGENERATION_INVALID')
+    }
+    let userMessage = null
+    if (sourceMessage.threadRootId) {
+      userMessage = messages.find(message => (
+        message.id === sourceMessage.threadRootId
+        && message.groupId === group.id
+        && message.role === 'user'
+      ))
+    } else if (group.conversationType === 'direct') {
+      for (let index = sourceIndex - 1; index >= 0; index -= 1) {
+        const message = messages[index]
+        if (message.groupId === group.id && message.role === 'user' && !message.threadRootId) {
+          userMessage = message
+          break
+        }
+      }
+    }
+    if (!userMessage) throw new Error('LOCAL_MESSAGE_REGENERATION_INVALID')
+    return {
+      sourceMessage,
+      userMessage,
+      responseVersionRootId: cleanText(
+        sourceMessage.responseVersionRootId || sourceMessage.id,
+        100,
+      ),
+    }
+  }
+
+  regenerationInput(input, regeneration, targetKind) {
+    const message = regeneration.userMessage
+    return {
+      ...input,
+      text: message.content,
+      attachments: Array.isArray(message.attachments) ? message.attachments : [],
+      skillHints: (Array.isArray(message.skillHints) ? message.skillHints : [])
+        .filter(skill => skill.targetKind === targetKind),
+      knowledgeBaseHints: (Array.isArray(message.knowledgeBaseHints)
+        ? message.knowledgeBaseHints
+        : []).filter(source => source.targetKinds?.includes(targetKind)).map(source => ({
+        ...source,
+        targetKinds: [targetKind],
+      })),
+    }
+  }
+
+  regenerationInstruction() {
+    return [
+      'Produce a fresh alternative response to the user request.',
+      'Re-evaluate the task independently and return the best complete answer.',
+      'Do not mention response versions, regeneration, or the previous answer.',
+    ].join('\n')
   }
 
   replacementInstruction(failedKind) {
@@ -243,12 +323,21 @@ class LocalWorkspaceMessageSubmission {
       unlimitedRounds,
       maxRounds,
       requestedThreadRootId,
+      regenerateMessageId,
     } = this.validateInput(group, input)
+    const regeneration = this.resolveRegeneration(group, regenerateMessageId, targetKinds)
     const reservation = this.reserveRun(
-      group.id, mode, targetKinds, '', maxRounds, unlimitedRounds,
+      group.id,
+      mode,
+      targetKinds,
+      regeneration?.userMessage.id || '',
+      maxRounds,
+      unlimitedRounds,
     )
     try {
+      if (regeneration) reservation.responseVersionRootId = regeneration.responseVersionRootId
       this.configureRunBudget(reservation, input.budget || {})
+      if (regeneration) this.emitChanged()
     } catch (error) {
       this.releasePreparation(group.id, reservation)
       throw error
@@ -260,7 +349,11 @@ class LocalWorkspaceMessageSubmission {
       let runStatus = 'failed'
       const reportedFailures = new Set()
       try {
-        const prepared = await this.preflight(targetKinds, input, reservation)
+        const prepared = await this.preflight(
+          targetKinds,
+          regeneration ? this.regenerationInput(input, regeneration, targetKinds[0]) : input,
+          reservation,
+        )
         if (mode === 'auto') {
           const previousUpdatedAt = group.updatedAt
           const userMessage = this.addMessage(
@@ -310,7 +403,7 @@ class LocalWorkspaceMessageSubmission {
         }
 
         const previousUpdatedAt = group.updatedAt
-        const userMessage = this.addMessage(
+        const userMessage = regeneration?.userMessage || this.addMessage(
           group.id,
           'user',
           prepared.text,
@@ -324,7 +417,9 @@ class LocalWorkspaceMessageSubmission {
             targetKinds: group.conversationType === 'direct' ? [] : targetKinds,
           },
         )
-        const threadRootId = group.conversationType === 'direct' ? '' : userMessage.id
+        const threadRootId = regeneration
+          ? userMessage.id
+          : (group.conversationType === 'direct' ? '' : userMessage.id)
         try {
           const contextPack = this.createContextPack({
             group,
@@ -337,14 +432,19 @@ class LocalWorkspaceMessageSubmission {
           this.bindRunTask(
             group.id, reservation, userMessage.id, threadRootId, contextPack.contextPackId,
           )
+          if (regeneration) {
+            this.resetAgentSession(group, targetKinds[0], true, userMessage.id)
+          }
           controller = this.beginRun(
             group.id, 'manual', targetKinds, threadRootId, reservation,
           )
         } catch (error) {
-          try {
-            this.rollbackAddedMessage(group.id, userMessage.id, previousUpdatedAt)
-          } catch (rollbackError) {
-            if (error && typeof error === 'object') error.rollbackError = rollbackError
+          if (!regeneration) {
+            try {
+              this.rollbackAddedMessage(group.id, userMessage.id, previousUpdatedAt)
+            } catch (rollbackError) {
+              if (error && typeof error === 'object') error.rollbackError = rollbackError
+            }
           }
           throw error
         }
@@ -352,6 +452,7 @@ class LocalWorkspaceMessageSubmission {
         let activeKinds = [...targetKinds]
         const pendingKinds = [...targetKinds]
         const replacementInstructions = new Map()
+        const mediaOwnerKind = prepared.mediaRequest ? targetKinds[0] : ''
         while (pendingKinds.length) {
           const kind = pendingKinds.shift()
           if (!activeKinds.includes(kind)) continue
@@ -373,6 +474,16 @@ class LocalWorkspaceMessageSubmission {
                 attachmentSnapshots: prepared.attachments,
                 sessionThreadRootId: requestedThreadRootId || threadRootId,
                 runtimeInstruction: replacementInstructions.get(kind) || '',
+                mediaRequest: kind === mediaOwnerKind ? prepared.mediaRequest : null,
+                responseVersionRootId: regeneration?.responseVersionRootId || '',
+                regenerationInstruction: regeneration ? this.regenerationInstruction() : '',
+                contextOptions: regeneration
+                  ? {
+                      beforeMessageId: regeneration.sourceMessage.id,
+                      excludeResponseVersionRootId: regeneration.responseVersionRootId,
+                      focusUserMessageId: regeneration.userMessage.id,
+                    }
+                  : { focusUserMessageId: userMessage.id },
               },
               reportedFailures,
             })

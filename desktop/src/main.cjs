@@ -38,6 +38,8 @@ const {
   resolveNativeCredentialState,
 } = require('./local-agent-readiness.cjs')
 const { LocalWorkspace } = require('./local-workspace.cjs')
+const { MediaGenerationRuntime } = require('./media-generation-runtime.cjs')
+const { resolveMediaProvider } = require('./media-provider-resolution.cjs')
 const { registerDesktopIpc } = require('./main-ipc.cjs')
 const {
   isAllowedExternalUrl,
@@ -371,6 +373,16 @@ function createWorkspace() {
     }),
     connectors: [],
   })
+  const mediaGeneration = new MediaGenerationRuntime({
+    getProvider: (kind, type, excludedKinds) => resolveMediaProvider({
+      requestedKind: kind,
+      type,
+      kinds: EXTERNAL_PROVIDER_KINDS,
+      excludedKinds,
+      statusFor: candidateKind => providerStore.status(candidateKind),
+      credentialsFor: candidateKind => providerStore.envForAgent(candidateKind),
+    }),
+  })
   const localWorkspace = new LocalWorkspace({
     storagePath: workspaceStoragePath(),
     contentBlobStore,
@@ -407,6 +419,7 @@ function createWorkspace() {
     agentLabel: kind => customAgentStore.label(kind) || agentConnectors.label(kind),
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
     connectorRuntime: agentConnectors,
+    generateMedia: input => mediaGeneration.generate(input),
     runAgent: async (agent, prompt, workdir, options = {}) => {
       if (customAgentStore.has(agent.kind)) {
         return customAgentStore.run(agent.kind, prompt, workdir, {

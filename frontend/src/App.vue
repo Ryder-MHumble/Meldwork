@@ -3,7 +3,7 @@
     class="app-shell"
     :class="{
       'sidebar-collapsed': sidebarCollapsed,
-      'trace-panel-open': tracePanelOpen && activeGroup?.conversationType !== 'direct',
+      'trace-panel-open': tracePanelOpen,
     }"
     :data-theme="theme"
     :data-platform="desktopPlatform"
@@ -93,7 +93,7 @@
       </section>
 
       <RunTracePanel
-        v-if="tracePanelOpen && activeGroup?.conversationType !== 'direct'"
+        v-if="tracePanelOpen"
         ref="tracePanel"
         :open="tracePanelOpen"
         :drawer="tracePanelDrawer"
@@ -570,6 +570,7 @@ const messageActions = useMessageActions({
   notify,
   showCopyToast,
   showError,
+  showLatestResponseVersion: conversationTimeline.showLatestResponseVersion,
   snapshot,
   t,
   workspace,
