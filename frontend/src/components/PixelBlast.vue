@@ -145,7 +145,6 @@ function disposeRuntime() {
   runtime.geometry.dispose()
   runtime.material.dispose()
   runtime.renderer.dispose()
-  runtime.renderer.forceContextLoss()
   runtime = null
   rendererReady.value = false
 }

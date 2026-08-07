@@ -247,11 +247,58 @@
   width: 34px;
   display: inline-flex;
   padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  transition: color 0.14s ease;
+}
+
+.sidebar-footer-actions .icon-button:hover {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+}
+
+.preference-icon-frame {
+  position: relative;
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.preference-icon {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.preference-icon-enter-active,
+.preference-icon-leave-active {
+  transition: opacity 0.14s ease, transform 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.preference-icon-enter-from {
+  opacity: 0;
+  transform: scale(0.76) rotate(8deg);
+}
+
+.preference-icon-leave-to {
+  opacity: 0;
+  transform: scale(0.76) rotate(-8deg);
 }
 
 .sidebar-footer svg {
   width: 17px;
   height: 17px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preference-icon-enter-active,
+  .preference-icon-leave-active {
+    transition-duration: 0.01ms;
+  }
 }
 
 .footer-count {

@@ -399,6 +399,8 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.find('.brand-actions').exists()).toBe(false)
     expect(wrapper.findAll('.sidebar-footer-actions button')).toHaveLength(2)
+    expect(wrapper.findAll('.sidebar-footer-actions .preference-icon-frame')).toHaveLength(2)
+    expect(wrapper.findAll('.nav-heading svg')).toHaveLength(0)
     expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(2)
 
     await wrapper.get('.sidebar-toggle').trigger('click')
@@ -601,6 +603,7 @@ describe('RoundRelay workbench', () => {
     expect(pixelBlastSource).toContain('uPixelJitter: { value: 0.32 }')
     expect(pixelBlastSource).toContain('uOpacity: { value: 0.42 }')
     expect(pixelBlastSource).toContain('Math.min(32, now - previousFrame) * 0.00036')
+    expect(pixelBlastSource).not.toContain('forceContextLoss()')
     expect(source).toMatch(/\.agent-discovery-leave-active\s*\{[^}]*transition:\s*opacity 0\.28s ease;/s)
     expect(source).toMatch(/\.onboarding-leave-active\s*\{[^}]*transition:\s*opacity 0\.42s ease;/s)
     expect(source).toMatch(/\.onboarding-leave-active \.onboarding-backdrop\s*\{[^}]*transition:\s*background-color 0\.42s ease;/s)
@@ -615,6 +618,9 @@ describe('RoundRelay workbench', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
 
     expect(source).toMatch(/\.sidebar-footer\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;/s)
+    expect(source).toMatch(/\.sidebar-footer-actions \.icon-button:hover\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*transparent;[^}]*color:\s*var\(--text\);/s)
+    expect(source).toMatch(/\.preference-icon-enter-active,[^{]+\.preference-icon-leave-active\s*\{[^}]*opacity 0\.14s ease,[^}]*transform 0\.14s cubic-bezier\(0\.16, 1, 0\.3, 1\);/s)
+    expect(source).not.toMatch(/\.nav-heading svg\s*\{/s)
     expect(source).not.toMatch(/\.sidebar\s*\{[^}]*border-right:\s*1px solid var\(--border\);/s)
     expect(source).not.toMatch(/\.sidebar-footer\s*\{[^}]*border-top:\s*1px solid var\(--border\);/s)
     expect(source).not.toMatch(/\.system-settings-header\s*\{[^}]*border-bottom:\s*1px solid var\(--border\);/s)
