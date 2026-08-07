@@ -20,9 +20,17 @@ class LocalWorkspaceAgentCatalog {
   async refresh() {
     const runtimeAtRefreshStart = new Map(Object.entries(this.state().agentRuntime))
     const detected = await this.detectAgents()
-    const nativeStates = await Promise.all(detected.map(
-      agent => this.credentialState(agent.kind, agent),
-    ))
+    const nativeStates = await Promise.all(detected.map((agent) => {
+      const runtime = runtimeAtRefreshStart.get(agent.kind)
+      const sharedProviderReady = Boolean(this.sharedProviderReady(agent.kind))
+      if (sharedProviderReady && runtime?.credentialState === 'missing') {
+        return { state: 'missing', source: 'runtime-auth-failure' }
+      }
+      if (sharedProviderReady) {
+        return { state: 'ready', source: 'shared-provider' }
+      }
+      return this.credentialState(agent.kind, agent)
+    }))
     const state = this.state()
     let recoveredRuntimeCredential = false
     const agents = detected.map((agent, index) => {

@@ -49,7 +49,7 @@ describe('RoundRelay workbench', () => {
       id: 'direct-codex-1',
       conversationType: 'direct',
       directAgentKind: 'codex',
-      name: 'Codex',
+      name: 'Earlier Codex conversation with a longer sidebar title',
       topic: '',
       agentKinds: ['codex'],
       workdir: '/tmp/roundrelay-workspace',
@@ -57,9 +57,16 @@ describe('RoundRelay workbench', () => {
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
     }
+    const latest = {
+      ...existing,
+      id: 'direct-codex-latest',
+      name: 'Recent Codex conversation',
+      createdAt: '2026-07-29T07:00:00Z',
+      updatedAt: '2026-07-29T08:30:00Z',
+    }
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.agents[1].showInSidebar = false
-      state.groups.push(existing)
+      state.groups.push(existing, latest)
       desktopBridge.agentInstaller.skills.mockImplementation(async kind => ({
         supported: true,
         total: kind === 'codex' ? 12 : 0,
@@ -91,15 +98,17 @@ describe('RoundRelay workbench', () => {
     expect(bridge.localWorkspace.createGroup).toHaveBeenCalledWith(expect.objectContaining({
       conversationType: 'direct',
       directAgentKind: 'codex',
-      name: 'Codex chat 2',
+      name: 'Codex chat 3',
     }))
-    expect(wrapper.findAll('.direct-session-row')).toHaveLength(2)
+    expect(wrapper.findAll('.direct-session-row')).toHaveLength(3)
     await wrapper.get('.sidebar-agent-main').trigger('click')
     expect(wrapper.findAll('.direct-session-row')).toHaveLength(0)
     await wrapper.get('.sidebar-agent-main').trigger('click')
     const sessions = wrapper.findAll('.direct-session-row')
-    expect(sessions).toHaveLength(2)
-    expect(sessions[0].get('.direct-session-open span').text()).toBe('Codex chat 2')
+    expect(sessions).toHaveLength(3)
+    expect(sessions[0].get('.direct-session-open span').text()).toBe('Codex chat 3')
+    expect(sessions[1].get('.direct-session-open span').text()).toBe('Recent Codex conversation')
+    expect(sessions[1].find('.direct-session-open time').exists()).toBe(false)
 
     await sessions[0].findAll('.direct-session-action')[0].trigger('click')
     expect(wrapper.get('#modal-title').text()).toBe('Rename direct chat')
@@ -112,7 +121,7 @@ describe('RoundRelay workbench', () => {
       expect.objectContaining({ name: 'Code audit' }),
     )
 
-    await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
+    await wrapper.findAll('.direct-session-row')[2].findAll('.direct-session-action')[1].trigger('click')
     expect(wrapper.find('.modal.medium').exists()).toBe(false)
     let sidebarDeletePopover = document.body.querySelector('.sidebar-delete-popover')
     expect(sidebarDeletePopover.textContent).toContain('Delete this conversation?')
@@ -121,7 +130,7 @@ describe('RoundRelay workbench', () => {
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
     await flushPromises()
     expect(document.body.querySelector('.sidebar-delete-popover')).toBeNull()
-    await wrapper.findAll('.direct-session-row')[1].findAll('.direct-session-action')[1].trigger('click')
+    await wrapper.findAll('.direct-session-row')[2].findAll('.direct-session-action')[1].trigger('click')
     sidebarDeletePopover = document.body.querySelector('.sidebar-delete-popover')
     sidebarDeletePopover.querySelector('.danger-button').click()
     await flushPromises()
@@ -138,6 +147,9 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.direct-session-list > :last-child::before\s*\{[^}]*content:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row\.active\s*\{[^}]*border-color:\s*transparent;[^}]*background:\s*var\(--surface-active\);/s)
     expect(source).toMatch(/\.direct-session-row\.active::after\s*\{[^}]*background:\s*var\(--accent\);/s)
+    expect(source).toMatch(/\.direct-session-action:hover\s*\{[^}]*background:\s*var\(--surface-hover\);/s)
+    expect(source).not.toMatch(/\.direct-session-action:hover\s*\{[^}]*border-color:/s)
+    expect(source).not.toMatch(/\.direct-session-action\.danger:hover\s*\{[^}]*border-color:/s)
     expect(source).toMatch(/\.sidebar-delete-popover\s*\{[^}]*position:\s*fixed;[^}]*border:\s*0;[^}]*transform:\s*translateY\(calc\(-100% \+ 18px\)\);/s)
     expect(source).toMatch(/\.sidebar-delete-popover::after\s*\{[^}]*border:\s*0;/s)
     expect(source).not.toMatch(/\.group-conversation-list::before/)

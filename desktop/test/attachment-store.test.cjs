@@ -16,6 +16,7 @@ const PNG = Buffer.from([
   0x00, 0x00, 0x00, 0x0d,
 ])
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46])
+const GIF = Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00\x00', 'binary')
 const WEBP = Buffer.from([
   0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00,
   0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
@@ -101,6 +102,17 @@ test('accepts PNG and JPEG using their real magic bytes', (t) => {
     store.importBuffer({ bytes: JPEG, name: 'photo.jpeg', mimeType: 'image/jpeg' }),
     { id: 'attachment-2', name: 'photo.jpg', mimeType: 'image/jpeg', size: JPEG.length },
   )
+})
+
+test('accepts GIF and WebP as image media using their real magic bytes', (t) => {
+  const { store } = fixture(t)
+
+  assert.equal(store.importBuffer({
+    bytes: GIF, name: 'animation.gif', mimeType: 'image/gif',
+  }).mimeType, 'image/gif')
+  assert.equal(store.importBuffer({
+    bytes: WEBP, name: 'preview.webp', mimeType: 'image/webp',
+  }).mimeType, 'image/webp')
 })
 
 test('imports validated audio and video while preserving controlled storage paths', (t) => {
@@ -189,7 +201,7 @@ test('rejects media extension, MIME, and magic-byte mismatches', (t) => {
   )
   assert.throws(
     () => store.importBuffer({ bytes: WEBP, name: 'preview.webm', mimeType: 'video/webm' }),
-    { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
+    { message: 'LOCAL_ATTACHMENT_TYPE_MISMATCH' },
   )
 })
 
@@ -201,7 +213,7 @@ test('rejects unsupported bytes and declared type or extension mismatches', (t) 
     { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
   )
   assert.throws(
-    () => store.importBuffer({ bytes: WEBP, name: 'preview.webp', mimeType: 'image/webp' }),
+    () => store.importBuffer({ bytes: Buffer.from('not webp'), name: 'preview.webp', mimeType: 'image/webp' }),
     { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
   )
   assert.throws(

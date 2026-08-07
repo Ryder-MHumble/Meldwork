@@ -12,7 +12,10 @@ export default defineConfig(() => ({
     rolldownOptions: {
       output: {
         codeSplitting: {
-          groups: [{ name: 'vendor', test: /node_modules[\\/]/ }],
+          groups: [
+            { name: 'pixel-blast', test: /node_modules[\\/]three[\\/]/ },
+            { name: 'vendor', test: /node_modules[\\/]/ },
+          ],
         },
       },
     },

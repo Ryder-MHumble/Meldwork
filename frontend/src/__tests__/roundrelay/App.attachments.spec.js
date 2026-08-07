@@ -666,6 +666,82 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('falls back to the private media protocol when an Agent image has no thumbnail', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'agent-protocol-image',
+        groupId: 'direct-codex',
+        role: 'agent',
+        agentKind: 'codex',
+        content: 'The original image is ready.',
+        attachments: [{ id: 'original-image', name: 'original.webp', mimeType: 'image/webp', size: 4 }],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      desktopBridge.localAttachments.preview.mockResolvedValue({
+        id: 'original-image', name: 'original.webp', mimeType: 'image/webp', size: 4,
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.preview).toHaveBeenCalledWith('original-image')
+    expect(wrapper.get('.message-attachment-grid img').attributes('src'))
+      .toBe('meldwork-media://attachment/original-image')
+    wrapper.unmount()
+  })
+
+  it('renders Agent image, audio, and video outputs inside a group conversation', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-media',
+        conversationType: 'group',
+        name: 'Media studio',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'group-agent-media',
+        groupId: 'group-media',
+        role: 'agent',
+        agentKind: 'codex',
+        content: 'Generated media is ready.',
+        attachments: [
+          { id: 'group-poster', name: 'group-poster.png', mimeType: 'image/png', size: 3 },
+          { id: 'group-audio', name: 'group-audio.mp3', mimeType: 'audio/mpeg', size: 12 },
+          { id: 'group-video', name: 'group-video.mp4', mimeType: 'video/mp4', size: 24 },
+        ],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localAttachments.preview).toHaveBeenCalledWith('group-poster')
+    expect(wrapper.get('.message-attachment-grid img').attributes('src')).toBe('data:image/png;base64,AQID')
+    expect(wrapper.get('.message-attachment-grid audio').attributes('src'))
+      .toBe('meldwork-media://attachment/group-audio')
+    expect(wrapper.get('.message-attachment-grid video').attributes('src'))
+      .toBe('meldwork-media://attachment/group-video')
+    wrapper.unmount()
+  })
+
   it('renders and opens an Agent-generated document without exposing a path', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({

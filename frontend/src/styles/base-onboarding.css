@@ -9,6 +9,14 @@
   background: rgb(13 17 23 / 0.62);
 }
 
+.onboarding-transition-shell {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  pointer-events: auto;
+  will-change: opacity;
+}
+
 .onboarding-dialog {
   width: min(760px, 100%);
   height: min(700px, calc(100dvh - 48px));
@@ -181,4 +189,37 @@
 .onboarding-slide-enter-from,
 .onboarding-slide-leave-to {
   opacity: 0;
+}
+
+.onboarding-enter-active,
+.onboarding-leave-active {
+  transition: opacity 0.42s ease;
+}
+
+.onboarding-enter-active .onboarding-dialog,
+.onboarding-leave-active .onboarding-dialog {
+  transition: opacity 0.42s ease, transform 0.42s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.onboarding-leave-active {
+  pointer-events: none;
+}
+
+.onboarding-leave-active .onboarding-backdrop {
+  transition: background-color 0.42s ease;
+}
+
+.onboarding-enter-from,
+.onboarding-leave-to {
+  opacity: 0;
+}
+
+.onboarding-enter-from .onboarding-dialog,
+.onboarding-leave-to .onboarding-dialog {
+  opacity: 0;
+  transform: translateY(14px) scale(0.975);
+}
+
+.onboarding-leave-to .onboarding-backdrop {
+  background-color: rgb(13 17 23 / 0);
 }

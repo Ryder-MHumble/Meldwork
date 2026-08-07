@@ -29,6 +29,8 @@
 }
 
 .user-message-flow {
+  display: grid;
+  justify-items: end;
   line-height: 1.68;
 }
 
@@ -367,7 +369,29 @@
 }
 
 .user-message-flow .message-content {
-  display: inline;
+  display: block;
+}
+
+.user-message-content.collapsed {
+  max-height: 216px;
+  overflow: hidden;
+}
+
+.user-message-expand-button {
+  margin-top: 5px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.user-message-expand-button:hover,
+.user-message-expand-button:focus-visible {
+  color: var(--text);
 }
 
 .message-copy-surface {

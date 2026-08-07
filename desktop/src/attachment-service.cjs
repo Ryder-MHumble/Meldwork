@@ -116,9 +116,7 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
       size: metadata.size,
     }
     if (!metadata.mimeType.startsWith('image/')) return attachment
-    if (metadata.mimeType !== 'image/png' && metadata.mimeType !== 'image/jpeg') {
-      throw new Error('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')
-    }
+    if (metadata.mimeType !== 'image/png' && metadata.mimeType !== 'image/jpeg') return attachment
     inspectImageDimensions(bytes)
     const source = nativeImage.createFromBuffer(bytes)
     if (source.isEmpty()) throw new Error('LOCAL_ATTACHMENT_TYPE_UNSUPPORTED')

@@ -168,6 +168,8 @@ export default {
     'conversation.topicReplies': '{count} 条回复',
     'conversation.expandTopic': '展开{replies}',
     'conversation.collapseTopic': '收起{replies}',
+    'conversation.expandMessage': '展开全文',
+    'conversation.collapseMessage': '收起',
     'conversation.executionProcess': '执行过程',
     'conversation.elapsed': '用时 {duration}',
     'conversation.seconds': '{count} 秒',

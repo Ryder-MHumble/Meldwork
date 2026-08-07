@@ -30,22 +30,20 @@
           aria-live="polite"
           :aria-label="t('agentDiscovery.title')"
         >
-          <div class="agent-discovery-orbit" aria-hidden="true">
-            <span class="agent-discovery-orbit-ring ring-one" />
-            <span class="agent-discovery-orbit-ring ring-two" />
-            <span class="agent-discovery-orbit-scan" />
-            <img :src="productMark" alt="" />
-          </div>
-          <div class="agent-discovery-copy">
-            <p class="agent-discovery-kicker">{{ t('agentDiscovery.kicker') }}</p>
-            <h1>{{ t('agentDiscovery.title') }}</h1>
-            <p>{{ t('agentDiscovery.body') }}</p>
-            <div class="agent-discovery-progress" aria-hidden="true">
-              <span />
-            </div>
-            <div class="agent-discovery-status">
-              <span class="agent-discovery-status-dot" aria-hidden="true" />
-              <span>{{ t('agentDiscovery.status') }}</span>
+          <PixelBlast :theme="theme" />
+          <div class="agent-discovery-content">
+            <img class="agent-discovery-mark" :src="productMark" alt="" />
+            <div class="agent-discovery-copy">
+              <p class="agent-discovery-kicker">{{ t('agentDiscovery.kicker') }}</p>
+              <h1>{{ t('agentDiscovery.title') }}</h1>
+              <p>{{ t('agentDiscovery.body') }}</p>
+              <div class="agent-discovery-progress" aria-hidden="true">
+                <span />
+              </div>
+              <div class="agent-discovery-status">
+                <span class="agent-discovery-status-dot" aria-hidden="true" />
+                <span>{{ t('agentDiscovery.status') }}</span>
+              </div>
             </div>
           </div>
         </section>
@@ -116,11 +114,14 @@
         @jump-source="jumpToTraceSource"
       />
 
-      <OnboardingDialog
-        v-if="onboardingVisible"
-        ref="onboardingDialog"
-        :controller="onboardingDialogController"
-      />
+      <transition name="onboarding" appear>
+        <div v-if="onboardingVisible" class="onboarding-transition-shell">
+          <OnboardingDialog
+            ref="onboardingDialog"
+            :controller="onboardingDialogController"
+          />
+        </div>
+      </transition>
 
       <transition name="modal-backdrop" appear>
         <div v-if="modal" class="modal-backdrop" @mousedown.self="closeModal">
@@ -194,6 +195,7 @@ import ConversationHeader from './components/ConversationHeader.vue'
 import ConversationTimelineView from './components/ConversationTimelineView.vue'
 import HomeDashboard from './components/HomeDashboard.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
+import PixelBlast from './components/PixelBlast.vue'
 import RunTracePanel from './components/RunTracePanel.vue'
 import SystemSettingsView from './components/SystemSettingsView.vue'
 import WorkspaceModalContent from './components/WorkspaceModalContent.vue'

@@ -303,9 +303,12 @@
   transition: color 0.14s ease, opacity 0.14s ease;
 }
 
-.sidebar-agent-new:hover,
-.direct-session-action:hover {
+.sidebar-agent-new:hover {
   border-color: var(--border);
+  background: var(--surface-hover);
+}
+
+.direct-session-action:hover {
   background: var(--surface-hover);
 }
 
@@ -476,19 +479,13 @@
   white-space: nowrap;
 }
 
-.direct-session-open time {
-  flex: 0 0 auto;
-  color: var(--faint);
-  font-size: 9px;
-}
-
 .direct-session-action {
   width: 24px;
   height: 24px;
   opacity: 0;
   pointer-events: none;
   transform: translateX(3px);
-  transition: opacity 0.14s ease, transform 0.16s ease, border-color 0.14s ease, background 0.14s ease, color 0.14s ease;
+  transition: opacity 0.14s ease, transform 0.16s ease, background 0.14s ease, color 0.14s ease;
 }
 
 .direct-session-row:hover .direct-session-action,
@@ -511,7 +508,6 @@
 }
 
 .direct-session-action.danger:hover {
-  border-color: var(--danger);
   background: var(--danger-soft);
   color: var(--danger);
 }

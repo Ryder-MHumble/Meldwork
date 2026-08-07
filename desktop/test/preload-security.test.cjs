@@ -432,25 +432,28 @@ test('local preload rejects unbounded or unsupported renderer attachment payload
     }),
     { code: 'LOCAL_ATTACHMENT_BYTES_INVALID' },
   )
-  assert.throws(
-    () => api.localAttachments.importAttachment({
-      name: 'animation.gif', mimeType: 'image/gif', bytes: Uint8Array.from([1]),
-    }),
-    { code: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
-  )
-  assert.throws(
-    () => api.localAttachments.importAttachment({
-      name: 'preview.webp', mimeType: 'image/webp', bytes: Uint8Array.from([1]),
-    }),
-    { code: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' },
-  )
+  await api.localAttachments.importAttachment({
+    name: 'animation.gif', mimeType: 'image/gif', bytes: Uint8Array.from([1]),
+  })
+  await api.localAttachments.importAttachment({
+    name: 'preview.webp', mimeType: 'image/webp', bytes: Uint8Array.from([1]),
+  })
   assert.throws(
     () => api.localAttachments.importAttachment({
       name: 'large.png', mimeType: 'image/png', bytes: new Uint8Array((8 * 1024 * 1024) + 1),
     }),
     { code: 'LOCAL_ATTACHMENT_TOO_LARGE' },
   )
-  assert.deepEqual(invocations, [])
+  assert.deepEqual(invocations, [
+    {
+      channel: 'local-attachments:import',
+      args: [{ name: 'animation.gif', mimeType: 'image/gif', bytes: Uint8Array.from([1]) }],
+    },
+    {
+      channel: 'local-attachments:import',
+      args: [{ name: 'preview.webp', mimeType: 'image/webp', bytes: Uint8Array.from([1]) }],
+    },
+  ])
 })
 
 test('remote preload does not expose local credentials, workspace, or installer APIs', () => {

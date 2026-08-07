@@ -4,6 +4,8 @@ const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const ATTACHMENT_LIMITS = new Map([
   ['image/png', 8 * 1024 * 1024],
   ['image/jpeg', 8 * 1024 * 1024],
+  ['image/gif', 8 * 1024 * 1024],
+  ['image/webp', 8 * 1024 * 1024],
   ['audio/mpeg', 32 * 1024 * 1024],
   ['audio/wav', 64 * 1024 * 1024],
   ['audio/mp4', 64 * 1024 * 1024],

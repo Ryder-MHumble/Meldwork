@@ -16,6 +16,7 @@ function readFileSync(filename, encoding) {
 }
 
 const originalScrollIntoView = HTMLElement.prototype.scrollIntoView
+const originalScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollHeight')
 const originalClipboard = navigator.clipboard
 const originalExecCommand = document.execCommand
 
@@ -37,6 +38,8 @@ afterEach(() => {
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
   else delete HTMLElement.prototype.scrollIntoView
+  if (originalScrollHeight) Object.defineProperty(HTMLElement.prototype, 'scrollHeight', originalScrollHeight)
+  else delete HTMLElement.prototype.scrollHeight
   Object.defineProperty(navigator, 'clipboard', { configurable: true, value: originalClipboard })
   if (originalExecCommand) Object.defineProperty(document, 'execCommand', { configurable: true, value: originalExecCommand })
   else delete document.execCommand
@@ -375,6 +378,52 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(execCommand).toHaveBeenCalledWith('copy')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('collapses oversized user queries and restores them on demand', async () => {
+    Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
+      configurable: true,
+      get() {
+        return this.classList.contains('user-message-content') && this.textContent.length > 100
+          ? 480
+          : 0
+      },
+    })
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-codex',
+        conversationType: 'direct',
+        directAgentKind: 'codex',
+        name: 'Codex',
+        agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'long-user-query',
+        groupId: 'direct-codex',
+        role: 'user',
+        content: 'A'.repeat(240),
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const content = wrapper.get('.user-message-content')
+    const toggle = wrapper.get('.user-message-expand-button')
+    expect(content.classes()).toContain('collapsed')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+    expect(toggle.text()).toBe('Show more')
+
+    await toggle.trigger('click')
+
+    expect(content.classes()).not.toContain('collapsed')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(toggle.text()).toBe('Show less')
     wrapper.unmount()
   })
 

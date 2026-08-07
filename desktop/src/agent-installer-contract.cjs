@@ -6,7 +6,7 @@ const { promisify } = require('node:util')
 const { searchPath } = require('./cli-adapters.cjs')
 
 const execFileAsync = promisify(execFile)
-const DETECTION_CACHE_TTL_MS = 3000
+const DETECTION_CACHE_TTL_MS = 30000
 const MAX_SCRIPT_BYTES = 4 * 1024 * 1024
 const NPM_REGISTRY = 'https://registry.npmjs.org/'
 const NPM_INTEGRITY = /^sha512-[A-Za-z0-9+/]+={0,2}$/

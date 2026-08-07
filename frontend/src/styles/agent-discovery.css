@@ -7,38 +7,14 @@
   overflow: hidden;
   isolation: isolate;
   padding: 32px;
-  background: color-mix(in srgb, var(--bg) 82%, var(--accent-soft) 18%);
+  background: var(--bg);
   color: var(--text);
   cursor: progress;
 }
 
-.agent-discovery-overlay::before,
-.agent-discovery-overlay::after {
-  content: "";
-  position: absolute;
-  z-index: -1;
-  width: min(64vw, 720px);
-  aspect-ratio: 1;
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.agent-discovery-overlay::before {
-  border: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
-  box-shadow:
-    0 0 0 34px color-mix(in srgb, var(--accent) 7%, transparent),
-    0 0 0 96px color-mix(in srgb, var(--accent) 3%, transparent);
-  animation: agent-discovery-breathe 3.6s ease-in-out infinite;
-}
-
-.agent-discovery-overlay::after {
-  background: var(--shell-gradient);
-  opacity: 0.16;
-  filter: blur(28px);
-  animation: agent-discovery-drift 8s ease-in-out infinite alternate;
-}
-
-.agent-discovery-copy {
+.agent-discovery-content {
+  position: relative;
+  z-index: 1;
   width: min(430px, 100%);
   display: grid;
   justify-items: center;
@@ -47,52 +23,22 @@
   text-align: center;
 }
 
-.agent-discovery-orbit {
+.agent-discovery-mark {
   position: relative;
-  width: 112px;
-  height: 112px;
-  display: grid;
-  place-items: center;
-  margin-bottom: 26px;
-}
-
-.agent-discovery-orbit img {
-  position: relative;
-  z-index: 2;
+  display: block;
   width: 52px;
   height: 52px;
+  margin-bottom: 28px;
   object-fit: contain;
-  filter: drop-shadow(0 8px 18px color-mix(in srgb, var(--accent) 20%, transparent));
+  filter: drop-shadow(0 9px 20px color-mix(in srgb, var(--accent) 18%, transparent));
 }
 
-.agent-discovery-orbit-ring,
-.agent-discovery-orbit-scan {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  pointer-events: none;
-}
-
-.agent-discovery-orbit-ring {
-  border: 1px solid color-mix(in srgb, var(--accent) 27%, transparent);
-}
-
-.agent-discovery-orbit-ring.ring-one {
-  animation: agent-discovery-spin 5.2s linear infinite;
-}
-
-.agent-discovery-orbit-ring.ring-two {
-  inset: 12px;
-  border-color: color-mix(in srgb, var(--text-soft) 24%, transparent);
-  animation: agent-discovery-spin-reverse 3.8s linear infinite;
-}
-
-.agent-discovery-orbit-scan {
-  inset: -7px;
-  border: 2px solid transparent;
-  border-top-color: var(--accent);
-  border-right-color: color-mix(in srgb, var(--accent) 28%, transparent);
-  animation: agent-discovery-spin 1.8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+.agent-discovery-copy {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  justify-items: center;
+  text-shadow: 0 1px 14px color-mix(in srgb, var(--bg) 72%, transparent);
 }
 
 .agent-discovery-kicker {
@@ -128,12 +74,12 @@
 
 .agent-discovery-progress span {
   display: block;
-  width: 38%;
+  width: 46%;
   height: 100%;
   border-radius: inherit;
-  background: var(--accent);
-  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 46%, transparent);
-  animation: agent-discovery-progress 1.55s ease-in-out infinite;
+  background: var(--onboarding-frame-gradient);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent) 34%, transparent);
+  animation: agent-discovery-progress 1.35s ease-in-out infinite;
 }
 
 .agent-discovery-status {
@@ -156,7 +102,12 @@
 
 .agent-discovery-enter-active,
 .agent-discovery-leave-active {
-  transition: opacity 0.18s ease;
+  transition: opacity 0.28s ease;
+}
+
+.agent-discovery-enter-active .agent-discovery-content,
+.agent-discovery-leave-active .agent-discovery-content {
+  transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 .agent-discovery-enter-from,
@@ -164,17 +115,16 @@
   opacity: 0;
 }
 
-@keyframes agent-discovery-spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes agent-discovery-spin-reverse {
-  to { transform: rotate(-360deg); }
+.agent-discovery-enter-from .agent-discovery-content,
+.agent-discovery-leave-to .agent-discovery-content {
+  opacity: 0;
+  transform: translateY(8px) scale(0.985);
 }
 
 @keyframes agent-discovery-progress {
-  0% { transform: translateX(-125%); }
-  55%, 100% { transform: translateX(350%); }
+  0% { transform: translateX(-125%); opacity: 0.4; }
+  55% { opacity: 1; }
+  100% { transform: translateX(300%); opacity: 0.4; }
 }
 
 @keyframes agent-discovery-dot {
@@ -182,21 +132,7 @@
   50% { opacity: 1; transform: scale(1); }
 }
 
-@keyframes agent-discovery-breathe {
-  0%, 100% { transform: scale(0.92); opacity: 0.58; }
-  50% { transform: scale(1.04); opacity: 1; }
-}
-
-@keyframes agent-discovery-drift {
-  from { transform: translate(-3%, -2%) scale(0.96); }
-  to { transform: translate(3%, 2%) scale(1.04); }
-}
-
 @media (prefers-reduced-motion: reduce) {
-  .agent-discovery-overlay::before,
-  .agent-discovery-overlay::after,
-  .agent-discovery-orbit-ring,
-  .agent-discovery-orbit-scan,
   .agent-discovery-progress span,
   .agent-discovery-status-dot {
     animation: none;
@@ -211,4 +147,5 @@
 @media (max-width: 480px) {
   .agent-discovery-overlay { padding: 24px; }
   .agent-discovery-copy h1 { font-size: 26px; }
+  .agent-discovery-mark { margin-bottom: 20px; }
 }

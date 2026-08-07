@@ -96,7 +96,6 @@
                 @click="selectGroup(group.id)"
               >
                 <span>{{ groupName(group) }}</span>
-                <time>{{ formatNavTime(group.updatedAt || group.createdAt) }}</time>
               </button>
               <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
                 <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>

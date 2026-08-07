@@ -194,7 +194,7 @@
           >
             <img
               v-if="isImageAttachment(attachment)"
-              :src="attachment.previewDataUrl"
+              :src="attachment.previewDataUrl || attachmentMediaUrl(attachment)"
               :alt="attachment.name"
             />
             <template v-else>
@@ -377,6 +377,7 @@ const {
   activeSkillOptionId,
   attachmentActionLabel,
   attachmentKind,
+  attachmentMediaUrl,
   attachmentTypeLabel,
   canSendMessage,
   composerAttachmentSupported,

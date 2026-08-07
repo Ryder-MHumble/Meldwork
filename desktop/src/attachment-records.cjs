@@ -23,6 +23,8 @@ const GZIP_FILE_EXTENSIONS = Object.freeze(['gz', 'tgz'])
 const ATTACHMENT_TYPES = Object.freeze([
   Object.freeze({ mimeType: 'image/png', extension: 'png', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
   Object.freeze({ mimeType: 'image/jpeg', extension: 'jpg', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
+  Object.freeze({ mimeType: 'image/gif', extension: 'gif', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
+  Object.freeze({ mimeType: 'image/webp', extension: 'webp', maxBytes: 8 * 1024 * 1024, storageBase: 'image' }),
   Object.freeze({ mimeType: 'audio/mpeg', extension: 'mp3', maxBytes: 32 * 1024 * 1024, storageBase: 'media' }),
   Object.freeze({ mimeType: 'audio/wav', extension: 'wav', maxBytes: 64 * 1024 * 1024, storageBase: 'media' }),
   Object.freeze({ mimeType: 'audio/mp4', extension: 'm4a', maxBytes: 64 * 1024 * 1024, storageBase: 'media' }),
@@ -75,6 +77,8 @@ const TYPE_BY_EXTENSION = new Map([
   ['png', TYPE_BY_MIME.get('image/png')],
   ['jpg', TYPE_BY_MIME.get('image/jpeg')],
   ['jpeg', TYPE_BY_MIME.get('image/jpeg')],
+  ['gif', TYPE_BY_MIME.get('image/gif')],
+  ['webp', TYPE_BY_MIME.get('image/webp')],
   ['mp3', TYPE_BY_MIME.get('audio/mpeg')],
   ['wav', TYPE_BY_MIME.get('audio/wav')],
   ['m4a', TYPE_BY_MIME.get('audio/mp4')],
@@ -201,6 +205,13 @@ function detectAttachmentType(bytes, nameType = null, declaredMime = '') {
   }
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
     return TYPE_BY_MIME.get('image/jpeg')
+  }
+  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) {
+    return TYPE_BY_MIME.get('image/gif')
+  }
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF'
+      && bytes.subarray(8, 12).toString('ascii') === 'WEBP') {
+    return TYPE_BY_MIME.get('image/webp')
   }
   if (bytes.length >= 3 && (bytes.subarray(0, 3).toString('ascii') === 'ID3'
       || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0))) {

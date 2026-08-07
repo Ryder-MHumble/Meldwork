@@ -126,6 +126,7 @@ export function createConversationControllers({
     activeSkillOptionId: composerContext.activeSkillOptionId,
     attachmentActionLabel: attachments.attachmentActionLabel,
     attachmentKind: attachments.attachmentKind,
+    attachmentMediaUrl: attachments.attachmentMediaUrl,
     attachmentTypeLabel: attachments.attachmentTypeLabel,
     canSendMessage: app.canSendMessage,
     composerAttachmentSupported: attachments.composerAttachmentSupported,

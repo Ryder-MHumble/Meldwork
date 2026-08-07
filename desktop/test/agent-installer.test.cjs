@@ -236,7 +236,7 @@ test('catalog lookups share in-flight and short-lived Agent detection', async ()
   await service.catalog()
   assert.equal(detectCount, 1)
 
-  now += 3001
+  now += 30001
   await service.catalog()
   assert.equal(detectCount, 2)
 

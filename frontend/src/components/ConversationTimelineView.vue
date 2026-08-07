@@ -268,12 +268,27 @@
                   </div>
                   <div
                     v-if="message.content"
-                    class="message-content plain-message message-copy-surface"
-                    :class="{ copied: isMessageCopied(message.id) }"
+                    :ref="element => setUserMessageContentElement(message.id, element)"
+                    class="message-content plain-message message-copy-surface user-message-content"
+                    :class="{
+                      copied: isMessageCopied(message.id),
+                      collapsed: isUserMessageCollapsed(message.id),
+                    }"
                     @click="copyMessageContent(message, $event)"
                   >
                     {{ message.content }}
                   </div>
+                  <button
+                    v-if="isUserMessageCollapsible(message.id)"
+                    class="user-message-expand-button"
+                    type="button"
+                    :aria-expanded="String(!isUserMessageCollapsed(message.id))"
+                    @click.stop="toggleUserMessageExpansion(message.id)"
+                  >
+                    {{ isUserMessageCollapsed(message.id)
+                      ? t('conversation.expandMessage')
+                      : t('conversation.collapseMessage') }}
+                  </button>
                 </div>
                 <button
                   v-if="isTopicRoot(message)"
@@ -319,8 +334,8 @@
                   :class="`media-${attachmentKind(attachment)}`"
                 >
                   <img
-                    v-if="isImageAttachment(attachment) && attachmentPreviewUrl(attachment)"
-                    :src="attachmentPreviewUrl(attachment)"
+                    v-if="isImageAttachment(attachment) && (attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment))"
+                    :src="attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment)"
                     :alt="attachment.name"
                     loading="lazy"
                     decoding="async"
@@ -526,7 +541,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AttachOutline,
   CheckmarkCircleOutline,
@@ -646,6 +661,84 @@ const humanGateDecisionPendingIds = computed(() => (
   props.controller.humanGateDecisionPendingIds?.value || []
 ))
 const directBudgetRows = computed(() => budgetRows(directRunBudget.value))
+const USER_MESSAGE_COLLAPSE_HEIGHT = 216
+const userMessageElements = new Map()
+const collapsibleUserMessageIds = ref(new Set())
+const expandedUserMessageIds = ref(new Set())
+let userMessageResizeObserver = null
+let userMessageMeasurementQueued = false
+
+function sameIds(left, right) {
+  return left.size === right.size && [...left].every(id => right.has(id))
+}
+
+function measureUserMessageContent() {
+  if (userMessageMeasurementQueued) return
+  userMessageMeasurementQueued = true
+  void nextTick(() => {
+    userMessageMeasurementQueued = false
+    const nextCollapsibleIds = new Set()
+    userMessageElements.forEach((element, id) => {
+      if (element.scrollHeight > USER_MESSAGE_COLLAPSE_HEIGHT + 1) {
+        nextCollapsibleIds.add(id)
+      }
+    })
+    if (!sameIds(nextCollapsibleIds, collapsibleUserMessageIds.value)) {
+      collapsibleUserMessageIds.value = nextCollapsibleIds
+    }
+    const nextExpandedIds = new Set(
+      [...expandedUserMessageIds.value].filter(id => nextCollapsibleIds.has(id)),
+    )
+    if (!sameIds(nextExpandedIds, expandedUserMessageIds.value)) {
+      expandedUserMessageIds.value = nextExpandedIds
+    }
+  })
+}
+
+function setUserMessageContentElement(id, element) {
+  const messageId = String(id || '')
+  if (!messageId) return
+  const previous = userMessageElements.get(messageId)
+  if (!element) {
+    if (previous) userMessageResizeObserver?.unobserve(previous)
+    userMessageElements.delete(messageId)
+    return
+  }
+  if (previous && previous !== element) userMessageResizeObserver?.unobserve(previous)
+  userMessageElements.set(messageId, element)
+  userMessageResizeObserver?.observe(element)
+  measureUserMessageContent()
+}
+
+function isUserMessageCollapsible(id) {
+  return collapsibleUserMessageIds.value.has(String(id || ''))
+}
+
+function isUserMessageCollapsed(id) {
+  const messageId = String(id || '')
+  return isUserMessageCollapsible(messageId) && !expandedUserMessageIds.value.has(messageId)
+}
+
+function toggleUserMessageExpansion(id) {
+  const messageId = String(id || '')
+  if (!isUserMessageCollapsible(messageId)) return
+  const next = new Set(expandedUserMessageIds.value)
+  if (next.has(messageId)) next.delete(messageId)
+  else next.add(messageId)
+  expandedUserMessageIds.value = next
+}
+
+watch(timelineMessages, measureUserMessageContent, { flush: 'post', immediate: true })
+
+onMounted(() => {
+  if (typeof ResizeObserver === 'function') {
+    userMessageResizeObserver = new ResizeObserver(measureUserMessageContent)
+    userMessageElements.forEach(element => userMessageResizeObserver.observe(element))
+  }
+  measureUserMessageContent()
+})
+
+onBeforeUnmount(() => userMessageResizeObserver?.disconnect())
 
 function decideHumanGate(payload) {
   return props.controller.decideHumanGate?.(payload)

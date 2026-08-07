@@ -550,6 +550,7 @@ class LocalWorkspaceAgentInvocation {
         }
         const baseContextPackId = isolated?.contextPackId || activeRun?.contextPackId || ''
         if (!baseContextPackId || !harness || !harnessRun) return
+        const deliveredPrompt = typeof outbound?.prompt === 'string' ? outbound.prompt : prompt
         const attempt = this.createAttemptContextPack({
           baseContextPackId,
           group,
@@ -560,7 +561,11 @@ class LocalWorkspaceAgentInvocation {
           attachments: isolated ? [] : (context.attachmentSnapshots || []),
           skillHints: isolated ? [] : (context.skillHints || []),
           knowledgeBaseHints: isolated ? [] : (context.knowledgeBaseHints || []),
-          approvedPrompt: isolated?.promptOverride || '',
+          // The prompt is context-budgeted, so delivery verification must use
+          // the exact prompt scheduled for this Agent rather than the raw turn.
+          // Verify against the prompt actually reported by the transport. This
+          // remains correct when a recovery path rebuilds a prompt mid-attempt.
+          approvedPrompt: deliveredPrompt,
           forceReadOnly: Boolean(isolated),
         })
         const delivery = this.recordContextDelivery({

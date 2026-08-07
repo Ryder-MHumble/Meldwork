@@ -38,6 +38,98 @@ test('search path includes common user CLI locations', () => {
   assert.match(searchPath(), /\.mimocode\/bin/)
 })
 
+test('Agent discovery scans independent Agent kinds concurrently', async () => {
+  const started = []
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const detection = detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async (kind) => {
+      started.push(kind)
+      await gate
+      return null
+    },
+  })
+
+  await new Promise(resolve => setImmediate(resolve))
+  const startedBeforeRelease = started.length
+  release()
+  assert.deepEqual(await detection, [])
+  assert.equal(startedBeforeRelease, 11)
+})
+
+test('Hermes capability and ACP checks run concurrently without changing the result', async () => {
+  let active = 0
+  let maxActive = 0
+  const started = []
+  const found = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'hermes' ? '/tmp/hermes' : null,
+    execFileFn: async (_command, args) => {
+      if (args[0] === '--version') return { stdout: 'Hermes 0.19.1\n', stderr: '' }
+      started.push(args.join(' '))
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      await new Promise(resolve => setTimeout(resolve, 12))
+      active -= 1
+      if (args[0] === 'chat') {
+        return {
+          stdout: '--quiet --query --provider --model --resume --image --yolo',
+          stderr: '',
+        }
+      }
+      return { stdout: '', stderr: '' }
+    },
+  })
+
+  assert.equal(maxActive, 2)
+  assert.deepEqual(started.sort(), ['acp --check', 'chat --help'])
+  assert.equal(found[0].compatibilityState, 'compatible')
+  assert.equal(found[0].acpAvailable, true)
+})
+
+test('Agent version gates capability checks while keeping compatible probes parallel', async () => {
+  let releaseVersion
+  let releaseCapability
+  const versionGate = new Promise(resolve => { releaseVersion = resolve })
+  const capabilityGate = new Promise(resolve => { releaseCapability = resolve })
+  const started = []
+  const detection = detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
+    probeAgentCapabilitiesFn: async () => {
+      started.push('capability')
+      await capabilityGate
+      return {
+        compatibilityState: 'compatible',
+        incompatibilityReason: '',
+        incompatibilityProbe: '',
+      }
+    },
+    execFileFn: async (_command, args) => {
+      if (args[0] === '--version') {
+        started.push('version')
+        await versionGate
+        return { stdout: 'Kimi Code 0.19.2\n', stderr: '' }
+      }
+      throw new Error('unexpected probe')
+    },
+  })
+
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(started, ['version'])
+  releaseVersion()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(started, ['version', 'capability'])
+  releaseCapability()
+  const [found] = await detection
+  assert.equal(found.kind, 'kimi')
+  assert.equal(found.compatibilityState, 'compatible')
+})
+
 test('macOS Finder cold starts include common Node version manager paths', () => {
   const roots = {
     '/Users/Ryder/.nvm/versions/node': ['v20.12.0', 'v22.5.1'],
@@ -432,7 +524,9 @@ test('Hermes detection records ACP availability when the capability check succee
     },
   })
 
-  assert.deepEqual(calls, [['--version'], ['chat', '--help'], ['acp', '--check']])
+  assert.deepEqual(calls.map(args => args.join(' ')).sort(), [
+    '--version', 'acp --check', 'chat --help',
+  ])
   assert.deepEqual(found, [{
     kind: 'hermes',
     name: 'Hermes CLI',
@@ -470,7 +564,9 @@ test('Hermes detection records unavailable ACP when the capability check fails',
     },
   })
 
-  assert.deepEqual(calls, [['--version'], ['chat', '--help'], ['acp', '--check']])
+  assert.deepEqual(calls.map(args => args.join(' ')).sort(), [
+    '--version', 'acp --check', 'chat --help',
+  ])
   assert.deepEqual(found, [{
     kind: 'hermes',
     name: 'Hermes CLI',

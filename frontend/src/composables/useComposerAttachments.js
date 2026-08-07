@@ -8,6 +8,7 @@ const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const ATTACHMENT_TYPES = new Set(['image', 'audio', 'video', 'file'])
 const MIME_BY_EXTENSION = new Map([
   ['png', 'image/png'], ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'],
+  ['gif', 'image/gif'], ['webp', 'image/webp'],
   ['mp3', 'audio/mpeg'], ['wav', 'audio/wav'], ['m4a', 'audio/mp4'],
   ['mp4', 'video/mp4'], ['mov', 'video/quicktime'], ['webm', 'video/webm'],
     ['pdf', 'application/pdf'], ['txt', 'text/plain'], ['md', 'text/markdown'],
@@ -66,7 +67,7 @@ export function useComposerAttachments({
     const size = Number(attachment?.size || 0)
     const previewDataUrl = String(attachment?.previewDataUrl || '')
     const kind = attachmentKind({ mimeType })
-    if (!id || !name || !ATTACHMENT_TYPES.has(kind) || (kind === 'image' && !previewDataUrl)) return null
+    if (!id || !name || !ATTACHMENT_TYPES.has(kind)) return null
     return {
       id,
       name,
@@ -166,7 +167,7 @@ export function useComposerAttachments({
   function attachmentMediaUrl(attachment) {
     const id = String(attachment?.id || '')
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id)
-        || !['audio', 'video'].includes(attachmentKind(attachment))) return ''
+        || !['image', 'audio', 'video'].includes(attachmentKind(attachment))) return ''
     return `meldwork-media://attachment/${id}`
   }
 

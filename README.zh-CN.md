@@ -6,95 +6,100 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-# Agent 可以换，工作不该断
+# 一项任务，不同 Agent，一份可检查的结果
 
-**Meldwork 是一个本地优先的 Agent 桌面工作台，用于持续单聊和有边界的多 Agent 复核。每个会话的上下文、权限、附件、兼容的原生 Session 与脱敏运行记录都保存在你的电脑上。**
+**Meldwork 是一个本地优先的 Agent 桌面工作空间。当工作在不同通用 Agent 之间流转时，它把会话、文件、权限、兼容的原生 Session 与脱敏运行证据留在同一个地方。**
 
-它解决的不是“同时打开更多 AI”，而是让一项复杂工作能够在不同 Agent 之间真正接力：前一个 Agent 留下的结论和证据，后一个可以继续使用；所有人的回答仍然回到同一条任务脉络里，由你决定哪些结果值得接受。
+多数 Agent 已经能够完成一段工作。真正脆弱的是切换工具之后：上下文需要手工复制，文件要重新附加，权限边界容易丢失，最终答案看起来完整，却很难说明它是如何形成的。
+
+Meldwork 让任务保持稳定，让 Agent 按需变化。先从一个 Agent 开始；只有当任务需要另一种能力或独立质疑时，再加入第二个 Agent；最后由你检查结果并决定保留什么。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>下载 macOS DMG 安装包</strong></a>
+  <a href="docs/harness-engine-strategy.md"><strong>了解 Harness</strong></a>
+  · <a href="#从源码运行">从源码运行</a>
   · <a href="LICENSE">AGPL-3.0 开源许可证</a>
-  · <a href="COMMERCIAL_USE.md">商业使用说明</a>
 </p>
 
-## 先装客户端，再开始工作
+## 问题不在 Agent 数量，而在工作被切碎
 
-当前桌面客户端面向 Apple 芯片 Mac：
+| 当工作跨越多个 Agent 工具 | Meldwork 保留下来的内容 |
+| --- | --- |
+| 会话历史散落在不同应用 | 持续存在的单聊或工作群组 |
+| 文件和要求反复复制 | 明确的任务文件、Skill、知识来源与有界上下文 |
+| 权限范围容易丢失 | 可见的工作目录与按需开启的写入权限 |
+| 多个答案带来更多噪音 | 限定轮次、Agent 独立结果与人工决定 |
+| 最终输出难以复盘 | 脱敏事件、上下文来源、状态与精简证据 |
 
-1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/latest)。
-2. 下载 `Meldwork-0.1.0-arm64.dmg`。
-3. 将 Meldwork 拖入“应用程序”并打开。
-4. 连接电脑上已经安装的 Agent CLI，或为某个 Agent 单独配置 Provider。
+Meldwork 不会自动合并彼此无关的会话历史。哪些消息、文件、Skill 和知识来源进入任务，始终由你决定。
 
-如果最新 Release 中包含 DMG 文件，就可以直接下载到本地安装。开发者也可以使用下方命令从源码运行。
+## 一条可以重复使用的工作流
 
-## 先跑通一个可重复的工作流
+1. **先聚焦。** 选择最适合第一步的 Agent，打开单聊开始工作。
+2. **只加入必要上下文。** 附加任务文件，选择兼容的 Skill 或已经配置的知识来源；除非任务必须修改文件，否则保持工作目录只读。
+3. **引入第二种视角。** 创建群组，只选择真正需要参与的 Agent，再使用手动接力或限定轮次的自动讨论。
+4. **检查后再接受。** 查看每个 Agent、每一轮、结论、注入的上下文来源和脱敏事件，再决定采用、修改还是放弃结果。
 
-公开 MVP 只围绕一个核心闭环：先产出交付物，再由第二个 Agent 质疑和复核，最后由人决定采用什么。
+## 单聊与协作共享一个工作空间
 
-1. 创建一个只有两个已就绪 Agent 的群组。
-2. 只附加任务真正需要的文件；除非任务必须修改工作区，否则保持写入权限关闭。
-3. 明确让一个 Agent 形成交付物，让另一个检查假设、遗漏与证据，并限制讨论轮数。
-4. 查看最终回答和脱敏运行轨迹，再决定采用、修改或放弃结果。
+![Meldwork 工作台总览](docs/assets/meldwork-multi-agent-review.png)
 
-研究、产品、开发、写作和运营是使用示例，不是五套独立的 MVP 承诺。首发成功的标准，是这条双 Agent 复核闭环能在一台干净的 Apple 芯片 Mac 上稳定完成。
+单聊和工作群组位于同一个桌面工作空间。左侧栏反映这台电脑上可以使用的 Agent；主工作区把当前任务、工作目录、权限和最近会话放在随时可回到的位置。
 
-## 打开客户端，看到的是完整工作现场
+## 工作空间背后的 Harness
 
-![Meldwork 工作台总览](docs/assets/meldwork-workspace-overview.png)
+![Meldwork Harness Engine](frontend/public/logos/Harness-readme.png)
 
-单聊、工作群组和最近任务都在同一个桌面工作台里。一个 Agent 足够时使用单聊；需要独立检查时创建群组。Meldwork 当前不会自动合并两个独立会话的历史，因此群组需要的背景和文件仍应由用户明确附加或重述。
+单聊的运行进度直接显示在对话中；群组 Run 会额外提供按 Agent 和轮次查看的运行详情。两种界面背后，Harness 负责统一 Agent 事件、构建有界 Context Pack、隔离兼容的原生 Session、保存本地 Run 状态，并把恢复过程变成明确状态。
 
-## 一项任务如何在 Meldwork 里推进
+- **运行控制：** 明确点名、手动接力、限定轮次的自动讨论、停止与单 Agent 控制。
+- **上下文控制：** 稳定约束、选定文件、按目标分配的 Skill 与知识来源、近期结论和精简证据摘要。
+- **可检查的执行过程：** 结论、上下文来源、警告、终态，以及所选 Agent 或传输能够提供的计划和工具生命周期摘要，同时不暴露原始思维链或凭据。
+- **持久本地状态：** 会话与有界 Run 记录在完成或中断后仍可查看；Context Pack 保持持久并可追溯。
+- **明确恢复：** 认证与兼容性错误需要先修正配置，再由用户重试，不进行无条件反复尝试。
 
-| 阶段 | 你的操作 | Meldwork 保留下来的内容 |
-| --- | --- | --- |
-| 先开工 | 选择最合适的 Agent 发起单聊 | 当前任务、对话和原生 Session 延续关系 |
-| 再协作 | 创建群组，只选择真正需要参与的 Agent | 群组成员、工作目录和明确的执行权限 |
-| 多轮打磨 | 手动点名，或启动有边界的自动多轮讨论 | 每轮回答、Agent 接力关系和运行状态 |
-| 最终验收 | 查看结论与运行轨迹，决定是否采用 | 精简后的证据、状态和可追溯结果 |
+中断的多 Agent 工作会留下记录，但目前并非所有工作流都能从上一个 Agent 执行位置精确续跑。当前行为优先保留可检查的中断状态，避免静默重复工作或外部副作用。
 
-![Meldwork 多 Agent 产品审查群聊](docs/assets/meldwork-multi-agent-review.png)
+## 当前可以完成什么
 
-主对话只保留对工作有价值的内容；需要追问时，再展开某个 Agent 的执行过程。这样既不会让工具日志淹没结论，也不会只剩一段看似完整、却无法复盘的最终回答。
+- 保留持续存在的 Agent 单聊与多 Agent 工作群组。
+- 明确点名一个或多个 Agent，或为自动讨论设置最大轮数。
+- 附加经过验证的图片、音视频、文档、代码和压缩包，具体取决于所选 Agent 的能力。
+- 为对应 Agent 目标加入最多四个兼容 Skill，以及已配置的飞书、钉钉或 Obsidian 知识来源。
+- 在兼容条件下延续原生 Session，同时不向渲染层暴露 Session 标识。
+- 默认关闭工作目录写入权限，并在任务确实需要修改文件时按会话开启。
+- 在单聊中查看脱敏运行详情，在群组中按 Agent 和轮次检查执行状态。
+- 在兼容系统上使用操作系统安全存储保存 Agent 专属 Provider 配置。
 
-## 它适合哪些真实工作
+## 它适合哪些工作
 
-- **研究与情报：** 一个 Agent 收集证据，另一个专门寻找证据缺口和错误假设。
-- **产品与战略：** 一个完善方案，另一个从用户价值、商业风险和执行成本上进行压力测试。
-- **软件开发：** 一个负责实现，另一个审查代码改动、测试覆盖和关键判断。
-- **写作与内容：** 一个搭建结构和初稿，另一个检查事实、表达和读者体验。
-- **复杂运营：** 不同 Agent 处理各自擅长的部分，但完整任务仍然留在一个地方。
+- **研究与情报：** 一个 Agent 建立证据基础，另一个寻找证据缺口与错误假设。
+- **产品与战略：** 一个完善方案，另一个检查用户价值、可行性和高成本风险。
+- **软件交付：** 一个负责实现，另一个审查代码改动、测试和关键判断。
+- **写作与运营：** 一个形成交付物，另一个检查准确性、结构和执行风险。
 
-Meldwork 不鼓励为了“看起来智能”而堆叠 Agent。一个 Agent 足够时就直接完成；只有当第二种能力确实能降低错误、返工或决策风险时，才把它加入工作。
+目标不是让更多 Agent 同时发言，而是用最小且有价值的组合完成任务，同时不丢失边界、上下文和证据。
 
-## 客户端把这些能力放在一起
+## 当前连接的 Agent
 
-- 持续存在的 Agent 单聊与多 Agent 工作群组。
-- 明确点名执行、手动接力和自动多轮讨论。
-- 在兼容条件下，为每个群组和 Agent 延续原生 Session。
-- 可复盘但经过脱敏和压缩的运行轨迹与证据摘要。
-- 每个 Agent 独立的 Provider 档案，以及兼容系统下的安全凭据存储。
-- Skill、经过验证的图片、音视频、文档、代码、压缩包、授权知识源和按需开启的工作目录访问。
-- 会话与编排状态留在本机，不依赖 Meldwork 云账号或远程会话数据库。
+通用 Agent：
 
-模型请求仍然会按照你选择的 Agent 和 Provider 发出。“本地优先”指 Meldwork 自己的工作空间和编排状态留在电脑上，并不意味着第三方模型自动变成离线模型。
+**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code**
 
-## 当前可以连接的 Agent
+专项审查：
 
-**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code · OpenCodeReview · 自定义 Agent**
+**OpenCodeReview**
 
-每个 Agent 保留自己的能力、Provider、权限模型和 Session 行为。能否使用取决于本机是否安装、版本是否兼容，以及对应认证是否就绪。
+能否实际使用取决于本机安装情况、受支持版本、认证状态和 Agent 声明的能力。OpenCodeReview 是专项审查目标，不作为通用对话 Agent 使用。
 
-## 当前仍是私有 MVP
+## 数据与控制边界
 
-仓库和 Release 暂时保持 private，直到公开发布门禁完成。目前经过发布验证的目标只有 Apple 芯片 Mac；Windows、Intel Mac 以及所有第三方 Agent 的广泛兼容性还不属于本版本承诺。剩余门禁见 [公开 MVP 发布清单](docs/public-mvp-release.md)。
+Meldwork 的工作空间与编排记录保存在本机，不要求 Meldwork 云账号或远程会话数据库。模型和工具请求仍会按照你配置的 Agent 与 Provider 发出。
 
-<details>
-<summary><strong>开发者从源码运行</strong></summary>
+工作目录写入是按会话明确开启的权限，但 Meldwork 不是操作系统级沙箱。Agent 进程仍以本地用户身份运行，上游工具需要对其声明的能力负责。
 
-源码开发需要 Node.js 20.19 或更高版本以及 npm：
+## 从源码运行
+
+需要 Node.js 20.19 或更高版本以及 npm。
 
 ```bash
 npm --prefix frontend ci
@@ -102,9 +107,16 @@ npm --prefix desktop ci
 npm --prefix desktop run dev
 ```
 
-完整验证命令见 [docs/tests.md](docs/tests.md)。
+目前最充分的打包与运行验证集中在 Apple 芯片 macOS。Windows 已具备实现层支持，但广泛的真实设备验证仍未完成。
 
-</details>
+完整验证命令与已知缺口见 [docs/tests.md](docs/tests.md)。
+
+## 文档
+
+- [Harness Engine 战略](docs/harness-engine-strategy.md)
+- [架构](docs/architecture.md)
+- [权限边界](docs/permissions.md)
+- [测试与验证](docs/tests.md)
 
 ## 许可证
 

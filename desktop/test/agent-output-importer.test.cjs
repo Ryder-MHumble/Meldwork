@@ -17,6 +17,11 @@ const PNG = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
   0x00, 0x00, 0x00, 0x0d,
 ])
+const GIF = Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00\x00', 'binary')
+const WEBP = Buffer.from([
+  0x52, 0x49, 0x46, 0x46, 0x04, 0x00, 0x00, 0x00,
+  0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20,
+])
 const MP3 = Buffer.from('49443304000000000000', 'hex')
 const MP4 = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypisom'), Buffer.alloc(8)])
 const READ_SIZE = 128 * 1024
@@ -68,6 +73,21 @@ test('imports only new or changed top-level attachments from the controlled outp
   assert.equal(imported.some(item => item.name === 'old.png'), false)
   assert.equal(imported.some(item => item.name === 'hidden.png'), false)
   assert.equal(imported.some(item => item.name === 'linked.png'), false)
+})
+
+test('imports generated GIF and WebP media for conversation previews', (t) => {
+  const { workdir, output, store } = fixture(t)
+  const baseline = captureAgentOutputState(workdir)
+  const startedAt = Date.now()
+  fs.writeFileSync(path.join(output, 'animation.gif'), GIF)
+  fs.writeFileSync(path.join(output, 'preview.webp'), WEBP)
+
+  const imported = importAgentOutputs({ workdir, baseline, startedAt }, store)
+
+  assert.deepEqual(imported.map(item => [item.name, item.mimeType]).sort(), [
+    ['animation.gif', 'image/gif'],
+    ['preview.webp', 'image/webp'],
+  ])
 })
 
 test('requires a matching pre-run baseline and refuses symlinked output directories', {

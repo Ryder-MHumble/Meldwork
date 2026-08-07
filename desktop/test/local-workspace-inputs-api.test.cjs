@@ -115,6 +115,7 @@ test('persisted message normalization keeps collection ordering and terminal lim
   })
   assert.equal(message.content.length, 20000)
   assert.deepEqual(message.attachments, [
+    { ...validAttachment(1), mimeType: 'image/webp' },
     validAttachment(2), validAttachment(3), validAttachment(4),
   ])
 

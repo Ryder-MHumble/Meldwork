@@ -120,6 +120,27 @@ test('shared Provider readiness cannot override a recorded runtime auth failure'
   assert.deepEqual(events, ['emit', 'snapshot'])
 })
 
+test('shared Provider readiness skips slow native credential probes', async () => {
+  let nativeProbeCalls = 0
+  const { agents, catalog } = fixture({
+    detectAgents: async () => [{
+      kind: 'codex', executable: '/tmp/codex', compatibilityState: 'compatible',
+    }],
+    credentialState: async () => {
+      nativeProbeCalls += 1
+      return { state: 'missing', source: 'native-auth-status' }
+    },
+    sharedProviderReady: () => true,
+  })
+
+  await catalog.refresh()
+
+  assert.equal(nativeProbeCalls, 0)
+  assert.equal(agents()[0].credentialState, 'ready')
+  assert.equal(agents()[0].availabilitySource, 'shared-provider')
+  assert.equal(agents()[0].available, true)
+})
+
 test('authoritative native validation persists recovery from a runtime auth failure', async () => {
   const { agents, catalog, events, state } = fixture({
     detectAgents: async () => [{

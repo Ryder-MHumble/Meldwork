@@ -20,7 +20,7 @@ const MAX_SKILL_HINTS = 4
 const MAX_KNOWLEDGE_BASE_HINTS = 4
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const USER_ATTACHMENT_MIME_TYPES = new Set([
-  'image/png', 'image/jpeg',
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp',
   'audio/mpeg', 'audio/wav', 'audio/mp4',
   'video/mp4', 'video/quicktime', 'video/webm',
   'application/pdf', 'text/plain', 'text/markdown', 'text/csv', 'application/json',

@@ -230,28 +230,26 @@ test('Custom Agent kinds keep their dynamic label across execution and reload', 
     'Repository Reviewer')
 })
 
-test('native readiness remains visible while a Meldwork Provider profile is active', async (t) => {
+test('shared Provider readiness skips slow native probes while a profile is active', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  let codexNativeState = { state: 'ready', source: 'native-auth-status' }
-  options.credentialState = async kind => kind === 'codex'
-    ? codexNativeState
+  const probedKinds = []
+  options.credentialState = async kind => {
+    probedKinds.push(kind)
+    return kind === 'codex'
+      ? { state: 'ready', source: 'native-auth-status' }
     : { state: 'ready', source: 'native-credential' }
+  }
   options.sharedProviderReady = kind => kind === 'codex'
   const workspace = new LocalWorkspace(options)
 
   let snapshot = await workspace.refreshAgents()
   let codex = snapshot.agents.find(agent => agent.kind === 'codex')
   assert.equal(codex.credentialState, 'ready')
-  assert.equal(codex.availabilitySource, 'native-auth-status')
-  assert.equal(codex.available, true)
-
-  codexNativeState = { state: 'missing', source: 'native-auth-status' }
-  snapshot = await workspace.refreshAgents()
-  codex = snapshot.agents.find(agent => agent.kind === 'codex')
-  assert.equal(codex.credentialState, 'ready')
   assert.equal(codex.availabilitySource, 'shared-provider')
   assert.equal(codex.available, true)
+  assert.equal(probedKinds.includes('codex'), false)
+  assert.equal(probedKinds.length, 4)
 })
 
 test('an unverified installed Agent stays unavailable until credentials are detected', async (t) => {
@@ -788,7 +786,7 @@ test('message deletion rejects active, unknown, and cross-conversation targets',
   assert.equal(workspace.snapshot().messages.some(message => message.id === firstMessage.id), true)
 })
 
-test('WebP attachment metadata is rejected before a message or Agent run is recorded', async (t) => {
+test('WebP attachment metadata is accepted for image-capable Agents', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -797,18 +795,17 @@ test('WebP attachment metadata is rejected before a message or Agent run is reco
     name: 'Unsupported image', agentKinds: ['codex'], workdir: directory,
   })
 
-  await assert.rejects(
-    workspace.sendMessage({
-      groupId: group.id,
-      text: 'Inspect',
-      attachments: [{
-        id: 'attachment-webp', name: 'preview.webp', mimeType: 'image/webp', size: 10,
-      }],
-    }),
-    { message: 'LOCAL_ATTACHMENT_REFERENCE_INVALID' },
-  )
-  assert.equal(calls.length, 0)
-  assert.equal(workspace.snapshot().messages.length, 0)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Inspect',
+    attachments: [{
+      id: 'attachment-webp', name: 'preview.webp', mimeType: 'image/webp', size: 10,
+    }],
+  })
+  assert.equal(calls.length, 1)
+  assert.deepEqual(workspace.snapshot().messages.find(message => message.role === 'user').attachments, [{
+    id: 'attachment-webp', name: 'preview.webp', mimeType: 'image/webp', size: 10,
+  }])
 })
 
 test('generic file support delivers images to Agents without native image arguments', async (t) => {
@@ -1308,6 +1305,36 @@ test('writable conversations persist validated Agent media outputs and enforce t
   const restored = new LocalWorkspace(options)
   const restoredReply = restored.snapshot().messages.find(message => message.role === 'agent')
   assert.deepEqual(restoredReply.attachments, generated)
+})
+
+test('writable group conversations persist generated media on the Agent reply', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = [
+    { id: 'group-image', name: 'group-poster.png', mimeType: 'image/png', size: 128 },
+    { id: 'group-audio', name: 'group-briefing.mp3', mimeType: 'audio/mpeg', size: 256 },
+    { id: 'group-video', name: 'group-demo.mp4', mimeType: 'video/mp4', size: 512 },
+  ]
+  options.captureAgentOutputs = async () => ({ marker: 'before-group-run' })
+  options.importAgentOutputs = async () => generated
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Media group', workdir: directory, allowWrite: true,
+    conversationType: 'group', agentKinds: ['codex', 'hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Generate image, audio, and video previews',
+    targetKinds: ['codex'],
+    mode: 'manual',
+  })
+
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.equal(reply.agentKind, 'codex')
+  assert.deepEqual(reply.attachments, generated)
+  assert.equal(JSON.stringify(reply).includes(directory), false)
 })
 
 test('read-only conversations forbid false media claims and do not scan for generated files', async (t) => {

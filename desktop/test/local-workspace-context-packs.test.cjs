@@ -37,6 +37,19 @@ function outboundPayload(prompt, transport = 'legacy') {
       wireBytes: Buffer.from(`${JSON.stringify(frame)}\n`, 'utf8'),
     })
   }
+  if (transport === 'codex') {
+    return createLegacyOutboundPayload({
+      prompt,
+      command: '/private/bin/codex',
+      args: [
+        'exec', '--json', '--skip-git-repo-check', '--sandbox', 'read-only',
+        '-C', '/private/workspace', '-',
+      ],
+      cwd: '/private/workspace',
+      stdin: prompt,
+      promptMode: 'stdin',
+    })
+  }
   return createLegacyOutboundPayload({
     prompt,
     command: '/private/bin/mock-agent',
@@ -391,6 +404,64 @@ test('ACP Delivery comparison preserves exact JSON-RPC bytes and remains safe af
     restarted.contextPacks.compareDelivery(delivery.deliveryRecordId),
     comparison,
   )
+})
+
+test('long user requests verify the budgeted prompt that is actually delivered', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (_agent, prompt, _workdir, runOptions) => {
+    calls.push({ prompt })
+    await runOptions.onOutboundPayload(outboundPayload(prompt))
+    return { text: 'Generated image request accepted', outcome: 'completed' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Long Codex request', agentKinds: ['codex'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex',
+  })
+  const request = `Generate this image exactly: ${'dense visual direction '.repeat(500)}`
+
+  await workspace.sendMessage({ groupId: group.id, text: request })
+
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  const attemptPack = workspace.contextPackStore.get(reply.trace.context.contextPackId)
+  const approvedPreview = jsonBlob(workspace, attemptPack.approvedPreviewRef)
+  const delivery = deliveryForMessage(workspace, reply)
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].prompt.length < request.length, true)
+  assert.equal(approvedPreview.text, calls[0].prompt)
+  assert.equal(workspace.contextPacks.compareDelivery(delivery.deliveryRecordId).status, 'match')
+})
+
+test('Codex-shaped stdin delivery verifies the exact budgeted prompt', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (_agent, prompt, _workdir, runOptions) => {
+    calls.push({ prompt })
+    await runOptions.onOutboundPayload(outboundPayload(prompt, 'codex'))
+    return { text: 'Generated image request accepted', outcome: 'completed' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Codex stdin request', agentKinds: ['codex'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex',
+  })
+  const request = `Generate this image exactly: ${'pixel and lighting direction '.repeat(500)}`
+
+  await workspace.sendMessage({ groupId: group.id, text: request })
+
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  const delivery = deliveryForMessage(workspace, reply)
+  const wire = jsonBlob(workspace, delivery.wirePayloadRef)
+  const attemptPack = workspace.contextPackStore.get(reply.trace.context.contextPackId)
+  const approvedPreview = jsonBlob(workspace, attemptPack.approvedPreviewRef)
+
+  assert.equal(approvedPreview.text, calls[0].prompt)
+  assert.equal(wire.stdin, calls[0].prompt)
+  assert.equal(workspace.contextPacks.compareDelivery(delivery.deliveryRecordId).status, 'match')
 })
 
 test('Delivery comparison fails closed before a mismatched payload can dispatch', async (t) => {

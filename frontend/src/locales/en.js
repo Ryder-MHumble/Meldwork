@@ -168,6 +168,8 @@ export default {
     'conversation.topicReplies': '{count} replies',
     'conversation.expandTopic': 'Show {replies}',
     'conversation.collapseTopic': 'Hide {replies}',
+    'conversation.expandMessage': 'Show more',
+    'conversation.collapseMessage': 'Show less',
     'conversation.executionProcess': 'Execution process',
     'conversation.elapsed': '{duration} elapsed',
     'conversation.seconds': '{count}s',

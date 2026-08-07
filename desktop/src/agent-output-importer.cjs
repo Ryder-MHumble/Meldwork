@@ -6,7 +6,7 @@ const OUTPUT_DIRECTORY = '.meldwork-output'
 const MAX_OUTPUT_ATTACHMENTS = 4
 const MAX_SCANNED_ENTRIES = 512
 const SUPPORTED_EXTENSIONS = new Set([
-  '.png', '.jpg', '.jpeg', '.mp3', '.wav', '.m4a', '.mp4', '.mov', '.webm',
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.mp3', '.wav', '.m4a', '.mp4', '.mov', '.webm',
   '.pdf', '.txt', '.md', '.csv', '.json', '.rtf', '.docx', '.xlsx', '.pptx',
 ])
 const ARTIFACT_BASELINE_VERSION = 1
