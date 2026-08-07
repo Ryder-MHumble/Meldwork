@@ -15,7 +15,7 @@ Most Agent tools are already good at completing one step. The fragile part start
 Meldwork is not about opening more AI windows. It is about letting complex work move between Agents without losing the thread: one Agent's conclusions and evidence can support the next step, every answer returns to the same task context, and you decide which results are worth accepting.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/latest"><strong>Download the macOS DMG</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.2/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
   · <a href="LICENSE">AGPL-3.0 license</a>
   · <a href="COMMERCIAL_USE.md">Commercial use</a>
 </p>
@@ -24,7 +24,7 @@ Meldwork is not about opening more AI windows. It is about letting complex work 
 
 The current desktop build is for Apple silicon Macs.
 
-1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/latest).
+1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/v0.1.0-private-preview.2).
 2. Download `Meldwork-0.1.0-arm64.dmg`.
 3. Drag Meldwork into Applications and open it.
 4. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
