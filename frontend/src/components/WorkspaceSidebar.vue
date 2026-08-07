@@ -43,7 +43,6 @@
       <section class="nav-section">
         <div class="nav-heading">
           <span>{{ t('nav.sidebarAgents') }}</span>
-          <PersonOutline />
         </div>
         <article v-for="agent in sidebarAgents" :key="agent.kind" class="sidebar-agent">
           <header class="sidebar-agent-header">
@@ -152,7 +151,6 @@
       <section class="nav-section group-nav-section">
         <div class="nav-heading">
           <span>{{ t('nav.groups') }}</span>
-          <PeopleOutline />
         </div>
         <div v-if="groupGroups.length" class="group-conversation-list">
           <div
@@ -259,7 +257,13 @@
           :aria-label="t('common.language')"
           @click="toggleLocale"
         >
-          <LanguageOutline />
+          <span class="preference-icon-frame" aria-hidden="true">
+            <Transition name="preference-icon">
+              <span :key="t('common.languageTarget')" class="preference-icon">
+                <LanguageOutline />
+              </span>
+            </Transition>
+          </span>
         </button>
         <button
           class="icon-button"
@@ -268,8 +272,14 @@
           :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
           @click="toggleTheme"
         >
-          <SunnyOutline v-if="theme === 'dark'" />
-          <MoonOutline v-else />
+          <span class="preference-icon-frame" aria-hidden="true">
+            <Transition name="preference-icon">
+              <span :key="theme" class="preference-icon">
+                <SunnyOutline v-if="theme === 'dark'" />
+                <MoonOutline v-else />
+              </span>
+            </Transition>
+          </span>
         </button>
       </div>
     </footer>
@@ -358,7 +368,6 @@ import {
   MoonOutline,
   PencilOutline,
   PeopleOutline,
-  PersonOutline,
   SettingsOutline,
   SunnyOutline,
   TrashOutline,
