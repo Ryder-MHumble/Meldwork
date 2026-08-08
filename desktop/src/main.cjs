@@ -70,6 +70,7 @@ const LOCAL_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   'opencodereview',
 ])
+const QUIT_CLEANUP_TIMEOUT_MS = 2500
 let mainWindow = null
 let workspace = null
 let workspaceChangedListener = null
@@ -90,9 +91,31 @@ const knowledgeBaseSourcesCache = new Map()
 let attachmentStore = null
 let skillCatalog = null
 let shutdownStarted = false
-let quitAfterCleanup = false
 let quitCleanup = null
 let cachedAppIcon
+
+function runQuitCleanup(cleanups, timeoutMs = QUIT_CLEANUP_TIMEOUT_MS) {
+  const tasks = cleanups.map((cleanup) => {
+    try {
+      return Promise.resolve(cleanup())
+    } catch (error) {
+      return Promise.reject(error)
+    }
+  })
+  const pending = Promise.allSettled(tasks)
+  return new Promise((resolve) => {
+    let settled = false
+    let timer = null
+    const finish = (timedOut) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      resolve({ timedOut })
+    }
+    pending.then(() => finish(false))
+    timer = setTimeout(() => finish(true), timeoutMs)
+  })
+}
 
 const attachments = createAttachmentService({
   getStore: () => attachmentStore,
@@ -659,6 +682,7 @@ if (!hasSingleInstanceLock) {
     }
     createWindow()
     app.on('activate', () => {
+      if (shutdownStarted) return
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
   })
@@ -672,7 +696,6 @@ if (!hasSingleInstanceLock) {
   })
 
   app.on('before-quit', (event) => {
-    if (quitAfterCleanup) return
     event.preventDefault()
     if (quitCleanup) return
     shutdownStarted = true
@@ -682,14 +705,13 @@ if (!hasSingleInstanceLock) {
     const installerState = installer?.state()
     const installRunning = Boolean(installerState?.canCancel)
     if (installRunning) installer.cancel(installerState.taskId)
-    quitCleanup = Promise.allSettled([
-      channelIngressRuntime?.shutdown() || Promise.resolve(),
-      cloudAgentRuntime?.shutdown() || Promise.resolve(),
-      workspace?.stopAll() || Promise.resolve(),
-      installer?.waitForIdle() || Promise.resolve(),
+    quitCleanup = runQuitCleanup([
+      () => channelIngressRuntime?.shutdown(),
+      () => cloudAgentRuntime?.shutdown(),
+      () => workspace?.stopAll(),
+      () => installer?.waitForIdle(),
     ]).then(() => {
-      quitAfterCleanup = true
-      app.quit()
+      app.exit(0)
     })
   })
 }
@@ -697,4 +719,5 @@ if (!hasSingleInstanceLock) {
 module.exports = {
   isTrustedLocalRenderer,
   isTrustedLocalWebContents,
+  runQuitCleanup,
 }

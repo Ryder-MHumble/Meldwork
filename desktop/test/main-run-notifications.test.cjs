@@ -166,7 +166,9 @@ test('run events require a trusted window and shutdown blocks notifications and 
   harness.setShutdown(true)
   harness.coordinator.notifyRunFinished({ groupId: 'group-1', status: 'completed' })
   assert.equal(harness.notifications.length, 0)
-  assert.equal(harness.coordinator.activateMainWindow(), true)
+  assert.equal(harness.coordinator.activateMainWindow(), false)
+  assert.equal(window.showCount, 0)
+  assert.equal(window.focusCount, 0)
   assert.equal(harness.coordinator.flushPendingOpenGroup(), false)
 })
 

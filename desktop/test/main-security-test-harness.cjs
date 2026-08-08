@@ -132,6 +132,7 @@ function loadMain(userData, options = {}) {
   let readyCallback
   let appReady = false
   let quitCount = 0
+  const exitCalls = []
   let singleInstanceLockCalls = 0
   let attachmentConstructionCount = 0
   const providerConfiguredKinds = new Set(options.providerConfigured === true ? ['hermes'] : [])
@@ -602,6 +603,7 @@ function loadMain(userData, options = {}) {
       this.input = input
       this.loads = []
       this.windowListeners = new Map()
+      this.destroyed = false
       this.focused = options.windowFocused !== false
       this.minimized = options.windowMinimized === true
       this.focusCount = 0
@@ -624,7 +626,7 @@ function loadMain(userData, options = {}) {
       windows.push(this)
     }
 
-    isDestroyed() { return false }
+    isDestroyed() { return this.destroyed }
     isFocused() { return this.focused }
     isMinimized() { return this.minimized }
     focus() { this.focused = true; this.focusCount += 1 }
@@ -650,9 +652,16 @@ function loadMain(userData, options = {}) {
       this.webContents.listeners.get('did-finish-load')?.()
     }
 
-    on(name, listener) { this.windowListeners.set(name, listener) }
+    on(name, listener) {
+      this.windowListeners.set(name, name === 'closed'
+        ? () => {
+            this.destroyed = true
+            listener()
+          }
+        : listener)
+    }
   }
-  TestBrowserWindow.getAllWindows = () => windows
+  TestBrowserWindow.getAllWindows = () => windows.filter(window => !window.destroyed)
 
   class TestNotification extends EventEmitter {
     constructor(input) {
@@ -683,6 +692,7 @@ function loadMain(userData, options = {}) {
       isReady: () => appReady,
       on: (name, listener) => appListeners.set(name, listener),
       quit: () => { quitCount += 1 },
+      exit: code => exitCalls.push(code),
       requestSingleInstanceLock: () => {
         singleInstanceLockCalls += 1
         return options.singleInstanceLock !== false
@@ -870,6 +880,7 @@ function loadMain(userData, options = {}) {
         skillSnapshotSelectionInstances,
         windows,
         workspaceInstances,
+        exitCalls,
         get quitCount() { return quitCount },
         get readyRegistered() { return typeof readyCallback === 'function' },
         get singleInstanceLockCalls() { return singleInstanceLockCalls },
