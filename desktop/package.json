@@ -57,6 +57,27 @@
         "dmg",
         "zip"
       ]
+    },
+    "dmg": {
+      "background": "build/dmg-background-ai-v2.png",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "iconSize": 128,
+      "contents": [
+        {
+          "x": 145,
+          "y": 210,
+          "type": "file"
+        },
+        {
+          "x": 395,
+          "y": 210,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
     }
   }
 }
