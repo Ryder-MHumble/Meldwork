@@ -15,7 +15,7 @@ Most Agent tools are already good at completing one step. The fragile part start
 Meldwork is not about opening more AI windows. It is about letting complex work move between Agents without losing the thread: one Agent's conclusions and evidence can support the next step, every answer returns to the same task context, and you decide which results are worth accepting.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.3/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.4/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
   · <a href="LICENSE">AGPL-3.0 license</a>
   · <a href="COMMERCIAL_USE.md">Commercial use</a>
 </p>
@@ -24,42 +24,41 @@ Meldwork is not about opening more AI windows. It is about letting complex work 
 
 The current desktop build is for Apple silicon Macs.
 
-1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/v0.1.0-private-preview.3).
+1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/v0.1.0-private-preview.4).
 2. Download `Meldwork-0.1.0-arm64.dmg`.
 3. Drag Meldwork into Applications and open it.
 4. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
 
 If the latest Release includes a DMG, it can be downloaded and installed locally. Developers can also run Meldwork from source with the commands below.
 
-## Start with one repeatable workflow
+## See the core workflow
 
-The first public workflow is simple: produce a deliverable, have a second Agent challenge it, and let the human decide what to keep.
+| Local Agent discovery | Direct multimodal work | Targeted multi-Agent review |
+| --- | --- | --- |
+| [![Meldwork detecting local Agent CLIs](docs/assets/meldwork-agent-discovery.png)](docs/assets/meldwork-agent-discovery.png) | [![A direct Agent conversation returning image, audio, and document outputs](docs/assets/meldwork-direct-multimodal.png)](docs/assets/meldwork-direct-multimodal.png) | [![A group conversation with targeted Agent replies](docs/assets/meldwork-group-collaboration.png)](docs/assets/meldwork-group-collaboration.png) |
+| Detect supported Agent CLIs without presenting startup as an error state. | Keep prompts, generated media, files, permissions, and compatible native sessions in one direct conversation. | Ask only the selected Agents to respond, then inspect or collapse each reply independently. |
 
-1. Create a group with two locally ready Agents.
-2. Attach only the files needed for the task and keep workspace write access off unless the task requires it.
-3. Ask one Agent to produce the deliverable and the other to check assumptions, omissions, and evidence in a bounded discussion.
-4. Inspect the final replies and sanitized run trace before accepting, revising, or discarding the result.
+Click any screenshot to view it at full resolution.
 
-Other domains are examples, not separate product promises. The release is successful when this two-Agent review loop works predictably on a clean Apple silicon Mac.
+## What Meldwork does today
 
-## One place to see the work
+- **Organizes local Agents:** detects supported CLI installations, keeps readiness visible, and lets users add approved CLI-based Custom Agents without turning the renderer into an unrestricted shell.
+- **Keeps direct work continuous:** each direct conversation retains its local history, attachments, permission mode, compatible native Session, and sanitized execution details.
+- **Moves multimodal files both ways:** users can paste or attach validated images, documents, code, archives, audio, and video; supported Agents and Providers can return locally previewable media and generated files to the same conversation.
+- **Targets group work explicitly:** mention the exact Agents needed for a task, run a single response or bounded automatic discussion, stop individual Agents, collapse replies, and review regenerated response versions.
+- **Makes execution inspectable and recoverable:** bounded run events, compact evidence capsules, checkpoints, completion states, and recovery actions remain available without exposing raw credentials, executable paths, or private reasoning.
+- **Keeps control local:** conversations and orchestration state stay on the computer, credentials use operating-system-backed secure storage where supported, and workspace write access remains opt-in.
 
-![Meldwork workspace overview](frontend/public/logos/meldwork-workspace-overview.png)
+Capability still depends on the selected Agent, its installed version, authentication state, Provider, and declared attachment or tool support.
 
-Direct conversations and working groups live in the same desktop workspace. Start directly when one Agent is enough; create a group when the task needs an independent check. Meldwork does not currently merge separate conversation histories automatically, so attach or restate the context the group must share.
+## A practical review loop
 
-## From a first answer to a reviewed decision
+1. Start a direct conversation with the Agent best suited to produce the first deliverable.
+2. Attach only the required context and enable workspace writes only when the task must modify files.
+3. Move the task into a group when it needs another capability or an independent challenge; select only the Agents that should participate.
+4. Compare final replies, generated artifacts, response versions, and sanitized run details before deciding what to accept.
 
-| Step | What happens in Meldwork |
-| --- | --- |
-| Start | Open a direct conversation with the Agent best suited to the first step |
-| Escalate | Create a working group and select only the Agents that should participate |
-| Discuss | Run a manual handoff or a bounded automatic multi-round discussion |
-| Verify | Inspect final replies, status, source context, and sanitized execution traces before accepting the result |
-
-![Multi-Agent product review in Meldwork](frontend/public/logos/meldwork-multi-agent-review.png)
-
-The conversation remains readable while Agent-specific process details stay available on demand. Group runs preserve compact evidence for later Agents and for the human making the final decision.
+Meldwork does not silently merge unrelated conversation histories. The user chooses which files, conclusions, Skills, and approved knowledge sources should cross into the next task.
 
 ## The Harness behind the workspace
 
@@ -72,27 +71,16 @@ The Harness is the layer that keeps Agent collaboration from turning into copied
 - **Inspectable execution:** conclusions, source context, warnings, terminal status, and, when exposed by the selected Agent or transport, plans and tool lifecycle summaries.
 - **Durable local state:** conversations and bounded run records remain inspectable; context stays durable and traceable after completion or interruption.
 
-## Why teams use Meldwork
+## Where the workflow fits
 
-- **Research and intelligence:** one Agent builds the evidence base while another challenges unsupported assumptions.
-- **Product and strategy:** one develops the proposal, another tests positioning, feasibility, and expensive failure modes.
-- **Software delivery:** one implements, another reviews the diff and the reasoning behind it.
-- **Writing and content:** one creates, another checks structure, factual accuracy, and tone.
-- **Operations:** specialized Agents handle different parts of the task while the full work record stays visible.
+| Work | First Agent | Independent check |
+| --- | --- | --- |
+| Research and intelligence | Build the evidence base | Challenge unsupported claims and missing sources |
+| Product and strategy | Draft the proposal and decision model | Test user value, feasibility, and expensive failure modes |
+| Software delivery | Implement and verify the change | Review the diff, tests, security boundaries, and regressions |
+| Writing and operations | Produce the deliverable | Check structure, accuracy, tone, and execution risk |
 
-The goal is not to maximize Agent count. It is to use the right Agent at the right moment without fragmenting the work.
-
-## What the desktop client keeps together
-
-- Persistent direct conversations and multi-Agent working groups.
-- Explicit Agent targeting, manual runs, and automatic multi-round discussions.
-- Compatible native-session continuity for each conversation and Agent.
-- Sanitized run traces, completion state, and compact evidence capsules.
-- Agent-specific Provider profiles and operating-system-backed credential storage where supported.
-- Skills, validated images, media, documents, code, archives, approved knowledge sources, and opt-in workspace access.
-- Local conversation and orchestration state with no Meldwork cloud account or remote conversation store.
-
-Model requests still follow the Agent and Provider you choose. Local-first describes Meldwork's workspace and orchestration state; it does not make third-party models offline.
+The goal is not to maximize Agent count. Use one Agent when one is enough, and add another only when a different capability or independent review materially improves the result. Model requests still follow the Agent and Provider you choose; local-first describes Meldwork's workspace and orchestration state, not third-party model hosting.
 
 ## Connected Agents
 
