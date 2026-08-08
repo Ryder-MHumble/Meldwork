@@ -15,7 +15,7 @@
 它解决的不是“同时打开更多 AI”，而是让一项复杂工作能够在不同 Agent 之间真正接力：前一个 Agent 留下的结论和证据，后一个可以继续使用；所有人的回答仍然回到同一条任务脉络里，由你决定哪些结果值得接受。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.2/Meldwork-0.1.0-arm64.dmg"><strong>下载 macOS DMG 安装包</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.3/Meldwork-0.1.0-arm64.dmg"><strong>下载 macOS DMG 安装包</strong></a>
   · <a href="LICENSE">AGPL-3.0 开源许可证</a>
   · <a href="COMMERCIAL_USE.md">商业使用说明</a>
 </p>
@@ -24,7 +24,7 @@
 
 当前桌面客户端面向 Apple 芯片 Mac：
 
-1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/v0.1.0-private-preview.2)。
+1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/v0.1.0-private-preview.3)。
 2. 下载 `Meldwork-0.1.0-arm64.dmg`。
 3. 将 Meldwork 拖入“应用程序”并打开。
 4. 连接电脑上已经安装的 Agent CLI，或为某个 Agent 单独配置 Provider。
