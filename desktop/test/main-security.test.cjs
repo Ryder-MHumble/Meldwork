@@ -522,6 +522,35 @@ test('a second desktop launch restores and focuses the existing window', async (
   assert.equal(harness.windows[0].focusCount, 1)
 })
 
+test('application activation cannot recreate a window after shutdown starts', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-shutdown-activate-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const originalWindow = harness.windows[0]
+
+  harness.appListeners.get('before-quit')({ preventDefault: () => {} })
+  originalWindow.windowListeners.get('closed')()
+  harness.appListeners.get('activate')()
+
+  assert.equal(harness.windows.length, 1)
+  await waitFor(() => harness.exitCalls.length === 1)
+  assert.deepEqual(harness.exitCalls, [0])
+})
+
+test('quit cleanup has a strict deadline when a runtime does not settle', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-quit-timeout-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { main } = loadMain(directory)
+
+  const result = await main.runQuitCleanup([
+    () => new Promise(() => {}),
+    () => Promise.reject(new Error('cleanup failed')),
+  ], 5)
+
+  assert.deepEqual(result, { timedOut: true })
+})
+
 test('closing the app window does not stop an active main-process Channel receiver', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-channel-background-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -1849,6 +1878,7 @@ test('before-quit waits for local workspace and installer cleanup', async (t) =>
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(harness.quitCount, 0)
   cloudShutdownGate.resolve()
-  await waitFor(() => harness.quitCount === 1)
+  await waitFor(() => harness.exitCalls.length === 1)
+  assert.deepEqual(harness.exitCalls, [0])
   assert.equal(harness.workspaceInstances[0].stopCount, 1)
 })

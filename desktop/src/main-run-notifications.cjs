@@ -70,6 +70,7 @@ function createRunNotificationCoordinator({
   }
 
   function activateMainWindow() {
+    if (isShutdownStarted()) return false
     let window = getMainWindow()
     if ((!window || window.isDestroyed()) && app.isReady()) {
       createWindow()
