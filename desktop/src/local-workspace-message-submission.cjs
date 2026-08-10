@@ -19,6 +19,7 @@ const {
 } = require('./local-workspace-inputs.cjs')
 const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 const { mediaGenerationRequest } = require('./media-generation-request.cjs')
+const { createTaskGraph } = require('./task-graph-records.cjs')
 
 function hardBudgetFailure(error) {
   return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
@@ -236,6 +237,18 @@ class LocalWorkspaceMessageSubmission {
     const maxRounds = mode === 'auto' && !unlimitedRounds
       ? normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
       : 0
+    let taskGraph = null
+    if (input.workflow != null) {
+      if (mode !== 'auto') throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      if (input.workflow?.template !== 'task-graph') {
+        throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      }
+      try {
+        taskGraph = createTaskGraph(input.workflow, targetKinds)
+      } catch {
+        throw new Error('LOCAL_WORKFLOW_INVALID')
+      }
+    }
     const requestedThreadRootId = mode === 'manual' ? cleanText(input.threadRootId, 100) : ''
     const regenerateMessageId = cleanText(input.regenerateMessageId, 100)
     if (input.regenerateMessageId != null && !regenerateMessageId) {
@@ -252,6 +265,7 @@ class LocalWorkspaceMessageSubmission {
       requestedThreadRootId,
       regenerateMessageId,
       routingDecision,
+      taskGraph,
     }
   }
 
@@ -340,6 +354,7 @@ class LocalWorkspaceMessageSubmission {
       requestedThreadRootId,
       regenerateMessageId,
       routingDecision,
+      taskGraph,
     } = this.validateInput(group, input)
     const regeneration = this.resolveRegeneration(group, regenerateMessageId, targetKinds)
     const reservation = this.reserveRun(
@@ -401,6 +416,7 @@ class LocalWorkspaceMessageSubmission {
             )
             controller = this.startAutoRunner(
               group, targetKinds, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
+              taskGraph,
             )
           } catch (error) {
             try {
@@ -664,6 +680,17 @@ class LocalWorkspaceMessageSubmission {
     const maxRounds = unlimitedRounds
       ? 0
       : normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
+    let taskGraph = null
+    if (input.workflow != null) {
+      if (input.workflow?.template !== 'task-graph') {
+        throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      }
+      try {
+        taskGraph = createTaskGraph(input.workflow, targetKinds)
+      } catch {
+        throw new Error('LOCAL_WORKFLOW_INVALID')
+      }
+    }
     const state = this.state()
     const latestRoot = state.messages.findLast(message => (
       message.groupId === group.id && message.role === 'user' && !message.threadRootId
@@ -694,6 +721,7 @@ class LocalWorkspaceMessageSubmission {
       )
       this.startAutoRunner(
         group, targetKinds, threadRootId, maxRounds, reservation, null, unlimitedRounds,
+        taskGraph,
       )
     } catch (error) {
       this.releasePreparation(group.id, reservation)

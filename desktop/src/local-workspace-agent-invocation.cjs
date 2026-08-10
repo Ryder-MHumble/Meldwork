@@ -730,7 +730,8 @@ class LocalWorkspaceAgentInvocation {
         ? isolated.promptOverride
         : [
             this.promptFor(
-              group, kind, mode, threadRootId, context.skillHints || [],
+              group, kind, context.completionPolicy === 'typed' ? 'manual' : mode,
+              threadRootId, context.skillHints || [],
               context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
             ),
             stagedAgentInputPrompt(stagedInputs),
@@ -1108,7 +1109,7 @@ class LocalWorkspaceAgentInvocation {
       result = requireTerminalAgentResult(result)
       this.markRuntimeCredential(kind, 'ready')
 
-      const reply = mode === 'auto'
+      const reply = mode === 'auto' && context.completionPolicy !== 'typed'
         ? parseAutoReply(result.text)
         : { text: result.text, consensus: false }
       if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')

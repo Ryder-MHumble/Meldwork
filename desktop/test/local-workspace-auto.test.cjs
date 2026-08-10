@@ -26,6 +26,161 @@ function pendingHumanGate(workspace, timeoutMs = 2000) {
     workspace.on('changed', changed)
   })
 }
+
+function graphNode(overrides = {}) {
+  return {
+    nodeId: 'primary-codex', role: 'primary', agentKind: 'codex',
+    dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce one durable conclusion.',
+    acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+    terminal: false, parallel: false, decisionOptions: [],
+    ...overrides,
+  }
+}
+
+function evidenceTaskGraph() {
+  return {
+    template: 'task-graph',
+    nodes: [
+      graphNode({ parallel: true }),
+      graphNode({ nodeId: 'primary-hermes', agentKind: 'hermes', parallel: true }),
+      graphNode({
+        nodeId: 'review-workbuddy', role: 'reviewer', agentKind: 'workbuddy',
+        dependsOn: ['primary-codex', 'primary-hermes'],
+        inputNodeIds: ['primary-codex', 'primary-hermes'],
+        expectedOutput: 'Review both Primary results independently.',
+      }),
+      graphNode({
+        nodeId: 'decide-kimi', role: 'arbiter', agentKind: 'kimi',
+        dependsOn: ['review-workbuddy'], inputNodeIds: ['review-workbuddy'],
+        expectedOutput: 'Resolve the reviewed conflict using typed Evidence.',
+        terminal: true,
+      }),
+    ],
+  }
+}
+
+test('task graph runs independent branches in parallel and completes from typed Evidence', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const primaryBarrier = deferred()
+  let activePrimaries = 0
+  let maxActivePrimaries = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (['codex', 'hermes'].includes(agent.kind)) {
+      activePrimaries += 1
+      maxActivePrimaries = Math.max(maxActivePrimaries, activePrimaries)
+      if (activePrimaries === 2) primaryBarrier.resolve()
+      await primaryBarrier.promise
+      activePrimaries -= 1
+    }
+    return {
+      text: agent.kind === 'codex'
+        ? 'Release is ready.'
+        : (agent.kind === 'hermes' ? 'Release is blocked.' : `${agent.kind} typed decision.`),
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Evidence task graph',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Assess release readiness with independent review.',
+    mode: 'auto',
+    maxRounds: 6,
+    targetKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workflow: evidenceTaskGraph(),
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(maxActivePrimaries, 2)
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'workbuddy', 'kimi',
+  ])
+  assert.equal(calls.every(call => !call.prompt.includes('ROUNDRELAY_CONSENSUS')), true)
+  assert.equal(calls[2].runOptions.sessionRef, '')
+  assert.match(calls[2].prompt, /ROUNDRELAY_TASK_GRAPH_V1/)
+  assert.match(calls[2].prompt, /\[conflict\]/)
+  assert.equal(calls[3].runOptions.sessionRef, '')
+
+  const durable = ledger.list(group.id)[0]
+  assert.equal(durable.status, 'completed')
+  assert.equal(durable.orchestration.version, 3)
+  assert.equal(durable.orchestration.taskGraph.terminalState, 'accepted')
+  const states = Object.fromEntries(durable.orchestration.taskGraph.nodeStates.map(state => (
+    [state.nodeId, state]
+  )))
+  assert.equal(states['review-workbuddy'].attention, 'review')
+  assert.equal(states['decide-kimi'].attention, 'decision')
+  assert.equal(durable.orchestration.taskGraph.nodeStates.every(state => (
+    state.status === 'accepted'
+  )), true)
+  assert.equal(durable.orchestration.collaboration.entries.some(entry => (
+    entry.entryType === 'decision'
+    && entry.refs.some(reference => durable.orchestration.collaboration.entries.some(
+      candidate => candidate.entryId === reference && candidate.entryType === 'conflict',
+    ))
+  )), true)
+  assert.equal(workspace.snapshot().messages.filter(message => (
+    message.threadRootId === started.threadRootId && message.role === 'agent'
+  )).length, 4)
+})
+
+test('task graph Human node uses a typed decision instead of Agent consensus', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Human decision graph', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const graph = {
+    template: 'task-graph',
+    nodes: [
+      graphNode(),
+      graphNode({
+        nodeId: 'human-release', role: 'human', agentKind: null,
+        dependsOn: ['primary-codex'], inputNodeIds: ['primary-codex'],
+        expectedOutput: 'Approve or reject the release decision.',
+        acceptance: { requireConclusion: false, minArtifactRefs: 0, minEvidenceRefs: 0 },
+        terminal: true,
+        decisionOptions: [
+          { optionId: 'approve-release', name: 'Approve release', kind: 'allow_once' },
+          { optionId: 'reject-release', name: 'Reject release', kind: 'reject_once' },
+        ],
+      }),
+    ],
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Prepare a release decision.',
+    mode: 'auto', maxRounds: 4, targetKinds: ['codex', 'hermes'], workflow: graph,
+  })
+  const gate = await pendingHumanGate(workspace)
+  assert.equal(gate.type, 'decision')
+  assert.equal(ledger.get(gate.runId).orchestration.taskGraph.nodeStates[1].status, 'waiting')
+  workspace.decideHumanGate(gate.gateId, {
+    status: 'approved', optionId: 'approve-release', actorId: 'local-user',
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  const durable = ledger.get(gate.runId)
+  assert.equal(durable.status, 'completed')
+  assert.equal(durable.continuation.state, 'completed')
+  assert.equal(durable.orchestration.taskGraph.nodeStates[1].decisionOptionId, 'approve-release')
+  assert.equal(calls.length, 1)
+})
 test('auto send preflights atomically, persists one root, and starts at round one', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

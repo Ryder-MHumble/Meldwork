@@ -592,7 +592,7 @@ class LocalWorkspace extends EventEmitter {
     const cursor = durable?.orchestration
     const continuation = durable?.continuation
     const supportedCursor = workflow === 'auto'
-      ? [1, 2].includes(cursor?.version)
+      ? [1, 2, 3].includes(cursor?.version)
       : cursor?.version === 1
     if (durable?.mode !== workflow || !supportedCursor || cursor.workflow !== workflow
         || cursor.currentKind !== continuation?.agentKind
@@ -830,6 +830,10 @@ class LocalWorkspace extends EventEmitter {
       const group = this.getGroup(durable.groupId)
       const resumableManual = this.canResumeManualOrchestration(durable)
       const resumableAuto = this.canResumeAutoOrchestration(durable)
+      const resumableTaskGraphDecision = durable.continuation.resumeKind === 'role_review_decision'
+        && durable.mode === 'auto'
+        && durable.orchestration?.version === 3
+        && durable.orchestration?.template === 'task-graph'
       if (durable.continuation.resumeKind === 'agent_slot'
           && decision.status === 'approved'
           && !this.canFinalizeReplayedAgentSlot(durable)
@@ -837,8 +841,16 @@ class LocalWorkspace extends EventEmitter {
           && !resumableAuto) {
         throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
       }
-      if (durable.continuation.resumeKind === 'role_review_decision') {
+      if (durable.continuation.resumeKind === 'role_review_decision'
+          && !resumableTaskGraphDecision) {
         throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      }
+      if (resumableTaskGraphDecision) {
+        const finalStatus = await this.autoRunner.resumeDecision(
+          group, durable, controller, decision,
+        )
+        await this.finishRun(durable.groupId, controller, finalStatus)
+        return
       }
       const request = this.humanGateStore.request(gate.gateId)
       let replayedResult = null
@@ -898,7 +910,7 @@ class LocalWorkspace extends EventEmitter {
       const finalStatus = resumableManual
         ? await this.continueManualOrchestration(group, durable, controller)
         : (resumableAuto
-            ? await this.autoRunner.resume(group, durable, controller)
+            ? await this.autoRunner.resume(group, durable, controller, replayedResult)
             : 'completed')
       await this.finishRun(durable.groupId, controller, finalStatus)
     } catch (error) {
@@ -1312,15 +1324,15 @@ class LocalWorkspace extends EventEmitter {
 
   startAutoRunner(
     group, targetKinds, threadRootId, maxRounds, reservation = null, preparedContext = null,
-    unlimitedRounds = false,
+    unlimitedRounds = false, taskGraph = null,
   ) {
     return this.autoRunner.start(
       group, targetKinds, threadRootId, maxRounds, reservation, preparedContext, unlimitedRounds,
+      taskGraph,
     )
   }
 
   async sendMessage(input) {
-    if (input?.workflow) throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
     return this.messageSubmission.send(input)
   }
 

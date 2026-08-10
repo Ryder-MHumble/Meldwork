@@ -88,6 +88,148 @@ function removeContextPack(workspace, contextPackId) {
   ))
 }
 
+function decisionTaskGraph() {
+  return {
+    template: 'task-graph',
+    nodes: [{
+      nodeId: 'primary-codex', role: 'primary', agentKind: 'codex',
+      dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce a durable recommendation.',
+      acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+      terminal: false, parallel: false, decisionOptions: [],
+    }, {
+      nodeId: 'human-decision', role: 'human', agentKind: null,
+      dependsOn: ['primary-codex'], inputNodeIds: ['primary-codex'],
+      expectedOutput: 'Approve or reject the recommendation.',
+      acceptance: { requireConclusion: false, minArtifactRefs: 0, minEvidenceRefs: 0 },
+      terminal: true, parallel: false,
+      decisionOptions: [
+        { optionId: 'approve-graph', name: 'Approve recommendation', kind: 'allow_once' },
+        { optionId: 'reject-graph', name: 'Reject recommendation', kind: 'reject_once' },
+      ],
+    }],
+  }
+}
+
+test('task-graph Human decisions resume from the durable v3 cursor after restart', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart task graph', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Prepare a durable recommendation for approval.',
+    mode: 'auto', maxRounds: 4, targetKinds: ['codex', 'hermes'],
+    workflow: decisionTaskGraph(),
+  })
+  const pending = await pendingGate(workspace)
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.equal(waiting.status, 'waiting')
+  assert.equal(waiting.orchestration.version, 3)
+  assert.deepEqual(waiting.orchestration.taskGraph.nodeStates.map(state => state.status), [
+    'accepted', 'waiting',
+  ])
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'approve-graph', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.continuation.state, 'completed')
+  assert.equal(terminal.orchestration.taskGraph.terminalState, 'accepted')
+  assert.equal(
+    terminal.orchestration.taskGraph.nodeStates[1].decisionOptionId,
+    'approve-graph',
+  )
+  assert.equal(calls.length, 1)
+
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls.length, 1)
+})
+
+test('task-graph Agent slots resume into typed acceptance after a permission Gate restart', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  let appliedDecisions = 0
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    calls.push({ agent, runOptions })
+    await runOptions.onSessionRef('kimi-task-graph-session', { transport: 'acp' })
+    const decision = await runOptions.onPermissionRequest({
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ],
+      operation: { kind: 'write', path: 'typed-result.txt' },
+    }, { signal: runOptions.signal })
+    appliedDecisions += 1
+    return {
+      text: `Typed result after ${decision.optionId}`,
+      sessionRef: 'kimi-task-graph-session',
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart task graph Agent',
+    agentKinds: ['kimi', 'codex'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Produce the typed result after permission.',
+    mode: 'auto', maxRounds: 2, targetKinds: ['kimi', 'codex'],
+    workflow: {
+      template: 'task-graph',
+      nodes: [{
+        nodeId: 'primary-kimi', role: 'primary', agentKind: 'kimi',
+        dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce a durable typed result.',
+        acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+        terminal: true, parallel: false, decisionOptions: [],
+      }],
+    },
+  })
+  const pending = await pendingGate(workspace)
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.deepEqual(waiting.orchestration.taskGraph.currentNodeIds, ['primary-kimi'])
+  assert.equal(waiting.orchestration.taskGraph.nodeStates[0].status, 'running')
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.orchestration.taskGraph.nodeStates[0].status, 'accepted')
+  assert.equal(terminal.orchestration.taskGraph.nodeStates[0].artifactIds.length, 1)
+  assert.equal(terminal.orchestration.taskGraph.nodeStates[0].evidenceIds.length, 1)
+  assert.equal(calls.length, 2)
+  assert.equal(appliedDecisions, 1)
+})
+
 async function verifyAutomaticGateRecovery(t, gateIndex) {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

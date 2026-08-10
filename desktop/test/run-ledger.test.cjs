@@ -9,6 +9,7 @@ const {
   appendHandoff,
   emptyCollaborationState,
 } = require('../src/collaboration-records.cjs')
+const { createTaskGraph, createTaskGraphCursor } = require('../src/task-graph-records.cjs')
 
 test('keeps the ledger facade limited to RunLedger', () => {
   assert.deepEqual(Object.keys(require('../src/run-ledger.cjs')), ['RunLedger'])
@@ -147,6 +148,55 @@ test('loads exact v1 orchestration cursors and persists strict v2 collaboration 
     currentRound: 1,
     maxRounds: 2,
     orchestration: { version: 1, ...baseCursor, collaboration },
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+})
+
+test('persists strict v3 task-graph cursors without weakening v1 and v2 loading', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const graph = createTaskGraph({
+    template: 'task-graph',
+    nodes: [{
+      nodeId: 'primary-codex', role: 'primary', agentKind: 'codex',
+      dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce a durable conclusion.',
+      acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+      terminal: true, parallel: false, decisionOptions: [],
+    }],
+  }, ['codex'])
+  const taskGraph = createTaskGraphCursor(graph, 1000)
+  const saved = ledger.checkpoint({
+    ...runRecord('run-orchestration-v3', 'group-orchestration-v3'),
+    mode: 'auto',
+    currentRound: 0,
+    maxRounds: 2,
+    orchestration: {
+      version: 3,
+      workflow: 'auto',
+      template: 'task-graph',
+      currentKind: '',
+      pendingKinds: ['codex'],
+      activeKinds: ['codex'],
+      successfulKinds: [],
+      agreementKinds: [],
+      attachmentRecipients: [],
+      totalSuccesses: 0,
+      terminalFailureOccurred: false,
+      collaboration: emptyCollaborationState(),
+      taskGraph,
+    },
+  })
+  assert.equal(saved.orchestration.version, 3)
+  assert.deepEqual(saved.orchestration.taskGraph, taskGraph)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration,
+    saved.orchestration,
+  )
+  assert.throws(() => ledger.checkpoint({
+    runId: saved.runId,
+    orchestration: {
+      ...saved.orchestration,
+      taskGraph: { ...taskGraph, terminalState: 'accepted' },
+    },
   }), { message: 'RUN_LEDGER_RECORD_INVALID' })
 })
 

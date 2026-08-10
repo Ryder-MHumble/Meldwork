@@ -26,6 +26,7 @@ const {
   normalizeAttemptHistory,
 } = require('./failure-policy.cjs')
 const { parseCollaborationState } = require('./collaboration-records.cjs')
+const { parseTaskGraphCursor } = require('./task-graph-records.cjs')
 
 const DEFAULT_MAX_DURABLE_AGENT_RUNS = 256
 const MAX_TARGET_KINDS = 32
@@ -64,7 +65,7 @@ const CONTINUATION_STATES = new Set([
 const ORCHESTRATION_FIELDS = new Set([
   'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
-  'totalSuccesses', 'terminalFailureOccurred', 'collaboration',
+  'totalSuccesses', 'terminalFailureOccurred', 'collaboration', 'template', 'taskGraph',
 ])
 const ORCHESTRATION_WORKFLOWS = new Set(['manual', 'auto'])
 
@@ -403,13 +404,25 @@ function normalizeOrchestration(input) {
   const agreementKinds = normalizeKinds(input.agreementKinds)
   const attachmentRecipients = normalizeKinds(input.attachmentRecipients)
   const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
-  if (![1, 2].includes(version) || !ORCHESTRATION_WORKFLOWS.has(workflow)
+  if (![1, 2, 3].includes(version) || !ORCHESTRATION_WORKFLOWS.has(workflow)
       || (version === 1 && hasOwn(input, 'collaboration'))
-      || (version === 2 && workflow !== 'auto')) return undefined
+      || (version === 2 && workflow !== 'auto')
+      || (version < 3 && (hasOwn(input, 'template') || hasOwn(input, 'taskGraph')))
+      || (version === 3 && (workflow !== 'auto' || input.template !== 'task-graph'))) {
+    return undefined
+  }
   let collaboration
-  if (version === 2) {
+  if (version >= 2) {
     try {
       collaboration = parseCollaborationState(input.collaboration)
+    } catch {
+      return undefined
+    }
+  }
+  let taskGraph
+  if (version === 3) {
+    try {
+      taskGraph = parseTaskGraphCursor(input.taskGraph)
     } catch {
       return undefined
     }
@@ -425,7 +438,8 @@ function normalizeOrchestration(input) {
     attachmentRecipients,
     totalSuccesses,
     terminalFailureOccurred: input.terminalFailureOccurred === true,
-    ...(version === 2 ? { collaboration } : {}),
+    ...(version >= 2 ? { collaboration } : {}),
+    ...(version === 3 ? { template: 'task-graph', taskGraph } : {}),
   }
 }
 
@@ -505,6 +519,7 @@ function hasValidStoredRecordShape(input) {
     ...orchestration.successfulKinds,
     ...orchestration.agreementKinds,
     ...orchestration.attachmentRecipients,
+    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
   ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return false
   const parent = {
     runId: cleanId(input.runId),
@@ -752,6 +767,7 @@ function normalizeRecord(input, options = {}) {
     ...orchestration.successfulKinds,
     ...orchestration.agreementKinds,
     ...orchestration.attachmentRecipients,
+    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
   ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return null
 
   const record = {
