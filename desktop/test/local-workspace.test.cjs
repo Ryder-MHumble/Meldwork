@@ -220,6 +220,7 @@ test('Custom Agent kinds keep their dynamic label across execution and reload', 
   await workspace.sendMessage({ groupId: group.id, text: 'Review this change', targetKinds: [kind] })
 
   assert.match(calls[0].prompt, /as Repository Reviewer\./)
+  assert.equal(calls[0].runOptions.sandbox, 'read-only')
   const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
   assert.equal(reply.agentKind, kind)
   assert.equal(reply.senderName, 'Repository Reviewer')
@@ -228,6 +229,20 @@ test('Custom Agent kinds keep their dynamic label across execution and reload', 
   assert.equal(reloaded.snapshot().groups[0].directAgentKind, kind)
   assert.equal(reloaded.snapshot().messages.find(message => message.role === 'agent').senderName,
     'Repository Reviewer')
+
+  await reloaded.refreshAgents()
+  const writeGroup = reloaded.createGroup({
+    name: 'Writable review',
+    agentKinds: [kind],
+    allowWrite: true,
+    workdir: directory,
+  })
+  await reloaded.sendMessage({
+    groupId: writeGroup.id,
+    text: 'Apply the approved change',
+    targetKinds: [kind],
+  })
+  assert.equal(calls.at(-1).runOptions.sandbox, 'workspace-write')
 })
 
 test('shared Provider readiness skips slow native probes while a profile is active', async (t) => {

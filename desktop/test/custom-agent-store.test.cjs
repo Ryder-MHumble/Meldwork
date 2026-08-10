@@ -127,6 +127,7 @@ test('runs a Custom Agent without a shell and redacts its private executable pat
   }
 
   const result = await store.run('custom-0123456789abcdef', 'Review this change', '/tmp', {
+    sandbox: 'workspace-write',
     spawnFn,
     attachments: [attachmentPath],
     onOutboundPayload: (payload) => {
@@ -167,6 +168,24 @@ test('runs a Custom Agent without a shell and redacts its private executable pat
   assert.equal(result.outcome, 'partial')
 })
 
+test('fails closed before spawning a Custom Agent in read-only mode', async (t) => {
+  const { executable, store } = fixture(t)
+  store.create({ label: 'Review Agent', args: [], promptMode: 'stdin' }, executable)
+  let spawnCalls = 0
+
+  await assert.rejects(
+    store.run('custom-0123456789abcdef', 'Do not write', '/tmp', {
+      sandbox: 'read-only',
+      spawnFn: () => {
+        spawnCalls += 1
+        throw new Error('process must not spawn')
+      },
+    }),
+    { code: 'CUSTOM_AGENT_READ_ONLY_UNSUPPORTED' },
+  )
+  assert.equal(spawnCalls, 0)
+})
+
 test('captures the exact Custom Agent stdin before process spawn', async (t) => {
   const { directory, executable, store } = fixture(t)
   store.create({
@@ -197,6 +216,7 @@ test('captures the exact Custom Agent stdin before process spawn', async (t) => 
     'Review stdin payload',
     directory,
     {
+      sandbox: 'workspace-write',
       spawnFn: (command, args, options) => {
         spawnCalled = true
         invocation = { command, args, options }
@@ -233,6 +253,7 @@ test('Custom Agent outbound callback failure prevents process spawn', async (t) 
 
   await assert.rejects(
     store.run('custom-0123456789abcdef', 'must not be delivered', '/tmp', {
+      sandbox: 'workspace-write',
       spawnFn: () => {
         spawnCalls += 1
         throw new Error('process must not spawn')
@@ -257,6 +278,7 @@ test('cancels the Custom Agent process through the shared AbortSignal', async (t
   }
   const controller = new AbortController()
   const run = store.run('custom-0123456789abcdef', 'Review this change', '/tmp', {
+    sandbox: 'workspace-write',
     signal: controller.signal,
     spawnFn: () => child,
   })

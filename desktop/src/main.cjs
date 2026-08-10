@@ -446,6 +446,7 @@ function createWorkspace() {
     runAgent: async (agent, prompt, workdir, options = {}) => {
       if (customAgentStore.has(agent.kind)) {
         return customAgentStore.run(agent.kind, prompt, workdir, {
+          sandbox: options.sandbox,
           signal: options.signal,
           onProgress: options.onProgress,
           onEvent: options.onEvent,

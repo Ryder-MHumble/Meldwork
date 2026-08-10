@@ -435,6 +435,7 @@ test('Custom Agent IPC keeps executable paths private and refreshes the local ca
     'Review this change',
     '/tmp/project',
     {
+      sandbox: 'read-only',
       signal,
       attachments: ['/tmp/project/input.txt'],
       onProgress: () => {},
@@ -450,6 +451,7 @@ test('Custom Agent IPC keeps executable paths private and refreshes the local ca
   assert.equal(runPrompt, 'Review this change')
   assert.equal(runWorkdir, '/tmp/project')
   assert.equal(runOptions.signal, signal)
+  assert.equal(runOptions.sandbox, 'read-only')
   assert.deepEqual(runOptions.attachments, ['/tmp/project/input.txt'])
   assert.equal(runOptions.onOutboundPayload, onOutboundPayload)
   assert.equal(harness.runAgentCalls.length, 0)
