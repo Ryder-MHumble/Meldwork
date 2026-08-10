@@ -16,6 +16,7 @@ const { LocalWorkspaceContextPacks } = require('./local-workspace-context-packs.
 const { LocalWorkspaceMessageSubmission } = require('./local-workspace-message-submission.cjs')
 const { LocalWorkspaceRunCoordinator } = require('./local-workspace-run-coordinator.cjs')
 const { LocalWorkspaceRunMessages } = require('./local-workspace-run-messages.cjs')
+const { AgentRouter } = require('./agent-routing.cjs')
 const {
   clearSessionState,
   openClawSessionRef,
@@ -139,10 +140,15 @@ class LocalWorkspace extends EventEmitter {
       detectAgents: () => this.detectAgentsFn(),
       credentialState: (...args) => this.credentialStateFn(...args),
       sharedProviderReady: kind => this.sharedProviderReadyFn(kind),
+      attachmentSupport: kind => this.attachmentSupportFn(kind),
       save: () => this.save(),
       emitChanged: () => this.emitChanged(),
       snapshot: () => this.snapshot(),
       now: () => this.now(),
+    })
+    this.agentRouter = options.agentRouter || new AgentRouter({
+      attachmentSupport: kind => this.attachmentSupportFn(kind),
+      fitMatrix: options.agentFitMatrix,
     })
     this.runLedgerCoordinator = new LocalWorkspaceRunLedger({
       runLedger: this.runLedger,
@@ -302,6 +308,7 @@ class LocalWorkspace extends EventEmitter {
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
       checkpointRun: (...args) => this.checkpointRun(...args),
       hasRunLedger: () => Boolean(this.runLedger),
+      routeAgents: input => this.agentRouter.route(input),
     })
     if (this.workspaceRecovery.trusted) {
       this.humanGateCoordinator.reconcileDecisions?.()

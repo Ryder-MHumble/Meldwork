@@ -62,6 +62,7 @@ class LocalWorkspaceMessageSubmission {
     this.consumeAgentControl = options.consumeAgentControl
     this.checkpointRun = options.checkpointRun
     this.hasRunLedger = options.hasRunLedger || (() => false)
+    this.routeAgents = options.routeAgents
   }
 
   async resolveAttachments(attachmentRefs, signal) {
@@ -186,14 +187,18 @@ class LocalWorkspaceMessageSubmission {
     const mode = input.mode === 'auto' && group.conversationType !== 'direct'
       ? 'auto'
       : 'manual'
-    if (input.targetKinds != null && !Array.isArray(input.targetKinds)) {
-      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
-    }
-    const requested = Array.isArray(input.targetKinds) && input.targetKinds.length
-      ? normalizeTargetKinds(input.targetKinds)
-      : group.agentKinds
-    const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
-    if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    const inputTypes = ['text', ...new Set((Array.isArray(input.attachments)
+      ? input.attachments
+      : []).map(attachment => attachmentType(attachment?.mimeType)).filter(Boolean))]
+    const routingDecision = this.routeAgents({
+      agents: this.detectedAgents(),
+      group,
+      input,
+      mode,
+      inputTypes,
+      minContextChars: Math.max(1, cleanText(input.text).length),
+    })
+    const targetKinds = routingDecision.selectedKinds
     if (mode === 'auto' && targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     if (input.mentionedAgentKinds != null && !Array.isArray(input.mentionedAgentKinds)) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
@@ -201,11 +206,6 @@ class LocalWorkspaceMessageSubmission {
     const mentionedAgentKinds = normalizeTargetKinds(input.mentionedAgentKinds)
     if (mentionedAgentKinds.some(kind => !targetKinds.includes(kind))) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
-    }
-    if (mode === 'auto' && targetKinds.some(kind => (
-      !this.detectedAgents().some(agent => agent.kind === kind && agent.available)
-    ))) {
-      throw new Error('LOCAL_AGENT_UNAVAILABLE')
     }
     if (input.skillHints != null && !Array.isArray(input.skillHints)) {
       throw new Error('LOCAL_SKILL_SELECTION_INVALID')
@@ -251,6 +251,7 @@ class LocalWorkspaceMessageSubmission {
       maxRounds,
       requestedThreadRootId,
       regenerateMessageId,
+      routingDecision,
     }
   }
 
@@ -338,6 +339,7 @@ class LocalWorkspaceMessageSubmission {
       maxRounds,
       requestedThreadRootId,
       regenerateMessageId,
+      routingDecision,
     } = this.validateInput(group, input)
     const regeneration = this.resolveRegeneration(group, regenerateMessageId, targetKinds)
     const reservation = this.reserveRun(
@@ -382,6 +384,7 @@ class LocalWorkspaceMessageSubmission {
               skillHints: prepared.skillHints,
               knowledgeBaseHints: prepared.storedKnowledgeBaseHints,
               targetKinds,
+              routingDecision,
             },
           )
           try {
@@ -429,6 +432,7 @@ class LocalWorkspaceMessageSubmission {
             skillHints: prepared.skillHints,
             knowledgeBaseHints: prepared.storedKnowledgeBaseHints,
             targetKinds: group.conversationType === 'direct' ? [] : targetKinds,
+            routingDecision,
           },
         )
         const threadRootId = regeneration

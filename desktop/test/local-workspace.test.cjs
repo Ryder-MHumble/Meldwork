@@ -27,6 +27,11 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(codex.installed, true)
   assert.equal(codex.available, true)
   assert.equal(codex.showInSidebar, true)
+  assert.deepEqual(Object.keys(codex.capabilities).sort(), [
+    'contextLimitChars', 'costBand', 'domains', 'inputTypes', 'latencyBand',
+    'outputTypes', 'permissionModes', 'resumable', 'task', 'toolClasses',
+  ])
+  assert.ok(codex.capabilities.domains.includes('software-development'))
   assert.equal(hermes.installed, true)
   assert.equal(hermes.available, false)
   assert.equal(hermes.credentialState, 'missing')
@@ -441,7 +446,74 @@ test('groups and messages persist without exposing executable paths', async (t) 
   assert.equal(restored.snapshot().groups[0].name, '本地测试群')
   assert.equal(restored.snapshot().messages.length, 2)
   assert.deepEqual(restored.snapshot().messages[0].targetKinds, ['codex'])
+  assert.equal(restored.snapshot().messages[0].routingDecision.mode, 'explicit')
   assert.equal('executable' in workspace.snapshot().agents[0], false)
+})
+
+test('invalid explicit targets fail before Task or message persistence', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Strict targets', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  for (const [targetKinds, code] of [
+    [['codex', 'codex'], 'LOCAL_MESSAGE_TARGET_DUPLICATE'],
+    [['unknown-agent'], 'LOCAL_MESSAGE_TARGET_UNKNOWN'],
+    [['qwen'], 'LOCAL_MESSAGE_TARGET_OUT_OF_GROUP'],
+  ]) {
+    await assert.rejects(workspace.sendMessage({
+      groupId: group.id, text: 'Must not persist', targetKinds,
+    }), { message: code })
+  }
+  workspace.markRuntimeCredential('hermes', 'missing')
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id, text: 'Unavailable target', targetKinds: ['hermes'],
+  }), { message: 'LOCAL_AGENT_UNAVAILABLE' })
+
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+  assert.equal(workspace.runLedger?.list?.().length || 0, 0)
+})
+
+test('opt-in automatic routing persists the smallest evidence-ranked team', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.agentFitMatrix = {
+    version: 'fit-matrix-test-v1',
+    entries: [
+      { kind: 'codex', domains: ['general'], score: 60, confidence: 0.8, sampleSize: 10 },
+      { kind: 'hermes', domains: ['general'], score: 90, confidence: 0.9, sampleSize: 12 },
+    ],
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Automatic routing', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Choose the smallest suitable team.',
+    targetKinds: [],
+    routingMode: 'automatic',
+  })
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['hermes'])
+  const root = workspace.snapshot().messages.find(message => message.role === 'user')
+  assert.deepEqual(root.targetKinds, ['hermes'])
+  assert.equal(root.routingDecision.mode, 'automatic')
+  assert.equal(root.routingDecision.rationale, 'evidence-ranked-team')
+  assert.equal(root.routingDecision.evidenceVersion, 'fit-matrix-test-v1')
+  assert.deepEqual(root.routingDecision.selectedKinds, ['hermes'])
+
+  const restored = new LocalWorkspace(options)
+  assert.deepEqual(
+    restored.snapshot().messages.find(message => message.role === 'user').routingDecision,
+    root.routingDecision,
+  )
 })
 
 test('all supported workspace versions preserve stored or omitted read-only permission', (t) => {

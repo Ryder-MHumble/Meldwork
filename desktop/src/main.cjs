@@ -498,6 +498,7 @@ async function localAgentCatalog() {
         authenticated: Boolean(agent.installed && state?.authenticated),
         invocable: Boolean(agent.installed && state?.invocable),
         recentlyVerified: Boolean(agent.installed && state?.recentlyVerified),
+        capabilities: state?.capabilities || agent.capabilities || null,
         available: Boolean(agent.installed && state?.invocable),
         credentialState: agent.installed ? (state?.credentialState || 'unknown') : 'missing',
         availabilitySource: agent.installed ? (state?.availabilitySource || 'unverified') : 'none',

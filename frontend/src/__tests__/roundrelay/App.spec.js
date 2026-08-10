@@ -1195,6 +1195,62 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps explicit routing as the default and sends automatic team formation only when enabled', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
+    const routingToggle = wrapper.get('[data-routing-mode="automatic"]')
+    expect(routingToggle.attributes('aria-pressed')).toBe('false')
+    expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
+
+    await wrapper.get('.composer-box textarea').setValue('Use the selected Agents')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.send).toHaveBeenNthCalledWith(1, {
+      groupId: 'group-1',
+      text: 'Use the selected Agents',
+      targetKinds: ['codex', 'hermes'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+
+    await routingToggle.trigger('click')
+    expect(routingToggle.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') !== undefined)).toBe(true)
+    await wrapper.get('.composer-box textarea').setValue('Choose the smallest suitable team')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenNthCalledWith(2, {
+      groupId: 'group-1',
+      text: 'Choose the smallest suitable team',
+      targetKinds: [],
+      routingMode: 'automatic',
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
   it('sends one atomic automatic discussion with bounded rounds', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({

@@ -131,6 +131,7 @@ export function createConversationControllers({
   const composerController = {
     activeGroup: app.activeGroup,
     activeRun: app.activeRun,
+    automaticTeamFormation: composerContext.automaticTeamFormation,
     activeSkillOptionId: composerContext.activeSkillOptionId,
     attachmentActionLabel: attachments.attachmentActionLabel,
     attachmentKind: attachments.attachmentKind,
@@ -190,6 +191,7 @@ export function createConversationControllers({
     t: app.t,
     theme: app.theme,
     toggleTarget: composerContext.toggleTarget,
+    toggleAutomaticTeamFormation: composerContext.toggleAutomaticTeamFormation,
     unlimitedRounds: app.unlimitedRounds,
   }
 

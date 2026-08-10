@@ -640,6 +640,7 @@ systemSettingsNavigation = useSystemSettingsNavigation({
 const {
   captureComposerContext,
   clearComposerContext,
+  automaticTeamFormation,
   composerMode,
   composerTargetKinds,
   discussionMode,
@@ -678,6 +679,7 @@ const {
 const conversationExecution = useConversationExecution({
   activeGroup,
   activeRun,
+  automaticTeamFormation,
   attachmentLimitMessage,
   captureComposerContext,
   clearComposerContext,

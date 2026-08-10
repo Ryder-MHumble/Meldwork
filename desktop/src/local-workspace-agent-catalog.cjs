@@ -36,6 +36,7 @@ class LocalWorkspaceAgentCatalog {
     this.detectAgents = options.detectAgents
     this.credentialState = options.credentialState
     this.sharedProviderReady = options.sharedProviderReady
+    this.attachmentSupport = options.attachmentSupport || (() => ({}))
     this.save = options.save
     this.emitChanged = options.emitChanged
     this.snapshot = options.snapshot
@@ -110,7 +111,10 @@ class LocalWorkspaceAgentCatalog {
         || recentlyVerified(runtime, this.now())
       const available = invocable
       const preferred = state.agentPreferences[agent.kind]?.showInSidebar
-      const capabilities = agentRuntimeCapabilities(agent.kind)
+      const capabilities = agentRuntimeCapabilities(agent.kind, {
+        agent,
+        attachmentSupport: this.attachmentSupport(agent.kind),
+      })
       let availabilitySource = 'unverified'
       if (!compatible) availabilitySource = 'incompatible'
       else if (runtimeMissing) availabilitySource = 'runtime-auth-failure'
@@ -132,6 +136,7 @@ class LocalWorkspaceAgentCatalog {
         available,
         task: capabilities.task,
         resumable: capabilities.resumable,
+        capabilities,
         showInSidebar: capabilities.task === 'general'
           && available
           && (typeof preferred === 'boolean' ? preferred : true),

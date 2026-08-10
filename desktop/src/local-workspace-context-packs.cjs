@@ -385,6 +385,7 @@ class LocalWorkspaceContextPacks {
       skillHints,
       knowledgeBaseHints: knowledgeBaseHints.map(publicKnowledgeHint),
       targetKinds,
+      ...(message?.routingDecision ? { routingDecision: message.routingDecision } : {}),
       group: {
         name: String(group?.name || ''),
         topic: String(group?.topic || ''),

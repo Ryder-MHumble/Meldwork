@@ -273,6 +273,7 @@ class AgentConnectorRuntime {
   detectAgents() {
     return this.registry.listInstances().map((instance) => {
       const { manifest } = this.registry.resolveInstance(instance.instanceId)
+      const snapshot = this.registry.runSnapshot(instance.instanceId)
       return Object.freeze({
         kind: instance.instanceId,
         name: instance.label,
@@ -287,6 +288,21 @@ class AgentConnectorRuntime {
         upstreamVersion: instance.upstreamVersion,
         acpAvailable: manifest.transport.type === 'acp',
         idempotencyMode: manifest.invocation.idempotencyMode || 'none',
+        routingCapabilities: Object.freeze({
+          domains: snapshot.capabilities.domains,
+          inputTypes: snapshot.capabilities.inputTypes,
+          outputTypes: Object.freeze([
+            'text',
+            ...(snapshot.capabilities.eventTypes.includes('Artifact') ? ['artifact'] : []),
+            ...(snapshot.capabilities.eventTypes.includes('Evidence') ? ['evidence'] : []),
+          ]),
+          toolClasses: Object.freeze(['agent-native']),
+          permissionModes: snapshot.capabilities.permissionModes,
+          latencyBand: 'unknown',
+          costBand: 'unknown',
+          contextLimitChars: MAX_PROMPT_BYTES,
+          resumable: snapshot.capabilities.session.resume,
+        }),
       })
     })
   }

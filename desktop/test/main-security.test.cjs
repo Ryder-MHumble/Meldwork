@@ -786,6 +786,10 @@ test('workspace run IPC requires an explicit non-empty Agent target contract', a
       channel,
     )
   }
+  await assert.doesNotReject(() => harness.ipcHandlers.get('local-workspace:send')(
+    harness.event(),
+    { groupId: 'group-1', text: 'Route the work', targetKinds: [], routingMode: 'automatic' },
+  ))
 })
 
 test('workspace stop IPC forwards only a validated group and run pair', async (t) => {

@@ -219,7 +219,8 @@ function registerDesktopIpc(options) {
   registerTrustedHandle('local-workspace:send', async (input) => {
     const workspace = getWorkspace()
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
-    if (!Array.isArray(input?.targetKinds) || !input.targetKinds.length) {
+    if ((!Array.isArray(input?.targetKinds) || !input.targetKinds.length)
+        && input?.routingMode !== 'automatic') {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
     return workspace.sendMessage(input)

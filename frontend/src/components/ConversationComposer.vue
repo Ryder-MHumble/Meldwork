@@ -90,6 +90,19 @@
           </div>
 
           <div class="target-row" :aria-label="t('composer.targets')">
+            <button
+              type="button"
+              class="routing-team-toggle"
+              data-routing-mode="automatic"
+              :class="{ active: automaticTeamFormation }"
+              :title="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
+              :aria-label="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
+              :aria-pressed="automaticTeamFormation"
+              :disabled="Boolean(activeRun) || sending"
+              @click="toggleAutomaticTeamFormation"
+            >
+              <SparklesOutline />
+            </button>
             <div class="target-avatar-stack" role="group" :aria-label="t('composer.targets')">
               <button
                 v-for="(kind, index) in activeGroup.agentKinds"
@@ -103,7 +116,7 @@
                   ? t('composer.autoTarget', { agent: agentLabel(kind) })
                   : t(isComposerTargetSelected(kind) ? 'composer.removeTarget' : 'composer.addTarget', { agent: agentLabel(kind) })"
                 :aria-pressed="isComposerTargetSelected(kind)"
-                :disabled="Boolean(activeRun) || sending || discussionMode === 'auto'"
+                :disabled="Boolean(activeRun) || sending || discussionMode === 'auto' || automaticTeamFormation"
                 @click="toggleTarget(kind)"
               >
                 <img :src="agentLogo(kind, theme)" alt="" />
@@ -362,6 +375,7 @@ import {
   LibraryOutline,
   RefreshOutline,
   SendOutline,
+  SparklesOutline,
   StopCircleOutline,
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
@@ -374,6 +388,7 @@ const props = defineProps({
 const {
   activeGroup,
   activeRun,
+  automaticTeamFormation,
   activeSkillOptionId,
   attachmentActionLabel,
   attachmentKind,
@@ -433,6 +448,7 @@ const {
   t,
   theme,
   toggleTarget,
+  toggleAutomaticTeamFormation,
   unlimitedRounds,
 } = props.controller
 </script>
