@@ -427,6 +427,27 @@ test('hydrates the durable event cursor so post-restart sequences stay monotonic
   assert.equal(restarted.snapshot()[0].output, 'firstsecond')
 })
 
+test('repeated restart keeps event sequences monotonic and Agent run ids unique', () => {
+  const createId = () => 'reused-token'
+  const initial = fixture({ createId })
+  const first = initial.beginAgent('codex', 1)
+  const delta = initial.ingest('codex', 1, { type: 'answer_delta', delta: 'partial' })
+  const firstRestart = fixture({ createId, agentRuns: initial.snapshot() })
+  const second = firstRestart.beginAgent('codex', 1)
+  const secondRestart = fixture({ createId, agentRuns: firstRestart.snapshot() })
+  const third = secondRestart.beginAgent('hermes', 1)
+
+  assert.notEqual(second.agentRunId, first.agentRunId)
+  assert.notEqual(third.agentRunId, second.agentRunId)
+  assert.equal(second.seq, delta.seq + 1)
+  assert.equal(third.seq, second.seq + 1)
+  assert.deepEqual(secondRestart.snapshot().map(run => run.agentRunId), [
+    first.agentRunId,
+    second.agentRunId,
+    third.agentRunId,
+  ])
+})
+
 test('finishes with the authoritative answer and persists only a compact capsule', () => {
   const harness = fixture()
   harness.beginAgent('hermes', 1, ['message-a', 'message-b'])

@@ -404,6 +404,8 @@ test('Connector input Gate survives shutdown and repeated restart without double
     targetKinds: ['custom-bbbbbbbbbbbbbbbb'],
   })
   const gate = await waitForPendingGate(workspace)
+  const historicalAgentRunIds = options.runLedger.get(gate.runId).agentRuns
+    .map(agentRun => agentRun.agentRunId)
   await workspace.stopAll()
   await send
   assert.equal(initialCalls, 1)
@@ -425,6 +427,15 @@ test('Connector input Gate survives shutdown and repeated restart without double
     await new Promise(resolve => setTimeout(resolve, 20))
   }
   assert.equal(restarted.runLedger.get(gate.runId)?.status, 'completed')
+  const completedRun = restarted.runLedger.get(gate.runId)
+  const completedAgentRunIds = completedRun.agentRuns.map(agentRun => agentRun.agentRunId)
+  assert.equal(historicalAgentRunIds.every(id => completedAgentRunIds.includes(id)), true)
+  assert.equal(new Set(completedAgentRunIds).size, completedAgentRunIds.length)
+  assert.equal(
+    completedRun.agentRuns.at(-1).eventCursor
+      > Math.max(0, ...completedRun.agentRuns.slice(0, -1).map(run => run.eventCursor)),
+    true,
+  )
   while (Date.now() < deadline && restarted.activeRuns.size > 0) {
     await new Promise(resolve => setTimeout(resolve, 20))
   }
@@ -447,6 +458,10 @@ test('Connector input Gate survives shutdown and repeated restart without double
   await secondRestart.refreshAgents()
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual({ initialCalls, resumedCalls }, { initialCalls: 1, resumedCalls: 1 })
+  assert.deepEqual(
+    secondLedger.get(gate.runId).agentRuns.map(agentRun => agentRun.agentRunId),
+    completedAgentRunIds,
+  )
 })
 
 test('isolated invocations use only the approved prompt and retain workflow Outcome refs', async (t) => {

@@ -139,6 +139,42 @@ function sha256(value) {
   return createHash('sha256').update(String(value || '')).digest('hex')
 }
 
+function deliveredPackedContext(packedContext, promptMode) {
+  if (promptMode !== 'continuation') return packedContext
+  return {
+    ...packedContext,
+    sourceMessageIds: packedContext.continuationSourceMessageIds || [],
+    sourceEntries: packedContext.continuationSourceEntries || [],
+    context: packedContext.continuationContext || {
+      includedCount: 0,
+      omittedCount: 0,
+      charCount: 0,
+    },
+  }
+}
+
+function contextSourceProof(contextPack) {
+  const sources = (Array.isArray(contextPack?.sources) ? contextPack.sources : []).map(source => ({
+    type: source.type,
+    sourceId: source.sourceId,
+    contentHash: source.contentHash,
+    targetKinds: source.targetKinds,
+    captureMode: source.captureMode,
+  }))
+  return {
+    sourceCount: sources.length,
+    sourceHash: sha256(canonicalJson(sources)),
+  }
+}
+
+function assertRequiredContextFits(packedContext) {
+  if (!packedContext?.requiredContextOverflow) return
+  const error = new Error('LOCAL_RUN_REQUIRED_CONTEXT_OVERFLOW')
+  error.code = 'LOCAL_RUN_REQUIRED_CONTEXT_OVERFLOW'
+  error.contextOverflow = { ...packedContext.requiredContextOverflow }
+  throw error
+}
+
 function connectorSessionBinding(sessionRef, sessionProvenance) {
   const stableProvenance = {
     scope: String(sessionProvenance?.scope || 'none'),
@@ -277,6 +313,12 @@ class LocalWorkspaceAgentInvocation {
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
+    if (!isolated) {
+      const requiredContext = this.packedPromptContext(
+        group.id, '', threadRootId, context.contextOptions || {},
+      )
+      assertRequiredContextFits(requiredContext)
+    }
     const requestedOperationId = String(context.operationId || '')
     const operationId = OPERATION_ID.test(requestedOperationId)
       ? requestedOperationId
@@ -385,8 +427,10 @@ class LocalWorkspaceAgentInvocation {
       : this.packedPromptContext(
           group.id, transcriptAfterKind, threadRootId, context.contextOptions || {},
         )
+    if (!isolated) assertRequiredContextFits(packedContext)
+    let deliveredContext = deliveredPackedContext(packedContext, promptMode)
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
-    const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
+    const harnessRun = harness?.beginAgent(kind, round, deliveredContext.sourceMessageIds)
     let deliveryContext = {
       contextPackId: isolated?.contextPackId || activeRun?.contextPackId || '',
       deliveryRecordIds: [],
@@ -396,7 +440,7 @@ class LocalWorkspaceAgentInvocation {
       const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
       if (liveHarnessRun) {
         liveHarnessRun.context = {
-          ...packedContext.context,
+          ...deliveredContext.context,
           contextMode: promptMode,
           sessionRotated,
           ...deliveryContext,
@@ -594,12 +638,12 @@ class LocalWorkspaceAgentInvocation {
       agentCallbacksClosed = true
       this.clearAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       const finished = harness.finishAgent(kind, round, status, finalText, {
-        ...packedContext.context,
+        ...deliveredContext.context,
         contextMode: promptMode,
         sessionRotated,
+        ...runtimeContext,
         ...deliveryContext,
         ...connectorContext,
-        ...runtimeContext,
       }, harnessRun.agentRunId)
       harnessFinished = true
       this.emitRunEvent(finished.event)
@@ -705,7 +749,7 @@ class LocalWorkspaceAgentInvocation {
           taskId,
           mode: group.conversationType === 'direct' ? 'direct' : mode,
           kind,
-          packedContext,
+          packedContext: deliveredContext,
           attachments: isolated ? [] : (context.attachmentSnapshots || []),
           skillHints: isolated ? [] : (context.skillHints || []),
           knowledgeBaseHints: isolated ? [] : (context.knowledgeBaseHints || []),
@@ -734,11 +778,17 @@ class LocalWorkspaceAgentInvocation {
             delivery.deliveryRecordId,
           ].slice(-8),
           sessionProvenance,
+          ...contextSourceProof(attempt.record),
+          promptChars: deliveredPrompt.length,
+          promptBytes: Buffer.byteLength(deliveredPrompt),
+          promptHash: sha256(deliveredPrompt),
+          wirePayloadBytes: delivery.wirePayloadBytes,
+          wirePayloadHash: delivery.wirePayloadHash,
         }
         const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
         if (liveHarnessRun) {
           liveHarnessRun.context = {
-            ...packedContext.context,
+            ...deliveredContext.context,
             contextMode: promptMode,
             sessionRotated,
             ...deliveryContext,
@@ -775,13 +825,15 @@ class LocalWorkspaceAgentInvocation {
         packedContext = this.packedPromptContext(
           group.id, '', threadRootId, context.contextOptions || {},
         )
+        assertRequiredContextFits(packedContext)
+        deliveredContext = deliveredPackedContext(packedContext, promptMode)
         const liveHarnessRun = harness?.current(
           kind, round, harnessRun?.agentRunId || '',
         )
         if (liveHarnessRun) {
-          liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
+          liveHarnessRun.sourceMessageIds = [...deliveredContext.sourceMessageIds]
           liveHarnessRun.context = {
-            ...packedContext.context,
+            ...deliveredContext.context,
             contextMode: promptMode,
             sessionRotated,
             ...deliveryContext,
@@ -879,7 +931,7 @@ class LocalWorkspaceAgentInvocation {
             const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
             if (liveHarnessRun) {
               liveHarnessRun.context = {
-                ...packedContext.context,
+                ...deliveredContext.context,
                 contextMode: promptMode,
                 sessionRotated,
                 ...deliveryContext,

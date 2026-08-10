@@ -165,6 +165,15 @@
               <span>{{ t('trace.contextIncluded', { count: selectedItem.context.includedCount }) }}</span>
               <span>{{ t('trace.contextOmitted', { count: selectedItem.context.omittedCount }) }}</span>
               <span>{{ t('trace.contextChars', { count: selectedItem.context.charCount }) }}</span>
+              <span v-if="selectedItem.context.contextMode">
+                {{ t(`trace.contextMode.${selectedItem.context.contextMode}`) }}
+              </span>
+              <span v-if="Number.isInteger(selectedItem.context.promptChars)">
+                {{ t('trace.promptChars', { count: selectedItem.context.promptChars }) }}
+              </span>
+              <span v-if="Number.isInteger(selectedItem.context.promptBytes)">
+                {{ t('trace.promptBytes', { count: selectedItem.context.promptBytes }) }}
+              </span>
               <span v-if="selectedItem.context.sessionRotated">{{ t('trace.contextRotated') }}</span>
               <span v-if="selectedItem.context.contextPackId" class="trace-context-record">
                 {{ t('trace.contextPackId') }}
@@ -189,6 +198,21 @@
                 <br v-if="index === 0" />
                 <span v-else>, </span>
                 <code>{{ id }}</code>
+              </template>
+              <template v-if="selectedItem.context.sourceHash">
+                <br />
+                <span>{{ t('trace.sourceFingerprint', { count: selectedItem.context.sourceCount }) }} </span>
+                <code>{{ selectedItem.context.sourceHash }}</code>
+              </template>
+              <template v-if="selectedItem.context.promptHash">
+                <br />
+                <span>{{ t('trace.promptFingerprint') }} </span>
+                <code>{{ selectedItem.context.promptHash }}</code>
+              </template>
+              <template v-if="selectedItem.context.wirePayloadHash">
+                <br />
+                <span>{{ t('trace.wireFingerprint', { count: selectedItem.context.wirePayloadBytes }) }} </span>
+                <code>{{ selectedItem.context.wirePayloadHash }}</code>
               </template>
             </p>
             <p
@@ -827,6 +851,11 @@ function hasTraceContext(context) {
   return Number(context?.includedCount) > 0
     || Number(context?.omittedCount) > 0
     || Number(context?.charCount) > 0
+    || Number.isInteger(context?.promptChars)
+    || Number.isInteger(context?.promptBytes)
+    || Boolean(context?.sourceHash)
+    || Boolean(context?.promptHash)
+    || Boolean(context?.wirePayloadHash)
     || context?.sessionRotated === true
     || Boolean(context?.contextPackId)
     || context?.contextPackState === 'legacy-unavailable'

@@ -502,6 +502,14 @@ describe('RoundRelay workbench', () => {
               includedCount: 3,
               omittedCount: 2,
               charCount: 480,
+              contextMode: 'continuation',
+              promptChars: 720,
+              promptBytes: 760,
+              promptHash: 'd'.repeat(64),
+              sourceCount: 4,
+              sourceHash: 'e'.repeat(64),
+              wirePayloadBytes: 900,
+              wirePayloadHash: 'f'.repeat(64),
               sessionRotated: true,
               contextPackId,
               deliveryRecordIds,
@@ -533,11 +541,18 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages injected for this attempt')
     expect(wrapper.get('.trace-context-stats').text()).toContain('2 messages compacted')
     expect(wrapper.get('.trace-context-stats').text()).toContain('480 context characters')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('Continuation payload')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('720 prompt characters')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('760 prompt bytes')
     expect(wrapper.get('.trace-context-stats').text()).toContain('Session context rotated')
     expect(wrapper.get('[data-context-section="attempt"]').text()).toContain(contextPackId)
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('Actual outbound')
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain(deliveryRecordIds[0])
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain(deliveryRecordIds[1])
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('Sources (4)')
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('d'.repeat(64))
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('e'.repeat(64))
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('f'.repeat(64))
     expect(wrapper.get('[data-context-section="session"]').attributes('data-session-reuse')).toBe('reused')
     expect(wrapper.get('[data-context-section="session"]').text())
       .toContain('Earlier native Session context may exist')
@@ -546,7 +561,9 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(wrapper.get('.trace-event-section .trace-empty-state').text()).toBe('没有保留详细过程事件。')
     expect(wrapper.get('.trace-context-stats').text()).toContain('本次尝试注入 3 条消息')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('续跑外发')
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('实际外发')
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('来源（4 项）')
     expect(wrapper.get('[data-context-section="session"]').text()).toContain('Session 中可能还存在更早的上下文')
     wrapper.unmount()
   })

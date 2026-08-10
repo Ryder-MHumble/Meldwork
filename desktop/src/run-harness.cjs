@@ -62,12 +62,14 @@ class RunHarness {
       .slice(-this.maxAgentRuns)
       .map((run) => {
         const events = Array.isArray(run?.events) ? run.events.map(event => ({ ...event })) : []
-        const eventCursor = boundedNumber(
-          run?.eventCursor,
-          events.reduce((highest, event) => Math.max(
-            highest, boundedNumber(event?.seq, 0, 1000000000),
-          ), 0),
-          1000000000,
+        const seenSeqs = [...new Set([
+          ...(Array.isArray(run?.seenSeqs) ? run.seenSeqs : []),
+          ...events.map(event => event?.seq),
+        ].map(value => boundedNumber(value, 0, 1000000000)).filter(Boolean))]
+          .slice(-MAX_SEEN_EVENT_SEQUENCES)
+        const eventCursor = Math.max(
+          boundedNumber(run?.eventCursor, 0, 1000000000),
+          ...seenSeqs,
         )
         const eventIndexes = new Map()
         events.forEach((event, index) => {
@@ -87,12 +89,13 @@ class RunHarness {
           lastActivityAt: safeTimestamp(run?.lastActivityAt, 0),
           silent: run?.silent === true,
           truncated: run?.truncated === true,
-          seenSeqs: events.map(event => boundedNumber(event?.seq, 0, 1000000000)).filter(Boolean),
+          seenSeqs,
           eventCursor,
           context: normalizeContextStats(run?.context),
         }
       })
       .filter(run => run.agentRunId && run.kind && this.targetKinds.includes(run.kind))
+    this.agentRunIds = new Set(this.agentRuns.map(run => run.agentRunId))
     this.sequence = this.agentRuns.reduce((highest, run) => Math.max(
       highest,
       run.eventCursor,
@@ -154,8 +157,16 @@ class RunHarness {
     }
     const safeRound = boundedNumber(round, 0, 100000)
     const token = cleanId(this.createId(), `${this.agentRuns.length + 1}`)
-    const agentRunId = cleanId(`${this.runId}:${safeRound}:${safeKind}:${token}`)
-      || `${this.runId}:${safeRound}:${safeKind}:${this.agentRuns.length + 1}`
+    let agentRunId = cleanId(`${this.runId}:${safeRound}:${safeKind}:${token}`)
+      || cleanId(`${this.runId}:${safeRound}:${safeKind}:${this.agentRuns.length + 1}`)
+    if (!agentRunId) throw new Error('RUN_HARNESS_AGENT_RUN_ID_INVALID')
+    let suffix = this.agentRuns.length + 1
+    while (this.agentRunIds.has(agentRunId)) {
+      suffix += 1
+      agentRunId = cleanId(`${this.runId}:${safeRound}:${safeKind}:${suffix}`)
+      if (!agentRunId) throw new Error('RUN_HARNESS_AGENT_RUN_ID_INVALID')
+    }
+    this.agentRunIds.add(agentRunId)
     const timestamp = this.timestamp()
     const run = {
       agentRunId,

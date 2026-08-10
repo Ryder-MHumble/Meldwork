@@ -486,6 +486,14 @@ test('loads equivalent Session provenance regardless of stored field order', (t)
       kind: 'codex',
       status: 'completed',
       context: {
+        contextMode: 'continuation',
+        promptChars: 1200,
+        promptBytes: 1280,
+        promptHash: 'c'.repeat(64),
+        sourceCount: 3,
+        sourceHash: 'd'.repeat(64),
+        wirePayloadBytes: 1500,
+        wirePayloadHash: 'e'.repeat(64),
         contextPackId,
         deliveryRecordIds: [deliveryRecordId],
         sessionProvenance: {
@@ -1619,6 +1627,12 @@ test('rejects persisted enums and bounded numbers that normalization would chang
     ['omitted-overflow', record => { record.agentRuns[0].context.omittedCount = 100001 }],
     ['chars-negative', record => { record.agentRuns[0].context.charCount = -1 }],
     ['chars-overflow', record => { record.agentRuns[0].context.charCount = 1000001 }],
+    ['source-count-negative', record => { record.agentRuns[0].context.sourceCount = -1 }],
+    ['prompt-bytes-overflow', record => { record.agentRuns[0].context.promptBytes = 10000001 }],
+    ['wire-bytes-fractional', record => { record.agentRuns[0].context.wirePayloadBytes = 1.5 }],
+    ['source-hash-invalid', record => { record.agentRuns[0].context.sourceHash = 'invalid' }],
+    ['prompt-hash-invalid', record => { record.agentRuns[0].context.promptHash = 'invalid' }],
+    ['wire-hash-invalid', record => { record.agentRuns[0].context.wirePayloadHash = 'invalid' }],
   ]
 
   for (const [index, [name, mutate]] of cases.entries()) {

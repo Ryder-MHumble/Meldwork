@@ -38,7 +38,8 @@ const REMOTE_JOB_FIELDS = new Set([
 const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
   'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
-  'sessionProvenance', 'outcomeRefs',
+  'sessionProvenance', 'outcomeRefs', 'sourceCount', 'sourceHash', 'promptBytes',
+  'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
   'connector', 'connectorEventState',
 ])
 const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
@@ -222,16 +223,17 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
   const hasContext = isRecord(input.context) && [
     'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
     'contextMode', 'promptChars', 'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+    'sourceCount', 'sourceHash', 'promptBytes', 'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
     'connector', 'connectorEventState',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
-  const eventCursor = boundedNumber(
-    input.eventCursor,
-    rawEvents.reduce((highest, event) => Math.max(highest, boundedNumber(
-      event?.seq, 0, 1000000000,
-    )), 0),
-    1000000000,
+  const eventCursor = Math.max(
+    boundedNumber(input.eventCursor, 0, 1000000000),
+    ...rawEvents.map(event => boundedNumber(event?.seq, 0, 1000000000)),
+    ...(Array.isArray(input.seenSeqs)
+      ? input.seenSeqs.map(seq => boundedNumber(seq, 0, 1000000000))
+      : []),
   )
   const outputChars = boundedNumber(input.outputChars, outputSource.length, 1000000)
   const agentRun = {
@@ -524,6 +526,15 @@ function hasValidStoredRecordShape(input) {
       if (hasOwn(agentRun.context, 'promptChars')
           && !hasStoredBoundedInteger(agentRun.context, 'promptChars', 0, 10000000)) {
         return false
+      }
+      for (const field of ['sourceCount', 'promptBytes', 'wirePayloadBytes']) {
+        if (hasOwn(agentRun.context, field)
+            && !hasStoredBoundedInteger(agentRun.context, field, 0, 10000000)) return false
+      }
+      for (const field of ['sourceHash', 'promptHash', 'wirePayloadHash']) {
+        if (hasOwn(agentRun.context, field)
+            && (typeof agentRun.context[field] !== 'string'
+              || !SHA256.test(agentRun.context[field]))) return false
       }
       if (hasOwn(agentRun.context, 'contextPackId')
           && normalizeContextPackId(agentRun.context.contextPackId)

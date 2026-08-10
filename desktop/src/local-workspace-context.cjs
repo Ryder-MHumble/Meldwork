@@ -335,6 +335,30 @@ function recentTranscriptEntries(state, groupId, afterAgentKind = '', contextOpt
     .slice(-RECENT_TRANSCRIPT_MESSAGE_LIMIT)
 }
 
+function packedContextSelection(currentTaskEntry, stable, recent) {
+  const sourceMessageIds = [...new Set([
+    currentTaskEntry?.id,
+    ...stable.sourceMessageIds,
+    ...recent.sourceMessageIds,
+  ].filter(Boolean))].slice(0, 32)
+  const selectedSourceIds = new Set(sourceMessageIds)
+  const sourceEntries = [currentTaskEntry, ...stable.sourceEntries, ...recent.sourceEntries]
+    .filter(Boolean)
+    .filter((entry, index, entries) => (
+      selectedSourceIds.has(entry.id)
+      && entries.findIndex(candidate => candidate.id === entry.id) === index
+    ))
+  return {
+    sourceMessageIds,
+    sourceEntries,
+    context: {
+      includedCount: sourceMessageIds.length,
+      omittedCount: stable.omittedCount + recent.omittedCount,
+      charCount: sourceEntries.reduce((total, entry) => total + entry.text.length, 0),
+    },
+  }
+}
+
 function packedPromptContext({
   state,
   groupId,
@@ -409,42 +433,42 @@ function packedPromptContext({
     'Recent shared conclusions:',
     continuationRecent.text || '(none)',
   ].join('\n')
+  const fullCurrentTaskText = latestUserMessage ? promptMessageText(latestUserMessage) : ''
+  const currentTaskText = latestUserMessage
+    ? promptMessageText(latestUserMessage, CURRENT_TASK_TEXT_LIMIT)
+    : '(none)'
   const currentTaskEntry = latestUserMessage
     ? {
         id: latestUserMessage.id,
         sender: latestUserMessage.senderName,
-        text: promptMessageText(latestUserMessage, CURRENT_TASK_TEXT_LIMIT),
+        text: currentTaskText,
         priority: 4,
       }
     : null
-  const sourceMessageIds = [...new Set([
-    currentTaskEntry?.id,
-    ...stable.sourceMessageIds,
-    ...recent.sourceMessageIds,
-  ].filter(Boolean))].slice(0, 32)
-  const selectedSourceIds = new Set(sourceMessageIds)
-  const sourceEntries = [currentTaskEntry, ...stable.sourceEntries, ...recent.sourceEntries]
-    .filter(Boolean)
-    .filter((entry, index, entries) => (
-      selectedSourceIds.has(entry.id)
-      && entries.findIndex(candidate => candidate.id === entry.id) === index
-    ))
+  const bootstrapSelection = packedContextSelection(currentTaskEntry, stable, recent)
+  const continuationSelection = packedContextSelection(
+    currentTaskEntry,
+    continuationStable,
+    continuationRecent,
+  )
   return {
     stableText: stable.text || '(none)',
     recentText: recent.text || '(none)',
     continuationText,
-    currentTaskText: latestUserMessage
-      ? promptMessageText(latestUserMessage, CURRENT_TASK_TEXT_LIMIT)
-      : '(none)',
+    currentTaskText,
     latestUserLanguage: responseLanguageFromText(latestUserMessage?.content),
     latestUserMessageId: latestUserMessage?.id || '',
-    sourceMessageIds,
-    sourceEntries,
-    context: {
-      includedCount: sourceMessageIds.length,
-      omittedCount: stable.omittedCount + recent.omittedCount,
-      charCount: stable.charCount + recent.charCount,
-    },
+    ...bootstrapSelection,
+    continuationSourceMessageIds: continuationSelection.sourceMessageIds,
+    continuationSourceEntries: continuationSelection.sourceEntries,
+    continuationContext: continuationSelection.context,
+    requiredContextOverflow: fullCurrentTaskText.length > CURRENT_TASK_TEXT_LIMIT
+      ? {
+          sourceMessageId: latestUserMessage?.id || '',
+          actualChars: fullCurrentTaskText.length,
+          maxChars: CURRENT_TASK_TEXT_LIMIT,
+        }
+      : null,
   }
 }
 

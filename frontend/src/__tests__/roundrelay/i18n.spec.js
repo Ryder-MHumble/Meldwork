@@ -25,6 +25,8 @@ describe('RoundRelay i18n', () => {
     setLocale('en')
     expect(t('trace.contextIncluded', { count: 3 }))
       .toBe('3 messages injected for this attempt')
+    expect(t('trace.contextMode.continuation')).toBe('Continuation payload')
+    expect(t('trace.sourceFingerprint', { count: 4 })).toBe('Sources (4):')
     expect(t('trace.sessionReuseWarning')).toContain('Earlier native Session context may exist')
     expect(t('trace.sessionUnknownLegacyWarning'))
       .toContain('injected message IDs for this attempt are not the complete context')
@@ -32,6 +34,8 @@ describe('RoundRelay i18n', () => {
 
     setLocale('zh')
     expect(t('trace.contextIncluded', { count: 3 })).toBe('本次尝试注入 3 条消息')
+    expect(t('trace.contextMode.continuation')).toBe('续跑外发')
+    expect(t('trace.sourceFingerprint', { count: 4 })).toBe('来源（4 项）：')
     expect(t('trace.sessionReuseWarning')).toContain('Session 中可能还存在更早的上下文')
     expect(t('trace.sessionUnknownLegacyWarning')).toContain('消息 ID 并不代表完整上下文')
     expect(t('trace.contextPackLegacyUnavailable')).toContain('无法还原完整输入')
