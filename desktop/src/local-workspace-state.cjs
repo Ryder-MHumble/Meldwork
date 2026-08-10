@@ -18,12 +18,51 @@ const FINISHED_AGENT_STATUSES = new Set([
 const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
 
 function loadWorkspaceState(storagePath) {
+  let source
   try {
-    const parsed = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
-    if (![1, 2, 3].includes(parsed?.version) || !Array.isArray(parsed.groups)
-        || !Array.isArray(parsed.messages) || typeof parsed.sessions !== 'object') {
-      return emptyState()
+    source = fs.readFileSync(storagePath, 'utf8')
+  } catch (error) {
+    const missing = error?.code === 'ENOENT'
+    return {
+      state: emptyState(),
+      status: missing ? 'missing' : 'unreadable',
+      trusted: missing,
+      diagnostic: missing ? '' : 'LOCAL_WORKSPACE_STATE_UNREADABLE',
     }
+  }
+
+  let parsed
+  try {
+    parsed = JSON.parse(source)
+  } catch {
+    return {
+      state: emptyState(),
+      status: 'corrupt',
+      trusted: false,
+      diagnostic: 'LOCAL_WORKSPACE_STATE_CORRUPT',
+    }
+  }
+
+  if (![1, 2, 3].includes(parsed?.version)) {
+    return {
+      state: emptyState(),
+      status: 'unsupported',
+      trusted: false,
+      diagnostic: 'LOCAL_WORKSPACE_STATE_UNSUPPORTED',
+    }
+  }
+  if (!Array.isArray(parsed.groups) || !Array.isArray(parsed.messages)
+      || !parsed.sessions || typeof parsed.sessions !== 'object'
+      || Array.isArray(parsed.sessions)) {
+    return {
+      state: emptyState(),
+      status: 'corrupt',
+      trusted: false,
+      diagnostic: 'LOCAL_WORKSPACE_STATE_CORRUPT',
+    }
+  }
+
+  try {
     const groups = parsed.groups
       .map(normalizeLoadedGroup)
       .filter(Boolean)
@@ -49,22 +88,32 @@ function loadWorkspaceState(storagePath) {
       }
     }
     return {
-      version: 3,
-      groups,
-      messages,
-      sessions,
-      sessionMeta,
-      agentPreferences: parsed.agentPreferences
-        && typeof parsed.agentPreferences === 'object' && !Array.isArray(parsed.agentPreferences)
-        ? { ...parsed.agentPreferences }
-        : {},
-      agentRuntime: parsed.agentRuntime
-        && typeof parsed.agentRuntime === 'object' && !Array.isArray(parsed.agentRuntime)
-        ? { ...parsed.agentRuntime }
-        : {},
+      state: {
+        version: 3,
+        groups,
+        messages,
+        sessions,
+        sessionMeta,
+        agentPreferences: parsed.agentPreferences
+          && typeof parsed.agentPreferences === 'object' && !Array.isArray(parsed.agentPreferences)
+          ? { ...parsed.agentPreferences }
+          : {},
+        agentRuntime: parsed.agentRuntime
+          && typeof parsed.agentRuntime === 'object' && !Array.isArray(parsed.agentRuntime)
+          ? { ...parsed.agentRuntime }
+          : {},
+      },
+      status: 'ready',
+      trusted: true,
+      diagnostic: '',
     }
   } catch {
-    return emptyState()
+    return {
+      state: emptyState(),
+      status: 'corrupt',
+      trusted: false,
+      diagnostic: 'LOCAL_WORKSPACE_STATE_CORRUPT',
+    }
   }
 }
 
@@ -139,6 +188,7 @@ function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds
 
 function workspaceSnapshot({
   detectedAgents, state, preparingRuns, activeRuns, humanGateCoordinator, runLedger,
+  workspaceRecovery,
 }) {
   const busyEntries = [
     ...[...preparingRuns.entries()].map(entry => [...entry, 'preparing']),
@@ -161,6 +211,13 @@ function workspaceSnapshot({
     agents: detectedAgents.map(({ executable, ...agent }) => agent),
     groups: state.groups,
     messages: state.messages,
+    ...(workspaceRecovery?.trusted === false ? {
+      recovery: {
+        state: 'read-only',
+        status: workspaceRecovery.status,
+        diagnostic: workspaceRecovery.diagnostic,
+      },
+    } : {}),
     runningGroupIds: [...new Set([
       ...busyEntries.map(([groupId]) => groupId),
       ...durableRuns.map(run => run.groupId),

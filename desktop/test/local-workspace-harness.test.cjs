@@ -1671,6 +1671,37 @@ test('conversation deletion remains retryable when a corrupt Run Ledger blocks c
   assert.equal(deleteAttempts, 2)
 })
 
+test('malformed workspace state enters read-only recovery without touching valid Ledger data', (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  fs.writeFileSync(options.storagePath, '{partially-written')
+  const ledgerCalls = []
+  options.runLedger = {
+    reconcileContextPacks: () => ledgerCalls.push('reconcileContextPacks'),
+    recoverInterrupted: () => ledgerCalls.push('recoverInterrupted'),
+    list: () => [{ runId: 'run-1', groupId: 'group-1', status: 'completed' }],
+    deleteGroup: groupId => ledgerCalls.push(`deleteGroup:${groupId}`),
+  }
+
+  const workspace = new LocalWorkspace(options)
+  const firstSnapshot = workspace.snapshot()
+  const restarted = new LocalWorkspace(options)
+
+  assert.deepEqual(ledgerCalls, [])
+  assert.deepEqual(firstSnapshot.recovery, {
+    state: 'read-only',
+    status: 'corrupt',
+    diagnostic: 'LOCAL_WORKSPACE_STATE_CORRUPT',
+  })
+  assert.deepEqual(restarted.snapshot().recovery, firstSnapshot.recovery)
+  assert.equal(fs.readFileSync(options.storagePath, 'utf8'), '{partially-written')
+  assert.throws(
+    () => workspace.save(),
+    { message: 'LOCAL_WORKSPACE_STATE_CORRUPT' },
+  )
+  assert.equal(fs.readFileSync(options.storagePath, 'utf8'), '{partially-written')
+})
+
 test('conversation state rolls back when workspace deletion persistence fails', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

@@ -88,6 +88,8 @@ class LocalWorkspace extends EventEmitter {
     this.createId = options.createId || randomUUID
     this.createRunId = options.createRunId || randomUUID
     this.runLedger = options.runLedger || null
+    this.workspaceRecovery = this.load()
+    this.state = this.workspaceRecovery.state
     const privateRoot = path.join(path.dirname(this.storagePath), 'roundrelay-private')
     this.contentBlobStore = options.contentBlobStore || new ContentBlobStore({
       rootPath: path.join(privateRoot, 'content-blobs'),
@@ -117,16 +119,17 @@ class LocalWorkspace extends EventEmitter {
       contentBlobStore: this.contentBlobStore,
       contextPackStore: this.contextPackStore,
     })
-    this.runLedger?.reconcileContextPacks?.(
-      contextPackId => this.contextPackStore.get(contextPackId),
-    )
+    if (this.workspaceRecovery.trusted) {
+      this.runLedger?.reconcileContextPacks?.(
+        contextPackId => this.contextPackStore.get(contextPackId),
+      )
+    }
     this.detectedAgents = []
     this.preparingRuns = new Map()
     this.activeRuns = new Map()
     this.runCheckpointTimers = new Map()
     this.humanGateWaitTails = new Map()
     this.shuttingDown = false
-    this.state = this.load()
     this.agentCatalog = new LocalWorkspaceAgentCatalog({
       state: () => this.state,
       detectedAgents: () => this.detectedAgents,
@@ -285,10 +288,12 @@ class LocalWorkspace extends EventEmitter {
       refreshAgents: () => this.refreshAgents(),
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
     })
-    this.humanGateCoordinator.reconcileDecisions?.()
-    this.restoreInterruptedRuns()
-    this.humanGateCoordinator.reconcileOrphans?.()
-    this.resumeReadyHumanGates()
+    if (this.workspaceRecovery.trusted) {
+      this.humanGateCoordinator.reconcileDecisions?.()
+      this.restoreInterruptedRuns()
+      this.humanGateCoordinator.reconcileOrphans?.()
+      this.resumeReadyHumanGates()
+    }
   }
 
   agentLabel(kind) {
@@ -300,6 +305,9 @@ class LocalWorkspace extends EventEmitter {
   }
 
   save() {
+    if (!this.workspaceRecovery.trusted) {
+      throw new Error(this.workspaceRecovery.diagnostic || 'LOCAL_WORKSPACE_STATE_UNTRUSTED')
+    }
     saveWorkspaceState(this.storagePath, this.state)
   }
 
