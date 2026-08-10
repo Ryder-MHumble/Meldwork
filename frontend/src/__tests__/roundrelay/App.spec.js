@@ -1212,8 +1212,12 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
-    const routingToggle = wrapper.get('[data-routing-mode="automatic"]')
-    expect(routingToggle.attributes('aria-pressed')).toBe('false')
+    const explicitRouting = wrapper.get('[data-routing-mode="explicit"]')
+    const automaticRouting = wrapper.get('[data-routing-mode="automatic"]')
+    expect(explicitRouting.text()).toBe('Selected Agents')
+    expect(automaticRouting.text()).toBe('Smart team')
+    expect(explicitRouting.attributes('aria-pressed')).toBe('true')
+    expect(automaticRouting.attributes('aria-pressed')).toBe('false')
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
 
     await wrapper.get('.composer-box textarea').setValue('Use the selected Agents')
@@ -1230,8 +1234,9 @@ describe('RoundRelay workbench', () => {
       maxRounds: 6,
     })
 
-    await routingToggle.trigger('click')
-    expect(routingToggle.attributes('aria-pressed')).toBe('true')
+    await automaticRouting.trigger('click')
+    expect(explicitRouting.attributes('aria-pressed')).toBe('false')
+    expect(automaticRouting.attributes('aria-pressed')).toBe('true')
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') !== undefined)).toBe(true)
     await wrapper.get('.composer-box textarea').setValue('Choose the smallest suitable team')
     await wrapper.get('.send-button').trigger('click')

@@ -90,19 +90,30 @@
           </div>
 
           <div class="target-row" :aria-label="t('composer.targets')">
-            <button
-              type="button"
-              class="routing-team-toggle"
-              data-routing-mode="automatic"
-              :class="{ active: automaticTeamFormation }"
-              :title="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
-              :aria-label="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
-              :aria-pressed="automaticTeamFormation"
-              :disabled="Boolean(activeRun) || sending"
-              @click="toggleAutomaticTeamFormation"
-            >
-              <SparklesOutline />
-            </button>
+            <div class="mode-segmented routing-mode-segmented" role="group" :aria-label="t('composer.teamMode')">
+              <button
+                type="button"
+                data-routing-mode="explicit"
+                :class="{ active: !automaticTeamFormation }"
+                :title="t('composer.autoTeamDisable')"
+                :aria-pressed="!automaticTeamFormation"
+                :disabled="Boolean(activeRun) || sending"
+                @click="automaticTeamFormation && toggleAutomaticTeamFormation()"
+              >
+                {{ t('composer.selectedAgents') }}
+              </button>
+              <button
+                type="button"
+                data-routing-mode="automatic"
+                :class="{ active: automaticTeamFormation }"
+                :title="t('composer.autoTeamEnable')"
+                :aria-pressed="automaticTeamFormation"
+                :disabled="Boolean(activeRun) || sending"
+                @click="!automaticTeamFormation && toggleAutomaticTeamFormation()"
+              >
+                {{ t('composer.smartTeam') }}
+              </button>
+            </div>
             <div class="target-avatar-stack" role="group" :aria-label="t('composer.targets')">
               <button
                 v-for="(kind, index) in activeGroup.agentKinds"
@@ -375,7 +386,6 @@ import {
   LibraryOutline,
   RefreshOutline,
   SendOutline,
-  SparklesOutline,
   StopCircleOutline,
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
