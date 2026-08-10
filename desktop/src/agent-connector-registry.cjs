@@ -347,6 +347,17 @@ class AgentConnectorRegistry {
       transport: deepClone(manifest.transport),
       credentialRef: instance.credentialRef,
       provenance: this.runProvenance(instanceId),
+      runtimeProvenance: {
+        connectorId: manifest.connectorId,
+        connectorVersion: manifest.connectorVersion,
+        manifestId: manifest.manifestId,
+        manifestSchemaVersion: manifest.schemaVersion,
+        instanceId: instance.instanceId,
+        recipeId: manifest.invocation.recipeId,
+        upstreamId: manifest.upstream.id,
+        upstreamVersion: instance.upstreamVersion,
+        credentialRefId: instance.credentialRef,
+      },
     })
   }
 }

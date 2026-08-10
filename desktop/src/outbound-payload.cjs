@@ -38,12 +38,15 @@ function cliWirePayload(command, args, cwd, stdin) {
   }
 }
 
-function createLegacyOutboundPayload({ prompt, command, args, cwd, stdin, promptMode }) {
+function createLegacyOutboundPayload({
+  prompt, command, args, cwd, stdin, promptMode, destination = '',
+}) {
   return payloadWithFingerprint({
     prompt,
     transport: 'legacy',
     serialization: 'cli-argv-stdin-v1',
     promptMode,
+    ...(destination ? { destination } : {}),
   }, cliWirePayload(command, args, cwd, stdin))
 }
 

@@ -136,6 +136,18 @@ test('supports multiple instances and keeps CredentialRefs out of Run provenance
   assert.equal(execution.recipeId, 'external.review-agent.run')
   assert.equal(execution.credentialRef, 'credential-ref:review-account-a')
   assert.deepEqual(execution.provenance, provenance)
+  assert.deepEqual(execution.runtimeProvenance, {
+    connectorId: manifest.connectorId,
+    connectorVersion: manifest.connectorVersion,
+    manifestId: manifest.manifestId,
+    manifestSchemaVersion: manifest.schemaVersion,
+    instanceId: first.instanceId,
+    recipeId: manifest.invocation.recipeId,
+    upstreamId: manifest.upstream.id,
+    upstreamVersion: first.upstreamVersion,
+    credentialRefId: 'credential-ref:review-account-a',
+  })
+  assert.equal(Object.isFrozen(execution.runtimeProvenance), true)
   assert.throws(
     () => parseConnectorRunSnapshot({ ...snapshot, connectorVersion: 'not-semver' }),
     { message: 'AGENT_CONNECTOR_RUN_SNAPSHOT_INVALID' },

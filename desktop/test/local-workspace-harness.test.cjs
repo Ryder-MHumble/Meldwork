@@ -218,6 +218,7 @@ test('external Connectors bypass the legacy runner and persist trusted provenanc
           cwd: input.workdir,
           stdin: input.prompt,
           promptMode: 'stdin',
+          destination: 'https://review.example.com/v1',
         }))
         input.emit({
           eventId: 'source-1', cursor: 'cursor-1', sequence: 1,

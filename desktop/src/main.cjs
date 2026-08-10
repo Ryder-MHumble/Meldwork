@@ -311,22 +311,30 @@ async function validateKnowledgeBaseSelections(targetKinds, selections) {
 }
 
 async function runCoreAgent(agent, prompt, workdir, options = {}) {
+  const connectorCredentialIsolation = options.connectorCredentialIsolation === true
+  const runOptions = { ...options }
+  delete runOptions.connectorCredentialIsolation
   const status = providerStore.status(agent.kind)
-  const nativeRuntime = agent.kind === 'openclaw' && !status.configured
+  const nativeRuntime = !connectorCredentialIsolation
+    && agent.kind === 'openclaw' && !status.configured
     ? await resolveNativeOpenClawRuntime({ executable: agent.executable })
     : null
-  const injected = providerOptions(agent.kind, {
-    ...options,
-    workdir,
-    storageRoot: app.getPath('userData'),
-    nativeRuntime,
-  })
-  const nativeEnv = agent.kind === 'openclaw'
+  const injected = connectorCredentialIsolation
+    ? {}
+    : providerOptions(agent.kind, {
+        ...runOptions,
+        workdir,
+        storageRoot: app.getPath('userData'),
+        nativeRuntime,
+      })
+  const nativeEnv = connectorCredentialIsolation || agent.kind === 'openclaw'
     ? {}
     : nativeCredentialEnvironment(agent.kind)
-  const callerEnv = agent.kind === 'openclaw' ? {} : options.env
+  const callerEnv = connectorCredentialIsolation || agent.kind !== 'openclaw'
+    ? runOptions.env
+    : {}
   return runAgent(agent, prompt, workdir, {
-    ...options,
+    ...runOptions,
     ...injected,
     env: { ...nativeEnv, ...callerEnv, ...injected.env },
   })
@@ -337,7 +345,7 @@ function localAttachmentSupport(kind) {
     return { image: 4, audio: 4, video: 4, file: 4 }
   }
   const connectorSupport = agentConnectors?.attachmentSupport(kind)
-  if (connectorSupport) return { ...connectorSupport, file: 4 }
+  if (connectorSupport) return connectorSupport
   return {
     image: imageAttachmentLimit(kind),
     file: kind === 'opencodereview' ? 0 : 4,

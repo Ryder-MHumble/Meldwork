@@ -11,6 +11,8 @@ const PUBLIC_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const MAX_PROMPT_BYTES = 4 * 1024 * 1024
 const MAX_INPUT_RESPONSE_BYTES = 128 * 1024
+const MAX_ATTACHMENTS = 16
+const OUTBOUND_TRANSPORTS = new Set(['http', 'a2a'])
 
 function runtimeError(code) {
   const error = new Error(code)
@@ -24,6 +26,88 @@ function fail(code) {
 
 function clone(value) {
   return JSON.parse(canonicalJson(value))
+}
+
+function attachmentInputType(attachment) {
+  if (typeof attachment === 'string') return attachment ? 'image' : ''
+  if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) return ''
+  const declared = String(attachment.inputType || attachment.type || '')
+  if (['image', 'audio', 'video', 'file', 'structured-data'].includes(declared)) {
+    return declared
+  }
+  const mimeType = String(attachment.mimeType || attachment.mediaType || '').toLowerCase()
+  if (mimeType.startsWith('image/')) return 'image'
+  if (mimeType.startsWith('audio/')) return 'audio'
+  if (mimeType.startsWith('video/')) return 'video'
+  return mimeType ? 'file' : ''
+}
+
+function validatedAttachments(value, capabilities) {
+  if (value == null) return []
+  if (!Array.isArray(value) || value.length > MAX_ATTACHMENTS) {
+    fail('AGENT_CONNECTOR_ATTACHMENTS_INVALID')
+  }
+  const attachments = [...value]
+  for (const attachment of attachments) {
+    const inputType = attachmentInputType(attachment)
+    if (!inputType) fail('AGENT_CONNECTOR_ATTACHMENTS_INVALID')
+    if (!capabilities.inputTypes.includes(inputType)) {
+      fail('AGENT_CONNECTOR_ATTACHMENT_UNSUPPORTED')
+    }
+  }
+  return attachments
+}
+
+function outboundOrigin(value) {
+  try {
+    const parsed = new URL(String(value || ''))
+    if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return ''
+    return parsed.origin
+  } catch {
+    return ''
+  }
+}
+
+function assertOutboundDestination(connector, value) {
+  const destinations = connector.capabilities.outboundDestinations
+  const destination = String(value || '')
+  if (!destination) {
+    if (destinations.length || OUTBOUND_TRANSPORTS.has(connector.transport.type)) {
+      fail('AGENT_CONNECTOR_OUTBOUND_DESTINATION_REQUIRED')
+    }
+    return ''
+  }
+  const origin = outboundOrigin(destination)
+  if (!origin || !destinations.includes(origin)) {
+    fail('AGENT_CONNECTOR_OUTBOUND_DESTINATION_UNSUPPORTED')
+  }
+  return origin
+}
+
+function assertEventCapabilities(connector, input) {
+  const type = String(input?.type || '')
+  if (!connector.capabilities.eventTypes.includes(type)) {
+    fail('AGENT_CONNECTOR_EVENT_UNDECLARED')
+  }
+  if (type === 'Cancelled' && !connector.capabilities.session.cancel) {
+    fail('AGENT_CONNECTOR_CANCEL_UNSUPPORTED')
+  }
+  if (type === 'Usage') {
+    for (const field of Object.keys(input?.usage || {})) {
+      if (connector.capabilities.usage[field] !== true) {
+        fail('AGENT_CONNECTOR_USAGE_UNDECLARED')
+      }
+    }
+  }
+}
+
+function assertResultCapabilities(connector, result) {
+  if (String(result?.sessionRef || '') && !connector.capabilities.session.supported) {
+    fail('AGENT_CONNECTOR_SESSION_UNSUPPORTED')
+  }
+  if (result?.outcome === 'cancelled' && !connector.capabilities.session.cancel) {
+    fail('AGENT_CONNECTOR_CANCEL_UNSUPPORTED')
+  }
 }
 
 function normalizeResume(input) {
@@ -260,7 +344,24 @@ class AgentConnectorRuntime {
     if (!connector.capabilities.inputTypes.includes('text')) {
       fail('AGENT_CONNECTOR_INPUT_UNSUPPORTED')
     }
+    const sessionRef = String(options.sessionRef || '')
+    if (sessionRef && !connector.capabilities.session.supported) {
+      fail('AGENT_CONNECTOR_SESSION_UNSUPPORTED')
+    }
+    if (sessionRef && !connector.capabilities.session.resume) {
+      fail('AGENT_CONNECTOR_RESUME_UNSUPPORTED')
+    }
+    const resume = normalizeResume(options.connectorResume)
+    if (resume && (!connector.capabilities.session.supported
+        || !connector.capabilities.session.resume)) {
+      fail('AGENT_CONNECTOR_RESUME_UNSUPPORTED')
+    }
+    if (options.signal?.aborted && !connector.capabilities.session.cancel) {
+      fail('AGENT_CONNECTOR_CANCEL_UNSUPPORTED')
+    }
+    const attachments = validatedAttachments(options.attachments, connector.capabilities)
     const emit = (input) => {
+      assertEventCapabilities(connector, input)
       const event = parseConnectorRunEvent(input, provenance)
       const duplicate = state.events.find(existing => existing.eventId === event.eventId)
       if (duplicate && canonicalJson(duplicate) === canonicalJson(event)) return event
@@ -270,7 +371,10 @@ class AgentConnectorRuntime {
       try { options.onEvent?.(harnessEvent(event)) } catch { /* Renderer events are best effort. */ }
       return event
     }
-    const resume = normalizeResume(options.connectorResume)
+    const onOutboundPayload = (outbound = {}) => {
+      assertOutboundDestination(connector, outbound.destination)
+      return options.onOutboundPayload?.(outbound)
+    }
 
     const result = await handler(Object.freeze({
       agent: Object.freeze({
@@ -279,6 +383,7 @@ class AgentConnectorRuntime {
       }),
       connector,
       credentialRefId: execution.credentialRef,
+      provenance: execution.runtimeProvenance,
       runId,
       agentRunId,
       operationId,
@@ -286,13 +391,16 @@ class AgentConnectorRuntime {
       prompt: promptText,
       workdir: resolvedWorkdir,
       permissionMode,
-      sessionRef: String(options.sessionRef || ''),
-      attachments: Array.isArray(options.attachments) ? [...options.attachments] : [],
-      signal: options.signal,
+      sessionRef,
+      attachments,
+      signal: connector.capabilities.session.cancel ? options.signal : undefined,
       emit,
       onProgress: options.onProgress,
       onRuntimeEvent: options.onEvent,
-      onOutboundPayload: options.onOutboundPayload,
+      onOutboundPayload,
+      assertOutboundDestination: destination => assertOutboundDestination(
+        connector, destination,
+      ),
       onPermissionRequest: options.onPermissionRequest,
       resume,
     }))
@@ -300,6 +408,7 @@ class AgentConnectorRuntime {
     if (!result || typeof result !== 'object' || Array.isArray(result)) {
       fail('AGENT_CONNECTOR_RESULT_INVALID')
     }
+    assertResultCapabilities(connector, result)
     if (result.outcome != null && result.outcome !== state.status) {
       fail('AGENT_CONNECTOR_RESULT_MISMATCH')
     }

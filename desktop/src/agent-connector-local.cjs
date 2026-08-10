@@ -424,7 +424,7 @@ class LocalAgentConnectors {
       image: snapshot.capabilities.inputTypes.includes('image') ? 4 : 0,
       audio: snapshot.capabilities.inputTypes.includes('audio') ? 4 : 0,
       video: snapshot.capabilities.inputTypes.includes('video') ? 4 : 0,
-      file: 4,
+      file: snapshot.capabilities.inputTypes.includes('file') ? 4 : 0,
     }
   }
 
@@ -462,6 +462,7 @@ class LocalAgentConnectors {
         operationId: input.operationId,
         idempotencyKey: input.idempotencyKey,
         connectorResume: input.resume,
+        ...(input.credentialRefId ? { connectorCredentialIsolation: true } : {}),
         ...(Object.keys(credentialEnv).length ? { env: credentialEnv } : {}),
       })
       const outcome = String(result?.outcome || 'completed')

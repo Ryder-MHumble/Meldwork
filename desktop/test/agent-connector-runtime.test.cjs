@@ -70,13 +70,30 @@ function runtimeFixture(handler, overrides = {}) {
 test('discovers and runs an approved external Connector with trusted durable provenance', async () => {
   const states = []
   const uiEvents = []
+  const outbound = []
   const { manifest, runtime } = runtimeFixture(async (input) => {
     assert.equal(input.credentialRefId, 'credential-ref:review-account-a')
     assert.equal(input.connector.connectorVersion, '1.0.0')
     assert.equal(input.connector.upstreamVersion, '3.2.0')
     assert.equal(input.permissionMode, 'read-only')
+    assert.deepEqual(input.provenance, {
+      connectorId: manifest.connectorId,
+      connectorVersion: manifest.connectorVersion,
+      manifestId: manifest.manifestId,
+      manifestSchemaVersion: manifest.schemaVersion,
+      instanceId: 'custom-aaaaaaaaaaaaaaaa',
+      recipeId: manifest.invocation.recipeId,
+      upstreamId: manifest.upstream.id,
+      upstreamVersion: '3.2.0',
+      credentialRefId: 'credential-ref:review-account-a',
+    })
     assert.equal(Object.hasOwn(input, 'executable'), false)
     assert.equal(Object.isFrozen(input.connector), true)
+    assert.equal(input.assertOutboundDestination('https://review.example.com/v1'), 'https://review.example.com')
+    await input.onOutboundPayload({
+      destination: 'https://review.example.com/v1',
+      transport: 'http',
+    })
     input.emit({
       eventId: 'event-3', cursor: 'cursor-3', sequence: 3,
       type: 'Completed', outcome: 'completed', summary: 'Review complete.',
@@ -89,7 +106,7 @@ test('discovers and runs an approved external Connector with trusted durable pro
     input.emit(source)
     input.emit({
       eventId: 'event-2', cursor: 'cursor-2', sequence: 2,
-      type: 'Progress', rawOutput: 'Bearer connector-secret',
+      type: 'Usage', mode: 'delta', usage: { inputTokens: 12 },
     })
     input.emit(source)
     return { text: 'External review result', sessionRef: 'review-session' }
@@ -106,19 +123,141 @@ test('discovers and runs an approved external Connector with trusted durable pro
     sandbox: 'read-only',
     onConnectorState: context => states.push(context),
     onEvent: event => uiEvents.push(event),
+    onOutboundPayload: payload => outbound.push(payload),
   })
   assert.equal(result.text, 'External review result')
   assert.equal(result.outcome, 'completed')
   assert.equal(result.connector.manifestId, manifest.manifestId)
   assert.deepEqual(result.connectorEventState.events.map(event => event.type), [
-    'SourceUsed', 'Unknown', 'Completed',
+    'SourceUsed', 'Usage', 'Completed',
   ])
-  assert.equal(result.connectorEventState.events[1].originalType, 'Progress')
-  assert.doesNotMatch(JSON.stringify(result.connectorEventState), /connector-secret/)
+  assert.equal(result.connectorEventState.usage.inputTokens, 12)
   assert.equal(states.length, 4)
   assert.deepEqual(states.at(-1).connectorEventState, result.connectorEventState)
   assert.equal(uiEvents.length, 3)
   assert.equal(uiEvents.every(event => !Object.hasOwn(event, 'rawOutput')), true)
+  assert.deepEqual(outbound, [{
+    destination: 'https://review.example.com/v1',
+    transport: 'http',
+  }])
+})
+
+test('rejects every undeclared Connector capability before it crosses the recipe boundary', async () => {
+  const terminalTypes = ['Completed', 'Failed', 'Cancelled']
+  const hashes = {
+    requestHash: 'a'.repeat(64),
+    sessionRefHash: 'b'.repeat(64),
+    sessionProvenanceHash: 'c'.repeat(64),
+  }
+
+  const attachments = runtimeFixture(async () => {
+    assert.fail('attachment contract must reject before recipe execution')
+  }, { inputTypes: ['text'] }).runtime
+  await assert.rejects(attachments.run(
+    attachments.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-attachment', agentRunId: 'agent-run-attachment', sandbox: 'read-only',
+      attachments: ['/tmp/undeclared.png'],
+    },
+  ), { message: 'AGENT_CONNECTOR_ATTACHMENT_UNSUPPORTED' })
+
+  const noSessions = runtimeFixture(async () => {
+    assert.fail('session contract must reject before recipe execution')
+  }, { session: { supported: false, resume: false, cancel: false, checkpoint: false } }).runtime
+  await assert.rejects(noSessions.run(
+    noSessions.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-session', agentRunId: 'agent-run-session', sandbox: 'read-only',
+      sessionRef: 'existing-session',
+    },
+  ), { message: 'AGENT_CONNECTOR_SESSION_UNSUPPORTED' })
+
+  const noResume = runtimeFixture(async () => {
+    assert.fail('resume contract must reject before recipe execution')
+  }, { session: { supported: true, resume: false, cancel: true, checkpoint: false } }).runtime
+  await assert.rejects(noResume.run(
+    noResume.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-resume', agentRunId: 'agent-run-resume', sandbox: 'read-only',
+      connectorResume: {
+        type: 'input', requestId: 'request-input', response: 'continue', ...hashes,
+      },
+    },
+  ), { message: 'AGENT_CONNECTOR_RESUME_UNSUPPORTED' })
+
+  const noCancel = runtimeFixture(async (input) => {
+    assert.equal(input.signal, undefined)
+    input.emit({
+      eventId: 'cancelled', cursor: 'cancelled', sequence: 1,
+      type: 'Cancelled', reason: 'user',
+    })
+  }, { session: { supported: true, resume: true, cancel: false, checkpoint: false } }).runtime
+  await assert.rejects(noCancel.run(
+    noCancel.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-cancel', agentRunId: 'agent-run-cancel', sandbox: 'read-only',
+      signal: new AbortController().signal,
+    },
+  ), { message: 'AGENT_CONNECTOR_CANCEL_UNSUPPORTED' })
+
+  const undeclaredEvent = runtimeFixture(async (input) => {
+    input.emit({
+      eventId: 'source', cursor: 'source', sequence: 1,
+      type: 'SourceUsed', sourceId: 'source-1', sourceType: 'workspace-file',
+      contentHash: 'd'.repeat(64),
+    })
+  }, { eventTypes: terminalTypes }).runtime
+  await assert.rejects(undeclaredEvent.run(
+    undeclaredEvent.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-event', agentRunId: 'agent-run-event', sandbox: 'read-only',
+    },
+  ), { message: 'AGENT_CONNECTOR_EVENT_UNDECLARED' })
+
+  const undeclaredUsage = runtimeFixture(async (input) => {
+    input.emit({
+      eventId: 'usage', cursor: 'usage', sequence: 1,
+      type: 'Usage', mode: 'delta', usage: { inputTokens: 1 },
+    })
+  }, {
+    eventTypes: [...terminalTypes, 'Usage'],
+    usage: {
+      inputTokens: false, outputTokens: false, costMicros: false,
+      toolCalls: false, outboundBytes: false, elapsedMs: false,
+    },
+  }).runtime
+  await assert.rejects(undeclaredUsage.run(
+    undeclaredUsage.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-usage', agentRunId: 'agent-run-usage', sandbox: 'read-only',
+    },
+  ), { message: 'AGENT_CONNECTOR_USAGE_UNDECLARED' })
+
+  const undeclaredDestination = runtimeFixture(async (input) => {
+    input.onOutboundPayload({ destination: 'https://untrusted.example.com/v1' })
+  }).runtime
+  await assert.rejects(undeclaredDestination.run(
+    undeclaredDestination.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-destination', agentRunId: 'agent-run-destination', sandbox: 'read-only',
+    },
+  ), { message: 'AGENT_CONNECTOR_OUTBOUND_DESTINATION_UNSUPPORTED' })
+
+  const missingDestination = runtimeFixture(async (input) => {
+    input.onOutboundPayload({ transport: 'http' })
+  }).runtime
+  await assert.rejects(missingDestination.run(
+    missingDestination.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-missing-destination', agentRunId: 'agent-run-missing-destination',
+      sandbox: 'read-only',
+    },
+  ), { message: 'AGENT_CONNECTOR_OUTBOUND_DESTINATION_REQUIRED' })
+
+  const undeclaredSessionResult = runtimeFixture(async (input) => {
+    input.emit({
+      eventId: 'completed', cursor: 'completed', sequence: 1,
+      type: 'Completed', outcome: 'completed',
+    })
+    return { text: 'done', sessionRef: 'undeclared-session' }
+  }, { session: { supported: false, resume: false, cancel: false, checkpoint: false } }).runtime
+  await assert.rejects(undeclaredSessionResult.run(
+    undeclaredSessionResult.detectAgents()[0], 'Review', '/tmp/workspace', {
+      runId: 'run-session-result', agentRunId: 'agent-run-session-result', sandbox: 'read-only',
+    },
+  ), { message: 'AGENT_CONNECTOR_SESSION_UNSUPPORTED' })
 })
 
 test('fails closed when a recipe, permission mode, or terminal event is missing', async () => {

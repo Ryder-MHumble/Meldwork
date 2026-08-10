@@ -309,6 +309,7 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
     serializeAgentConnectorManifest(SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST),
   )
   const options = {
+    providerConfigured: true,
     detectedAgents: [{
       kind: 'codex', name: 'Codex CLI', executable: '/private/bin/codex',
       version: 'codex-cli 0.147.0', compatibilityState: 'compatible',
@@ -346,6 +347,18 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
   )
   assert.doesNotMatch(JSON.stringify(result), /credential-ref|connector-main-secret/i)
   assert.equal(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'connector-main-secret-a')
+  assert.equal(Object.hasOwn(harness.runAgentCalls.at(-1)[3].env, 'OPENAI_BASE_URL'), false)
+  assert.equal(Object.hasOwn(harness.runAgentCalls.at(-1)[3].env, 'OPENAI_MODEL'), false)
+  assert.equal(Object.hasOwn(harness.runAgentCalls.at(-1)[3], 'connectorCredentialIsolation'), false)
+
+  await workspace.input.connectorRuntime.run(
+    agents.find(agent => agent.kind === second.instanceId),
+    'Review with account B',
+    directory,
+    { runId: 'run-account-b', agentRunId: 'agent-run-account-b', sandbox: 'read-only' },
+  )
+  assert.equal(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'connector-main-secret-b')
+  assert.notEqual(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'provider-key')
 
   const instanceFile = fs.readFileSync(
     path.join(directory, 'agent-connectors', 'instances.json'),
