@@ -490,7 +490,15 @@ async function localAgentCatalog() {
       const support = localAttachmentSupport(agent.kind)
       return {
         ...agent,
-        available: Boolean(agent.installed && state?.available),
+        versionIdentified: Boolean(agent.installed && (state?.versionIdentified
+          ?? agent.versionIdentified ?? agent.resolvedVersion)),
+        compatible: Boolean(agent.installed && (state?.compatible
+          ?? agent.compatible ?? agent.compatibilityState === 'compatible')),
+        configured: Boolean(agent.installed && state?.configured),
+        authenticated: Boolean(agent.installed && state?.authenticated),
+        invocable: Boolean(agent.installed && state?.invocable),
+        recentlyVerified: Boolean(agent.installed && state?.recentlyVerified),
+        available: Boolean(agent.installed && state?.invocable),
         credentialState: agent.installed ? (state?.credentialState || 'unknown') : 'missing',
         availabilitySource: agent.installed ? (state?.availabilitySource || 'unverified') : 'none',
         showInSidebar: Boolean(agent.installed && state?.showInSidebar),

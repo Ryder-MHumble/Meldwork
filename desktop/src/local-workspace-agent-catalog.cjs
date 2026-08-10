@@ -3,6 +3,31 @@ const {
   isReviewOnlyAgentKind,
 } = require('./agent-runtime-contract.cjs')
 
+const RECENT_VERIFICATION_MS = 24 * 60 * 60 * 1000
+
+function agentVersionIdentified(agent) {
+  if (agent?.custom === true) return true
+  if (typeof agent?.versionIdentified === 'boolean') return agent.versionIdentified
+  if (agent?.compatibilityState === 'unknown') return false
+  if (String(agent?.resolvedVersion || '').trim()) return true
+  if (agent?.compatibilityState === 'compatible') return true
+  return typeof agent?.compatibilityState === 'undefined'
+}
+
+function agentCompatible(agent) {
+  return agent?.custom === true
+    || agent?.compatibilityState === 'compatible'
+    || typeof agent?.compatibilityState === 'undefined'
+}
+
+function recentlyVerified(runtime, now) {
+  if (runtime?.credentialState !== 'ready') return false
+  const checkedAt = Date.parse(String(runtime.checkedAt || ''))
+  const current = Date.parse(String(now || ''))
+  return Number.isFinite(checkedAt) && Number.isFinite(current)
+    && current >= checkedAt && current - checkedAt <= RECENT_VERIFICATION_MS
+}
+
 class LocalWorkspaceAgentCatalog {
   constructor(options) {
     this.state = options.state
@@ -66,8 +91,24 @@ class LocalWorkspaceAgentCatalog {
       if (!runtimeMissing && sharedProviderReady) credentialState = 'ready'
       else if (!runtimeMissing && nativeState === 'ready') credentialState = 'ready'
       else if (!runtimeMissing && verifiedReady && nativeState !== 'missing') credentialState = 'ready'
-      const compatible = agent.custom === true || agent.compatibilityState !== 'incompatible'
-      const available = compatible && credentialState === 'ready'
+      const installed = true
+      const versionIdentified = agentVersionIdentified(agent)
+      const compatible = agentCompatible(agent)
+      const configured = sharedProviderReady
+        || nativeState === 'ready'
+        || native?.source === 'native-auth-status'
+        || native?.source === 'native-runtime-unavailable'
+        || verifiedReady
+        || runtimeMissing
+      const authenticated = !runtimeMissing && nativeState !== 'missing' && (
+        sharedProviderReady || nativeState === 'ready' || verifiedReady
+      )
+      const runtimePrerequisitesReady = native?.source !== 'native-runtime-unavailable'
+      const invocable = installed && versionIdentified && compatible && configured
+        && authenticated && runtimePrerequisitesReady
+      const verifiedRecently = (authoritativeNativeState && nativeState === 'ready')
+        || recentlyVerified(runtime, this.now())
+      const available = invocable
       const preferred = state.agentPreferences[agent.kind]?.showInSidebar
       const capabilities = agentRuntimeCapabilities(agent.kind)
       let availabilitySource = 'unverified'
@@ -79,7 +120,13 @@ class LocalWorkspaceAgentCatalog {
       else if (verifiedReady) availabilitySource = 'verified-run'
       return {
         ...agent,
-        installed: true,
+        installed,
+        versionIdentified,
+        compatible,
+        configured,
+        authenticated,
+        invocable,
+        recentlyVerified: verifiedRecently,
         credentialState,
         availabilitySource,
         available,
@@ -118,9 +165,15 @@ class LocalWorkspaceAgentCatalog {
     const agent = this.detectedAgents().find(item => item.kind === kind)
     if (agent) {
       agent.credentialState = credentialState
-      const compatible = agent.custom === true || agent.compatibilityState !== 'incompatible'
-      agent.available = compatible && credentialState === 'ready'
-      agent.availabilitySource = !compatible
+      agent.versionIdentified = agentVersionIdentified(agent)
+      agent.compatible = agentCompatible(agent)
+      agent.configured = credentialState !== 'unknown'
+      agent.authenticated = credentialState === 'ready'
+      agent.invocable = agent.versionIdentified && agent.compatible
+        && agent.configured && agent.authenticated
+      agent.recentlyVerified = credentialState === 'ready'
+      agent.available = agent.invocable
+      agent.availabilitySource = !agent.compatible
         ? 'incompatible'
         : credentialState === 'ready'
           ? 'verified-run'
