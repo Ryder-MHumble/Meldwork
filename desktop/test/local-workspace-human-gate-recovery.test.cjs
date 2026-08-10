@@ -36,6 +36,17 @@ async function waitForRunStatus(ledger, runId, status, timeoutMs = 5000) {
   throw new Error(`TEST_RUN_STATUS_TIMEOUT:${runId}:${status}`)
 }
 
+async function waitForTerminalRun(ledger, runId, timeoutMs = 5000) {
+  const terminal = new Set(['completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit'])
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const record = ledger.get(runId)
+    if (terminal.has(record?.status)) return record
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`TEST_RUN_TERMINAL_TIMEOUT:${runId}`)
+}
+
 async function stoppedBudgetGate(options, directory, text) {
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
@@ -75,6 +86,141 @@ function removeContextPack(workspace, contextPackId) {
     hash.slice(0, 2),
     `${contextPackId}.json`,
   ))
+}
+
+async function verifyAutomaticGateRecovery(t, gateIndex) {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const targetOrders = [
+    ['kimi', 'codex', 'workbuddy'],
+    ['codex', 'kimi', 'workbuddy'],
+    ['codex', 'workbuddy', 'kimi'],
+  ]
+  const targetKinds = targetOrders[gateIndex]
+  const maxRounds = gateIndex === 1 ? 2 : 1
+  const invokedKinds = []
+  const completedTurns = new Map()
+  let appliedDecisions = 0
+  options.runLedger = ledger
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    invokedKinds.push(agent.kind)
+    if (agent.kind !== 'kimi') {
+      const completed = (completedTurns.get(agent.kind) || 0) + 1
+      completedTurns.set(agent.kind, completed)
+      const consensus = maxRounds > 1 && completed === maxRounds
+        ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+        : ''
+      return {
+        text: `${agent.kind} completed its automatic slot${consensus}`,
+        sessionRef: `${agent.kind}-auto`,
+      }
+    }
+    if (appliedDecisions > 0) {
+      const completed = (completedTurns.get(agent.kind) || 0) + 1
+      completedTurns.set(agent.kind, completed)
+      const consensus = maxRounds > 1 && completed === maxRounds
+        ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+        : ''
+      return {
+        text: `Kimi completed its later automatic slot${consensus}`,
+        sessionRef: 'kimi-auto-gate-session',
+      }
+    }
+    await runOptions.onSessionRef('kimi-auto-gate-session', { transport: 'acp' })
+    const decision = await runOptions.onPermissionRequest({
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ],
+      operation: { kind: 'write', path: `auto-slot-${gateIndex}.txt` },
+    }, { signal: runOptions.signal })
+    appliedDecisions += 1
+    const completed = (completedTurns.get(agent.kind) || 0) + 1
+    completedTurns.set(agent.kind, completed)
+    const consensus = maxRounds > 1 && completed === maxRounds
+      ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+      : ''
+    return {
+      text: `Kimi resumed:${decision.optionId}${consensus}`,
+      sessionRef: 'kimi-auto-gate-session',
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: `Automatic Gate recovery ${gateIndex}`,
+    agentKinds: targetKinds,
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: `Resume automatic slot ${gateIndex} after restart`,
+    mode: 'auto',
+    maxRounds,
+    targetKinds,
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.equal(waiting.currentRound, 1)
+  assert.deepEqual(waiting.orchestration, {
+    version: 1,
+    workflow: 'auto',
+    currentKind: 'kimi',
+    pendingKinds: targetKinds.slice(gateIndex + 1),
+    activeKinds: targetKinds,
+    successfulKinds: targetKinds.slice(0, gateIndex),
+    agreementKinds: [],
+    attachmentRecipients: [],
+    totalSuccesses: 0,
+    terminalFailureOccurred: false,
+  })
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.deepEqual(
+    { status: terminal.status, reason: terminal.reason },
+    { status: maxRounds > 1 ? 'completed' : 'round-limit', reason: '' },
+  )
+  assert.deepEqual(invokedKinds, [
+    ...targetKinds.slice(0, gateIndex + 1),
+    'kimi',
+    ...targetKinds.slice(gateIndex + 1),
+    ...(maxRounds > 1 ? targetKinds : []),
+  ])
+  assert.equal(appliedDecisions, 1)
+  assert.equal(terminal.continuation.state, 'completed')
+  assert.deepEqual(terminal.orchestration.pendingKinds, [])
+  assert.deepEqual(terminal.orchestration.successfulKinds.sort(), [...targetKinds].sort())
+  assert.equal(terminal.orchestration.totalSuccesses, targetKinds.length * maxRounds)
+  for (const kind of targetKinds.slice(0, gateIndex)) {
+    assert.equal(restarted.snapshot().messages.filter(message => (
+      message.role === 'agent' && message.agentKind === kind
+    )).length, maxRounds)
+  }
+  const sequences = terminal.agentRuns.flatMap(run => run.events.map(event => event.seq))
+  assert.deepEqual(sequences, [...sequences].sort((left, right) => left - right))
+  assert.equal(new Set(sequences).size, sequences.length)
+
+  const invocationCount = invokedKinds.length
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(invokedKinds.length, invocationCount)
 }
 
 test('legacy Role Review continuations fail closed without reading workflow data', async (t) => {
@@ -160,8 +306,12 @@ test('restart resumes a durable Gate decision whose continuation checkpoint stay
   const restartedLedger = new RunLedger({ storagePath: ledgerPath })
   const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
   await restarted.refreshAgents()
-  const completed = await waitForRunStatus(restartedLedger, pending.runId, 'completed')
+  const completed = await waitForTerminalRun(restartedLedger, pending.runId)
 
+  assert.deepEqual(
+    { status: completed.status, reason: completed.reason },
+    { status: 'completed', reason: '' },
+  )
   assert.equal(invocations, 1)
   assert.equal(completed.continuation.state, 'completed')
   assert.equal(restarted.snapshot().messages.some(message => (
@@ -179,7 +329,7 @@ test('restart resumes a durable Gate decision whose continuation checkpoint stay
   assert.equal(invocations, 1)
 })
 
-test('restart fails a non-final Agent Gate closed instead of completing the remaining slots', async (t) => {
+test('restart resumes a first-slot Agent Gate and completes the remaining manual slots', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledgerPath = path.join(directory, 'run-ledger.json')
@@ -188,6 +338,9 @@ test('restart fails a non-final Agent Gate closed instead of completing the rema
   options.runLedger = ledger
   options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
     invokedKinds.push(agent.kind)
+    if (agent.kind === 'hermes') {
+      return { text: 'Hermes completed the remaining slot', sessionRef: 'hermes-resumed-session' }
+    }
     assert.equal(agent.kind, 'codex')
     await runOptions.onSessionRef('codex-non-final-session', { transport: 'acp' })
     const decision = await runOptions.onPermissionRequest({
@@ -220,17 +373,114 @@ test('restart fails a non-final Agent Gate closed instead of completing the rema
   const restartedLedger = new RunLedger({ storagePath: ledgerPath })
   const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
   await restarted.refreshAgents()
+  assert.deepEqual(restartedLedger.get(pending.runId).orchestration, {
+    version: 1,
+    workflow: 'manual',
+    currentKind: 'codex',
+    pendingKinds: ['hermes'],
+    activeKinds: ['codex', 'hermes'],
+    successfulKinds: [],
+    agreementKinds: [],
+    attachmentRecipients: [],
+    totalSuccesses: 0,
+    terminalFailureOccurred: false,
+  })
   restarted.decideHumanGate(pending.gateId, {
     status: 'approved', optionId: 'allow-once', actorId: 'local-user',
   })
-  const failed = await waitForRunStatus(restartedLedger, pending.runId, 'failed')
+  const completed = await waitForTerminalRun(restartedLedger, pending.runId)
 
-  assert.deepEqual(invokedKinds, ['codex'])
-  assert.equal(failed.reason, 'LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
-  assert.equal(failed.continuation.state, 'failed')
+  assert.deepEqual(
+    { status: completed.status, reason: completed.reason },
+    { status: 'completed', reason: '' },
+  )
+  assert.deepEqual(invokedKinds, ['codex', 'codex', 'hermes'])
+  assert.equal(completed.continuation.state, 'completed')
+  assert.deepEqual(completed.orchestration.pendingKinds, [])
+  assert.deepEqual(completed.orchestration.successfulKinds.sort(), ['codex', 'hermes'])
   assert.equal(restarted.snapshot().messages.some(message => (
-    message.role === 'agent' && message.agentKind === 'hermes'
-  )), false)
+    message.role === 'agent'
+      && message.agentKind === 'hermes'
+      && message.content === 'Hermes completed the remaining slot'
+  )), true)
+  const sequences = completed.agentRuns.flatMap(run => run.events.map(event => event.seq))
+  assert.deepEqual(sequences, [...sequences].sort((left, right) => left - right))
+  assert.equal(new Set(sequences).size, sequences.length)
+})
+
+test('restart resumes a middle Agent Gate without rerunning completed manual slots', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const invokedKinds = []
+  options.runLedger = ledger
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    invokedKinds.push(agent.kind)
+    if (agent.kind === 'codex') {
+      return { text: 'Codex completed before the Gate', sessionRef: 'codex-first-session' }
+    }
+    if (agent.kind === 'workbuddy') {
+      return { text: 'WorkBuddy completed after the Gate', sessionRef: 'workbuddy-last-session' }
+    }
+    await runOptions.onSessionRef('kimi-middle-session', { transport: 'acp' })
+    const decision = await runOptions.onPermissionRequest({
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ],
+      operation: { kind: 'write', path: 'middle-slot.txt' },
+    }, { signal: runOptions.signal })
+    return { text: `Kimi resumed:${decision.optionId}`, sessionRef: 'kimi-middle-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Middle Gate recovery',
+    agentKinds: ['codex', 'kimi', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace)
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Resume only the middle and remaining slots',
+    targetKinds: ['codex', 'kimi', 'workbuddy'],
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+  await send
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  assert.deepEqual(restartedLedger.get(pending.runId).orchestration.successfulKinds, ['codex'])
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.deepEqual(
+    { status: terminal.status, reason: terminal.reason },
+    { status: 'completed', reason: '' },
+  )
+  assert.deepEqual(invokedKinds, ['codex', 'kimi', 'kimi', 'workbuddy'])
+  assert.deepEqual(terminal.orchestration.successfulKinds.sort(), ['codex', 'kimi', 'workbuddy'])
+  assert.equal(restarted.snapshot().messages.filter(message => (
+    message.role === 'agent' && message.agentKind === 'codex'
+  )).length, 1)
+})
+
+test('restart resumes the first automatic Agent slot and completes the round', async (t) => {
+  await verifyAutomaticGateRecovery(t, 0)
+})
+
+test('restart resumes the middle automatic Agent slot without rerunning earlier Agents', async (t) => {
+  await verifyAutomaticGateRecovery(t, 1)
+})
+
+test('restart resumes the final automatic Agent slot exactly once', async (t) => {
+  await verifyAutomaticGateRecovery(t, 2)
 })
 
 test('a failed Gate resume checkpoint restores live continuation state for retry', async (t) => {

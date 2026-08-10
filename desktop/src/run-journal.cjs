@@ -12,7 +12,7 @@ const RUN_FIELDS = new Set([
   'runId', 'taskId', 'contextPackId', 'contextPackState', 'groupId', 'threadRootId', 'mode',
   'targetKinds', 'status', 'createdAt', 'startedAt', 'updatedAt', 'finishedAt',
   'reason', 'permissionMode', 'currentRound', 'maxRounds', 'unlimitedRounds',
-  'budget', 'attemptHistory', 'continuation', 'remoteJob', 'agentRuns',
+  'budget', 'attemptHistory', 'continuation', 'orchestration', 'remoteJob', 'agentRuns',
 ])
 const AGENT_RUN_FIELDS = new Set([
   'agentRunId', 'kind', 'round', 'status', 'reason', 'sourceMessageIds',

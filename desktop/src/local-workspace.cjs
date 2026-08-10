@@ -287,6 +287,8 @@ class LocalWorkspace extends EventEmitter {
       resetAgentSession: (...args) => this.resetAgentSession(...args),
       refreshAgents: () => this.refreshAgents(),
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
+      checkpointRun: (...args) => this.checkpointRun(...args),
+      hasRunLedger: () => Boolean(this.runLedger),
     })
     if (this.workspaceRecovery.trusted) {
       this.humanGateCoordinator.reconcileDecisions?.()
@@ -551,6 +553,35 @@ class LocalWorkspace extends EventEmitter {
     return !durable.threadRootId || durable.taskId === durable.threadRootId
   }
 
+  canResumeOrchestration(durable, workflow) {
+    const cursor = durable?.orchestration
+    const continuation = durable?.continuation
+    if (durable?.mode !== workflow || cursor?.version !== 1 || cursor.workflow !== workflow
+        || cursor.currentKind !== continuation?.agentKind
+        || !cursor.activeKinds.includes(cursor.currentKind)) return false
+    const targetKinds = Array.isArray(durable.targetKinds) ? durable.targetKinds : []
+    if (workflow === 'auto' && (
+      durable.currentRound < 1 || continuation?.round !== durable.currentRound
+    )) return false
+    if (workflow === 'manual' && continuation?.round !== 0) return false
+    return cursor.activeKinds.length > 0
+      && cursor.activeKinds.every(kind => targetKinds.includes(kind))
+      && cursor.pendingKinds.every(kind => cursor.activeKinds.includes(kind))
+      && !cursor.pendingKinds.includes(cursor.currentKind)
+      && !cursor.successfulKinds.includes(cursor.currentKind)
+      && cursor.successfulKinds.every(kind => cursor.activeKinds.includes(kind))
+      && cursor.pendingKinds.every(kind => !cursor.successfulKinds.includes(kind))
+      && cursor.agreementKinds.every(kind => cursor.successfulKinds.includes(kind))
+  }
+
+  canResumeManualOrchestration(durable) {
+    return this.canResumeOrchestration(durable, 'manual')
+  }
+
+  canResumeAutoOrchestration(durable) {
+    return this.canResumeOrchestration(durable, 'auto')
+  }
+
   async replayAgentSlot(group, durable, controller, gate, decision, request) {
     if (!['budget', 'permission'].includes(gate?.type)) {
       throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
@@ -571,11 +602,12 @@ class LocalWorkspace extends EventEmitter {
     const knowledge = await this.validateKnowledgeBaseSelectionsFn(
       [durable.continuation.agentKind], message.knowledgeBaseHints || [],
     )
+    const activeKinds = controller.orchestration?.activeKinds || durable.targetKinds
     const recovered = await this.autoRunner.invokeWithUnauthorizedRecovery({
       group,
       kind: durable.continuation.agentKind,
       controller,
-      activeKinds: durable.targetKinds,
+      activeKinds,
       threadRootId: durable.threadRootId,
       context: {
         attachments: attachments.map(attachment => attachment.path),
@@ -608,6 +640,106 @@ class LocalWorkspace extends EventEmitter {
     return recovered.result
   }
 
+  async continueManualOrchestration(group, durable, controller) {
+    const cursor = controller.orchestration
+    const message = this.state.messages.find(candidate => (
+      candidate.groupId === group.id
+      && candidate.role === 'user'
+      && [durable.taskId, durable.threadRootId].includes(candidate.id)
+    ))
+    if (!message || cursor?.version !== 1 || cursor.workflow !== 'manual'
+        || cursor.currentKind || cursor.pendingKinds.some(kind => !cursor.activeKinds.includes(kind))) {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const attachments = await this.resolveAttachments(message.attachments || [])
+    const activeKinds = [...cursor.activeKinds]
+    const successfulKinds = new Set(cursor.successfulKinds)
+    const pendingKinds = [...cursor.pendingKinds]
+    const reportedFailures = new Set()
+
+    while (pendingKinds.length) {
+      const kind = pendingKinds.shift()
+      if (!activeKinds.includes(kind) || controller.signal.aborted) continue
+      controller.currentKind = kind
+      controller.progress = []
+      controller.orchestration = {
+        ...controller.orchestration,
+        currentKind: kind,
+        pendingKinds: [...pendingKinds],
+        successfulKinds: [...successfulKinds],
+      }
+      if (this.checkpointRun(group.id, controller) !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      this.emitChanged()
+      try {
+        const skills = await this.validateSkillSelectionsFn(
+          kind,
+          (message.skillHints || []).filter(skill => skill.targetKind === kind),
+        )
+        const knowledge = await this.validateKnowledgeBaseSelectionsFn(
+          [kind],
+          (message.knowledgeBaseHints || []).filter(source => source.targetKinds?.includes(kind))
+            .map(source => ({ ...source, targetKinds: [kind] })),
+        )
+        const invocation = await this.autoRunner.invokeWithUnauthorizedRecovery({
+          group,
+          kind,
+          controller,
+          activeKinds,
+          threadRootId: durable.threadRootId,
+          context: {
+            attachments: attachments.map(attachment => attachment.path),
+            attachmentSnapshots: attachments,
+            skillHints: skills,
+            knowledgeBaseHints: knowledge,
+            contextOptions: { focusUserMessageId: message.id },
+          },
+          reportedFailures,
+          mode: 'manual',
+        })
+        if (!invocation?.result) throw invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+        successfulKinds.add(kind)
+      } catch (error) {
+        if (controller.signal.aborted) {
+          this.recordAgentInterruption(
+            group.id,
+            kind,
+            error,
+            durable.threadRootId,
+            controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
+            reportedFailures,
+          )
+          if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+          break
+        }
+        this.recordAgentFailure(group.id, kind, error, durable.threadRootId, reportedFailures)
+        if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+        successfulKinds.delete(kind)
+      }
+      if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+      controller.currentKind = ''
+      controller.progress = []
+      controller.orchestration = {
+        ...controller.orchestration,
+        currentKind: '',
+        pendingKinds: [...pendingKinds],
+        successfulKinds: [...successfulKinds],
+      }
+      if (this.checkpointRun(group.id, controller) !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      this.emitChanged()
+    }
+
+    if (controller.signal.aborted) {
+      return controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+    }
+    const successCount = activeKinds.filter(kind => successfulKinds.has(kind)).length
+    if (!successCount) return 'failed'
+    return successCount === activeKinds.length ? 'completed' : 'partial'
+  }
+
   async resumeHumanGateDecision(gate, decision) {
     const durable = this.runLedger?.get?.(gate.runId)
     if (!this.canResumeHumanGateRecord(durable, gate)) {
@@ -617,15 +749,20 @@ class LocalWorkspace extends EventEmitter {
     try {
       controller = this.runCoordinator.resume(durable)
       const group = this.getGroup(durable.groupId)
+      const resumableManual = this.canResumeManualOrchestration(durable)
+      const resumableAuto = this.canResumeAutoOrchestration(durable)
       if (durable.continuation.resumeKind === 'agent_slot'
           && decision.status === 'approved'
-          && !this.canFinalizeReplayedAgentSlot(durable)) {
+          && !this.canFinalizeReplayedAgentSlot(durable)
+          && !resumableManual
+          && !resumableAuto) {
         throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
       }
       if (durable.continuation.resumeKind === 'role_review_decision') {
         throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
       }
       const request = this.humanGateStore.request(gate.gateId)
+      let replayedResult = null
       if (gate.type === 'permission') {
         if (decision.status === 'rejected') {
           this.resetAgentSession(group, durable.continuation.agentKind, true, durable.taskId)
@@ -636,14 +773,49 @@ class LocalWorkspace extends EventEmitter {
           this.finishRun(durable.groupId, controller, 'stopped')
           return
         }
-        await this.replayAgentSlot(group, durable, controller, gate, decision, request)
+        replayedResult = await this.replayAgentSlot(
+          group, durable, controller, gate, decision, request,
+        )
       } else if (gate.type === 'budget' && decision.status !== 'approved') {
         throw new Error('LOCAL_BUDGET_REJECTED')
       } else {
-        await this.replayAgentSlot(group, durable, controller, gate, decision, request)
+        replayedResult = await this.replayAgentSlot(
+          group, durable, controller, gate, decision, request,
+        )
       }
-      this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')
-      this.finishRun(durable.groupId, controller, 'completed')
+      if (resumableManual || resumableAuto) {
+        const successfulKinds = new Set(controller.orchestration.successfulKinds)
+        successfulKinds.add(durable.continuation.agentKind)
+        controller.currentKind = ''
+        controller.orchestration = {
+          ...controller.orchestration,
+          currentKind: '',
+          successfulKinds: [...successfulKinds],
+          ...(resumableAuto ? {
+            agreementKinds: replayedResult?.consensus
+              ? [...new Set([
+                  ...controller.orchestration.agreementKinds,
+                  durable.continuation.agentKind,
+                ])]
+              : controller.orchestration.agreementKinds.filter(
+                  kind => kind !== durable.continuation.agentKind,
+                ),
+            attachmentRecipients: [...new Set([
+              ...controller.orchestration.attachmentRecipients,
+              durable.continuation.agentKind,
+            ])],
+          } : {}),
+        }
+      }
+      if (!this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      const finalStatus = resumableManual
+        ? await this.continueManualOrchestration(group, durable, controller)
+        : (resumableAuto
+            ? await this.autoRunner.resume(group, durable, controller)
+            : 'completed')
+      this.finishRun(durable.groupId, controller, finalStatus)
     } catch (error) {
       if (controller) {
         if (controller.signal.aborted && controller.stopReason === 'shutdown') {

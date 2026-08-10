@@ -157,6 +157,7 @@ class LocalWorkspaceRunLedger {
       budget: controller.budget?.snapshot?.(),
       attemptHistory: controller.attemptHistory,
       continuation: controller.continuation,
+      orchestration: controller.orchestration,
       agentRuns,
     }
   }

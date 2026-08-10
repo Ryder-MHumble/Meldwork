@@ -339,214 +339,343 @@ class LocalWorkspaceAutoRunner {
     }
   }
 
+  orchestrationCursor(targetKinds) {
+    return {
+      version: 1,
+      workflow: 'auto',
+      currentKind: '',
+      pendingKinds: [...targetKinds],
+      activeKinds: [...targetKinds],
+      successfulKinds: [],
+      agreementKinds: [],
+      attachmentRecipients: [],
+      totalSuccesses: 0,
+      terminalFailureOccurred: false,
+    }
+  }
+
+  checkpointOrchestration(group, controller, updates = {}) {
+    controller.orchestration = { ...controller.orchestration, ...updates }
+    const persisted = this.checkpointRun?.(group.id, controller)
+    if (this.hasRunLedger() && persisted !== true) {
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    }
+  }
+
+  async automaticContext(group, controller, threadRootId, preparedContext = null) {
+    let rootAttachments = preparedContext?.attachments
+    let rootSkillsByKind = preparedContext?.skillHintsByKind
+    let rootKnowledgeBasesByKind = preparedContext?.knowledgeBaseHintsByKind
+    let rootMediaRequest = preparedContext?.mediaRequest || null
+    if (!rootAttachments || !rootSkillsByKind || !rootKnowledgeBasesByKind) {
+      const rootMessage = this.state().messages.find(message => (
+        message.id === threadRootId && message.groupId === group.id && message.role === 'user'
+      ))
+      rootMediaRequest = mediaGenerationRequest(rootMessage?.content || '')
+      rootAttachments = await this.resolveAttachments(rootMessage?.attachments || [])
+      rootSkillsByKind = new Map()
+      for (const kind of controller.targetKinds) {
+        const scoped = (rootMessage?.skillHints || []).filter(skill => skill.targetKind === kind)
+        if (!scoped.length) {
+          rootSkillsByKind.set(kind, [])
+          continue
+        }
+        try {
+          const validated = await this.validateSkillSelections(kind, scoped)
+          rootSkillsByKind.set(
+            kind,
+            Array.isArray(validated) && validated.every(skill => skill?.targetKind === kind)
+              ? validated
+              : [],
+          )
+        } catch {
+          rootSkillsByKind.set(kind, [])
+        }
+      }
+      let storedKnowledgeBaseHints = []
+      try {
+        const validated = await this.validateKnowledgeBaseSelections(
+          controller.targetKinds,
+          rootMessage?.knowledgeBaseHints || [],
+        )
+        storedKnowledgeBaseHints = (Array.isArray(validated) ? validated : [])
+          .map(normalizeKnowledgeBaseHint)
+          .filter(Boolean)
+      } catch { /* unavailable knowledge bases are omitted when resuming */ }
+      rootKnowledgeBasesByKind = new Map(controller.targetKinds.map(kind => [
+        kind,
+        storedKnowledgeBaseHints.filter(source => source.targetKinds.includes(kind)),
+      ]))
+    }
+    return {
+      rootAttachments,
+      rootSkillsByKind,
+      rootKnowledgeBasesByKind,
+      rootMediaRequest,
+    }
+  }
+
+  async runRounds(group, controller, threadRootId, maxRounds, context, resume = false) {
+    const {
+      rootAttachments,
+      rootSkillsByKind,
+      rootKnowledgeBasesByKind,
+      rootMediaRequest,
+    } = context
+    const mediaOwnerKind = rootMediaRequest ? controller.targetKinds[0] : ''
+    const cursor = resume ? controller.orchestration : null
+    const attachmentRecipients = new Set(cursor?.attachmentRecipients || [])
+    let terminalFailureOccurred = cursor?.terminalFailureOccurred === true
+    let activeKinds = cursor ? [...cursor.activeKinds] : [...controller.targetKinds]
+    let totalSuccesses = cursor?.totalSuccesses || 0
+    let consensusReached = false
+    const reportedFailures = new Set()
+    const firstRound = resume ? Math.max(0, controller.currentRound - 1) : 0
+
+    for (
+      let round = firstRound;
+      (controller.unlimitedRounds || round < maxRounds) && !controller.signal.aborted;
+      round += 1
+    ) {
+      const resumedRound = resume && round === firstRound
+      const successfulKinds = new Set(resumedRound ? cursor.successfulKinds : [])
+      const agreementKinds = new Set(resumedRound ? cursor.agreementKinds : [])
+      const replacementInstructions = new Map()
+      const roundQueue = resumedRound ? [...cursor.pendingKinds] : [...activeKinds]
+      controller.currentRound = round + 1
+      controller.completedKinds = resumedRound
+        ? activeKinds.filter(kind => !roundQueue.includes(kind))
+        : []
+      controller.failedKinds = resumedRound
+        ? controller.completedKinds.filter(kind => !successfulKinds.has(kind))
+        : []
+      if (!resumedRound) {
+        this.checkpointOrchestration(group, controller, {
+          currentKind: '',
+          pendingKinds: [...roundQueue],
+          activeKinds: [...activeKinds],
+          successfulKinds: [],
+          agreementKinds: [],
+          attachmentRecipients: [...attachmentRecipients],
+          totalSuccesses,
+          terminalFailureOccurred,
+        })
+      }
+      this.emitChanged()
+
+      while (roundQueue.length) {
+        const kind = roundQueue.shift()
+        if (!activeKinds.includes(kind)) {
+          this.checkpointOrchestration(group, controller, { pendingKinds: [...roundQueue] })
+          continue
+        }
+        if (controller.signal.aborted) break
+        const executionKind = kind
+        this.setCurrentAgent(controller, executionKind)
+        this.checkpointOrchestration(group, controller, {
+          currentKind: executionKind,
+          pendingKinds: [...roundQueue],
+          activeKinds: [...activeKinds],
+          successfulKinds: [...successfulKinds],
+          agreementKinds: [...agreementKinds],
+          attachmentRecipients: [...attachmentRecipients],
+          totalSuccesses,
+          terminalFailureOccurred,
+        })
+        try {
+          const attachments = attachmentRecipients.has(executionKind)
+            ? []
+            : rootAttachments.map(attachment => attachment.path)
+          const invocation = await this.invokeWithUnauthorizedRecovery({
+            group,
+            kind: executionKind,
+            controller,
+            activeKinds,
+            threadRootId,
+            context: {
+              attachments,
+              attachmentSnapshots: attachments.length ? rootAttachments : [],
+              skillHints: rootSkillsByKind.get(executionKind) || [],
+              knowledgeBaseHints: rootKnowledgeBasesByKind.get(executionKind) || [],
+              runtimeInstruction: replacementInstructions.get(executionKind) || '',
+              mediaRequest: executionKind === mediaOwnerKind && round === 0
+                ? rootMediaRequest
+                : null,
+              contextOptions: { focusUserMessageId: threadRootId },
+            },
+            reportedFailures,
+          })
+          replacementInstructions.delete(executionKind)
+          if (invocation.control?.action === 'replace') {
+            this.recordAgentInterruption(
+              group.id, executionKind, invocation.error, threadRootId, 'stopped', reportedFailures,
+            )
+            if (!controller.failedKinds.includes(executionKind)) {
+              controller.failedKinds.push(executionKind)
+            }
+            if (!controller.completedKinds.includes(executionKind)) {
+              controller.completedKinds.push(executionKind)
+            }
+            successfulKinds.delete(executionKind)
+            agreementKinds.delete(executionKind)
+            const replacementKind = invocation.control.replacementKind
+            activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
+            replacementInstructions.set(
+              replacementKind,
+              this.replacementInstruction(executionKind),
+            )
+            if (!roundQueue.includes(replacementKind)) roundQueue.unshift(replacementKind)
+            controller.currentKind = ''
+            controller.progress = []
+            this.checkpointOrchestration(group, controller, {
+              currentKind: '',
+              pendingKinds: [...roundQueue],
+              activeKinds: [...activeKinds],
+              successfulKinds: [...successfulKinds],
+              agreementKinds: [...agreementKinds],
+            })
+            this.emitChanged()
+            continue
+          }
+          if (invocation.control?.action === 'cancel') {
+            this.recordAgentInterruption(
+              group.id, executionKind, invocation.error, threadRootId, 'stopped', reportedFailures,
+            )
+            if (!controller.failedKinds.includes(executionKind)) {
+              controller.failedKinds.push(executionKind)
+            }
+            if (!controller.completedKinds.includes(executionKind)) {
+              controller.completedKinds.push(executionKind)
+            }
+            successfulKinds.delete(executionKind)
+            agreementKinds.delete(executionKind)
+            controller.currentKind = ''
+            controller.progress = []
+            this.checkpointOrchestration(group, controller, {
+              currentKind: '',
+              pendingKinds: [...roundQueue],
+              successfulKinds: [...successfulKinds],
+              agreementKinds: [...agreementKinds],
+            })
+            this.emitChanged()
+            continue
+          }
+          const result = invocation.result
+          if (attachments.length) attachmentRecipients.add(executionKind)
+          successfulKinds.add(executionKind)
+          if (result.consensus) agreementKinds.add(executionKind)
+          else agreementKinds.delete(executionKind)
+        } catch (error) {
+          if (controller.signal.aborted) {
+            const interruptedKind = controller.currentKind || executionKind
+            if (error?.runTrace) {
+              this.recordAgentInterruption(
+                group.id,
+                interruptedKind,
+                error,
+                threadRootId,
+                controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
+                reportedFailures,
+              )
+              if (!controller.completedKinds.includes(interruptedKind)) {
+                controller.completedKinds.push(interruptedKind)
+              }
+              controller.currentKind = ''
+              controller.progress = []
+              this.emitChanged()
+            }
+            break
+          }
+          this.recordAgentFailure(
+            group.id, executionKind, error, threadRootId, reportedFailures,
+          )
+          successfulKinds.delete(executionKind)
+          agreementKinds.delete(executionKind)
+          if (!controller.failedKinds.includes(executionKind)) {
+            controller.failedKinds.push(executionKind)
+          }
+          if (['authentication', 'compatibility'].includes(normalizeFailure(error).category)) {
+            terminalFailureOccurred = true
+            activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
+          }
+        }
+        if (controller.signal.aborted) break
+        if (!controller.completedKinds.includes(executionKind)) {
+          controller.completedKinds.push(executionKind)
+        }
+        controller.currentKind = ''
+        controller.progress = []
+        this.checkpointOrchestration(group, controller, {
+          currentKind: '',
+          pendingKinds: [...roundQueue],
+          activeKinds: [...activeKinds],
+          successfulKinds: [...successfulKinds],
+          agreementKinds: [...agreementKinds],
+          attachmentRecipients: [...attachmentRecipients],
+          totalSuccesses,
+          terminalFailureOccurred,
+        })
+        this.emitChanged()
+      }
+
+      if (controller.signal.aborted) break
+      const successes = activeKinds.filter(kind => successfulKinds.has(kind)).length
+      const agreements = activeKinds.filter(kind => agreementKinds.has(kind)).length
+      totalSuccesses += successes
+      this.checkpointOrchestration(group, controller, {
+        currentKind: '',
+        pendingKinds: [],
+        activeKinds: [...activeKinds],
+        successfulKinds: [...successfulKinds],
+        agreementKinds: [...agreementKinds],
+        attachmentRecipients: [...attachmentRecipients],
+        totalSuccesses,
+        terminalFailureOccurred,
+      })
+      if (activeKinds.length < 2) break
+      if (successes === activeKinds.length && agreements === activeKinds.length) {
+        consensusReached = true
+        break
+      }
+    }
+
+    let runStatus
+    if (controller.signal.aborted) {
+      runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+    } else if (terminalFailureOccurred) runStatus = totalSuccesses > 0 ? 'partial' : 'failed'
+    else if (consensusReached) runStatus = 'completed'
+    else runStatus = totalSuccesses > 0 ? 'round-limit' : 'failed'
+    if (!terminalFailureOccurred && !controller.unlimitedRounds
+        && (runStatus === 'round-limit' || runStatus === 'failed')) {
+      this.addMessage(
+        group.id,
+        'system',
+        `Automatic discussion reached the ${maxRounds}-round safety limit without consensus.`,
+        '',
+        threadRootId,
+        { key: 'system.autoRoundLimit', params: { rounds: maxRounds } },
+      )
+    }
+    return runStatus
+  }
+
   start(
     group, targetKinds, threadRootId, maxRounds, reservation = null, preparedContext = null,
     unlimitedRounds = false,
   ) {
+    reservation.orchestration = this.orchestrationCursor(targetKinds)
     const controller = this.beginRun(
       group.id, 'auto', targetKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
     )
     const promise = (async () => {
       let runStatus = 'failed'
-      let totalSuccesses = 0
       try {
-        let rootAttachments = preparedContext?.attachments
-        let rootSkillsByKind = preparedContext?.skillHintsByKind
-        let rootKnowledgeBasesByKind = preparedContext?.knowledgeBaseHintsByKind
-        let rootMediaRequest = preparedContext?.mediaRequest || null
-        if (!rootAttachments || !rootSkillsByKind || !rootKnowledgeBasesByKind) {
-          const rootMessage = this.state().messages.find(message => (
-            message.id === threadRootId && message.groupId === group.id && message.role === 'user'
-          ))
-          rootMediaRequest = mediaGenerationRequest(rootMessage?.content || '')
-          rootAttachments = await this.resolveAttachments(rootMessage?.attachments || [])
-          rootSkillsByKind = new Map()
-          for (const kind of controller.targetKinds) {
-            const scoped = (rootMessage?.skillHints || []).filter(skill => skill.targetKind === kind)
-            if (!scoped.length) {
-              rootSkillsByKind.set(kind, [])
-              continue
-            }
-            try {
-              const validated = await this.validateSkillSelections(kind, scoped)
-              rootSkillsByKind.set(
-                kind,
-                Array.isArray(validated) && validated.every(skill => skill?.targetKind === kind)
-                  ? validated
-                  : [],
-              )
-            } catch {
-              rootSkillsByKind.set(kind, [])
-            }
-          }
-          let storedKnowledgeBaseHints = []
-          try {
-            const validated = await this.validateKnowledgeBaseSelections(
-              controller.targetKinds,
-              rootMessage?.knowledgeBaseHints || [],
-            )
-            storedKnowledgeBaseHints = (Array.isArray(validated) ? validated : [])
-              .map(normalizeKnowledgeBaseHint)
-              .filter(Boolean)
-          } catch { /* unavailable knowledge bases are omitted when resuming */ }
-          rootKnowledgeBasesByKind = new Map(controller.targetKinds.map(kind => [
-            kind,
-            storedKnowledgeBaseHints.filter(source => source.targetKinds.includes(kind)),
-          ]))
-        }
-        const mediaOwnerKind = rootMediaRequest ? controller.targetKinds[0] : ''
-        const attachmentRecipients = new Set()
-        let consensusReached = false
-        let terminalFailureOccurred = false
-        let activeKinds = [...controller.targetKinds]
-        const reportedFailures = new Set()
-        for (
-          let round = 0;
-          (controller.unlimitedRounds || round < maxRounds) && !controller.signal.aborted;
-          round += 1
-        ) {
-          const successfulKinds = new Set()
-          const agreementKinds = new Set()
-          const replacementInstructions = new Map()
-          const roundQueue = [...activeKinds]
-          controller.currentRound = round + 1
-          controller.completedKinds = []
-          controller.failedKinds = []
-          this.emitChanged()
-          while (roundQueue.length) {
-            const kind = roundQueue.shift()
-            if (!activeKinds.includes(kind)) continue
-            if (controller.signal.aborted) break
-            let executionKind = kind
-            try {
-              const attachments = attachmentRecipients.has(executionKind)
-                ? []
-                : rootAttachments.map(attachment => attachment.path)
-              const invocation = await this.invokeWithUnauthorizedRecovery({
-                group,
-                kind: executionKind,
-                controller,
-                activeKinds,
-                threadRootId,
-                context: {
-                  attachments,
-                  attachmentSnapshots: attachments.length ? rootAttachments : [],
-                  skillHints: rootSkillsByKind.get(executionKind) || [],
-                  knowledgeBaseHints: rootKnowledgeBasesByKind.get(executionKind) || [],
-                  runtimeInstruction: replacementInstructions.get(executionKind) || '',
-                  mediaRequest: executionKind === mediaOwnerKind && round === 0
-                    ? rootMediaRequest
-                    : null,
-                  contextOptions: { focusUserMessageId: threadRootId },
-                },
-                reportedFailures,
-              })
-              replacementInstructions.delete(executionKind)
-              if (invocation.control?.action === 'replace') {
-                this.recordAgentInterruption(
-                  group.id, executionKind, invocation.error, threadRootId, 'stopped', reportedFailures,
-                )
-                if (!controller.failedKinds.includes(executionKind)) {
-                  controller.failedKinds.push(executionKind)
-                }
-                if (!controller.completedKinds.includes(executionKind)) {
-                  controller.completedKinds.push(executionKind)
-                }
-                successfulKinds.delete(executionKind)
-                agreementKinds.delete(executionKind)
-                const replacementKind = invocation.control.replacementKind
-                activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
-                replacementInstructions.set(
-                  replacementKind,
-                  this.replacementInstruction(executionKind),
-                )
-                if (!roundQueue.includes(replacementKind)) roundQueue.unshift(replacementKind)
-                controller.currentKind = ''
-                controller.progress = []
-                this.emitChanged()
-                continue
-              }
-              if (invocation.control?.action === 'cancel') {
-                this.recordAgentInterruption(
-                  group.id, executionKind, invocation.error, threadRootId, 'stopped', reportedFailures,
-                )
-                controller.failedKinds.push(executionKind)
-                controller.completedKinds.push(executionKind)
-                controller.currentKind = ''
-                controller.progress = []
-                this.emitChanged()
-                continue
-              }
-              const result = invocation.result
-              if (attachments.length) attachmentRecipients.add(executionKind)
-              successfulKinds.add(executionKind)
-              if (result.consensus) agreementKinds.add(executionKind)
-              else agreementKinds.delete(executionKind)
-            } catch (error) {
-              if (controller.signal.aborted) {
-                const interruptedKind = controller.currentKind || executionKind
-                if (error?.runTrace) {
-                  this.recordAgentInterruption(
-                    group.id,
-                    interruptedKind,
-                    error,
-                    threadRootId,
-                    controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
-                    reportedFailures,
-                  )
-                  controller.completedKinds.push(interruptedKind)
-                  controller.currentKind = ''
-                  controller.progress = []
-                  this.emitChanged()
-                }
-                break
-              }
-              this.recordAgentFailure(
-                group.id, executionKind, error, threadRootId, reportedFailures,
-              )
-              successfulKinds.delete(executionKind)
-              agreementKinds.delete(executionKind)
-              if (!controller.failedKinds.includes(executionKind)) {
-                controller.failedKinds.push(executionKind)
-              }
-              if (['authentication', 'compatibility'].includes(normalizeFailure(error).category)) {
-                terminalFailureOccurred = true
-                activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
-              }
-            }
-            if (!controller.completedKinds.includes(executionKind)) {
-              controller.completedKinds.push(executionKind)
-            }
-            controller.currentKind = ''
-            controller.progress = []
-            this.emitChanged()
-          }
-          const successes = activeKinds.filter(kind => successfulKinds.has(kind)).length
-          const agreements = activeKinds.filter(kind => agreementKinds.has(kind)).length
-          totalSuccesses += successes
-          if (controller.signal.aborted) break
-          if (activeKinds.length < 2) break
-          if (successes === activeKinds.length && agreements === activeKinds.length) {
-            consensusReached = true
-            break
-          }
-        }
-        if (controller.signal.aborted) {
-          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
-        } else if (terminalFailureOccurred) runStatus = totalSuccesses > 0 ? 'partial' : 'failed'
-        else if (consensusReached) runStatus = 'completed'
-        else runStatus = totalSuccesses > 0 ? 'round-limit' : 'failed'
-        if (!terminalFailureOccurred && !controller.unlimitedRounds
-            && (runStatus === 'round-limit' || runStatus === 'failed')) {
-          this.addMessage(
-            group.id,
-            'system',
-            `Automatic discussion reached the ${maxRounds}-round safety limit without consensus.`,
-            '',
-            threadRootId,
-            { key: 'system.autoRoundLimit', params: { rounds: maxRounds } },
-          )
-        }
+        const context = await this.automaticContext(
+          group, controller, threadRootId, preparedContext,
+        )
+        runStatus = await this.runRounds(
+          group, controller, threadRootId, maxRounds, context,
+        )
       } catch (error) {
         runStatus = controller.signal.aborted
           ? (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped')
@@ -578,6 +707,15 @@ class LocalWorkspaceAutoRunner {
     })()
     controller.promise = promise
     return controller
+  }
+
+  async resume(group, durable, controller) {
+    const context = await this.automaticContext(
+      group, controller, durable.threadRootId, null,
+    )
+    return this.runRounds(
+      group, controller, durable.threadRootId, durable.maxRounds, context, true,
+    )
   }
 }
 

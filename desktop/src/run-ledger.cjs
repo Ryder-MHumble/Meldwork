@@ -98,6 +98,7 @@ function journalRunSignature(record) {
     budget: record.budget || null,
     attemptHistory: record.attemptHistory,
     continuation: record.continuation || null,
+    orchestration: record.orchestration || null,
     remoteJob: record.remoteJob || null,
   })
 }
@@ -133,6 +134,7 @@ function journalRun(record, existing = null, includeAllAgents = false) {
     agentRuns,
   }
   if (record.continuation) run.continuation = record.continuation
+  if (record.orchestration) run.orchestration = record.orchestration
   if (record.budget) run.budget = record.budget
   if (record.finishedAt != null) run.finishedAt = record.finishedAt
   if (record.remoteJob) run.remoteJob = record.remoteJob

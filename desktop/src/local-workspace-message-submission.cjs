@@ -48,6 +48,8 @@ class LocalWorkspaceMessageSubmission {
     this.resetAgentSession = options.resetAgentSession
     this.refreshAgents = options.refreshAgents
     this.consumeAgentControl = options.consumeAgentControl
+    this.checkpointRun = options.checkpointRun
+    this.hasRunLedger = options.hasRunLedger || (() => false)
   }
 
   async resolveAttachments(attachmentRefs, signal) {
@@ -435,6 +437,18 @@ class LocalWorkspaceMessageSubmission {
           if (regeneration) {
             this.resetAgentSession(group, targetKinds[0], true, userMessage.id)
           }
+          reservation.orchestration = {
+            version: 1,
+            workflow: 'manual',
+            currentKind: '',
+            pendingKinds: [...targetKinds],
+            activeKinds: [...targetKinds],
+            successfulKinds: [],
+            agreementKinds: [],
+            attachmentRecipients: [],
+            totalSuccesses: 0,
+            terminalFailureOccurred: false,
+          }
           controller = this.beginRun(
             group.id, 'manual', targetKinds, threadRootId, reservation,
           )
@@ -459,6 +473,16 @@ class LocalWorkspaceMessageSubmission {
           if (controller.signal.aborted) break
           controller.currentKind = kind
           controller.progress = []
+          controller.orchestration = {
+            ...controller.orchestration,
+            currentKind: kind,
+            pendingKinds: [...pendingKinds],
+            activeKinds: [...activeKinds],
+            successfulKinds: [...successfulKinds],
+          }
+          if (this.hasRunLedger() && this.checkpointRun(group.id, controller) !== true) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
           this.emitChanged()
           try {
             const invocation = await this.invokeWithRecovery({
@@ -543,6 +567,16 @@ class LocalWorkspaceMessageSubmission {
           if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
           controller.currentKind = ''
           controller.progress = []
+          controller.orchestration = {
+            ...controller.orchestration,
+            currentKind: '',
+            pendingKinds: [...pendingKinds],
+            activeKinds: [...activeKinds],
+            successfulKinds: [...successfulKinds],
+          }
+          if (this.hasRunLedger() && this.checkpointRun(group.id, controller) !== true) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
           this.emitChanged()
         }
         if (controller.signal.aborted) {

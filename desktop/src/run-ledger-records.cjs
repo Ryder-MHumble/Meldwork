@@ -55,6 +55,12 @@ const CONTINUATION_RESUME_KINDS = new Set(['agent_slot', 'role_review_decision']
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
 ])
+const ORCHESTRATION_FIELDS = new Set([
+  'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
+  'successfulKinds', 'agreementKinds', 'attachmentRecipients',
+  'totalSuccesses', 'terminalFailureOccurred',
+])
+const ORCHESTRATION_WORKFLOWS = new Set(['manual', 'auto'])
 
 const RUN_STATUSES = new Set([
   'preparing', 'queued', 'running', 'waiting', 'reconciling',
@@ -351,6 +357,35 @@ function normalizeContinuation(input) {
   }
 }
 
+function normalizeOrchestration(input) {
+  if (input == null) return null
+  if (!isRecord(input) || Object.keys(input).some(field => !ORCHESTRATION_FIELDS.has(field))) {
+    return undefined
+  }
+  const version = boundedNumber(input.version, 0, 100)
+  const workflow = String(input.workflow || '')
+  const currentKind = cleanId(input.currentKind)
+  const pendingKinds = normalizeKinds(input.pendingKinds)
+  const activeKinds = normalizeKinds(input.activeKinds)
+  const successfulKinds = normalizeKinds(input.successfulKinds)
+  const agreementKinds = normalizeKinds(input.agreementKinds)
+  const attachmentRecipients = normalizeKinds(input.attachmentRecipients)
+  const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
+  if (version !== 1 || !ORCHESTRATION_WORKFLOWS.has(workflow)) return undefined
+  return {
+    version,
+    workflow,
+    currentKind,
+    pendingKinds,
+    activeKinds,
+    successfulKinds,
+    agreementKinds,
+    attachmentRecipients,
+    totalSuccesses,
+    terminalFailureOccurred: input.terminalFailureOccurred === true,
+  }
+}
+
 function hasValidStoredRecordShape(input) {
   if (!isRecord(input)) return false
   if (!hasStoredFieldTypes(input, [
@@ -377,6 +412,11 @@ function hasValidStoredRecordShape(input) {
     const continuation = normalizeContinuation(input.continuation)
     if (continuation === undefined
         || canonicalJson(continuation) !== canonicalJson(input.continuation)) return false
+  }
+  if (hasOwn(input, 'orchestration')) {
+    const orchestration = normalizeOrchestration(input.orchestration)
+    if (orchestration === undefined
+        || canonicalJson(orchestration) !== canonicalJson(input.orchestration)) return false
   }
   if (hasOwn(input, 'remoteJob')) {
     if (!isRecord(input.remoteJob)
@@ -414,6 +454,15 @@ function hasValidStoredRecordShape(input) {
   if (!Array.isArray(input.agentRuns)) return false
 
   const targetKinds = normalizeKinds(input.targetKinds)
+  const orchestration = normalizeOrchestration(input.orchestration)
+  if (orchestration && [
+    orchestration.currentKind,
+    ...orchestration.pendingKinds,
+    ...orchestration.activeKinds,
+    ...orchestration.successfulKinds,
+    ...orchestration.agreementKinds,
+    ...orchestration.attachmentRecipients,
+  ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return false
   const parent = {
     runId: cleanId(input.runId),
     groupId: cleanGroupId(input.groupId),
@@ -640,6 +689,18 @@ function normalizeRecord(input, options = {}) {
   const rawContinuation = selectedValue(input, existing, 'continuation')
   const continuation = normalizeContinuation(rawContinuation)
   if (continuation === undefined) return null
+  const rawOrchestration = selectedValue(input, existing, 'orchestration')
+  const orchestration = normalizeOrchestration(rawOrchestration)
+  if (orchestration === undefined) return null
+  if (orchestration && orchestration.workflow !== mode) return null
+  if (orchestration && [
+    orchestration.currentKind,
+    ...orchestration.pendingKinds,
+    ...orchestration.activeKinds,
+    ...orchestration.successfulKinds,
+    ...orchestration.agreementKinds,
+    ...orchestration.attachmentRecipients,
+  ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return null
 
   const record = {
     runId,
@@ -664,6 +725,7 @@ function normalizeRecord(input, options = {}) {
   }
   if (budget) record.budget = budget
   if (continuation) record.continuation = continuation
+  if (orchestration) record.orchestration = orchestration
   if (remoteJob) record.remoteJob = remoteJob
   if (TERMINAL_STATUSES.has(status)) {
     record.finishedAt = safeTimestamp(

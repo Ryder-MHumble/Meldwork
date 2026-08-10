@@ -85,6 +85,7 @@ class LocalWorkspaceRunCoordinator {
     controller.waitingGateIds = new Set()
     controller.attemptHistory = []
     controller.continuation = null
+    controller.orchestration = null
     return controller
   }
 
@@ -274,6 +275,7 @@ class LocalWorkspaceRunCoordinator {
     controller.currentRound = record.currentRound || 0
     controller.startedAt = record.startedAt
     controller.attemptHistory = [...(record.attemptHistory || [])]
+    controller.orchestration = record.orchestration ? structuredClone(record.orchestration) : null
     const targetKinds = new Set(controller.targetKinds)
     const latestAgentStatuses = new Map()
     for (const agentRun of Array.isArray(record.agentRuns) ? record.agentRuns : []) {
@@ -287,6 +289,13 @@ class LocalWorkspaceRunCoordinator {
       .map(([kind]) => kind)
     controller.continuation = { ...record.continuation, state: 'resuming', updatedAt: Date.now() }
     controller.waitingGateIds = new Set([record.continuation.gateId])
+    controller.harness = new RunHarness({
+      runId: record.runId,
+      groupId,
+      threadRootId: record.threadRootId,
+      targetKinds: record.targetKinds,
+      agentRuns: record.agentRuns,
+    })
     if (record.budget) {
       controller.budget = new RunBudget({
         ...record.budget,

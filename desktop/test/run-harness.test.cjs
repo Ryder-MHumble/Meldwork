@@ -410,6 +410,23 @@ test('tracks answer delta sequences even though deltas stay outside the event le
   assert.equal(run.output, 'streamed')
 })
 
+test('hydrates the durable event cursor so post-restart sequences stay monotonic', () => {
+  const harness = fixture()
+  harness.beginAgent('codex', 1)
+  harness.ingest('codex', 1, { type: 'answer_delta', delta: 'first' })
+  const finalDelta = harness.ingest('codex', 1, { type: 'answer_delta', delta: 'second' })
+  const persisted = harness.snapshot()
+
+  assert.equal(persisted[0].eventCursor, finalDelta.seq)
+  assert.equal(Math.max(...persisted[0].events.map(event => event.seq)) < finalDelta.seq, true)
+
+  const restarted = fixture({ agentRuns: persisted })
+  const next = restarted.beginAgent('hermes', 1)
+
+  assert.equal(next.seq, finalDelta.seq + 1)
+  assert.equal(restarted.snapshot()[0].output, 'firstsecond')
+})
+
 test('finishes with the authoritative answer and persists only a compact capsule', () => {
   const harness = fixture()
   harness.beginAgent('hermes', 1, ['message-a', 'message-b'])
