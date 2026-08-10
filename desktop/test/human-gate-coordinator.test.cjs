@@ -206,3 +206,47 @@ test('aborted waiters leave a retryable pending gate when rejection persistence 
   assert.equal(decided.status, 'rejected')
   assert.equal(checkpointAttempts, 2)
 })
+
+test('expires a live Gate through the same durable rejection continuation', async (t) => {
+  const resumed = []
+  const { coordinator } = fixture(t, {
+    onResumed: (_record, decision) => resumed.push(decision),
+  })
+  const decision = await coordinator.wait({
+    ...request(),
+    expiresAt: '2026-08-03T23:59:59.000Z',
+  }, {
+    continuation: {
+      resumeKind: 'agent_slot', agentRunId: 'agent-run-1', agentKind: 'codex', round: 0,
+    },
+  })
+
+  assert.equal(decision.status, 'rejected')
+  assert.equal(decision.actorId, 'meldwork-system')
+  assert.equal(coordinator.list({ pendingOnly: true }).length, 0)
+  assert.equal(resumed.length, 1)
+})
+
+test('restart reconciliation expires a resumable orphan exactly once', async (t) => {
+  const { store } = fixture(t)
+  const record = store.create({
+    ...request(),
+    createdAt: '2026-08-03T23:00:00.000Z',
+    expiresAt: '2026-08-03T23:59:59.000Z',
+  })
+  let resumed = 0
+  const restarted = new HumanGateCoordinator({
+    store,
+    now: () => '2026-08-04T00:00:00.000Z',
+    canResume: candidate => candidate.gateId === record.gateId,
+    onOrphanDecision: () => { resumed += 1 },
+  })
+
+  const [expired] = restarted.reconcileOrphans()
+  await new Promise(resolve => setImmediate(resolve))
+  restarted.reconcileOrphans()
+
+  assert.equal(expired.status, 'rejected')
+  assert.equal(expired.decision.actorId, 'meldwork-system')
+  assert.equal(resumed, 1)
+})

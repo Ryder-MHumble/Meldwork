@@ -339,6 +339,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   scheduleRunCheckpoint(groupId, controller) {
+    if (this.shuttingDown) return
     this.runLedgerCoordinator.schedule(groupId, controller)
   }
 
@@ -435,6 +436,12 @@ class LocalWorkspace extends EventEmitter {
         round: input.round || 0,
         createdAt: timestamp,
         updatedAt: timestamp,
+        ...(input.requestId ? {
+          requestId: input.requestId,
+          requestHash: record.requestHash,
+          sessionRefHash: input.sessionRefHash,
+          sessionProvenanceHash: input.sessionProvenanceHash,
+        } : {}),
       }
       controller.waitingGateIds.add(record.gateId)
       if (this.runLedger && this.checkpointRun(groupId, controller, 'waiting') !== true) {
@@ -530,10 +537,18 @@ class LocalWorkspace extends EventEmitter {
         || gate.agentKind !== continuation.agentKind) return false
     if (continuation.state !== 'pending' && gate.status === 'pending') return false
     try {
+      const request = this.humanGateStore.request(gate.gateId)
+      const connectorBound = gate.type === 'input' || request?.source === 'connector'
+      if (connectorBound && (
+        continuation.requestId !== request.requestId
+        || continuation.requestHash !== gate.requestHash
+        || continuation.sessionRefHash !== request.sessionRefHash
+        || continuation.sessionProvenanceHash !== request.sessionProvenanceHash
+      )) return false
       const pack = this.contextPackStore.get(runRecord.contextPackId)
       return pack.taskId === runRecord.taskId
         && this.state.groups.some(group => group.id === runRecord.groupId)
-        && Boolean(this.humanGateStore.request(gate.gateId))
+        && Boolean(request)
     } catch {
       return false
     }
@@ -596,7 +611,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async replayAgentSlot(group, durable, controller, gate, decision, request) {
-    if (!['budget', 'permission', 'retry'].includes(gate?.type)) {
+    if (!['budget', 'permission', 'retry', 'input'].includes(gate?.type)) {
       throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
     }
     const message = this.state.messages.find(candidate => (
@@ -630,9 +645,14 @@ class LocalWorkspace extends EventEmitter {
         resumedGate: {
           gateId: gate.gateId,
           type: gate.type,
+          agentRunId: gate.agentRunId,
           status: decision.status,
           optionId: decision.optionId,
-          ...(gate.type === 'permission' ? { request } : {}),
+          ...(['permission', 'input'].includes(gate.type) ? {
+            request,
+            requestHash: gate.requestHash,
+          } : {}),
+          ...(gate.type === 'input' ? { response: decision.response } : {}),
           used: false,
         },
         runtimeInstruction: gate.type === 'permission'
@@ -641,12 +661,14 @@ class LocalWorkspace extends EventEmitter {
               'Do not repeat actions completed before that request.',
               'Continue only after the Harness applies the persisted decision to the exact reissued request.',
             ].join(' ')
-          : (gate.type === 'retry'
+          : (gate.type === 'input'
+              ? 'Resume the exact pending Connector input request with the persisted user response.'
+              : (gate.type === 'retry'
               ? [
                   'The user explicitly approved one replay after an earlier attempt had an uncertain outcome.',
                   'Reuse the durable operation identity supplied by the Harness.',
                 ].join(' ')
-              : ''),
+              : '')),
       },
       reportedFailures: new Set(),
       mode: durable.mode,
@@ -810,7 +832,7 @@ class LocalWorkspace extends EventEmitter {
       }
       const request = this.humanGateStore.request(gate.gateId)
       let replayedResult = null
-      if (gate.type === 'permission' || gate.type === 'retry') {
+      if (gate.type === 'permission' || gate.type === 'retry' || gate.type === 'input') {
         if (decision.status === 'rejected') {
           this.resetAgentSession(group, durable.continuation.agentKind, true, durable.taskId)
           if (!controller.completedKinds.includes(durable.continuation.agentKind)) {
@@ -1317,7 +1339,11 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async stopAll() {
-    return this.runCoordinator.stopAll()
+    for (const timer of this.runCheckpointTimers.values()) clearTimeout(timer)
+    this.runCheckpointTimers.clear()
+    await this.runCoordinator.stopAll()
+    for (const timer of this.runCheckpointTimers.values()) clearTimeout(timer)
+    this.runCheckpointTimers.clear()
   }
 }
 

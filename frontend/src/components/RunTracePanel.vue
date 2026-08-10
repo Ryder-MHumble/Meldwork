@@ -243,7 +243,40 @@
               <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
             </header>
             <p>{{ humanGateSummary(gate) }}</p>
-            <div class="trace-human-gate-options">
+            <form
+              v-if="gate.type === 'input'"
+              class="trace-human-gate-input"
+              @submit.prevent="submitHumanGateInput(gate)"
+            >
+              <input
+                v-model="humanGateResponses[gate.gateId]"
+                type="text"
+                maxlength="32768"
+                :placeholder="t('humanGate.inputPlaceholder')"
+                :aria-label="t('humanGate.inputLabel')"
+                :disabled="humanGateDecisionPending(gate.gateId)"
+              />
+              <div class="trace-human-gate-options">
+                <button
+                  class="compact primary-button"
+                  type="submit"
+                  :disabled="humanGateDecisionPending(gate.gateId) || !humanGateResponse(gate.gateId)"
+                >
+                  <CheckmarkCircleOutline />
+                  {{ t('humanGate.option.submitInput') }}
+                </button>
+                <button
+                  class="compact secondary-button"
+                  type="button"
+                  :disabled="humanGateDecisionPending(gate.gateId)"
+                  @click="cancelHumanGateInput(gate)"
+                >
+                  <CloseCircleOutline />
+                  {{ t('humanGate.option.cancelInput') }}
+                </button>
+              </div>
+            </form>
+            <div v-else class="trace-human-gate-options">
               <button
                 v-for="option in gate.options"
                 :key="option.optionId"
@@ -383,7 +416,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   CheckmarkCircleOutline,
   ChevronDownOutline,
@@ -420,6 +453,7 @@ const roundSelector = ref(null)
 const roundSelectTrigger = ref(null)
 const openSelector = ref('')
 const replacementKind = ref('')
+const humanGateResponses = reactive({})
 const BUDGET_DIMENSIONS = [
   'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
 ]
@@ -593,7 +627,23 @@ function emitAgentControl(action, nextReplacementKind = '') {
 }
 
 function optionApprovesHumanGate(option) {
-  return ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+  return ['allow_once', 'allow_always', 'accept', 'respond'].includes(option?.kind)
+}
+
+function humanGateResponse(gateId) {
+  return String(humanGateResponses[gateId] || '').trim()
+}
+
+function submitHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'respond')
+  const response = humanGateResponse(gate?.gateId)
+  if (!option || !response) return
+  emit('decide-human-gate', { gateId: gate.gateId, optionId: option.optionId, response })
+}
+
+function cancelHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'reject')
+  if (option) emit('decide-human-gate', { gateId: gate.gateId, optionId: option.optionId })
 }
 
 function humanGateDecisionPending(gateId) {
@@ -903,6 +953,16 @@ defineExpose({ focus })
 .trace-agent-control-actions {
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.trace-human-gate-input {
+  display: grid;
+  gap: 10px;
+}
+
+.trace-human-gate-input input {
+  width: 100%;
+  min-width: 0;
 }
 
 .trace-human-gate-options button svg,

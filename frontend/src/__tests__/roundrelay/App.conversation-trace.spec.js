@@ -973,6 +973,49 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('submits direct Connector input through the narrow Human Gate decision', async () => {
+    const gateId = `human-gate-${'d'.repeat(64)}`
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-input', conversationType: 'direct', directAgentKind: 'codex',
+        name: 'Connector input', topic: '', agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace', allowWrite: false,
+        createdAt: '2026-08-04T08:00:00.000Z', updatedAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.messages.push({
+        id: 'direct-input-root', groupId: 'direct-input', role: 'user',
+        content: 'Prepare release', createdAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.runningGroupIds = ['direct-input']
+      state.runs = [{
+        runId: 'run-direct-input', groupId: 'direct-input', threadRootId: 'direct-input-root',
+        targetKinds: ['codex'], currentKind: 'codex', waitingGateIds: [gateId],
+        agentRuns: [{ agentRunId: 'agent-direct-input', kind: 'codex', status: 'waiting' }],
+      }]
+      state.humanGates = [{
+        gateId, type: 'input', runId: 'run-direct-input',
+        agentRunId: 'agent-direct-input', agentKind: 'codex',
+        summary: 'Choose release channel',
+        options: [
+          { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+          { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+        ],
+        status: 'pending', createdAt: '2026-08-04T08:00:00.000Z',
+      }]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('.human-gate-input input').setValue('stable')
+    await wrapper.get('.human-gate-input').trigger('submit')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.decideHumanGate).toHaveBeenCalledWith(
+      gateId,
+      { optionId: 'submit-input', response: 'stable' },
+    )
+    wrapper.unmount()
+  })
+
   it('keeps live and durable direct traces collapsed by default', async () => {
     const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state: nextState }) => {
       nextState.groups.push({

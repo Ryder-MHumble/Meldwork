@@ -264,13 +264,18 @@ function registerDesktopIpc(options) {
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
     const normalizedGateId = String(gateId || '')
     const optionId = typeof decision?.optionId === 'string' ? decision.optionId : ''
+    const hasResponse = Object.hasOwn(decision || {}, 'response')
+    const response = hasResponse && typeof decision.response === 'string'
+      ? decision.response.trim()
+      : ''
     const hasStatus = Object.hasOwn(decision || {}, 'status')
     const requestedStatus = hasStatus ? decision.status : ''
     if (!HUMAN_GATE_IDENTIFIER.test(normalizedGateId)
         || !HUMAN_GATE_OPTION_IDENTIFIER.test(optionId)
         || !isPlainObject(decision)
         || (hasStatus && !['approved', 'rejected'].includes(requestedStatus))
-        || Reflect.ownKeys(decision).some(key => !['status', 'optionId'].includes(key))) {
+        || (hasResponse && (!response || response.length > 32 * 1024))
+        || Reflect.ownKeys(decision).some(key => !['status', 'optionId', 'response'].includes(key))) {
       throw new Error('HUMAN_GATE_DECISION_INVALID')
     }
     const gates = workspace.listHumanGates()
@@ -283,7 +288,14 @@ function registerDesktopIpc(options) {
     if (!status || (hasStatus && requestedStatus !== status)) {
       throw new Error('HUMAN_GATE_DECISION_INVALID')
     }
-    return workspace.decideHumanGate(normalizedGateId, { status, optionId })
+    if ((gate?.type === 'input' && status === 'approved' && !response)
+        || (gate?.type !== 'input' && hasResponse)
+        || (status !== 'approved' && hasResponse)) {
+      throw new Error('HUMAN_GATE_DECISION_INVALID')
+    }
+    return workspace.decideHumanGate(normalizedGateId, {
+      status, optionId, ...(response ? { response } : {}),
+    })
   })
   registerTrustedHandle('local-cloud-agent:provide-input', (runId, requestId, value) => {
     const runtime = getCloudAgentRuntime?.()

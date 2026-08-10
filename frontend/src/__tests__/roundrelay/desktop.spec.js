@@ -407,6 +407,29 @@ describe('run event normalization', () => {
     })])
   })
 
+  it('accepts a strict pending input Gate without exposing response data', () => {
+    const gateId = `human-gate-${'d'.repeat(64)}`
+    const inputGate = humanGate(gateId, {
+      type: 'input',
+      summary: 'Choose release channel',
+      options: [
+        { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+        { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+      ],
+    })
+    const snapshot = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: [],
+      runs: [{
+        runId: 'run-gated', groupId: 'group-gated', targetKinds: ['codex'],
+        waitingGateIds: [gateId],
+        agentRuns: [{ agentRunId: 'agent-gated', kind: 'codex', status: 'waiting' }],
+      }],
+      humanGates: [inputGate, { ...inputGate, response: 'must-not-cross-the-bridge' }],
+    })
+
+    expect(snapshot.humanGates).toEqual([inputGate])
+  })
+
   it('drops budget snapshots with extra or missing fields', () => {
     const valid = budgetSnapshot()
     const malformed = [

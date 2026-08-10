@@ -135,6 +135,25 @@ function matchesResumedPermission(request, resumedGate) {
     : selected.kind.startsWith('reject_')
 }
 
+function sha256(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex')
+}
+
+function connectorSessionBinding(sessionRef, sessionProvenance) {
+  const stableProvenance = {
+    scope: String(sessionProvenance?.scope || 'none'),
+    originTaskId: String(sessionProvenance?.originTaskId || ''),
+    inheritedTaskIds: Array.isArray(sessionProvenance?.inheritedTaskIds)
+      ? [...sessionProvenance.inheritedTaskIds]
+      : [],
+    completeness: String(sessionProvenance?.completeness || 'complete'),
+  }
+  return {
+    sessionRefHash: sha256(sessionRef),
+    sessionProvenanceHash: sha256(canonicalJson(stableProvenance)),
+  }
+}
+
 class LocalWorkspaceAgentInvocation {
   constructor(options) {
     this.state = options.state
@@ -215,7 +234,7 @@ class LocalWorkspaceAgentInvocation {
         taskId,
         workspaceKey,
         signal: agentController.signal,
-      }, () => {
+      }, (lease) => {
         if (signal && queuedAbortHandler) {
           signal.removeEventListener('abort', queuedAbortHandler)
           queuedAbortHandler = null
@@ -227,7 +246,7 @@ class LocalWorkspaceAgentInvocation {
           signal,
           threadRootId,
           context,
-          { agentController, registration },
+          { agentController, registration, lease },
         )
       })
     } finally {
@@ -284,7 +303,12 @@ class LocalWorkspaceAgentInvocation {
     let sessionMeta = normalizeSessionMeta(resolvedSession.sessionMeta)
     let sessionProvenance = resolvedSession.provenance
     let sessionRotated = resolvedSession.sessionReset === true
+    const resumedConnectorGate = ['input', 'permission'].includes(context.resumedGate?.type)
+      && context.resumedGate?.request?.source === 'connector'
+      ? context.resumedGate
+      : null
     const resumedPermission = context.resumedGate?.type === 'permission'
+      && !resumedConnectorGate
       ? context.resumedGate
       : null
     const sessionNeedsRotation = sessionRef && shouldRotateSession(sessionMeta)
@@ -397,6 +421,9 @@ class LocalWorkspaceAgentInvocation {
     let agentCallbacksClosed = false
     let watchdogTimer = null
     let watchdogPromise = null
+    let watchdogReject = null
+    let watchdogRemainingMs = this.runAgentTimeoutMs
+    let watchdogStartedAt = 0
     let parentAbortHandler = null
     let parentAbortPromise = null
     let capturePromise = null
@@ -421,16 +448,38 @@ class LocalWorkspaceAgentInvocation {
       if (signal.aborted) parentAbortHandler()
       else signal.addEventListener('abort', parentAbortHandler, { once: true })
     }
-    watchdogPromise = new Promise((_, reject) => {
+    const armWatchdog = () => {
+      if (watchdogTimer || agentController.signal.aborted || watchdogRemainingMs <= 0) return
+      watchdogStartedAt = Date.now()
       watchdogTimer = setTimeout(() => {
         if (parentAbortObserved || signal?.aborted) return
         watchdogTimedOut = true
         watchdogError = new Error('LOCAL_AGENT_TIMEOUT')
         agentController.abort()
-        reject(watchdogError)
-      }, this.runAgentTimeoutMs)
+        watchdogReject(watchdogError)
+      }, watchdogRemainingMs)
+    }
+    const pauseWatchdog = () => {
+      if (!watchdogTimer) return
+      clearTimeout(watchdogTimer)
+      watchdogTimer = null
+      watchdogRemainingMs = Math.max(0, watchdogRemainingMs - (Date.now() - watchdogStartedAt))
+    }
+    watchdogPromise = new Promise((_, reject) => {
+      watchdogReject = reject
     })
     watchdogPromise.catch(() => {})
+    armWatchdog()
+    const waitForHumanGate = async (operation) => {
+      pauseWatchdog()
+      try {
+        return invocation.lease?.suspend
+          ? await invocation.lease.suspend(operation)
+          : await operation()
+      } finally {
+        if (!agentController.signal.aborted) armWatchdog()
+      }
+    }
     const onProgress = (step) => {
       if (agentCallbacksClosed || agentController.signal.aborted
           || !activeRun || this.activeRuns.get(group.id) !== activeRun) return
@@ -508,6 +557,37 @@ class LocalWorkspaceAgentInvocation {
     let terminalFailureKnown = false
     let harnessFinished = false
     let connectorContext = {}
+    let connectorResume = null
+    if (resumedConnectorGate) {
+      const request = resumedConnectorGate.request
+      const binding = connectorSessionBinding(sessionRef, sessionProvenance)
+      const requestHash = sha256(canonicalJson(request))
+      if (!agent.connectorInstanceId
+          || request.connectorInstanceId !== agent.connectorInstanceId
+          || request.connectorId !== agent.connectorId
+          || request.connectorVersion !== agent.connectorVersion
+          || request.runId !== activeRun?.runId
+          || request.agentRunId !== resumedConnectorGate.agentRunId
+          || request.operationId !== operationId
+          || request.requestId !== resumedConnectorGate.request?.requestId
+          || requestHash !== resumedConnectorGate.requestHash
+          || binding.sessionRefHash !== request.sessionRefHash
+          || binding.sessionProvenanceHash !== request.sessionProvenanceHash) {
+        throw new Error('LOCAL_RUN_CONNECTOR_REQUEST_MISMATCH')
+      }
+      connectorResume = {
+        type: resumedConnectorGate.type,
+        requestId: request.requestId,
+        requestHash,
+        ...binding,
+        ...(resumedConnectorGate.type === 'input'
+          ? { response: resumedConnectorGate.response }
+          : {
+              status: resumedConnectorGate.status,
+              optionId: resumedConnectorGate.optionId,
+            }),
+      }
+    }
     const finishHarness = (status, finalText = '', runtimeContext = {}) => {
       if (!harness || !harnessRun || harnessFinished) return null
       flushRuntimeEvent()
@@ -750,7 +830,7 @@ class LocalWorkspaceAgentInvocation {
               optionId: resumedPermission.optionId,
             }
           }
-          const decision = await this.requestHumanGate({
+          const decision = await waitForHumanGate(() => this.requestHumanGate({
             type: 'permission',
             runId: activeRun.runId,
             agentRunId: harnessRun.agentRunId,
@@ -767,7 +847,7 @@ class LocalWorkspaceAgentInvocation {
               agentKind: kind,
               round,
             },
-          })
+          }))
           if (decision.gateId) resolvedGateIds.push(decision.gateId)
           return { status: decision.status, optionId: decision.optionId }
         },
@@ -809,6 +889,7 @@ class LocalWorkspaceAgentInvocation {
             this.checkpointRun(group.id, activeRun)
             this.emitChanged()
           },
+          connectorResume,
         })
       }
       const costDecision = activeRun?.budget?.check('costMicros')
@@ -816,7 +897,7 @@ class LocalWorkspaceAgentInvocation {
         const resumed = context.resumedGate
         const decision = resumed?.type === 'budget'
           ? resumed
-          : await this.requestHumanGate({
+          : await waitForHumanGate(() => this.requestHumanGate({
           type: 'budget',
           runId: activeRun.runId,
           agentRunId: harnessRun.agentRunId,
@@ -836,14 +917,14 @@ class LocalWorkspaceAgentInvocation {
               agentKind: kind,
               round,
             },
-          })
+          }))
         if (decision.gateId && resumed?.type !== 'budget') resolvedGateIds.push(decision.gateId)
         if (decision.status !== 'approved') throw new Error('LOCAL_BUDGET_REJECTED')
         activeRun.budget.approveUnobservable('costMicros')
         this.checkpointRun(group.id, activeRun)
       }
       if (agentController.signal.aborted) throw agentStoppedError()
-      runPromise = Promise.resolve().then(async () => {
+      const executeCurrentSession = async () => {
         const reusedSessionRef = sessionRef
         try {
           operationStarted = true
@@ -851,18 +932,101 @@ class LocalWorkspaceAgentInvocation {
           return await runCurrentSession()
         } catch (error) {
           if (agentController.signal.aborted || !reusedSessionRef
-              || resumedPermission
+              || resumedPermission || resumedConnectorGate
               || error?.message !== 'LOCAL_AGENT_SESSION_INVALID') throw error
           rebuildFreshSession()
           operationStarted = true
           if (allowWrite) sideEffectsStarted = true
           return await runCurrentSession()
         }
-      })
-      runPromise.catch(() => {})
-      const pending = [runPromise, watchdogPromise]
-      if (parentAbortPromise) pending.push(parentAbortPromise)
-      result = await Promise.race(pending)
+      }
+      const raceCurrentSession = async () => {
+        runPromise = Promise.resolve().then(executeCurrentSession)
+        runPromise.catch(() => {})
+        const pending = [runPromise, watchdogPromise]
+        if (parentAbortPromise) pending.push(parentAbortPromise)
+        return Promise.race(pending)
+      }
+      result = await raceCurrentSession()
+      if (['waiting_input', 'waiting_permission'].includes(result?.outcome)) {
+        if (!agent.connectorInstanceId || resumedConnectorGate) {
+          throw new Error('LOCAL_RUN_CONNECTOR_WAITING_INVALID')
+        }
+        const waiting = result.waitingRequest
+        const waitingSessionRef = String(result.sessionRef || '')
+        if (waitingSessionRef && waitingSessionRef !== sessionRef) {
+          runOptions.onSessionRef(waitingSessionRef)
+          sessionRef = waitingSessionRef
+        }
+        const binding = connectorSessionBinding(sessionRef, sessionProvenance)
+        const request = {
+          version: 1,
+          source: 'connector',
+          outcome: result.outcome,
+          requestId: waiting?.requestId,
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          ...(result.outcome === 'waiting_input'
+            ? { prompt: waiting?.prompt }
+            : {
+                permission: waiting?.permission,
+                ...(waiting?.summary ? { summary: waiting.summary } : {}),
+              }),
+          connectorInstanceId: agent.connectorInstanceId,
+          connectorId: result.connector?.connectorId,
+          connectorVersion: result.connector?.connectorVersion,
+          operationId,
+          cursor: waiting?.cursor,
+          ...binding,
+        }
+        const requestHash = sha256(canonicalJson(request))
+        const gateType = result.outcome === 'waiting_input' ? 'input' : 'permission'
+        const decision = await waitForHumanGate(() => this.requestHumanGate({
+          type: gateType,
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          agentKind: kind,
+          summary: gateType === 'input'
+            ? String(waiting?.prompt || '').trim().replace(/\s+/g, ' ').slice(0, 500)
+            : String(waiting?.summary || 'Connector requests permission to continue.').slice(0, 500),
+          options: gateType === 'input'
+            ? [
+                { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+                { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+              ]
+            : [
+                { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+                { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+              ],
+          request,
+        }, {
+          signal: agentController.signal,
+          preserveOnAbort: () => activeRun.stopReason === 'shutdown',
+          continuation: {
+            resumeKind: 'agent_slot',
+            agentRunId: harnessRun.agentRunId,
+            agentKind: kind,
+            round,
+            requestId: request.requestId,
+            requestHash,
+            ...binding,
+          },
+        }))
+        if (decision.gateId) resolvedGateIds.push(decision.gateId)
+        if (decision.status !== 'approved') throw new Error(
+          gateType === 'input' ? 'LOCAL_INPUT_REJECTED' : 'LOCAL_PERMISSION_REJECTED',
+        )
+        connectorResume = {
+          type: gateType,
+          requestId: request.requestId,
+          requestHash,
+          ...binding,
+          ...(gateType === 'input'
+            ? { response: decision.response }
+            : { status: decision.status, optionId: decision.optionId }),
+        }
+        result = await raceCurrentSession()
+      }
       terminalFailureKnown = ['failed', 'cancelled']
         .includes(String(result?.outcome || ''))
       if (agentController.signal.aborted) throw agentStoppedError()

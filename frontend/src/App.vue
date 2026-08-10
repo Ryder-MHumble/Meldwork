@@ -718,12 +718,18 @@ function stopRun(...args) {
 async function decideHumanGate(payload = {}) {
   const gate = pendingHumanGates.value.find(item => item.gateId === payload.gateId)
   const option = gate?.options.find(item => item.optionId === payload.optionId)
+  const response = typeof payload.response === 'string' ? payload.response.trim() : ''
   if (!gate || !option || humanGateDecisionPendingIds.value.includes(gate.gateId)) return false
+  if ((gate.type === 'input' && option.kind === 'respond' && !response)
+      || (gate.type !== 'input' && response)) return false
   const bridge = workspace.value
   if (!bridge?.decideHumanGate) return false
   humanGateDecisionPendingIds.value = [...humanGateDecisionPendingIds.value, gate.gateId]
   try {
-    const result = await bridge.decideHumanGate(gate.gateId, { optionId: option.optionId })
+    const result = await bridge.decideHumanGate(gate.gateId, {
+      optionId: option.optionId,
+      ...(response ? { response } : {}),
+    })
     if (!['approved', 'rejected'].includes(result?.status)
         || result?.decision?.optionId !== option.optionId) {
       throw new Error('HUMAN_GATE_DECISION_FAILED')

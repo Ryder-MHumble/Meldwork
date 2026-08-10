@@ -492,7 +492,40 @@
               <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
             </header>
             <p>{{ humanGateSummary(gate) }}</p>
-            <div class="human-gate-options">
+            <form
+              v-if="gate.type === 'input'"
+              class="human-gate-input"
+              @submit.prevent="submitHumanGateInput(gate)"
+            >
+              <input
+                v-model="humanGateResponses[gate.gateId]"
+                type="text"
+                maxlength="32768"
+                :placeholder="t('humanGate.inputPlaceholder')"
+                :aria-label="t('humanGate.inputLabel')"
+                :disabled="humanGateDecisionPending(gate.gateId)"
+              />
+              <div class="human-gate-options">
+                <button
+                  class="compact primary-button"
+                  type="submit"
+                  :disabled="humanGateDecisionPending(gate.gateId) || !humanGateResponse(gate.gateId)"
+                >
+                  <CheckmarkCircleOutline />
+                  {{ t('humanGate.option.submitInput') }}
+                </button>
+                <button
+                  class="compact secondary-button"
+                  type="button"
+                  :disabled="humanGateDecisionPending(gate.gateId)"
+                  @click="cancelHumanGateInput(gate)"
+                >
+                  <CloseCircleOutline />
+                  {{ t('humanGate.option.cancelInput') }}
+                </button>
+              </div>
+            </form>
+            <div v-else class="human-gate-options">
               <button
                 v-for="option in gate.options"
                 :key="option.optionId"
@@ -647,7 +680,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AttachOutline,
   ArchiveOutline,
@@ -784,6 +817,7 @@ const directRunBudget = computed(() => props.controller.directRunBudget?.value |
 const humanGateDecisionPendingIds = computed(() => (
   props.controller.humanGateDecisionPendingIds?.value || []
 ))
+const humanGateResponses = reactive({})
 const directBudgetRows = computed(() => budgetRows(directRunBudget.value))
 const USER_MESSAGE_COLLAPSE_HEIGHT = 216
 const userMessageElements = new Map()
@@ -917,8 +951,24 @@ function decideHumanGate(payload) {
   return props.controller.decideHumanGate?.(payload)
 }
 
+function humanGateResponse(gateId) {
+  return String(humanGateResponses[gateId] || '').trim()
+}
+
+function submitHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'respond')
+  const response = humanGateResponse(gate?.gateId)
+  if (!option || !response) return false
+  return decideHumanGate({ gateId: gate.gateId, optionId: option.optionId, response })
+}
+
+function cancelHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'reject')
+  return option ? decideHumanGate({ gateId: gate.gateId, optionId: option.optionId }) : false
+}
+
 function optionApprovesHumanGate(option) {
-  return ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+  return ['allow_once', 'allow_always', 'accept', 'respond'].includes(option?.kind)
 }
 
 function humanGateDecisionPending(gateId) {
@@ -1048,6 +1098,16 @@ function formatBudgetNumber(value) {
 .human-gate-options {
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.human-gate-input {
+  display: grid;
+  gap: 10px;
+}
+
+.human-gate-input input {
+  width: 100%;
+  min-width: 0;
 }
 
 .human-gate-options button svg {

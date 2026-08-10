@@ -461,11 +461,30 @@ class LocalAgentConnectors {
         onPermissionRequest: input.onPermissionRequest,
         operationId: input.operationId,
         idempotencyKey: input.idempotencyKey,
+        connectorResume: input.resume,
         ...(Object.keys(credentialEnv).length ? { env: credentialEnv } : {}),
       })
       const outcome = String(result?.outcome || 'completed')
       if (outcome === 'completed' || outcome === 'partial') {
         input.emit({ ...terminal, type: 'Completed', outcome })
+      } else if (outcome === 'waiting_input') {
+        const waiting = result?.waitingRequest || result?.waitingInput
+        input.emit({
+          ...terminal,
+          type: 'WaitingInput',
+          requestId: waiting?.requestId,
+          prompt: waiting?.prompt,
+        })
+      } else if (outcome === 'waiting_permission') {
+        const waiting = result?.waitingRequest || result?.waitingPermission
+        input.emit({
+          ...terminal,
+          type: 'Permission',
+          requestId: waiting?.requestId,
+          permission: waiting?.permission,
+          decision: 'requested',
+          ...(waiting?.summary ? { summary: waiting.summary } : {}),
+        })
       } else if (outcome === 'cancelled') {
         input.emit({ ...terminal, type: 'Cancelled', reason: 'other' })
       } else if (outcome === 'failed') {

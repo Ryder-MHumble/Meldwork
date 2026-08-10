@@ -8,7 +8,9 @@ const {
 } = require('./run-event-protocol.cjs')
 
 const PUBLIC_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
+const SHA256 = /^[a-f0-9]{64}$/
 const MAX_PROMPT_BYTES = 4 * 1024 * 1024
+const MAX_INPUT_RESPONSE_BYTES = 128 * 1024
 
 function runtimeError(code) {
   const error = new Error(code)
@@ -22,6 +24,40 @@ function fail(code) {
 
 function clone(value) {
   return JSON.parse(canonicalJson(value))
+}
+
+function normalizeResume(input) {
+  if (input == null) return null
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    fail('AGENT_CONNECTOR_RESUME_INVALID')
+  }
+  const type = String(input.type || '')
+  const requestId = String(input.requestId || '')
+  const requestHash = String(input.requestHash || '')
+  const sessionRefHash = String(input.sessionRefHash || '')
+  const sessionProvenanceHash = String(input.sessionProvenanceHash || '')
+  if (!['input', 'permission'].includes(type) || !PUBLIC_ID.test(requestId)
+      || !SHA256.test(requestHash) || !SHA256.test(sessionRefHash)
+      || !SHA256.test(sessionProvenanceHash)) {
+    fail('AGENT_CONNECTOR_RESUME_INVALID')
+  }
+  if (type === 'input') {
+    const response = String(input.response || '').trim()
+    if (!response || Buffer.byteLength(response) > MAX_INPUT_RESPONSE_BYTES) {
+      fail('AGENT_CONNECTOR_RESUME_INVALID')
+    }
+    return Object.freeze({
+      type, requestId, requestHash, sessionRefHash, sessionProvenanceHash, response,
+    })
+  }
+  const status = String(input.status || '')
+  const optionId = String(input.optionId || '')
+  if (!['approved', 'rejected'].includes(status) || !PUBLIC_ID.test(optionId)) {
+    fail('AGENT_CONNECTOR_RESUME_INVALID')
+  }
+  return Object.freeze({
+    type, requestId, requestHash, sessionRefHash, sessionProvenanceHash, status, optionId,
+  })
 }
 
 function recipeEntries(value) {
@@ -234,6 +270,7 @@ class AgentConnectorRuntime {
       try { options.onEvent?.(harnessEvent(event)) } catch { /* Renderer events are best effort. */ }
       return event
     }
+    const resume = normalizeResume(options.connectorResume)
 
     const result = await handler(Object.freeze({
       agent: Object.freeze({
@@ -257,8 +294,30 @@ class AgentConnectorRuntime {
       onRuntimeEvent: options.onEvent,
       onOutboundPayload: options.onOutboundPayload,
       onPermissionRequest: options.onPermissionRequest,
+      resume,
     }))
 
+    if (!result || typeof result !== 'object' || Array.isArray(result)) {
+      fail('AGENT_CONNECTOR_RESULT_INVALID')
+    }
+    if (result.outcome != null && result.outcome !== state.status) {
+      fail('AGENT_CONNECTOR_RESULT_MISMATCH')
+    }
+    if (['waiting_input', 'waiting_permission'].includes(state.status)) {
+      const waiting = state.events.at(-1)
+      const validWaiting = state.status === 'waiting_input'
+        ? waiting?.type === 'WaitingInput'
+        : waiting?.type === 'Permission' && waiting.decision === 'requested'
+      if (!validWaiting) fail('AGENT_CONNECTOR_WAITING_EVENT_REQUIRED')
+      return {
+        ...result,
+        outcome: state.status,
+        usage: state.usage,
+        waitingRequest: clone(waiting),
+        connector,
+        connectorEventState: clone(state),
+      }
+    }
     if (!['completed', 'partial', 'failed', 'cancelled'].includes(state.status)) {
       fail('AGENT_CONNECTOR_TERMINAL_EVENT_REQUIRED')
     }
@@ -287,12 +346,6 @@ class AgentConnectorRuntime {
         connector,
         connectorEventState: clone(state),
       }
-    }
-    if (!result || typeof result !== 'object' || Array.isArray(result)) {
-      fail('AGENT_CONNECTOR_RESULT_INVALID')
-    }
-    if (result.outcome != null && result.outcome !== state.status) {
-      fail('AGENT_CONNECTOR_RESULT_MISMATCH')
     }
     return {
       ...result,

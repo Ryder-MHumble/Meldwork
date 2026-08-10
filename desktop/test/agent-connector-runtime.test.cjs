@@ -190,3 +190,87 @@ test('passes one durable operation ID through repeated idempotent Connector call
     { operationId, idempotencyKey: operationId, mode: 'durable' },
   ])
 })
+
+test('returns durable waiting input and passes an exactly validated resume response', async () => {
+  const received = []
+  const { runtime } = runtimeFixture(async (input) => {
+    received.push(input.resume)
+    if (!input.resume) {
+      input.emit({
+        eventId: 'input-request', cursor: 'cursor-input', sequence: 1,
+        type: 'WaitingInput', requestId: 'request-input', prompt: 'Choose a channel',
+      })
+      return { sessionRef: 'connector-session' }
+    }
+    input.emit({
+      eventId: 'input-completed', cursor: 'cursor-completed', sequence: 1,
+      type: 'Completed', outcome: 'completed',
+    })
+    return { text: `channel:${input.resume.response}`, sessionRef: 'connector-session' }
+  })
+  const [agent] = runtime.detectAgents()
+  const waiting = await runtime.run(agent, 'Release', '/tmp/workspace', {
+    runId: 'run-input', agentRunId: 'agent-run-input', sandbox: 'read-only',
+  })
+  assert.equal(waiting.outcome, 'waiting_input')
+  assert.deepEqual({
+    requestId: waiting.waitingRequest.requestId,
+    prompt: waiting.waitingRequest.prompt,
+  }, { requestId: 'request-input', prompt: 'Choose a channel' })
+
+  const hashes = {
+    requestHash: 'a'.repeat(64),
+    sessionRefHash: 'b'.repeat(64),
+    sessionProvenanceHash: 'c'.repeat(64),
+  }
+  const completed = await runtime.run(agent, 'Release', '/tmp/workspace', {
+    runId: 'run-input', agentRunId: 'agent-run-input-2', sandbox: 'read-only',
+    connectorResume: {
+      type: 'input', requestId: 'request-input', response: 'stable', ...hashes,
+    },
+  })
+  assert.equal(completed.text, 'channel:stable')
+  assert.deepEqual(received, [null, {
+    type: 'input', requestId: 'request-input', response: 'stable', ...hashes,
+  }])
+  await assert.rejects(runtime.run(agent, 'Release', '/tmp/workspace', {
+    runId: 'run-input', agentRunId: 'agent-run-input-3', sandbox: 'read-only',
+    connectorResume: {
+      type: 'input', requestId: 'request-input', response: '', ...hashes,
+    },
+  }), { message: 'AGENT_CONNECTOR_RESUME_INVALID' })
+})
+
+test('returns durable waiting permission and validates the bound decision', async () => {
+  const { runtime } = runtimeFixture(async (input) => {
+    if (!input.resume) {
+      input.emit({
+        eventId: 'permission-request', cursor: 'permission-request', sequence: 1,
+        type: 'Permission', requestId: 'network-request', permission: 'network',
+        decision: 'requested', summary: 'Allow network access?',
+      })
+      return { sessionRef: 'permission-session' }
+    }
+    input.emit({
+      eventId: 'permission-completed', cursor: 'permission-completed', sequence: 1,
+      type: 'Completed', outcome: 'completed',
+    })
+    return { text: input.resume.status, sessionRef: 'permission-session' }
+  })
+  const [agent] = runtime.detectAgents()
+  const waiting = await runtime.run(agent, 'Check permission', '/tmp/workspace', {
+    runId: 'run-permission', agentRunId: 'agent-run-permission', sandbox: 'read-only',
+  })
+  assert.equal(waiting.outcome, 'waiting_permission')
+  assert.equal(waiting.waitingRequest.requestId, 'network-request')
+
+  const completed = await runtime.run(agent, 'Check permission', '/tmp/workspace', {
+    runId: 'run-permission', agentRunId: 'agent-run-permission-2', sandbox: 'read-only',
+    connectorResume: {
+      type: 'permission', requestId: 'network-request', status: 'approved',
+      optionId: 'allow-once', requestHash: 'a'.repeat(64),
+      sessionRefHash: 'b'.repeat(64), sessionProvenanceHash: 'c'.repeat(64),
+    },
+  })
+  assert.equal(completed.text, 'approved')
+})

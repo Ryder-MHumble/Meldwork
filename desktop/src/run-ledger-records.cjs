@@ -48,11 +48,13 @@ const BUDGET_DIMENSION_SET = new Set(BUDGET_DIMENSIONS)
 const BUDGET_SOURCE_SET = new Set(BUDGET_SOURCES)
 const BUDGET_ENFORCEMENT_SET = new Set(BUDGET_ENFORCEMENTS)
 const HUMAN_GATE_ID = /^human-gate-[a-f0-9]{64}$/
+const SHA256 = /^[a-f0-9]{64}$/
 const CONTINUATION_FIELDS = new Set([
   'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
-  'round', 'createdAt', 'updatedAt',
+  'round', 'createdAt', 'updatedAt', 'requestId', 'requestHash',
+  'sessionRefHash', 'sessionProvenanceHash',
 ])
-const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry'])
+const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry', 'input'])
 const CONTINUATION_RESUME_KINDS = new Set(['agent_slot', 'role_review_decision'])
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
@@ -362,13 +364,25 @@ function normalizeContinuation(input) {
   const round = boundedNumber(input.round, 0, 100000)
   const createdAt = safeTimestamp(input.createdAt, 0)
   const updatedAt = safeTimestamp(input.updatedAt, createdAt)
+  const requestId = cleanId(input.requestId)
+  const requestHash = String(input.requestHash || '')
+  const sessionRefHash = String(input.sessionRefHash || '')
+  const sessionProvenanceHash = String(input.sessionProvenanceHash || '')
+  const hasRequestBinding = requestId && SHA256.test(requestHash)
+    && SHA256.test(sessionRefHash) && SHA256.test(sessionProvenanceHash)
   if (!HUMAN_GATE_ID.test(gateId) || !CONTINUATION_GATE_TYPES.has(gateType)
       || !CONTINUATION_RESUME_KINDS.has(resumeKind)
       || !CONTINUATION_STATES.has(state) || !agentRunId || !agentKind
-      || (resumeKind === 'role_review_decision' && gateType !== 'decision')) return undefined
+      || (resumeKind === 'role_review_decision' && gateType !== 'decision')
+      || (gateType === 'input' && !hasRequestBinding)
+      || (!hasRequestBinding && [requestId, requestHash, sessionRefHash, sessionProvenanceHash]
+        .some(Boolean))) return undefined
   return {
     gateId, gateType, resumeKind, state, agentRunId, agentKind,
     round, createdAt, updatedAt,
+    ...(hasRequestBinding ? {
+      requestId, requestHash, sessionRefHash, sessionProvenanceHash,
+    } : {}),
   }
 }
 

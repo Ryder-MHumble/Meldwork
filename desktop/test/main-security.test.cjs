@@ -838,12 +838,20 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
   const decide = harness.ipcHandlers.get('local-workspace:decide-human-gate')
   const workspace = harness.workspaceInstances[0]
   const gateId = `human-gate-${'b'.repeat(64)}`
+  const inputGateId = `human-gate-${'c'.repeat(64)}`
   workspace.state.humanGates = [{
     gateId,
     options: [
       { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
       { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
       { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+    ],
+  }, {
+    gateId: inputGateId,
+    type: 'input',
+    options: [
+      { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+      { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
     ],
   }]
 
@@ -853,9 +861,18 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
   assert.deepEqual(await decide(harness.event(), gateId, {
     optionId: 'reopen-task',
   }), { gateId, status: 'rejected', optionId: 'reopen-task' })
+  assert.deepEqual(await decide(harness.event(), inputGateId, {
+    optionId: 'submit-input', response: 'stable',
+  }), {
+    gateId: inputGateId, status: 'approved', optionId: 'submit-input', response: 'stable',
+  })
   assert.deepEqual(workspace.humanGateDecisionCalls, [
     { gateId, decision: { status: 'approved', optionId: 'allow-once' } },
     { gateId, decision: { status: 'rejected', optionId: 'reopen-task' } },
+    {
+      gateId: inputGateId,
+      decision: { status: 'approved', optionId: 'submit-input', response: 'stable' },
+    },
   ])
 
   for (const [invalidGateId, decision] of [
@@ -864,6 +881,9 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
     [gateId, { status: 'approved', optionId: '../allow' }],
     [gateId, { status: 'approved', optionId: 'allow-once', actorId: 'renderer' }],
     [gateId, { status: 'approved', optionId: 'reopen-task' }],
+    [gateId, { optionId: 'allow-once', response: 'unexpected' }],
+    [inputGateId, { optionId: 'submit-input' }],
+    [inputGateId, { optionId: 'cancel-input', response: 'unexpected' }],
     [gateId, { optionId: 'missing-option' }],
   ]) {
     await assert.rejects(
@@ -871,7 +891,7 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
       { message: 'HUMAN_GATE_DECISION_INVALID' },
     )
   }
-  assert.equal(workspace.humanGateDecisionCalls.length, 2)
+  assert.equal(workspace.humanGateDecisionCalls.length, 3)
 })
 
 test('Cloud Agent IPC exposes only validated continuation and cancel actions', async (t) => {
