@@ -50,8 +50,19 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-custom-agent:create',
   'local-custom-agent:delete',
   'local-agent-connector:list',
+  'local-agent-connector:packages',
+  'local-agent-connector:import',
+  'local-agent-connector:inspect',
+  'local-agent-connector:audit',
+  'local-agent-connector:approve',
+  'local-agent-connector:install',
+  'local-agent-connector:disable',
+  'local-agent-connector:revoke',
+  'local-agent-connector:upgrade',
+  'local-agent-connector:remove',
   'local-agent-connector:configure',
   'local-agent-connector:delete',
+  'local-agent-connector:test',
   'local-attachments:pick',
   'local-attachments:import',
   'local-attachments:preview',
@@ -708,6 +719,10 @@ function loadMain(userData, options = {}) {
       showOpenDialog: async (...args) => {
         dialogCalls.push(args)
         return options.dialogResult || { canceled: true, filePaths: [] }
+      },
+      showMessageBox: async (...args) => {
+        dialogCalls.push(args)
+        return options.messageBoxResult || { response: 1 }
       },
     },
     ipcMain: {

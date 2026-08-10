@@ -22,6 +22,7 @@ const { detectAgents, imageAttachmentLimit, runAgent } = require('./cli-adapters
 const { AgentInstaller } = require('./agent-installer.cjs')
 const { AgentConnectorInstanceStore } = require('./agent-connector-instance-store.cjs')
 const { LocalAgentConnectors } = require('./agent-connector-local.cjs')
+const { AgentConnectorPackageStore } = require('./agent-connector-package-store.cjs')
 const { CloudAgentOperationStore } = require('./cloud-agent-operation-store.cjs')
 const {
   CloudAgentRuntime,
@@ -375,6 +376,9 @@ function createWorkspace() {
   })
   agentConnectors = new LocalAgentConnectors({
     manifestDirectory: path.join(app.getPath('userData'), 'agent-connectors', 'manifests'),
+    packageStore: new AgentConnectorPackageStore({
+      rootPath: path.join(privateRoot, 'agent-connector-packages'),
+    }),
     instanceStore: new AgentConnectorInstanceStore({
       instanceStoragePath: path.join(app.getPath('userData'), 'agent-connectors', 'instances.json'),
       credentialStoragePath: path.join(privateRoot, 'agent-connector-credentials.json'),

@@ -402,6 +402,114 @@ function registerDesktopIpc(options) {
     connectors.refresh(await installer.detectedAgents())
     return connectors.list()
   })
+  registerTrustedHandle('local-agent-connector:packages', (...args) => {
+    if (args.length) throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    return connectors.packages()
+  })
+  registerTrustedHandle('local-agent-connector:import', async (...args) => {
+    if (args.length) throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    const locale = String(app.getLocale?.() || '').toLowerCase()
+    const result = await dialog.showOpenDialog(getMainWindow(), {
+      title: locale.startsWith('zh') ? '导入 Agent Connector 包' : 'Import Agent Connector package',
+      properties: ['openFile'],
+      filters: [{ name: 'Agent Connector', extensions: ['json'] }],
+    })
+    if (isShutdownStarted()) throw new Error('DESKTOP_CLIENT_SHUTTING_DOWN')
+    if (result.canceled || !result.filePaths[0]) return { canceled: true }
+    return { canceled: false, package: connectors.importPackageFile(result.filePaths[0]) }
+  })
+  registerTrustedHandle('local-agent-connector:inspect', (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    }
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    return connectors.inspectPackage(args[0])
+  })
+  registerTrustedHandle('local-agent-connector:audit', (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    }
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    return connectors.auditPackage(args[0])
+  })
+  registerTrustedHandle('local-agent-connector:approve', async (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    }
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    const inspected = connectors.inspectPackage(args[0])
+    const manifest = inspected.manifest
+    const locale = String(app.getLocale?.() || '').toLowerCase()
+    const slots = manifest.credentials.slots.map(slot => (
+      `${slot.slotId} (${slot.type}${slot.required
+        ? locale.startsWith('zh') ? '，必填' : ', required'
+        : ''})`
+    )).join(', ') || (locale.startsWith('zh') ? '无' : 'None')
+    const destinations = manifest.outboundDestinations.join(', ')
+      || (locale.startsWith('zh') ? '无' : 'None')
+    const detail = locale.startsWith('zh')
+      ? [
+          `发布者：${inspected.publisher.name} (${inspected.publisher.id})`,
+          `来源：${inspected.origin.filename}`,
+          `来源哈希：${inspected.origin.sha256}`,
+          `Connector：${manifest.connectorId} ${manifest.connectorVersion}`,
+          `传输：${manifest.transport.type}/${manifest.transport.protocol}`,
+          `权限：${manifest.permissionModes.join(', ')}`,
+          `凭据槽：${slots}`,
+          `外联目标：${destinations}`,
+          `SDK Provider：${inspected.provider.id}`,
+        ].join('\n')
+      : [
+          `Publisher: ${inspected.publisher.name} (${inspected.publisher.id})`,
+          `Origin: ${inspected.origin.filename}`,
+          `Origin hash: ${inspected.origin.sha256}`,
+          `Connector: ${manifest.connectorId} ${manifest.connectorVersion}`,
+          `Transport: ${manifest.transport.type}/${manifest.transport.protocol}`,
+          `Permissions: ${manifest.permissionModes.join(', ')}`,
+          `Credential slots: ${slots}`,
+          `Outbound destinations: ${destinations}`,
+          `SDK provider: ${inspected.provider.id}`,
+        ].join('\n')
+    const decision = await dialog.showMessageBox(getMainWindow(), {
+      type: 'warning',
+      title: locale.startsWith('zh') ? '批准 Agent Connector' : 'Approve Agent Connector',
+      message: locale.startsWith('zh')
+        ? '仅在确认发布者与权限范围后批准。'
+        : 'Approve only after verifying the publisher and permission scope.',
+      detail,
+      buttons: locale.startsWith('zh') ? ['批准', '取消'] : ['Approve', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    })
+    if (decision.response !== 0) return { canceled: true }
+    return { canceled: false, package: connectors.approvePackage(args[0]) }
+  })
+  for (const [channel, method] of [
+    ['install', 'installPackage'],
+    ['disable', 'disablePackage'],
+    ['revoke', 'revokePackage'],
+    ['upgrade', 'upgradePackage'],
+    ['remove', 'removePackage'],
+  ]) {
+    registerTrustedHandle(`local-agent-connector:${channel}`, async (...args) => {
+      if (args.length !== 1 || typeof args[0] !== 'string') {
+        throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+      }
+      const connectors = getAgentConnectors?.()
+      if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+      const result = connectors[method](args[0])
+      await refreshLocalAgentState()
+      return result
+    })
+  }
   registerTrustedHandle('local-agent-connector:configure', async (...args) => {
     if (args.length !== 1 || !args[0] || typeof args[0] !== 'object'
         || Array.isArray(args[0])
@@ -435,6 +543,15 @@ function registerDesktopIpc(options) {
     const result = connectors.delete(instanceId)
     await refreshLocalAgentState()
     return result
+  })
+  registerTrustedHandle('local-agent-connector:test', async (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('AGENT_CONNECTOR_REQUEST_INVALID')
+    }
+    const connectors = getAgentConnectors?.()
+    if (!connectors) throw new Error('AGENT_CONNECTOR_RUNTIME_UNAVAILABLE')
+    connectors.refresh(await installer.detectedAgents())
+    return connectors.test(args[0], app.getPath('userData'))
   })
   registerTrustedHandle('local-attachments:pick', async (remainingCapacity) => {
     attachments.availableStore()

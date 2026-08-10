@@ -1,3 +1,4 @@
+const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 
@@ -8,6 +9,14 @@ const {
 } = require('./agent-connector-manifest.cjs')
 const { AgentConnectorRegistry } = require('./agent-connector-registry.cjs')
 const { AgentConnectorRuntime } = require('./agent-connector-runtime.cjs')
+const {
+  AGENT_CONNECTOR_SDK_VERSION,
+  SDK_HTTP_JSON_RECIPE_ID,
+  SDK_LOCAL_ECHO_RECIPE_ID,
+  SDK_RECIPE_IDS,
+  MAX_PACKAGE_BYTES,
+  createAgentConnectorPackage,
+} = require('./agent-connector-package-store.cjs')
 
 const LOCAL_DELEGATE_RECIPE_ID = 'external.local-agent.delegate'
 const MAX_LOCAL_MANIFESTS = 64
@@ -78,6 +87,42 @@ const APPROVED_AGENT_CONNECTOR_MANIFESTS = Object.freeze([
   SAMPLE_AGENT_CONNECTOR_MANIFEST,
   SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST,
 ])
+const SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest({
+  connectorId: 'external.local-echo-sample',
+  connectorVersion: '1.0.0',
+  kind: 'agent',
+  label: 'Local Echo Connector Sample',
+  description: 'Local SDK sample that returns text without delegating to a built-in Agent.',
+  transport: { type: 'cli', protocol: 'json' },
+  upstream: {
+    id: 'meldwork-sdk',
+    minVersion: AGENT_CONNECTOR_SDK_VERSION,
+    maxVersion: AGENT_CONNECTOR_SDK_VERSION,
+  },
+  invocation: { recipeId: SDK_LOCAL_ECHO_RECIPE_ID },
+  domains: ['general'],
+  session: { supported: true, resume: true, cancel: true, checkpoint: false },
+  inputTypes: ['text'],
+  permissionModes: ['read-only'],
+  eventProtocolVersion: 1,
+  eventTypes: ['Completed', 'Failed', 'Cancelled'],
+  usage: {
+    inputTokens: false,
+    outputTokens: false,
+    costMicros: false,
+    toolCalls: false,
+    outboundBytes: false,
+    elapsedMs: false,
+  },
+  outboundDestinations: [],
+  credentials: { mode: 'none', slots: [] },
+  license: 'AGPL-3.0-only',
+})
+const SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE = createAgentConnectorPackage({
+  publisher: { id: 'meldwork', name: 'Meldwork' },
+  provider: { id: SDK_LOCAL_ECHO_RECIPE_ID, config: {} },
+  manifest: SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_MANIFEST,
+})
 
 function connectorError(code) {
   const error = new Error(code)
@@ -92,7 +137,7 @@ function fail(code) {
 function exactOptions(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every(key => [
-      'instanceStore', 'manifestDirectory', 'runAgent', 'seedSample',
+      'fetch', 'instanceStore', 'manifestDirectory', 'packageStore', 'runAgent', 'seedSample',
     ].includes(key))
 }
 
@@ -177,12 +222,18 @@ class LocalAgentConnectors {
         || typeof options.instanceStore.list !== 'function'
         || typeof options.instanceStore.listRecords !== 'function'
         || typeof options.instanceStore.resolveCredential !== 'function'
-        || typeof options.runAgent !== 'function') {
+        || typeof options.runAgent !== 'function'
+        || (options.packageStore !== undefined
+          && (typeof options.packageStore.installedPackages !== 'function'
+            || typeof options.packageStore.packageForManifest !== 'function'))
+        || (options.fetch !== undefined && typeof options.fetch !== 'function')) {
       fail('LOCAL_AGENT_CONNECTORS_OPTIONS_INVALID')
     }
     this.manifestDirectory = path.normalize(options.manifestDirectory)
     this.instanceStore = options.instanceStore
+    this.packageStore = options.packageStore || null
     this.runAgent = options.runAgent
+    this.fetch = options.fetch || globalThis.fetch
     this.seedSample = options.seedSample === true
     this.registry = this.createRegistry()
     this.runtime = this.createRuntime(this.registry)
@@ -192,9 +243,15 @@ class LocalAgentConnectors {
   }
 
   createRegistry() {
+    const installedPackageManifests = this.packageStore
+      ? this.packageStore.installedPackages().map(item => item.manifest)
+      : []
     return new AgentConnectorRegistry({
-      approvedRecipeIds: [LOCAL_DELEGATE_RECIPE_ID],
-      approvedExternalManifestIds: APPROVED_AGENT_CONNECTOR_MANIFESTS.map(item => item.manifestId),
+      approvedRecipeIds: [LOCAL_DELEGATE_RECIPE_ID, ...SDK_RECIPE_IDS],
+      approvedExternalManifestIds: [
+        ...APPROVED_AGENT_CONNECTOR_MANIFESTS.map(item => item.manifestId),
+        ...installedPackageManifests.map(item => item.manifestId),
+      ],
     })
   }
 
@@ -203,6 +260,8 @@ class LocalAgentConnectors {
       registry,
       recipes: {
         [LOCAL_DELEGATE_RECIPE_ID]: input => this.runDelegated(input),
+        [SDK_LOCAL_ECHO_RECIPE_ID]: input => this.runLocalEcho(input),
+        [SDK_HTTP_JSON_RECIPE_ID]: input => this.runHttpJson(input),
       },
     })
   }
@@ -259,6 +318,16 @@ class LocalAgentConnectors {
         diagnostics.push({ name, code: safeFailureCode(error) })
       }
     }
+    if (this.packageStore) {
+      const installedPackages = this.packageStore.installedPackages()
+      const packageDiagnostic = this.packageStore.diagnostic?.()
+      if (packageDiagnostic) diagnostics.push({ name: 'packages', code: packageDiagnostic })
+      for (const item of installedPackages) {
+        try { registry.registerExternal(item.manifest) } catch (error) {
+          diagnostics.push({ name: item.packageId, code: safeFailureCode(error) })
+        }
+      }
+    }
     return diagnostics
   }
 
@@ -291,7 +360,14 @@ class LocalAgentConnectors {
         diagnostics.push({ name: stored.instanceId, code: 'AGENT_CONNECTOR_MANIFEST_NOT_REGISTERED' })
         continue
       }
-      const installed = availableAgents.find(agent => (
+      const sdkPackage = this.packageStore?.packageForManifest(manifest.manifestId)
+      const installed = sdkPackage ? {
+        kind: 'meldwork-sdk',
+        name: 'Meldwork Connector SDK',
+        version: AGENT_CONNECTOR_SDK_VERSION,
+        compatibilityState: 'compatible',
+        packageId: sdkPackage.packageId,
+      } : availableAgents.find(agent => (
         agent?.kind === manifest.upstream.id && semanticVersionFrom(agent.version)
       ))
       const upstream = installed?.compatibilityState === 'incompatible' ? null : installed
@@ -361,7 +437,11 @@ class LocalAgentConnectors {
       item.manifestId === String(input.manifestId || '')
     ))
     if (!manifest) fail('AGENT_CONNECTOR_MANIFEST_NOT_REGISTERED')
-    const upstream = this.detectedUpstreams.find(agent => (
+    const sdkPackage = this.packageStore?.packageForManifest(manifest.manifestId)
+    const upstream = sdkPackage ? {
+      kind: 'meldwork-sdk', version: AGENT_CONNECTOR_SDK_VERSION,
+      compatibilityState: 'compatible', packageId: sdkPackage.packageId,
+    } : this.detectedUpstreams.find(agent => (
       agent?.kind === manifest.upstream.id
       && agent.compatibilityState !== 'incompatible'
       && semanticVersionFrom(agent.version)
@@ -382,6 +462,102 @@ class LocalAgentConnectors {
     const result = this.instanceStore.delete(String(instanceId || ''))
     this.refresh(this.detectedUpstreams)
     return result
+  }
+
+  requirePackageStore() {
+    if (!this.packageStore) fail('AGENT_CONNECTOR_PACKAGE_STORE_UNAVAILABLE')
+    return this.packageStore
+  }
+
+  importPackageFile(filename) {
+    const normalized = String(filename || '')
+    if (!path.isAbsolute(normalized)) fail('AGENT_CONNECTOR_PACKAGE_ORIGIN_INVALID')
+    let descriptor
+    try {
+      descriptor = fs.openSync(
+        normalized,
+        fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0),
+      )
+      const stat = fs.fstatSync(descriptor)
+      if (!stat.isFile() || stat.size > MAX_PACKAGE_BYTES) {
+        fail('AGENT_CONNECTOR_PACKAGE_ORIGIN_INVALID')
+      }
+      return this.requirePackageStore().import(
+        fs.readFileSync(descriptor),
+        path.basename(normalized),
+      )
+    } catch (error) {
+      if (error?.code?.startsWith('AGENT_CONNECTOR_')) throw error
+      fail('AGENT_CONNECTOR_PACKAGE_ORIGIN_INVALID')
+    } finally {
+      if (descriptor !== undefined) try { fs.closeSync(descriptor) } catch {}
+    }
+  }
+
+  packages() {
+    return this.requirePackageStore().list()
+  }
+
+  inspectPackage(packageId) {
+    return this.requirePackageStore().inspect(String(packageId || ''))
+  }
+
+  auditPackage(packageId) {
+    return this.requirePackageStore().audit(String(packageId || ''))
+  }
+
+  packageTransition(action, packageId) {
+    const store = this.requirePackageStore()
+    const normalizedId = String(packageId || '')
+    if (action === 'upgrade') {
+      const target = store.inspect(normalizedId)
+      const replaced = store.list().find(item => (
+        item.state === 'installed'
+        && item.connectorId === target.manifest.connectorId
+        && item.packageId !== normalizedId
+      ))
+      if (replaced && this.instanceStore.listRecords().some(item => (
+        item.manifestId === replaced.manifestId
+      ))) fail('AGENT_CONNECTOR_PACKAGE_IN_USE')
+    }
+    if (action === 'remove') {
+      const manifestId = store.inspect(normalizedId).manifest.manifestId
+      if (this.instanceStore.listRecords().some(item => item.manifestId === manifestId)) {
+        fail('AGENT_CONNECTOR_PACKAGE_IN_USE')
+      }
+    }
+    const result = store[action](normalizedId)
+    this.refresh(this.detectedUpstreams)
+    return result
+  }
+
+  approvePackage(packageId) { return this.packageTransition('approve', packageId) }
+
+  installPackage(packageId) { return this.packageTransition('install', packageId) }
+
+  disablePackage(packageId) { return this.packageTransition('disable', packageId) }
+
+  revokePackage(packageId) { return this.packageTransition('revoke', packageId) }
+
+  upgradePackage(packageId) { return this.packageTransition('upgrade', packageId) }
+
+  removePackage(packageId) { return this.packageTransition('remove', packageId) }
+
+  async test(instanceId, workdir) {
+    const agent = this.detectAgents().find(item => item.kind === String(instanceId || ''))
+    if (!agent) fail('AGENT_CONNECTOR_INSTANCE_NOT_FOUND')
+    const suffix = crypto.randomBytes(8).toString('hex')
+    const result = await this.run(agent, 'Meldwork Connector conformance probe', workdir, {
+      runId: `connector-test-${suffix}`,
+      agentRunId: `connector-agent-test-${suffix}`,
+      sandbox: 'read-only',
+    })
+    return Object.freeze({
+      instanceId: agent.kind,
+      passed: result.outcome === 'completed',
+      outcome: result.outcome,
+      failure: result.failure ? Object.freeze({ ...result.failure }) : null,
+    })
   }
 
   catalog() {
@@ -515,6 +691,82 @@ class LocalAgentConnectors {
       return { outcome: 'failed', failure }
     }
   }
+
+  async runLocalEcho(input) {
+    const terminal = {
+      eventId: `${input.agentRunId}:terminal`,
+      cursor: `${input.agentRunId}:terminal`,
+      sequence: 1,
+    }
+    if (input.signal?.aborted) {
+      input.emit({ ...terminal, type: 'Cancelled', reason: 'user' })
+      return { outcome: 'cancelled', sessionRef: input.sessionRef || '' }
+    }
+    const text = input.resume?.type === 'input' ? input.resume.response : input.prompt
+    input.emit({ ...terminal, type: 'Completed', outcome: 'completed' })
+    return { text, outcome: 'completed', sessionRef: input.sessionRef || 'local-echo-session' }
+  }
+
+  async runHttpJson(input) {
+    const packageRecord = this.packageStore?.packageForManifest(input.connector.manifestId)
+    if (!packageRecord || packageRecord.provider.id !== SDK_HTTP_JSON_RECIPE_ID) {
+      fail('AGENT_CONNECTOR_PACKAGE_NOT_INSTALLED')
+    }
+    const endpoint = packageRecord.provider.config.endpoint
+    const terminal = {
+      eventId: `${input.agentRunId}:terminal`,
+      cursor: `${input.agentRunId}:terminal`,
+      sequence: 1,
+    }
+    try {
+      input.onOutboundPayload({ destination: endpoint, transport: 'http' })
+      const headers = { 'content-type': 'application/json' }
+      const authSlotId = packageRecord.provider.config.authSlotId
+      if (authSlotId) {
+        const credentials = this.instanceStore.resolveCredential(input.credentialRefId)
+        headers.authorization = `Bearer ${credentials[authSlotId]}`
+      }
+      const response = await this.fetch(endpoint, {
+        method: 'POST',
+        redirect: 'error',
+        headers,
+        signal: input.signal,
+        body: JSON.stringify({
+          prompt: input.prompt,
+          sessionRef: input.sessionRef || null,
+          resume: input.resume,
+          permissionMode: input.permissionMode,
+          operationId: input.operationId,
+        }),
+      })
+      if (!response?.ok) throw Object.assign(new Error('AGENT_CONNECTOR_HTTP_FAILED'), {
+        code: 'AGENT_CONNECTOR_HTTP_FAILED', retryable: response?.status >= 500,
+      })
+      const text = await response.text()
+      if (typeof text !== 'string' || Buffer.byteLength(text) > 4 * 1024 * 1024) {
+        fail('AGENT_CONNECTOR_HTTP_RESPONSE_INVALID')
+      }
+      let parsed
+      try { parsed = JSON.parse(text) } catch { fail('AGENT_CONNECTOR_HTTP_RESPONSE_INVALID') }
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)
+          || typeof parsed.text !== 'string' || parsed.text.includes('\u0000')
+          || (parsed.sessionRef !== undefined
+            && (typeof parsed.sessionRef !== 'string' || parsed.sessionRef.length > 8192
+              || /[\u0000-\u001f\u007f]/.test(parsed.sessionRef)))) {
+        fail('AGENT_CONNECTOR_HTTP_RESPONSE_INVALID')
+      }
+      input.emit({ ...terminal, type: 'Completed', outcome: 'completed' })
+      return { text: parsed.text, sessionRef: parsed.sessionRef || '', outcome: 'completed' }
+    } catch (error) {
+      if (input.signal?.aborted || error?.name === 'AbortError') {
+        input.emit({ ...terminal, type: 'Cancelled', reason: 'user' })
+        return { outcome: 'cancelled', sessionRef: input.sessionRef || '' }
+      }
+      const failure = failureDetails(error)
+      input.emit({ ...terminal, type: 'Failed', ...failure })
+      return { outcome: 'failed', failure }
+    }
+  }
 }
 
 module.exports = {
@@ -522,5 +774,7 @@ module.exports = {
   LocalAgentConnectors,
   SAMPLE_AGENT_CONNECTOR_MANIFEST,
   SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST,
+  SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_MANIFEST,
+  SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE,
   semanticVersionFrom,
 }

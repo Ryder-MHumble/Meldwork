@@ -8,7 +8,9 @@ const { serializeAgentConnectorManifest } = require('../src/agent-connector-mani
 const {
   SAMPLE_AGENT_CONNECTOR_MANIFEST,
   SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST,
+  SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE,
 } = require('../src/agent-connector-local.cjs')
+const { serializeAgentConnectorPackage } = require('../src/agent-connector-package-store.cjs')
 const {
   LOCAL_IPC_CHANNELS,
   PROVIDER_AGENT_KINDS,
@@ -405,6 +407,58 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
     }),
     { message: 'AGENT_CONNECTOR_CREDENTIAL_INVALID' },
   )
+})
+
+test('Agent Connector package IPC keeps paths private and requires native approval', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-package-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const packagePath = path.join(directory, 'local-echo.connector.json')
+  fs.writeFileSync(
+    packagePath,
+    serializeAgentConnectorPackage(SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE),
+  )
+  const { harness } = loadMain(directory, {
+    dialogResult: { canceled: false, filePaths: [packagePath] },
+    messageBoxResult: { response: 0 },
+  })
+  await harness.ready()
+  const invoke = name => harness.ipcHandlers.get(`local-agent-connector:${name}`)
+  const imported = await invoke('import')(harness.event())
+  assert.equal(imported.canceled, false)
+  assert.equal(imported.package.state, 'imported')
+  assert.equal(imported.package.origin.filename, path.basename(packagePath))
+  assert.doesNotMatch(JSON.stringify(imported), new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  const packageId = SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE.packageId
+  const approved = await invoke('approve')(harness.event(), packageId)
+  assert.equal(approved.canceled, false)
+  assert.equal(approved.package.state, 'approved')
+  const approvalOptions = harness.dialogCalls.at(-1)[1]
+  assert.match(approvalOptions.detail, /Meldwork/)
+  assert.match(approvalOptions.detail, /Transport: cli\/json/)
+  assert.match(approvalOptions.detail, /Permissions: read-only/)
+  assert.match(approvalOptions.detail, /Credential slots: None/)
+  assert.match(approvalOptions.detail, /Outbound destinations: None/)
+  assert.doesNotMatch(approvalOptions.detail, new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  assert.equal((await invoke('install')(harness.event(), packageId)).state, 'installed')
+  const configured = await invoke('configure')(harness.event(), {
+    manifestId: SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE.manifest.manifestId,
+    label: 'Main-process echo',
+    credentials: null,
+  })
+  const tested = await invoke('test')(harness.event(), configured.instanceId)
+  assert.equal(tested.passed, true)
+  assert.equal(Object.hasOwn(tested, 'text'), false)
+  assert.equal(harness.runAgentCalls.length, 0)
+  assert.deepEqual((await invoke('audit')(harness.event(), packageId)).map(event => event.action), [
+    'imported', 'approved', 'installed',
+  ])
+  assert.equal((await invoke('disable')(harness.event(), packageId)).state, 'disabled')
+  assert.equal((await invoke('install')(harness.event(), packageId)).state, 'installed')
+  assert.equal((await invoke('revoke')(harness.event(), packageId)).state, 'revoked')
+  await invoke('delete')(harness.event(), configured.instanceId)
+  assert.equal((await invoke('remove')(harness.event(), packageId)).state, 'removed')
 })
 
 test('Custom Agent IPC keeps executable paths private and refreshes the local catalog', async (t) => {
