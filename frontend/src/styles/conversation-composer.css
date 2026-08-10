@@ -253,19 +253,6 @@
   display: none;
 }
 
-.routing-mode-segmented {
-  flex: 0 0 auto;
-}
-
-.routing-mode-segmented button {
-  min-width: 86px;
-}
-
-.routing-mode-segmented button[data-routing-mode="automatic"].active {
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
 .target-avatar-stack {
   display: flex;
   align-items: center;
@@ -746,7 +733,7 @@
 .composer-tools {
   flex: 1 1 auto;
   gap: 5px;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .composer-run-actions {
@@ -793,6 +780,183 @@
   border-color: transparent;
   background: transparent;
   color: var(--accent);
+}
+
+.smart-team-control {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.smart-team-trigger {
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.16s ease, color 0.16s ease, transform 0.16s ease;
+}
+
+.smart-team-trigger:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-soft);
+}
+
+.smart-team-trigger:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.smart-team-trigger.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.smart-team-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  overflow: visible;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.smart-team-icon-state {
+  transform-box: fill-box;
+  transform-origin: center;
+  transition: opacity 0.16s ease, transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.smart-team-icon-state-off {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.smart-team-icon-state-on {
+  opacity: 0;
+  transform: scale(0.62) rotate(-12deg);
+}
+
+.smart-team-icon-manual-rail {
+  opacity: 0.72;
+}
+
+.smart-team-icon-manual-node {
+  fill: currentColor;
+  stroke: none;
+}
+
+.smart-team-icon-manual-caret {
+  opacity: 0.52;
+}
+
+.smart-team-icon-network {
+  stroke-dasharray: 8;
+  stroke-dashoffset: 8;
+  transition: stroke-dashoffset 0.24s 0.05s ease-out;
+}
+
+.smart-team-icon-spark {
+  fill: currentColor;
+  stroke: none;
+}
+
+.smart-team-trigger.active .smart-team-icon-state-off {
+  opacity: 0;
+  transform: scale(0.62) rotate(12deg);
+}
+
+.smart-team-trigger.active .smart-team-icon-state-on {
+  opacity: 1;
+  transform: scale(1) rotate(0deg);
+}
+
+.smart-team-trigger.active .smart-team-icon-network {
+  stroke-dashoffset: 0;
+}
+
+.smart-team-label,
+.smart-team-status {
+  white-space: nowrap;
+}
+
+.smart-team-label {
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.smart-team-status {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.smart-team-trigger.active .smart-team-status {
+  color: currentColor;
+}
+
+.smart-team-tooltip {
+  width: 276px;
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 8;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 74%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  box-shadow: 0 12px 28px rgb(32 43 53 / 0.14);
+  pointer-events: none;
+  animation: smart-team-tooltip-in 0.14s ease-out;
+}
+
+:root[data-theme="dark"] .smart-team-tooltip {
+  box-shadow: 0 10px 24px rgb(0 0 0 / 0.28);
+}
+
+.smart-team-tooltip header {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.smart-team-tooltip strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.smart-team-tooltip small {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.smart-team-tooltip p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@keyframes smart-team-tooltip-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .smart-team-icon-state,
+  .smart-team-icon-network {
+    transition: none;
+  }
+
+  .smart-team-tooltip {
+    animation: none;
+  }
 }
 
 .selected-skill {
@@ -939,6 +1103,10 @@
 
   .round-settings-popover {
     width: min(246px, calc(100cqw - 12px));
+  }
+
+  .smart-team-tooltip {
+    width: min(276px, calc(100cqw - 16px));
   }
 
   .round-unlimited-button,
