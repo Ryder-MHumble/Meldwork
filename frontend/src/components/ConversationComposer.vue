@@ -90,19 +90,6 @@
           </div>
 
           <div class="target-row" :aria-label="t('composer.targets')">
-            <button
-              type="button"
-              class="routing-team-toggle"
-              data-routing-mode="automatic"
-              :class="{ active: automaticTeamFormation }"
-              :title="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
-              :aria-label="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
-              :aria-pressed="automaticTeamFormation"
-              :disabled="Boolean(activeRun) || sending"
-              @click="toggleAutomaticTeamFormation"
-            >
-              <SparklesOutline />
-            </button>
             <div class="target-avatar-stack" role="group" :aria-label="t('composer.targets')">
               <button
                 v-for="(kind, index) in activeGroup.agentKinds"
@@ -293,7 +280,9 @@
             ref="composerInput"
             v-model="draft"
             rows="1"
-            :placeholder="t('composer.placeholder', { name: groupName(activeGroup) })"
+            :placeholder="automaticTeamFormation
+              ? t('composer.smartTeamPlaceholder')
+              : t('composer.placeholder', { name: groupName(activeGroup) })"
             :disabled="Boolean(activeRun) || sending"
             role="combobox"
             aria-autocomplete="list"
@@ -328,6 +317,69 @@
             >
               <AtOutline />
             </button>
+            <div
+              v-if="activeGroup.conversationType !== 'direct'"
+              class="smart-team-control"
+              @mouseenter="smartTeamTooltipOpen = true"
+              @mouseleave="smartTeamTooltipOpen = false"
+            >
+              <button
+                class="smart-team-trigger"
+                :class="{ active: automaticTeamFormation }"
+                type="button"
+                :aria-label="t(automaticTeamFormation ? 'composer.autoTeamDisable' : 'composer.autoTeamEnable')"
+                :aria-pressed="automaticTeamFormation"
+                :aria-describedby="smartTeamTooltipOpen ? 'smart-team-tooltip' : undefined"
+                :disabled="Boolean(activeRun) || sending"
+                @click="handleSmartTeamToggle"
+                @focus="smartTeamTooltipOpen = true"
+                @blur="smartTeamTooltipOpen = false"
+              >
+                <svg
+                  class="smart-team-icon"
+                  viewBox="0 0 20 20"
+                  fill="none"
+                  aria-hidden="true"
+                >
+                  <g class="smart-team-icon-state smart-team-icon-state-off">
+                    <path class="smart-team-icon-manual-rail" d="M3.5 5.25h8.4" />
+                    <path class="smart-team-icon-manual-rail" d="M8.1 10h8.4" />
+                    <path class="smart-team-icon-manual-rail" d="M3.5 14.75h8.4" />
+                    <circle class="smart-team-icon-manual-node" cx="14.55" cy="5.25" r="1.55" />
+                    <circle class="smart-team-icon-manual-node" cx="5.45" cy="10" r="1.55" />
+                    <circle class="smart-team-icon-manual-node" cx="14.55" cy="14.75" r="1.55" />
+                    <path class="smart-team-icon-manual-caret" d="M9.05 7.65 10 6.75l.95.9" />
+                  </g>
+                  <g class="smart-team-icon-state smart-team-icon-state-on">
+                    <path class="smart-team-icon-network" d="M4.25 15.25c2.4-.45 3.85-1.7 4.7-3.75" />
+                    <path class="smart-team-icon-network" d="M15.75 15.25c-2.4-.45-3.85-1.7-4.7-3.75" />
+                    <circle cx="3.75" cy="15.25" r="1.35" />
+                    <circle cx="16.25" cy="15.25" r="1.35" />
+                    <path class="smart-team-icon-spark" d="M10 2.25 11.15 5.1 14 6.25 11.15 7.4 10 10.25 8.85 7.4 6 6.25 8.85 5.1 10 2.25Z" />
+                  </g>
+                </svg>
+                <span class="smart-team-label">{{ t('composer.smartTeam') }}</span>
+                <span class="smart-team-status" aria-live="polite">
+                  {{ t(automaticTeamFormation ? 'composer.smartTeamOn' : 'composer.smartTeamOff') }}
+                </span>
+              </button>
+              <div
+                v-if="smartTeamTooltipOpen"
+                id="smart-team-tooltip"
+                class="smart-team-tooltip"
+                role="tooltip"
+              >
+                <header>
+                  <strong>{{ t('composer.smartTeam') }}</strong>
+                  <small>{{ t(automaticTeamFormation ? 'composer.smartTeamOn' : 'composer.smartTeamOff') }}</small>
+                </header>
+                <p>
+                  {{ t(automaticTeamFormation
+                    ? 'composer.smartTeamActiveHint'
+                    : 'composer.smartTeamEnableHint') }}
+                </p>
+              </div>
+            </div>
           </div>
 
           <div class="composer-run-actions">
@@ -364,6 +416,7 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import {
   AddOutline,
   AttachOutline,
@@ -375,7 +428,6 @@ import {
   LibraryOutline,
   RefreshOutline,
   SendOutline,
-  SparklesOutline,
   StopCircleOutline,
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
@@ -451,4 +503,11 @@ const {
   toggleAutomaticTeamFormation,
   unlimitedRounds,
 } = props.controller
+
+const smartTeamTooltipOpen = ref(false)
+
+function handleSmartTeamToggle() {
+  toggleAutomaticTeamFormation()
+}
+
 </script>

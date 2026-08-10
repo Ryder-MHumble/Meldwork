@@ -1212,9 +1212,22 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
-    const routingToggle = wrapper.get('[data-routing-mode="automatic"]')
-    expect(routingToggle.attributes('aria-pressed')).toBe('false')
+    const smartTeam = wrapper.get('.smart-team-trigger')
+    expect(wrapper.find('[data-routing-mode]').exists()).toBe(false)
+    expect(smartTeam.get('.smart-team-label').text()).toBe('Smart team')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('Off')
+    expect(smartTeam.attributes('aria-pressed')).toBe('false')
+    expect(smartTeam.find('.smart-team-icon-state-off').exists()).toBe(true)
+    expect(smartTeam.find('.smart-team-icon-state-on').exists()).toBe(true)
+    expect(wrapper.find('.smart-team-tooltip').exists()).toBe(false)
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
+
+    await wrapper.get('.smart-team-control').trigger('mouseenter')
+    expect(wrapper.get('.smart-team-tooltip').attributes('role')).toBe('tooltip')
+    expect(wrapper.get('.smart-team-tooltip').text()).toContain('Off uses the selected group Agents')
+    await wrapper.get('.smart-team-control').trigger('mouseleave')
+    expect(wrapper.find('.smart-team-tooltip').exists()).toBe(false)
 
     await wrapper.get('.composer-box textarea').setValue('Use the selected Agents')
     await wrapper.get('.send-button').trigger('click')
@@ -1230,9 +1243,16 @@ describe('RoundRelay workbench', () => {
       maxRounds: 6,
     })
 
-    await routingToggle.trigger('click')
-    expect(routingToggle.attributes('aria-pressed')).toBe('true')
+    await smartTeam.trigger('click')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('On')
+    expect(smartTeam.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Describe the task and Meldwork will choose the right Agent team')
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') !== undefined)).toBe(true)
+
+    await wrapper.get('.smart-team-control').trigger('mouseenter')
+    expect(wrapper.get('.smart-team-tooltip').text()).toContain('ignore manual Agent targets')
+    await wrapper.get('.smart-team-control').trigger('mouseleave')
+
     await wrapper.get('.composer-box textarea').setValue('Choose the smallest suitable team')
     await wrapper.get('.send-button').trigger('click')
     await flushPromises()
@@ -1248,6 +1268,18 @@ describe('RoundRelay workbench', () => {
       mode: 'manual',
       maxRounds: 6,
     })
+
+    await smartTeam.trigger('click')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('Off')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
+
+    setLocale('zh')
+    await flushPromises()
+    expect(smartTeam.get('.smart-team-label').text()).toBe('智能组队')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('关闭')
+    await wrapper.get('.smart-team-control').trigger('mouseenter')
+    expect(wrapper.get('.smart-team-tooltip').text()).toContain('关闭时使用当前群聊或手动选择的 Agent')
     wrapper.unmount()
   })
 
