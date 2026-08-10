@@ -149,6 +149,7 @@ function registerDesktopIpc(options) {
     getKnowledgeConnectors,
     getMainWindow,
     getOutcomeStore,
+    getSkillTrustStore,
     getWorkspace,
     installer,
     isShutdownStarted,
@@ -358,6 +359,19 @@ function registerDesktopIpc(options) {
       return { supported: false, skills: [], total: 0, limit: 0 }
     }
     return installer.skills(selectedKind)
+  })
+  registerTrustedHandle('local-skill-trust:list', () => {
+    const store = getSkillTrustStore?.()
+    if (!store) throw new Error('LOCAL_SKILL_TRUST_STORE_UNAVAILABLE')
+    return store.list()
+  })
+  registerTrustedHandle('local-skill-trust:revoke', (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('LOCAL_SKILL_TRUST_REQUEST_INVALID')
+    }
+    const store = getSkillTrustStore?.()
+    if (!store) throw new Error('LOCAL_SKILL_TRUST_STORE_UNAVAILABLE')
+    return store.revoke(args[0])
   })
   registerTrustedHandle('local-agent-installer:state', () => installer.state())
   registerTrustedHandle('local-agent-installer:start', kind => installer.start(String(kind || '')))

@@ -43,6 +43,8 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-workspace:default-directory',
   'local-agent-installer:catalog',
   'local-agent-installer:skills',
+  'local-skill-trust:list',
+  'local-skill-trust:revoke',
   'local-agent-installer:state',
   'local-agent-installer:start',
   'local-agent-installer:cancel',
@@ -124,6 +126,7 @@ function loadMain(userData, options = {}) {
   const skillCatalogInstances = []
   const skillSnapshotStoreInstances = []
   const skillSnapshotSelectionInstances = []
+  const skillTrustStoreInstances = []
   const cloudAgentRuntimeInstances = []
   const cloudAgentOperationStoreInstances = []
   const channelInboxStoreInstances = []
@@ -524,6 +527,21 @@ function loadMain(userData, options = {}) {
     }
   }
 
+  class TestLocalSkillTrustStore {
+    constructor(input) {
+      this.input = input
+      this.records = options.skillTrustRecords || []
+      this.revocations = []
+      skillTrustStoreInstances.push(this)
+    }
+
+    list() { return this.records }
+    revoke(bindingId) {
+      this.revocations.push(bindingId)
+      return { bindingId, revoked: true }
+    }
+  }
+
   class TestProviderStore {
     constructor(input) {
       this.input = input
@@ -813,6 +831,7 @@ function loadMain(userData, options = {}) {
     './local-skill-snapshot-selections.cjs': {
       LocalSkillSnapshotSelections: TestLocalSkillSnapshotSelections,
     },
+    './local-skill-trust-store.cjs': { LocalSkillTrustStore: TestLocalSkillTrustStore },
     './openclaw-runtime.cjs': {
       managedOpenClawOptions: input => ({ env: { MANAGED_OPENCLAW: JSON.stringify(input) } }),
       nativeOpenClawOptions: input => ({ env: { NATIVE_OPENCLAW: JSON.stringify(input) } }),
@@ -893,6 +912,7 @@ function loadMain(userData, options = {}) {
         skillCatalogInstances,
         skillSnapshotStoreInstances,
         skillSnapshotSelectionInstances,
+        skillTrustStoreInstances,
         windows,
         workspaceInstances,
         exitCalls,

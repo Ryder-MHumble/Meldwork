@@ -135,6 +135,10 @@ if (isLocalDocument) Object.assign(desktopApi, {
       return () => ipcRenderer.removeListener('local-agent-installer:changed', listener)
     },
   }),
+  localSkillTrust: Object.freeze({
+    list: () => ipcRenderer.invoke('local-skill-trust:list'),
+    revoke: bindingId => ipcRenderer.invoke('local-skill-trust:revoke', bindingId),
+  }),
   customAgent: Object.freeze({
     create: input => ipcRenderer.invoke('local-custom-agent:create', input),
     delete: kind => ipcRenderer.invoke('local-custom-agent:delete', kind),

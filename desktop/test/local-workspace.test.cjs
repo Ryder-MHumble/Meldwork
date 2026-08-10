@@ -602,6 +602,50 @@ test('Skills are validated and injected only into their selected target Agent', 
   assert.equal(workspace.snapshot().messages.filter(message => message.role === 'user').length, 1)
 })
 
+test('Skill contracts block permission escalation before the Agent process starts', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'codex', name: 'Codex CLI', executable: '/tmp/codex', version: '0.137.0',
+  }]
+  const selected = {
+    targetKind: 'codex', namespace: 'global', slug: 'writer', name: 'Writer',
+  }
+  options.validateSkillSelections = (_kind, selections) => selections.map((selection) => {
+    const runtime = { ...selection }
+    Object.defineProperty(runtime, 'approvedSkillManifest', {
+      enumerable: false,
+      value: {
+        schemaVersion: 1,
+        recordType: 'meldwork-skill-manifest',
+        identity: { id: 'global/writer', version: '1.0.0' },
+        origin: { type: 'local-unsigned', publisher: 'Local author' },
+        agents: [{ kind: 'codex', minVersion: '0.130.0', maxVersion: '0.200.0' }],
+        inputTypes: ['text'],
+        tools: ['filesystem'],
+        credentials: [],
+        permissionMode: 'workspace-write',
+        networkDestinations: [],
+        sideEffectClass: 'local-write',
+      },
+    })
+    return runtime
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Read-only Skill', agentKinds: ['codex'], workdir: directory, allowWrite: false,
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Use the writer Skill',
+    targetKinds: ['codex'],
+    skillHints: [selected],
+  }), { message: 'LOCAL_SKILL_PERMISSION_ESCALATION' })
+  assert.equal(calls.length, 0)
+})
+
 test('Knowledge bases are validated, persisted, and injected only into selected Agents', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

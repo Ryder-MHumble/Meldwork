@@ -6,6 +6,9 @@ const {
   ContentBlobStore,
   normalizeContentBlobRef,
 } = require('./content-blob-store.cjs')
+const {
+  normalizeLocalSkillSnapshotProvenance,
+} = require('./local-skill-contract.cjs')
 
 const LOCAL_SKILL_SNAPSHOT_VERSION = 1
 const MAX_SKILL_DEPTH = 8
@@ -419,7 +422,8 @@ function normalizeManifest(value) {
 }
 
 function normalizeLocalSkillSnapshot(value) {
-  if (sortedKeys(value) !== 'manifest,manifestHash,snapshotId'
+  const keys = sortedKeys(value)
+  if (!['manifest,manifestHash,snapshotId', 'manifest,manifestHash,provenance,snapshotId'].includes(keys)
       || typeof value.manifestHash !== 'string' || !SHA256.test(value.manifestHash)
       || typeof value.snapshotId !== 'string' || !SNAPSHOT_ID.test(value.snapshotId)) {
     fail('LOCAL_SKILL_SNAPSHOT_INVALID')
@@ -429,11 +433,21 @@ function normalizeLocalSkillSnapshot(value) {
   if (value.manifestHash !== hash || value.snapshotId !== `skill-snapshot-${hash}`) {
     fail('LOCAL_SKILL_SNAPSHOT_ID_MISMATCH')
   }
+  const provenance = Object.hasOwn(value, 'provenance')
+    ? normalizeLocalSkillSnapshotProvenance(value.provenance, value.manifestHash)
+    : null
   return deepFreeze({
     snapshotId: value.snapshotId,
     manifestHash: value.manifestHash,
     manifest,
+    ...(provenance ? { provenance } : {}),
   })
+}
+
+function bindLocalSkillSnapshotProvenance(value, provenance) {
+  const snapshot = normalizeLocalSkillSnapshot(value)
+  if (snapshot.provenance) fail('LOCAL_SKILL_PROVENANCE_INVALID')
+  return normalizeLocalSkillSnapshot({ ...snapshot, provenance })
 }
 
 function expectedDirectories(files) {
@@ -775,6 +789,7 @@ module.exports = {
   MAX_SKILL_FILES,
   MAX_SKILL_FILE_BYTES,
   MAX_SKILL_TOTAL_BYTES,
+  bindLocalSkillSnapshotProvenance,
   canonicalSkillSnapshotJson,
   normalizeLocalSkillSnapshot,
 }

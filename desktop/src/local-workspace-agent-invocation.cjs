@@ -18,6 +18,7 @@ const {
   MAX_MESSAGE_ATTACHMENTS,
   abortableOperation,
   agentStoppedError,
+  attachmentType,
   cleanText,
   cleanProgressSteps,
   credentialFailure,
@@ -25,6 +26,7 @@ const {
   parseAutoReply,
   settleWithin,
 } = require('./local-workspace-inputs.cjs')
+const { assertLocalSkillExecution } = require('./local-skill-contract.cjs')
 const { outboundWirePayloadBytes } = require('./outbound-payload.cjs')
 const { processRunScheduler } = require('./run-scheduler.cjs')
 const {
@@ -319,6 +321,22 @@ class LocalWorkspaceAgentInvocation {
     const internal = context.internal === true
     if (internal && !isolated) throw new Error('LOCAL_RUN_INTERNAL_CONTEXT_INVALID')
     const allowWrite = group.allowWrite === true && !reviewOnly && !isolated
+    const skillInputTypes = new Set(['text'])
+    for (const attachment of context.attachmentSnapshots || []) {
+      const type = attachmentType(attachment?.mimeType)
+      if (type) skillInputTypes.add(type)
+    }
+    for (const skill of context.skillHints || []) {
+      if (!skill?.approvedSkillManifest) continue
+      assertLocalSkillExecution(skill.approvedSkillManifest, {
+        kind,
+        version: agent.resolvedVersion || agent.version,
+        inputTypes: [...skillInputTypes],
+        capabilities: agent.capabilities,
+        permissionMode: allowWrite ? 'workspace-write' : 'read-only',
+        credentialIds: [],
+      })
+    }
     const state = this.state()
     const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)

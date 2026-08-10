@@ -8,6 +8,24 @@ const { ContentBlobStore } = require('../src/content-blob-store.cjs')
 const { LocalSkillCatalog } = require('../src/local-skill-catalog.cjs')
 const { LocalSkillSnapshotStore } = require('../src/local-skill-snapshot.cjs')
 const { LocalSkillSnapshotSelections } = require('../src/local-skill-snapshot-selections.cjs')
+const { LocalSkillTrustStore } = require('../src/local-skill-trust-store.cjs')
+
+function skillManifest(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    recordType: 'meldwork-skill-manifest',
+    identity: { id: 'global/review', version: '1.0.0' },
+    origin: { type: 'local-unsigned', publisher: 'Local author' },
+    agents: [{ kind: 'codex', minVersion: '0.100.0', maxVersion: '1.0.0' }],
+    inputTypes: ['text'],
+    tools: ['filesystem'],
+    credentials: [],
+    permissionMode: 'read-only',
+    networkDestinations: [],
+    sideEffectClass: 'none',
+    ...overrides,
+  }
+}
 
 function removeFixture(directory) {
   if (!fs.existsSync(directory)) return
@@ -29,6 +47,10 @@ function fixture(t) {
   const skillDirectory = path.join(directory, 'home', '.codex', 'skills', 'review')
   fs.mkdirSync(path.join(skillDirectory, 'references'), { recursive: true })
   fs.writeFileSync(path.join(skillDirectory, 'SKILL.md'), '# Original Skill\n')
+  fs.writeFileSync(
+    path.join(skillDirectory, 'meldwork.skill.json'),
+    `${JSON.stringify(skillManifest())}\n`,
+  )
   fs.writeFileSync(path.join(skillDirectory, 'references', 'rules.md'), 'Original rules\n')
   const contentBlobStore = new ContentBlobStore({
     rootPath: path.join(directory, 'private', 'blobs'),
@@ -38,22 +60,33 @@ function fixture(t) {
     rootPath: path.join(directory, 'private', 'materialized'),
   })
   const catalog = new LocalSkillCatalog({ home: path.join(directory, 'home') })
+  const trustStore = new LocalSkillTrustStore({
+    storagePath: path.join(directory, 'private', 'skill-trust.jsonl'),
+  })
+  const approvals = []
   const selections = new LocalSkillSnapshotSelections({
     catalog,
     snapshotStore,
     contentBlobStore,
+    trustStore,
+    requestTrust: async request => {
+      approvals.push(request)
+      return true
+    },
   })
-  return { catalog, contentBlobStore, directory, selections, skillDirectory }
+  return {
+    approvals, catalog, contentBlobStore, directory, selections, skillDirectory, trustStore,
+  }
 }
 
 function persistedHint(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-test('captures a current catalog selection without serializing source or materialized paths', (t) => {
-  const { catalog, directory, selections } = fixture(t)
+test('captures a trusted current selection without serializing source or materialized paths', async (t) => {
+  const { approvals, catalog, directory, selections } = fixture(t)
   const selected = catalog.list('codex').skills[0]
-  const [runtime] = selections.prepare('codex', [selected])
+  const [runtime] = await selections.prepare('codex', [selected])
   const persisted = persistedHint(runtime)
 
   assert.equal(fs.readFileSync(runtime.entryPath, 'utf8'), '# Original Skill\n')
@@ -62,16 +95,18 @@ test('captures a current catalog selection without serializing source or materia
   ])
   assert.equal(JSON.stringify(persisted).includes(directory), false)
   assert.equal(Object.keys(runtime).includes('entryPath'), false)
+  assert.equal(Object.keys(runtime).includes('approvedSkillManifest'), false)
+  assert.equal(approvals.length, 1)
 })
 
-test('restores the same immutable snapshot after the live Skill changes or disappears', (t) => {
-  const { catalog, selections, skillDirectory } = fixture(t)
-  const [captured] = selections.prepare('codex', [catalog.list('codex').skills[0]])
+test('restores the same trusted immutable snapshot after the live Skill changes or disappears', async (t) => {
+  const { approvals, catalog, selections, skillDirectory } = fixture(t)
+  const [captured] = await selections.prepare('codex', [catalog.list('codex').skills[0]])
   const persisted = persistedHint(captured)
   fs.writeFileSync(path.join(skillDirectory, 'SKILL.md'), '# Mutated Skill\n')
   fs.rmSync(path.join(skillDirectory, 'references'), { recursive: true })
 
-  const [restored] = selections.prepare('codex', [persisted])
+  const [restored] = await selections.prepare('codex', [persisted])
 
   assert.equal(restored.snapshotId, captured.snapshotId)
   assert.equal(fs.readFileSync(restored.entryPath, 'utf8'), '# Original Skill\n')
@@ -79,24 +114,25 @@ test('restores the same immutable snapshot after the live Skill changes or disap
     fs.readFileSync(path.join(path.dirname(restored.entryPath), 'references', 'rules.md'), 'utf8'),
     'Original rules\n',
   )
+  assert.equal(approvals.length, 1)
 })
 
-test('rejects mixed, forged, missing, or tampered snapshot selections', (t) => {
+test('rejects mixed, forged, missing, or tampered snapshot selections', async (t) => {
   const { catalog, contentBlobStore, selections } = fixture(t)
   const selected = catalog.list('codex').skills[0]
-  const [captured] = selections.prepare('codex', [selected])
+  const [captured] = await selections.prepare('codex', [selected])
   const persisted = persistedHint(captured)
 
-  assert.throws(
-    () => selections.prepare('codex', [selected, persisted]),
+  await assert.rejects(
+    selections.prepare('codex', [selected, persisted]),
     { message: 'LOCAL_SKILL_SELECTION_INVALID' },
   )
-  assert.throws(
-    () => selections.prepare('codex', [{ ...persisted, manifestHash: 'b'.repeat(64) }]),
+  await assert.rejects(
+    selections.prepare('codex', [{ ...persisted, manifestHash: 'b'.repeat(64) }]),
     { message: 'LOCAL_SKILL_SELECTION_INVALID' },
   )
-  assert.throws(
-    () => selections.prepare('hermes', [persisted]),
+  await assert.rejects(
+    selections.prepare('hermes', [persisted]),
     { message: 'LOCAL_SKILL_SELECTION_INVALID' },
   )
   const missing = {
@@ -106,8 +142,8 @@ test('rejects mixed, forged, missing, or tampered snapshot selections', (t) => {
       hash: 'c'.repeat(64),
     },
   }
-  assert.throws(
-    () => selections.prepare('codex', [missing]),
+  await assert.rejects(
+    selections.prepare('codex', [missing]),
     { message: 'LOCAL_SKILL_SNAPSHOT_RESTORE_FAILED' },
   )
 
@@ -119,8 +155,38 @@ test('rejects mixed, forged, missing, or tampered snapshot selections', (t) => {
   )
   fs.chmodSync(filename, 0o600)
   fs.writeFileSync(filename, Buffer.alloc(persisted.snapshotRef.size, 0x78), { mode: 0o600 })
-  assert.throws(
-    () => selections.prepare('codex', [persisted]),
+  await assert.rejects(
+    selections.prepare('codex', [persisted]),
     { message: 'LOCAL_SKILL_SNAPSHOT_RESTORE_FAILED' },
   )
+})
+
+test('content upgrades require a new approval and revoked trust blocks restore', async (t) => {
+  const { approvals, catalog, selections, skillDirectory, trustStore } = fixture(t)
+  const selected = catalog.list('codex').skills[0]
+  const [first] = await selections.prepare('codex', [selected])
+  const firstBindingId = first.trustBindingId
+
+  fs.writeFileSync(path.join(skillDirectory, 'SKILL.md'), '# Upgraded Skill\n')
+  const [upgraded] = await selections.prepare('codex', [selected])
+  assert.notEqual(upgraded.manifestHash, first.manifestHash)
+  assert.notEqual(upgraded.trustBindingId, firstBindingId)
+  assert.equal(approvals.length, 2)
+
+  trustStore.revoke(upgraded.trustBindingId)
+  await assert.rejects(
+    selections.prepare('codex', [persistedHint(upgraded)]),
+    { message: 'LOCAL_SKILL_TRUST_REQUIRED' },
+  )
+})
+
+test('rejects missing manifests and manifest upgrades that are not explicitly approved', async (t) => {
+  const { approvals, catalog, selections, skillDirectory } = fixture(t)
+  const selected = catalog.list('codex').skills[0]
+  fs.rmSync(path.join(skillDirectory, 'meldwork.skill.json'))
+  await assert.rejects(
+    selections.prepare('codex', [selected]),
+    { message: 'LOCAL_SKILL_MANIFEST_MISSING' },
+  )
+  assert.equal(approvals.length, 0)
 })

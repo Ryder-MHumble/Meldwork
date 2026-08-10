@@ -55,6 +55,7 @@ const { RunLedger } = require('./run-ledger.cjs')
 const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
 const { LocalSkillSnapshotSelections } = require('./local-skill-snapshot-selections.cjs')
 const { LocalSkillSnapshotStore } = require('./local-skill-snapshot.cjs')
+const { LocalSkillTrustStore } = require('./local-skill-trust-store.cjs')
 const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
 const {
   knowledgeBaseSelectionHint,
@@ -92,6 +93,7 @@ let knowledgeBaseStatusPromise = null
 const knowledgeBaseSourcesCache = new Map()
 let attachmentStore = null
 let skillCatalog = null
+let skillTrustStore = null
 let shutdownStarted = false
 let quitCleanup = null
 let cachedAppIcon
@@ -354,6 +356,59 @@ function localAttachmentSupport(kind) {
   }
 }
 
+async function requestLocalSkillTrust({ binding, coordinates, manifest }) {
+  const locale = String(app.getLocale?.() || '').toLowerCase()
+  const compatibility = manifest.agents.map(agent => (
+    `${agent.kind} ${agent.minVersion} - ${agent.maxVersion}`
+  )).join(', ')
+  const credentials = manifest.credentials.map(item => (
+    `${item.credentialId} (${item.type})`
+  )).join(', ') || (locale.startsWith('zh') ? '无' : 'None')
+  const destinations = manifest.networkDestinations.join(', ')
+    || (locale.startsWith('zh') ? '无' : 'None')
+  const tools = manifest.tools.join(', ') || (locale.startsWith('zh') ? '无' : 'None')
+  const detail = locale.startsWith('zh')
+    ? [
+        `Skill：${coordinates.name} (${manifest.identity.id} ${manifest.identity.version})`,
+        `来源：${manifest.origin.type} / ${manifest.origin.publisher}`,
+        `适配 Agent：${compatibility}`,
+        `输入类型：${manifest.inputTypes.join(', ')}`,
+        `工具：${tools}`,
+        `权限：${manifest.permissionMode}`,
+        `凭据：${credentials}`,
+        `外联目标：${destinations}`,
+        `副作用等级：${manifest.sideEffectClass}`,
+        `清单哈希：${binding.contractHash}`,
+        `内容哈希：${binding.contentHash}`,
+      ].join('\n')
+    : [
+        `Skill: ${coordinates.name} (${manifest.identity.id} ${manifest.identity.version})`,
+        `Origin: ${manifest.origin.type} / ${manifest.origin.publisher}`,
+        `Compatible Agents: ${compatibility}`,
+        `Input types: ${manifest.inputTypes.join(', ')}`,
+        `Tools: ${tools}`,
+        `Permission: ${manifest.permissionMode}`,
+        `Credentials: ${credentials}`,
+        `Network destinations: ${destinations}`,
+        `Side-effect class: ${manifest.sideEffectClass}`,
+        `Manifest hash: ${binding.contractHash}`,
+        `Content hash: ${binding.contentHash}`,
+      ].join('\n')
+  const decision = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: locale.startsWith('zh') ? '批准本地 Skill' : 'Approve Local Skill',
+    message: locale.startsWith('zh')
+      ? '这是未签名的本地 Skill。仅在确认来源和权限范围后批准。'
+      : 'This is an unsigned local Skill. Approve only after verifying its origin and permissions.',
+    detail,
+    buttons: locale.startsWith('zh') ? ['批准', '取消'] : ['Approve', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  })
+  return decision.response === 0
+}
+
 function createWorkspace() {
   cloudAgentStartRetry?.cancel()
   const privateRoot = path.join(app.getPath('userData'), 'roundrelay-private')
@@ -364,10 +419,15 @@ function createWorkspace() {
     contentBlobStore,
     rootPath: path.join(privateRoot, 'skill-snapshots'),
   })
+  skillTrustStore = new LocalSkillTrustStore({
+    storagePath: path.join(privateRoot, 'skill-trust-audit.jsonl'),
+  })
   const skillSnapshotSelections = new LocalSkillSnapshotSelections({
     catalog: skillCatalog,
     snapshotStore: skillSnapshotStore,
     contentBlobStore,
+    trustStore: skillTrustStore,
+    requestTrust: requestLocalSkillTrust,
   })
   knowledgeConnectors = new LocalKnowledgeConnectors({
     contentBlobStore,
@@ -637,6 +697,7 @@ function registerIpc() {
     localAgentCatalog,
     openExternalUrl,
     getOutcomeStore: () => workspace?.outcomeStore,
+    getSkillTrustStore: () => skillTrustStore,
     providerStore,
     providerAgentKind,
     refreshLocalAgentState,

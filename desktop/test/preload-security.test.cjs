@@ -60,6 +60,7 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.equal(api.platform, process.platform)
   assert.equal(Object.isFrozen(api.localAgentProvider), true)
   assert.equal(Object.isFrozen(api.localAgentConnector), true)
+  assert.equal(Object.isFrozen(api.localSkillTrust), true)
   assert.equal(Object.isFrozen(api.cloudAgent), true)
   assert.equal(Object.isFrozen(api.localOutcome), true)
   assert.deepEqual(Object.keys(api.localOutcome), ['recordAdoption'])
@@ -358,6 +359,20 @@ test('local preload exposes only the narrow Agent installer methods', async () =
   ])
 })
 
+test('local preload exposes only review and revocation for Skill trust', async () => {
+  const { api, invocations } = loadPreload('file:')
+  const bindingId = `skill-trust-binding-${'a'.repeat(64)}`
+
+  assert.equal(Object.isFrozen(api.localSkillTrust), true)
+  assert.deepEqual(Object.keys(api.localSkillTrust).sort(), ['list', 'revoke'])
+  await api.localSkillTrust.list()
+  await api.localSkillTrust.revoke(bindingId)
+  assert.deepEqual(invocations, [
+    { channel: 'local-skill-trust:list', args: [] },
+    { channel: 'local-skill-trust:revoke', args: [bindingId] },
+  ])
+})
+
 test('local preload exposes only create and delete for Custom Agents', async () => {
   const { api, invocations } = loadPreload('file:')
 
@@ -493,6 +508,7 @@ test('remote preload does not expose local credentials, workspace, or installer 
   assert.equal('cloudAgent' in api, false)
   assert.equal('localOutcome' in api, false)
   assert.equal('agentInstaller' in api, false)
+  assert.equal('localSkillTrust' in api, false)
   assert.equal('customAgent' in api, false)
   assert.equal('localAttachments' in api, false)
   assert.equal('localAgentProvider' in api, false)

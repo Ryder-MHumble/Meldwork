@@ -165,6 +165,15 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     harness.skillSnapshotSelectionInstances[0].input.catalog,
     harness.skillCatalogInstances[0],
   )
+  assert.equal(
+    harness.skillSnapshotSelectionInstances[0].input.trustStore,
+    harness.skillTrustStoreInstances[0],
+  )
+  assert.equal(
+    harness.skillTrustStoreInstances[0].input.storagePath,
+    path.join(directory, 'roundrelay-private', 'skill-trust-audit.jsonl'),
+  )
+  assert.equal(typeof harness.skillSnapshotSelectionInstances[0].input.requestTrust, 'function')
   const selectedSkills = [{
     targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
   }]
@@ -459,6 +468,64 @@ test('Agent Connector package IPC keeps paths private and requires native approv
   assert.equal((await invoke('revoke')(harness.event(), packageId)).state, 'revoked')
   await invoke('delete')(harness.event(), configured.instanceId)
   assert.equal((await invoke('remove')(harness.event(), packageId)).state, 'removed')
+})
+
+test('unsigned Skill trust uses native approval and exposes only review and revocation', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-skill-trust-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const bindingId = `skill-trust-binding-${'a'.repeat(64)}`
+  const record = {
+    bindingId,
+    state: 'approved',
+    decisionId: `skill-trust-decision-${'b'.repeat(64)}`,
+  }
+  const { harness } = loadMain(directory, {
+    messageBoxResult: { response: 0 },
+    skillTrustRecords: [record],
+  })
+  await harness.ready()
+  const manifest = {
+    identity: { id: 'global/review', version: '1.0.0' },
+    origin: { type: 'local-unsigned', publisher: 'Local author' },
+    agents: [{ kind: 'codex', minVersion: '0.100.0', maxVersion: '1.0.0' }],
+    inputTypes: ['text'],
+    tools: ['filesystem'],
+    credentials: [],
+    permissionMode: 'read-only',
+    networkDestinations: [],
+    sideEffectClass: 'none',
+  }
+  const approved = await harness.skillSnapshotSelectionInstances[0].input.requestTrust({
+    binding: {
+      bindingId,
+      contractHash: 'c'.repeat(64),
+      contentHash: 'd'.repeat(64),
+    },
+    coordinates: {
+      targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
+    },
+    manifest,
+  })
+  assert.equal(approved, true)
+  const approvalOptions = harness.dialogCalls.at(-1)[1]
+  assert.match(approvalOptions.detail, /Skill: Review \(global\/review 1\.0\.0\)/)
+  assert.match(approvalOptions.detail, /Permission: read-only/)
+  assert.match(approvalOptions.detail, /Side-effect class: none/)
+  assert.doesNotMatch(approvalOptions.detail, new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-skill-trust:list')(harness.event()),
+    [record],
+  )
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-skill-trust:revoke')(harness.event(), bindingId),
+    { bindingId, revoked: true },
+  )
+  assert.deepEqual(harness.skillTrustStoreInstances[0].revocations, [bindingId])
+  assert.throws(
+    () => harness.ipcHandlers.get('local-skill-trust:revoke')(harness.event(), { bindingId }),
+    { message: 'LOCAL_SKILL_TRUST_REQUEST_INVALID' },
+  )
 })
 
 test('Custom Agent IPC keeps executable paths private and refreshes the local catalog', async (t) => {

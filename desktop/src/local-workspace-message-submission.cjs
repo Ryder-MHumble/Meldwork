@@ -20,6 +20,7 @@ const {
 const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 const { mediaGenerationRequest } = require('./media-generation-request.cjs')
 const { createTaskGraph } = require('./task-graph-records.cjs')
+const { assertLocalSkillExecution } = require('./local-skill-contract.cjs')
 
 function hardBudgetFailure(error) {
   return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
@@ -114,7 +115,7 @@ class LocalWorkspaceMessageSubmission {
     }
   }
 
-  async preflight(targetKinds, input, reservation) {
+  async preflight(group, targetKinds, input, reservation) {
     const text = cleanText(input.text)
     const attachments = await this.resolveAttachments(input.attachments || [], reservation.signal)
     if (reservation.signal.aborted || this.isShuttingDown()) {
@@ -137,6 +138,20 @@ class LocalWorkspaceMessageSubmission {
       }
       if (!Array.isArray(validated) || validated.some(skill => skill?.targetKind !== kind)) {
         throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+      }
+      const agent = this.detectedAgents().find(candidate => candidate.kind === kind)
+      for (const skill of validated) {
+        if (!skill?.approvedSkillManifest) continue
+        assertLocalSkillExecution(skill.approvedSkillManifest, {
+          kind,
+          version: agent?.resolvedVersion || agent?.version,
+          inputTypes: ['text', ...new Set(attachments.map(attachment => (
+            attachmentType(attachment.mimeType)
+          )).filter(Boolean))],
+          capabilities: agent?.capabilities,
+          permissionMode: group.allowWrite === true ? 'workspace-write' : 'read-only',
+          credentialIds: [],
+        })
       }
       const publicHints = validated.map(normalizeSkillHint).filter(Boolean)
       if (publicHints.length !== validated.length) {
@@ -381,6 +396,7 @@ class LocalWorkspaceMessageSubmission {
       const reportedFailures = new Set()
       try {
         const prepared = await this.preflight(
+          group,
           targetKinds,
           regeneration ? this.regenerationInput(input, regeneration, targetKinds[0]) : input,
           reservation,
