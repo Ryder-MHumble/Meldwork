@@ -128,6 +128,10 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     harness.workspaceInstances[0].input.runLedger.storagePath,
     path.join(directory, 'roundrelay-run-ledger.json'),
   )
+  assert.match(
+    harness.workspaceInstances[0].input.agentFitMatrix.matrixId,
+    /^fit-matrix-[a-f0-9]{64}$/,
+  )
   assert.equal(harness.workspaceInstances[0].refreshCount, 0)
   assert.equal(harness.providerInstances[0].input.storagePath,
     path.join(directory, 'roundrelay-provider.json'))

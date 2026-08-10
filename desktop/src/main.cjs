@@ -5,6 +5,7 @@ const { AttachmentStore } = require('./attachment-store.cjs')
 const { ContentBlobStore } = require('./content-blob-store.cjs')
 const { ContextPackStore } = require('./context-pack-store.cjs')
 const { OutcomeStore } = require('./outcome-store.cjs')
+const FROZEN_AGENT_FIT_MATRIX = require('./eval-data/agent-fit-matrix.v1.json')
 const {
   MEDIA_SCHEME,
   attachmentIdsFromSnapshot,
@@ -421,6 +422,7 @@ function createWorkspace() {
       rootPath: path.join(privateRoot, 'context-packs'),
     }),
     outcomeStore,
+    agentFitMatrix: FROZEN_AGENT_FIT_MATRIX,
     runLedger: cloudAgentRuntime.workspaceLedger(),
     detectAgents: async () => {
       const [installedAgents, customAgents] = await Promise.all([

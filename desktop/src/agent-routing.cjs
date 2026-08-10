@@ -8,9 +8,12 @@ const {
   AGENT_TOOL_CLASSES,
   agentRuntimeCapabilities,
 } = require('./agent-runtime-contract.cjs')
+const { parseFitMatrix } = require('./eval-records.cjs')
 const { cleanInline, isSupportedAgentKind } = require('./local-workspace-contracts.cjs')
 
 const ROUTING_DECISION_VERSION = 1
+const MIN_FIT_MATRIX_SAMPLE_SIZE = 3
+const MIN_FIT_MATRIX_CONFIDENCE = 0.6
 const MAX_ROUTING_CANDIDATES = 32
 const MAX_ROUTING_REQUIREMENTS = 8
 const ROUTING_MODES = new Set(['explicit', 'automatic'])
@@ -107,6 +110,25 @@ function normalizeRoutingRequirements(value, defaults = {}) {
 
 function normalizeFitMatrix(value) {
   const input = plainRecord(value)
+  if (input?.schemaVersion === 1 && Object.hasOwn(input, 'matrixId')) {
+    try {
+      const matrix = parseFitMatrix(input)
+      return Object.freeze({
+        version: matrix.matrixId,
+        entries: Object.freeze(matrix.entries.filter(entry => entry.routingEligible).map(entry => (
+          Object.freeze({
+            kind: entry.kind,
+            domains: Object.freeze([...entry.domains]),
+            score: entry.score,
+            confidence: entry.confidence,
+            sampleSize: entry.sampleSize,
+          })
+        ))),
+      })
+    } catch {
+      return Object.freeze({ version: '', entries: Object.freeze([]) })
+    }
+  }
   if (!input || !PUBLIC_ID.test(String(input.version || ''))
       || !Array.isArray(input.entries) || input.entries.length > 512) {
     return Object.freeze({ version: '', entries: Object.freeze([]) })
@@ -131,7 +153,10 @@ function normalizeFitMatrix(value) {
 
 function evidenceFor(kind, requirements, matrix) {
   const matches = matrix.entries.filter(entry => (
-    entry.kind === kind && entry.domains.some(domain => requirements.domains.includes(domain))
+    entry.kind === kind
+      && entry.sampleSize >= MIN_FIT_MATRIX_SAMPLE_SIZE
+      && entry.confidence >= MIN_FIT_MATRIX_CONFIDENCE
+      && entry.domains.some(domain => requirements.domains.includes(domain))
   )).sort((left, right) => (
     (right.confidence * right.sampleSize) - (left.confidence * left.sampleSize)
       || right.score - left.score
@@ -371,6 +396,8 @@ class AgentRouter {
 
 module.exports = {
   AgentRouter,
+  MIN_FIT_MATRIX_CONFIDENCE,
+  MIN_FIT_MATRIX_SAMPLE_SIZE,
   ROUTING_DECISION_VERSION,
   normalizeFitMatrix,
   normalizeRoutingDecision,

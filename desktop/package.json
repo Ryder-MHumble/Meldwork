@@ -9,6 +9,8 @@
   "scripts": {
     "build:frontend": "npm --prefix ../frontend run build:desktop",
     "dev": "npm run build:frontend && electron .",
+    "eval:deterministic": "node scripts/run-evals.cjs --suite deterministic",
+    "eval:provider": "node scripts/run-evals.cjs --suite provider",
     "test": "node --test test/*.test.cjs",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "npm run build:frontend && electron-builder --mac dmg zip",

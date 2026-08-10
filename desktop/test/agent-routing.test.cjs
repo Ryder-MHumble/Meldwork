@@ -3,8 +3,10 @@ const assert = require('node:assert/strict')
 
 const {
   AgentRouter,
+  normalizeFitMatrix,
   normalizeRoutingDecision,
 } = require('../src/agent-routing.cjs')
+const frozenMatrix = require('../src/eval-data/agent-fit-matrix.v1.json')
 
 function agent(kind, overrides = {}) {
   return { kind, available: true, invocable: true, ...overrides }
@@ -178,6 +180,38 @@ test('frozen Eval Harness evidence influences routing without static brand prefe
   assert.equal(decision.rationale, 'evidence-ranked-team')
   assert.equal(decision.evidenceVersion, 'fit-matrix-2026-08-10')
   assert.equal(decision.candidates.find(candidate => candidate.kind === 'hermes').evidence.sampleSize, 12)
+})
+
+test('automatic routing ignores low-sample or low-confidence Eval evidence', () => {
+  const router = new AgentRouter({
+    fitMatrix: {
+      version: 'fit-matrix-insufficient-v1',
+      entries: [
+        { kind: 'codex', domains: ['general'], score: 10, confidence: 0.9, sampleSize: 2 },
+        { kind: 'hermes', domains: ['general'], score: 100, confidence: 0.59, sampleSize: 20 },
+      ],
+    },
+  })
+  const decision = router.route(request({
+    input: { routingMode: 'automatic', targetKinds: [] },
+  }))
+
+  assert.deepEqual(decision.selectedKinds, ['codex'])
+  assert.equal(decision.rationale, 'smallest-suitable-team')
+  assert.equal(decision.evidenceVersion, '')
+  assert.equal(decision.candidates.some(candidate => candidate.evidence), false)
+})
+
+test('routing consumes a strict content-addressed frozen matrix without weak evidence', () => {
+  const normalized = normalizeFitMatrix(frozenMatrix)
+  assert.equal(normalized.version, frozenMatrix.matrixId)
+  assert.deepEqual(normalized.entries, [])
+
+  const decision = new AgentRouter({ fitMatrix: frozenMatrix }).route(request({
+    input: { routingMode: 'automatic', targetKinds: [] },
+  }))
+  assert.equal(decision.rationale, 'smallest-suitable-team')
+  assert.equal(decision.evidenceVersion, '')
 })
 
 test('persisted routing decisions use a strict bounded public schema', () => {
