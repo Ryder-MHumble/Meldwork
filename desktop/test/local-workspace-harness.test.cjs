@@ -295,7 +295,7 @@ test('isolated invocations use only the approved prompt and retain workflow Outc
       outcomeRefs: requestedOutcomeRefs,
     },
   )
-  workspace.finishRun(group.id, controller, 'completed')
+  await workspace.finishRun(group.id, controller, 'completed')
 
   assert.equal(calls.length, 1)
   assert.equal(captureCalls, 0)
@@ -1516,13 +1516,15 @@ test('resuming automatic discussion fails closed when its running checkpoint is 
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
 })
 
-test('Run Ledger finalization retries the full terminal snapshot before finish', async (t) => {
+test('Run Ledger finalization automatically retries the full terminal snapshot before finish', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledgerPath = path.join(directory, 'run-ledger.json')
   const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
   options.runLedger = ledger
   const workspace = new LocalWorkspace(options)
+  const finishedEvents = []
+  workspace.on('run-finished', event => finishedEvents.push(event))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Retry terminal checkpoint', agentKinds: ['codex'], workdir: directory,
@@ -1567,15 +1569,14 @@ test('Run Ledger finalization retries the full terminal snapshot before finish',
     output: 'Fresh terminal output',
   }]
 
-  workspace.finishRunCheckpoint(group.id, controller, 'completed')
-  assert.equal(ledger.get(controller.runId).status, 'running')
-  assert.equal(ledger.get(controller.runId).agentRuns[0].output, 'Stale output')
-
-  workspace.finishRunCheckpoint(group.id, controller, 'completed')
+  await workspace.finishRun(group.id, controller, 'completed')
   const finished = ledger.get(controller.runId)
   assert.equal(finished.status, 'completed')
   assert.equal(finished.agentRuns[0].status, 'completed')
   assert.equal(finished.agentRuns[0].output, 'Fresh terminal output')
+  assert.equal(workspace.activeRuns.has(group.id), false)
+  assert.equal(finishedEvents.length, 1)
+  assert.equal(finishedEvents[0].status, 'completed')
 })
 
 test('a Unicode group identifier preserves native sessions and every runtime path', async (t) => {
@@ -1834,6 +1835,71 @@ test('restart recovery persists the last nonterminal Agent trace as interrupted'
   assert.equal(interrupted.trace.summary, 'Located the failing lifecycle boundary.')
   assert.deepEqual(interrupted.trace.sourceMessageIds, [root.id])
   assert.equal(interrupted.trace.context.omittedCount, 2)
+})
+
+test('restart never downgrades an already completed conversation result from a stale Run', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  const group = initial.createGroup({
+    name: 'Completed result recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const root = initial.addMessage(group.id, 'user', 'Keep the completed result')
+  const contextPack = initial.createContextPack({
+    group,
+    taskId: root.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: root,
+  })
+  initial.addMessage(
+    group.id,
+    'agent',
+    'Durable completed answer',
+    'codex',
+    root.id,
+    null,
+    {
+      trace: {
+        runId: 'run-stale-terminal',
+        agentRunId: 'run-stale-terminal:0:codex:agent-1',
+        round: 0,
+        status: 'completed',
+      },
+    },
+  )
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  ledger.checkpoint({
+    runId: 'run-stale-terminal',
+    taskId: root.id,
+    contextPackId: contextPack.contextPackId,
+    contextPackState: 'captured',
+    groupId: group.id,
+    threadRootId: root.id,
+    targetKinds: ['codex'],
+    status: 'running',
+    agentRuns: [{
+      agentRunId: 'run-stale-terminal:0:codex:agent-1',
+      kind: 'codex',
+      round: 0,
+      status: 'running',
+      output: 'Durable completed answer',
+    }],
+  })
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  })
+  const result = restored.snapshot().messages.find(message => (
+    message.trace?.agentRunId === 'run-stale-terminal:0:codex:agent-1'
+  ))
+
+  assert.equal(result.role, 'agent')
+  assert.equal(result.content, 'Durable completed answer')
+  assert.equal(result.trace.status, 'completed')
 })
 
 test('restart reconciles after recovery message persistence fails and then deduplicates', async (t) => {

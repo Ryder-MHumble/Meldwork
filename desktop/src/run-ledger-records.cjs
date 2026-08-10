@@ -746,22 +746,19 @@ function oldestTimestamp(record) {
 
 function pruneRecords(value, maxRuns) {
   const records = [...value]
-  while (records.length > maxRuns) {
-    let removable = -1
-    for (let index = 0; index < records.length; index += 1) {
-      if (!TERMINAL_STATUSES.has(records[index].status)) continue
-      if (removable < 0 || oldestTimestamp(records[index]) < oldestTimestamp(records[removable])) {
-        removable = index
-      }
-    }
-    if (removable < 0) {
-      removable = records.reduce((oldest, record, index) => (
-        oldestTimestamp(record) < oldestTimestamp(records[oldest]) ? index : oldest
-      ), 0)
-    }
-    records.splice(removable, 1)
-  }
-  return records
+  const removeCount = records.length - maxRuns
+  if (removeCount <= 0) return records
+  const terminalIndexes = records
+    .map((record, index) => ({ index, timestamp: oldestTimestamp(record) }))
+    .filter(({ index }) => TERMINAL_STATUSES.has(records[index].status))
+    .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index)
+  const nonterminalCount = records.length - terminalIndexes.length
+  const terminalFloor = nonterminalCount >= maxRuns && terminalIndexes.length ? 1 : 0
+  const terminalRemoveCount = Math.min(removeCount, terminalIndexes.length - terminalFloor)
+  terminalIndexes.splice(terminalRemoveCount)
+  if (!terminalIndexes.length) return records
+  const removed = new Set(terminalIndexes.map(item => item.index))
+  return records.filter((_record, index) => !removed.has(index))
 }
 
 function clone(value) {

@@ -1178,13 +1178,24 @@ test('retention evicts the oldest terminal record before active records', (t) =>
 
   add('active-next', 'running')
   assert.deepEqual(ledger.list().map(record => record.runId), [
-    'active-next', 'active-new', 'active-old',
+    'active-next', 'active-new', 'terminal-new', 'active-old',
   ])
 
   add('active-last', 'running')
   assert.deepEqual(ledger.list().map(record => record.runId), [
-    'active-last', 'active-next', 'active-new',
+    'active-last', 'active-next', 'active-new', 'terminal-new', 'active-old',
   ])
+  assert.deepEqual(
+    new RunLedger({ storagePath, maxRuns: 3 }).list().map(record => record.runId),
+    ['active-last', 'active-next', 'active-new', 'terminal-new', 'active-old'],
+  )
+
+  ledger.finish('active-last', 'completed')
+  assert.deepEqual(ledger.list().map(record => record.runId), [
+    'active-last', 'active-next', 'active-new', 'active-old',
+  ])
+  assert.equal(ledger.get('active-last').status, 'completed')
+  assert.equal(new RunLedger({ storagePath, maxRuns: 3 }).get('active-last').status, 'completed')
 })
 
 test('deleteGroup removes only matching records and persists the result', (t) => {

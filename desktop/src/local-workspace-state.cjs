@@ -16,6 +16,20 @@ const FINISHED_AGENT_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
 ])
 const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
+const TERMINAL_PERSISTENCE_STATES = new Set(['pending', 'retrying', 'failed'])
+
+function terminalPersistenceSnapshot(value) {
+  if (!value || !TERMINAL_PERSISTENCE_STATES.has(value.state)) return null
+  return {
+    state: value.state,
+    status: typeof value.status === 'string' ? value.status : 'failed',
+    attempts: Number.isSafeInteger(value.attempts) && value.attempts > 0 ? value.attempts : 1,
+    nextRetryAt: Number.isSafeInteger(value.nextRetryAt) && value.nextRetryAt > 0
+      ? value.nextRetryAt
+      : 0,
+    code: value.code === 'LOCAL_RUN_PERSIST_FAILED' ? value.code : '',
+  }
+}
 
 function loadWorkspaceState(storagePath) {
   let source
@@ -227,6 +241,7 @@ function workspaceSnapshot({
       const mode = run.mode === 'auto' ? 'auto' : 'manual'
       const unlimitedRounds = mode === 'auto' && run.unlimitedRounds === true
       const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
+      const terminalPersistence = terminalPersistenceSnapshot(run.terminalPersistence)
       return {
         groupId,
         runId: run.runId || '',
@@ -249,6 +264,7 @@ function workspaceSnapshot({
         agentRuns: run.harness?.snapshot?.() || [],
         waitingGateIds: [...(run.waitingGateIds || [])],
         budget: run.budget?.snapshot?.() || null,
+        ...(terminalPersistence ? { terminalPersistence } : {}),
       }
     }), ...durableRuns],
   }

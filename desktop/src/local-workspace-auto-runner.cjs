@@ -702,7 +702,7 @@ class LocalWorkspaceAutoRunner {
         if (controller.signal.aborted) {
           runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
         }
-        this.finishRun(group.id, controller, runStatus)
+        await this.finishRun(group.id, controller, runStatus)
       }
     })()
     controller.promise = promise

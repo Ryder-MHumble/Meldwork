@@ -598,7 +598,7 @@ class LocalWorkspaceMessageSubmission {
           if (controller.signal.aborted) {
             runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
           } else if (runStatus === 'failed' && successfulKinds.size > 0) runStatus = 'partial'
-          this.finishRun(group.id, controller, runStatus)
+          await this.finishRun(group.id, controller, runStatus)
         } else {
           this.releasePreparation(group.id, reservation)
         }

@@ -197,7 +197,7 @@ class RunLedger {
         }
       }
       const byId = new Map()
-      for (const rawRecord of parsed.runs.slice(-MAX_RUNS * 4)) {
+      for (const rawRecord of parsed.runs) {
         const normalized = normalizeRecord(rawRecord, { now: 0, allowLegacyContext: true })
         byId.set(normalized.runId, normalized)
       }
@@ -485,7 +485,7 @@ class RunLedger {
     })
     const nextRuns = this.runs.filter((_record, recordIndex) => recordIndex !== index)
     nextRuns.push(normalized)
-    this.commit(nextRuns, [normalized.runId])
+    this.commit(pruneRecords(nextRuns, this.maxRuns), [normalized.runId])
     return clone(normalized)
   }
 

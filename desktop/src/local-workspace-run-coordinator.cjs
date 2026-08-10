@@ -1,5 +1,6 @@
 const { randomUUID } = require('node:crypto')
 const { RunHarness } = require('./run-harness.cjs')
+const { boundedBackoffDelay } = require('./failure-policy.cjs')
 const {
   RunBudget,
   normalizeRunBudgetConfiguration,
@@ -17,6 +18,14 @@ const FINISHED_AGENT_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
 ])
 const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
+const TERMINAL_PERSIST_ATTEMPTS = 3
+
+function persistenceFailure(state) {
+  return Object.assign(new Error('LOCAL_RUN_TERMINAL_PERSIST_FAILED'), {
+    code: 'LOCAL_RUN_TERMINAL_PERSIST_FAILED',
+    persistence: { ...state },
+  })
+}
 
 class LocalWorkspaceRunCoordinator {
   constructor(options) {
@@ -40,6 +49,14 @@ class LocalWorkspaceRunCoordinator {
     this.emitChanged = options.emitChanged
     this.emit = options.emit
     this.runBudgetDefaults = normalizeRunBudgetConfiguration(options.runBudgetDefaults || {})
+    this.terminalRetryBaseDelayMs = Number.isFinite(options.retryBaseDelayMs)
+      ? Math.max(1, Math.floor(options.retryBaseDelayMs))
+      : 250
+    this.terminalRetryMaxDelayMs = Number.isFinite(options.retryMaxDelayMs)
+      ? Math.max(this.terminalRetryBaseDelayMs, Math.floor(options.retryMaxDelayMs))
+      : 2000
+    this.terminalRetrySleep = options.terminalRetrySleep
+      || (delayMs => new Promise(resolve => this.setTimeout(resolve, delayMs)))
   }
 
   createController(mode, targetKinds, threadRootId, maxRounds = 0, unlimitedRounds = false) {
@@ -86,6 +103,10 @@ class LocalWorkspaceRunCoordinator {
     controller.attemptHistory = []
     controller.continuation = null
     controller.orchestration = null
+    controller.finished = false
+    controller.terminalOutbox = null
+    controller.terminalPersistence = null
+    controller.finishingPromise = null
     return controller
   }
 
@@ -316,8 +337,8 @@ class LocalWorkspaceRunCoordinator {
   }
 
   finish(groupId, controller, status) {
-    if (controller.finished) return
-    controller.finished = true
+    if (controller.finished) return controller.done
+    if (controller.finishingPromise) return controller.finishingPromise
     this.clearRunSilence(controller)
     const preserveContinuation = status === 'interrupted'
       && ['pending', 'ready', 'resuming'].includes(controller.continuation?.state)
@@ -333,8 +354,68 @@ class LocalWorkspaceRunCoordinator {
       }
       return
     }
-    const finalStatus = RUN_STATUSES.has(status) ? status : 'failed'
-    this.finishRunCheckpoint(groupId, controller, finalStatus)
+    if (!controller.terminalOutbox) {
+      controller.terminalOutbox = {
+        status: RUN_STATUSES.has(status) ? status : 'failed',
+        finishedAt: Date.now(),
+      }
+    }
+    const finishing = this.commitTerminal(groupId, controller)
+    controller.finishingPromise = finishing
+    finishing.then(() => {}, () => {
+      if (!controller.finished && controller.finishingPromise === finishing) {
+        controller.finishingPromise = null
+      }
+    })
+    return finishing
+  }
+
+  async commitTerminal(groupId, controller) {
+    const finalStatus = controller.terminalOutbox.status
+    for (let attempt = 1; attempt <= TERMINAL_PERSIST_ATTEMPTS; attempt += 1) {
+      const attempts = (controller.terminalPersistence?.attempts || 0) + 1
+      controller.terminalPersistence = {
+        state: attempt === 1 ? 'pending' : 'retrying',
+        status: finalStatus,
+        attempts,
+        nextRetryAt: 0,
+        code: '',
+      }
+      const requiresLedger = this.hasRunLedger()
+      let persisted = false
+      try {
+        const result = this.finishRunCheckpoint(groupId, controller, finalStatus)
+        persisted = !requiresLedger || result === true
+      } catch { persisted = !requiresLedger }
+      if (persisted) return this.acknowledgeTerminal(groupId, controller)
+      controller.terminalPersistence = {
+        ...controller.terminalPersistence,
+        state: attempt < TERMINAL_PERSIST_ATTEMPTS ? 'retrying' : 'failed',
+        code: 'LOCAL_RUN_PERSIST_FAILED',
+      }
+      if (attempt < TERMINAL_PERSIST_ATTEMPTS) {
+        const delayMs = boundedBackoffDelay(attempt, {
+          baseDelayMs: this.terminalRetryBaseDelayMs,
+          maxDelayMs: this.terminalRetryMaxDelayMs,
+        })
+        controller.terminalPersistence.nextRetryAt = Date.now() + delayMs
+        try { this.emitChanged() } catch {}
+        await this.terminalRetrySleep(delayMs)
+      }
+    }
+    try { this.emitChanged() } catch {}
+    throw persistenceFailure(controller.terminalPersistence)
+  }
+
+  acknowledgeTerminal(groupId, controller) {
+    const finalStatus = controller.terminalOutbox.status
+    controller.finished = true
+    controller.terminalPersistence = {
+      ...controller.terminalPersistence,
+      state: 'committed',
+      nextRetryAt: 0,
+      code: '',
+    }
     const ownsActiveRun = this.activeRuns.get(groupId) === controller
     if (ownsActiveRun) this.activeRuns.delete(groupId)
     const payload = {
@@ -354,7 +435,7 @@ class LocalWorkspaceRunCoordinator {
       completedKinds: controller.completedKinds.filter(isSupportedAgentKind),
       failedKinds: controller.failedKinds.filter(isSupportedAgentKind),
       startedAt: Number.isFinite(controller.startedAt) ? controller.startedAt : Date.now(),
-      finishedAt: Date.now(),
+      finishedAt: controller.terminalOutbox.finishedAt,
     }
     try {
       if (ownsActiveRun) this.emitChanged()
@@ -363,6 +444,7 @@ class LocalWorkspaceRunCoordinator {
       this.emit('run-finished', payload)
     } catch {}
     controller.resolveDone()
+    return payload
   }
 
   ensureHarness(group, controller, threadRootId = '') {

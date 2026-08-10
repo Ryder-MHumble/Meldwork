@@ -171,6 +171,9 @@ class LocalWorkspace extends EventEmitter {
       emitChanged: () => this.emitChanged(),
       emit: (...args) => this.emit(...args),
       runBudgetDefaults: this.runBudgetDefaults,
+      retryBaseDelayMs: options.retryBaseDelayMs,
+      retryMaxDelayMs: options.retryMaxDelayMs,
+      terminalRetrySleep: options.terminalRetrySleep,
     })
     this.conversations = new LocalWorkspaceConversations({
       state: () => this.state,
@@ -330,7 +333,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   finishRunCheckpoint(groupId, controller, status) {
-    this.runLedgerCoordinator.finish(groupId, controller, status)
+    return this.runLedgerCoordinator.finish(groupId, controller, status)
   }
 
   snapshot() {
@@ -770,7 +773,7 @@ class LocalWorkspace extends EventEmitter {
             controller.completedKinds.push(durable.continuation.agentKind)
           }
           this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
-          this.finishRun(durable.groupId, controller, 'stopped')
+          await this.finishRun(durable.groupId, controller, 'stopped')
           return
         }
         replayedResult = await this.replayAgentSlot(
@@ -815,11 +818,12 @@ class LocalWorkspace extends EventEmitter {
         : (resumableAuto
             ? await this.autoRunner.resume(group, durable, controller)
             : 'completed')
-      this.finishRun(durable.groupId, controller, finalStatus)
+      await this.finishRun(durable.groupId, controller, finalStatus)
     } catch (error) {
       if (controller) {
+        if (error?.code === 'LOCAL_RUN_TERMINAL_PERSIST_FAILED') return
         if (controller.signal.aborted && controller.stopReason === 'shutdown') {
-          this.finishRun(durable.groupId, controller, 'interrupted')
+          await this.finishRun(durable.groupId, controller, 'interrupted')
           return
         }
         if (durable.continuation.resumeKind === 'agent_slot'
@@ -843,7 +847,11 @@ class LocalWorkspace extends EventEmitter {
           durable.runId, gate.gateId,
           decision.status === 'rejected' ? 'cancelled' : 'failed',
         )
-        this.finishRun(durable.groupId, controller, decision.status === 'rejected' ? 'stopped' : 'failed')
+        await this.finishRun(
+          durable.groupId,
+          controller,
+          decision.status === 'rejected' ? 'stopped' : 'failed',
+        )
       } else {
         this.failHumanGateContinuation(gate, error)
       }

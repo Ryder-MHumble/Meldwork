@@ -183,7 +183,7 @@ test('an explicit internal code-review task runs once and remains read-only', as
     '',
     { taskType: 'code_review' },
   )
-  workspace.finishRun(group.id, controller, 'completed')
+  await workspace.finishRun(group.id, controller, 'completed')
 
   assert.equal(result.message.content, 'Review completed.')
   assert.equal(result.message.trace.context.externalRunRef, 'ocr-review-123')
@@ -1135,7 +1135,7 @@ test('stopAll records an in-flight Agent and its ledger checkpoint as interrupte
   assert.equal(terminalCheckpoint.agentRuns[0].status, 'interrupted')
 })
 
-test('a stale controller cannot clear a newer active run for the same group', (t) => {
+test('a stale controller cannot clear a newer active run for the same group', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1144,10 +1144,10 @@ test('a stale controller cannot clear a newer active run for the same group', (t
   workspace.activeRuns.set('group-id', first)
   workspace.activeRuns.set('group-id', second)
 
-  workspace.finishRun('group-id', first, 'completed')
+  await workspace.finishRun('group-id', first, 'completed')
   assert.equal(workspace.activeRuns.get('group-id'), second)
 
-  workspace.finishRun('group-id', second, 'stopped')
+  await workspace.finishRun('group-id', second, 'stopped')
   assert.equal(workspace.activeRuns.has('group-id'), false)
 })
 

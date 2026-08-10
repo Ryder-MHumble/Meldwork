@@ -77,6 +77,7 @@ class LocalWorkspaceRunLedger {
           message.trace?.agentRunId === trace.agentRunId
         ))
         if (existingMessage) {
+          if (['completed', 'partial'].includes(existingMessage.trace?.status) && !completed) continue
           if (!completed && output) {
             const prefix = terminalStatusPrefixFromMessage(
               existingMessage, label, status, reason,
@@ -186,14 +187,17 @@ class LocalWorkspaceRunLedger {
   }
 
   finish(groupId, controller, status) {
-    if (!this.runLedger || !controller?.runId) return
+    if (!this.runLedger || !controller?.runId) return false
     const timer = this.timers.get(controller.runId)
     if (timer) clearTimeout(timer)
     this.timers.delete(controller.runId)
-    if (!this.checkpoint(groupId, controller, status)) return
+    if (!this.checkpoint(groupId, controller, status)) return false
     try {
       this.runLedger.finish?.(controller.runId, status, controller.stopReason || '')
-    } catch { /* the conversation result remains authoritative */ }
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
