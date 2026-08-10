@@ -25,6 +25,7 @@ const {
   MAX_ATTEMPT_HISTORY,
   normalizeAttemptHistory,
 } = require('./failure-policy.cjs')
+const { parseCollaborationState } = require('./collaboration-records.cjs')
 
 const DEFAULT_MAX_DURABLE_AGENT_RUNS = 256
 const MAX_TARGET_KINDS = 32
@@ -63,7 +64,7 @@ const CONTINUATION_STATES = new Set([
 const ORCHESTRATION_FIELDS = new Set([
   'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
-  'totalSuccesses', 'terminalFailureOccurred',
+  'totalSuccesses', 'terminalFailureOccurred', 'collaboration',
 ])
 const ORCHESTRATION_WORKFLOWS = new Set(['manual', 'auto'])
 
@@ -402,7 +403,17 @@ function normalizeOrchestration(input) {
   const agreementKinds = normalizeKinds(input.agreementKinds)
   const attachmentRecipients = normalizeKinds(input.attachmentRecipients)
   const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
-  if (version !== 1 || !ORCHESTRATION_WORKFLOWS.has(workflow)) return undefined
+  if (![1, 2].includes(version) || !ORCHESTRATION_WORKFLOWS.has(workflow)
+      || (version === 1 && hasOwn(input, 'collaboration'))
+      || (version === 2 && workflow !== 'auto')) return undefined
+  let collaboration
+  if (version === 2) {
+    try {
+      collaboration = parseCollaborationState(input.collaboration)
+    } catch {
+      return undefined
+    }
+  }
   return {
     version,
     workflow,
@@ -414,6 +425,7 @@ function normalizeOrchestration(input) {
     attachmentRecipients,
     totalSuccesses,
     terminalFailureOccurred: input.terminalFailureOccurred === true,
+    ...(version === 2 ? { collaboration } : {}),
   }
 }
 

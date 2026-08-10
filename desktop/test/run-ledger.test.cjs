@@ -5,6 +5,10 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { RunLedger } = require('../src/run-ledger.cjs')
+const {
+  appendHandoff,
+  emptyCollaborationState,
+} = require('../src/collaboration-records.cjs')
 
 test('keeps the ledger facade limited to RunLedger', () => {
   assert.deepEqual(Object.keys(require('../src/run-ledger.cjs')), ['RunLedger'])
@@ -81,6 +85,70 @@ function attemptHistory() {
     timestamp: 1100,
   }]
 }
+
+test('loads exact v1 orchestration cursors and persists strict v2 collaboration state', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const baseCursor = {
+    workflow: 'auto',
+    currentKind: '',
+    pendingKinds: ['codex', 'hermes'],
+    activeKinds: ['codex', 'hermes'],
+    successfulKinds: [],
+    agreementKinds: [],
+    attachmentRecipients: [],
+    totalSuccesses: 0,
+    terminalFailureOccurred: false,
+  }
+  const legacy = ledger.checkpoint({
+    ...runRecord('run-orchestration-v1', 'group-orchestration-v1'),
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: 1,
+    maxRounds: 2,
+    orchestration: { version: 1, ...baseCursor },
+  })
+  assert.deepEqual(legacy.orchestration, { version: 1, ...baseCursor })
+
+  const collaboration = appendHandoff(emptyCollaborationState(), {
+    source: { type: 'harness' },
+    destination: { agentKind: 'codex', role: 'primary' },
+    objective: 'Assess the release.',
+    selectedEntryIds: [],
+    expectedOutput: 'One conclusion.',
+    acceptanceCriteria: ['Use selected state only.'],
+    provenance: {
+      runId: 'run-orchestration-v2',
+      taskId: 'run-orchestration-v2-task',
+      round: 1,
+      agentRunId: null,
+      artifactIds: [],
+      evidenceIds: [],
+    },
+    createdAt: 1000,
+  })
+  const current = ledger.checkpoint({
+    ...runRecord('run-orchestration-v2', 'group-orchestration-v2'),
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: 1,
+    maxRounds: 2,
+    orchestration: { version: 2, ...baseCursor, collaboration },
+  })
+  assert.deepEqual(current.orchestration.collaboration, collaboration)
+
+  const restarted = new RunLedger({ storagePath, now: () => 1100 })
+  assert.deepEqual(restarted.get(legacy.runId).orchestration, legacy.orchestration)
+  assert.deepEqual(restarted.get(current.runId).orchestration, current.orchestration)
+  assert.throws(() => ledger.checkpoint({
+    ...runRecord('run-orchestration-invalid', 'group-orchestration-invalid'),
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: 1,
+    maxRounds: 2,
+    orchestration: { version: 1, ...baseCursor, collaboration },
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+})
 
 test('persists sanitized attempt history through journal recovery and restart', (t) => {
   const { storagePath } = fixture(t)

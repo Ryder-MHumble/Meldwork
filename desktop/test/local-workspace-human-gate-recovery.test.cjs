@@ -168,8 +168,9 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
 
   const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
   assert.equal(waiting.currentRound, 1)
-  assert.deepEqual(waiting.orchestration, {
-    version: 1,
+  const { collaboration, ...waitingCursor } = waiting.orchestration
+  assert.deepEqual(waitingCursor, {
+    version: 2,
     workflow: 'auto',
     currentKind: 'kimi',
     pendingKinds: targetKinds.slice(gateIndex + 1),
@@ -180,6 +181,15 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
     totalSuccesses: 0,
     terminalFailureOccurred: false,
   })
+  assert.equal(collaboration.version, 1)
+  assert.deepEqual(
+    collaboration.handoffs.map(handoff => handoff.destination.agentKind),
+    targetKinds.slice(0, gateIndex + 1),
+  )
+  assert.equal(collaboration.entries.every(entry => (
+    targetKinds.slice(0, gateIndex).includes(entry.owner.agentKind)
+      || entry.owner.type === 'harness'
+  )), true)
 
   const restartedLedger = new RunLedger({ storagePath: ledgerPath })
   const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })

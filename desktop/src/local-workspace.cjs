@@ -591,7 +591,10 @@ class LocalWorkspace extends EventEmitter {
   canResumeOrchestration(durable, workflow) {
     const cursor = durable?.orchestration
     const continuation = durable?.continuation
-    if (durable?.mode !== workflow || cursor?.version !== 1 || cursor.workflow !== workflow
+    const supportedCursor = workflow === 'auto'
+      ? [1, 2].includes(cursor?.version)
+      : cursor?.version === 1
+    if (durable?.mode !== workflow || !supportedCursor || cursor.workflow !== workflow
         || cursor.currentKind !== continuation?.agentKind
         || !cursor.activeKinds.includes(cursor.currentKind)) return false
     const targetKinds = Array.isArray(durable.targetKinds) ? durable.targetKinds : []

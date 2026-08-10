@@ -153,6 +153,17 @@ function deliveredPackedContext(packedContext, promptMode) {
   }
 }
 
+function withCollaborationPackage(packedContext, collaborationPackage) {
+  if (!collaborationPackage) return packedContext
+  const text = typeof collaborationPackage.text === 'string'
+    ? collaborationPackage.text
+    : ''
+  if (!text || text.length > 128000 || text.includes('\u0000')) {
+    throw new Error('LOCAL_RUN_COLLABORATION_PACKAGE_INVALID')
+  }
+  return { ...packedContext, collaborationText: text }
+}
+
 function contextSourceProof(contextPack) {
   const sources = (Array.isArray(contextPack?.sources) ? contextPack.sources : []).map(source => ({
     type: source.type,
@@ -427,6 +438,11 @@ class LocalWorkspaceAgentInvocation {
       : this.packedPromptContext(
           group.id, transcriptAfterKind, threadRootId, context.contextOptions || {},
         )
+    if (!isolated) {
+      packedContext = withCollaborationPackage(
+        packedContext, context.collaborationPackage,
+      )
+    }
     if (!isolated) assertRequiredContextFits(packedContext)
     let deliveredContext = deliveredPackedContext(packedContext, promptMode)
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
@@ -824,6 +840,9 @@ class LocalWorkspaceAgentInvocation {
         sessionRotated = true
         packedContext = this.packedPromptContext(
           group.id, '', threadRootId, context.contextOptions || {},
+        )
+        packedContext = withCollaborationPackage(
+          packedContext, context.collaborationPackage,
         )
         assertRequiredContextFits(packedContext)
         deliveredContext = deliveredPackedContext(packedContext, promptMode)

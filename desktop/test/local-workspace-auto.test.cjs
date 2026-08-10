@@ -119,6 +119,70 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.equal(finished[0].status, 'completed')
 })
 
+test('automatic Primary Reviewer Arbiter flow uses selective typed collaboration state', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const conclusions = {
+    codex: 'The release is ready after tests.',
+    hermes: 'The release is blocked by missing package proof.',
+    workbuddy: 'The release is ready because package proof is present.',
+  }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${conclusions[agent.kind]}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Typed collaboration',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Assess release readiness using the available evidence.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'workbuddy'])
+  assert.match(calls[0].prompt, /Role: primary/)
+  assert.match(calls[0].prompt, /Selected blackboard entries: \(none\)/)
+  assert.match(calls[1].prompt, /Role: reviewer/)
+  assert.match(calls[1].prompt, /The release is ready after tests\./)
+  assert.match(calls[2].prompt, /Role: arbiter/)
+  assert.match(calls[2].prompt, /\[conflict\]/)
+  assert.match(calls[2].prompt, /missing package proof/)
+  assert.doesNotMatch(calls[2].prompt, /Recent conversation across the group:\n(?:Codex|Hermes):/)
+
+  const messages = workspace.snapshot().messages.filter(message => message.role === 'agent')
+  const arbiterMessage = messages.find(message => message.agentKind === 'workbuddy')
+  const transcriptOnly = workspace.packedPromptContext(group.id, '', started.threadRootId, {
+    beforeMessageId: arbiterMessage.id,
+    focusUserMessageId: started.threadRootId,
+  })
+  assert.ok(transcriptOnly.context.includedCount > arbiterMessage.trace.context.includedCount)
+  assert.ok(transcriptOnly.context.charCount > arbiterMessage.trace.context.charCount)
+  assert.deepEqual(arbiterMessage.trace.sourceMessageIds, [started.threadRootId])
+
+  const durable = ledger.list(group.id)[0]
+  assert.equal(durable.orchestration.version, 2)
+  assert.deepEqual(durable.orchestration.collaboration.handoffs.map(handoff => (
+    handoff.destination.role
+  )), ['primary', 'reviewer', 'arbiter'])
+  assert.equal(durable.orchestration.collaboration.entries.some(entry => (
+    entry.entryType === 'conflict'
+  )), true)
+})
+
 test('unlimited automatic discussion continues past a finite cap until consensus', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -296,9 +360,9 @@ test('later group rounds use a compact Harness continuation instead of the boots
   assert.match(calls[2].prompt, /Harness-compressed shared context/)
   assert.doesNotMatch(calls[2].prompt, /You are participating in the local|Group topic:/)
   assert.doesNotMatch(calls[2].prompt, /Deliverable capture contract|Stable user instructions and constraints:/)
-  assert.match(calls[2].prompt, /Hermes: hermes round 2/)
+  assert.match(calls[2].prompt, /\[claim\].*hermes round 2/)
   assert.match(calls[2].prompt, /请围绕这个主题进行两轮讨论/)
-  assert.ok(calls[2].prompt.length < calls[0].prompt.length)
+  assert.ok(calls[2].prompt.length < 12000)
   assert.equal(calls[2].runOptions.sessionRef, 'codex-session')
   assert.equal(calls[3].runOptions.sessionRef, 'hermes-session')
 
