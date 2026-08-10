@@ -54,6 +54,7 @@ const IDEMPOTENCY_MODES = Object.freeze(['none', 'durable'])
 const IDEMPOTENCY_MODE_SET = new Set(IDEMPOTENCY_MODES)
 const ATTEMPT_PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const MAX_ATTEMPT_HISTORY = 256
+const MAX_RUN_AGENT_ATTEMPTS = 128
 const NETWORK_CODES = new Set([
   'ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETDOWN',
   'ENETUNREACH', 'ENOTFOUND', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
@@ -327,6 +328,7 @@ module.exports = {
   FAILURE_OUTCOME_CERTAINTIES,
   IDEMPOTENCY_MODES,
   MAX_ATTEMPT_HISTORY,
+  MAX_RUN_AGENT_ATTEMPTS,
   boundedBackoffDelay,
   normalizeFailure,
   normalizeFailureOutcome,

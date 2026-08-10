@@ -137,10 +137,20 @@ test('persists strict budget snapshots through the journal and restart', (t) => 
   const { storagePath } = fixture(t)
   const ledger = new RunLedger({ storagePath, now: () => 1000 })
   const budget = budgetSnapshot({
-    limits: { ...budgetSnapshot().limits, inputTokens: 4000 },
+    limits: { ...budgetSnapshot().limits, inputTokens: 4000, toolCalls: 1 },
     used: { ...budgetSnapshot().used, inputTokens: 750, toolCalls: 2 },
     source: { ...budgetSnapshot().source, inputTokens: 'estimated', toolCalls: 'reported' },
-    enforcement: { ...budgetSnapshot().enforcement, inputTokens: 'hard' },
+    enforcement: { ...budgetSnapshot().enforcement, inputTokens: 'hard', toolCalls: 'hard' },
+    exhaustion: {
+      dimension: 'toolCalls',
+      limit: 1,
+      priorUsed: 1,
+      attemptedUsage: 1,
+      used: 2,
+      source: 'reported',
+      enforcement: 'hard',
+      reason: 'BUDGET_LIMIT_EXCEEDED',
+    },
   })
 
   const saved = ledger.checkpoint({

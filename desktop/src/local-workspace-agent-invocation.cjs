@@ -607,10 +607,14 @@ class LocalWorkspaceAgentInvocation {
       const recordOutboundPayload = (outbound = {}) => {
         if (activeRun?.budget) {
           const bytes = outboundWirePayloadBytes(outbound)
-          activeRun.budget.addUsage('outboundBytes', bytes.length, { source: 'reported' })
-          activeRun.budget.addUsage('inputTokens', Math.ceil(bytes.length / 4), {
-            source: 'estimated',
-          })
+          activeRun.budget.addUsageBatch([
+            { dimension: 'outboundBytes', amount: bytes.length, source: 'reported' },
+            {
+              dimension: 'inputTokens',
+              amount: Math.ceil(bytes.length / 4),
+              source: 'estimated',
+            },
+          ])
         }
         const baseContextPackId = isolated?.contextPackId || activeRun?.contextPackId || ''
         if (!baseContextPackId || !harness || !harnessRun) return
@@ -883,17 +887,25 @@ class LocalWorkspaceAgentInvocation {
         const reportedOutputTokens = Number(result.usage?.outputTokens)
         const hasReportedOutputTokens = Number.isSafeInteger(reportedOutputTokens)
           && reportedOutputTokens >= 0
-        activeRun.budget.addUsage(
-          'outputTokens',
-          hasReportedOutputTokens ? reportedOutputTokens : Math.ceil(reply.text.length / 4),
-          { source: hasReportedOutputTokens ? 'reported' : 'estimated' },
-        )
-        activeRun.budget.addUsage('toolCalls', toolCalls.length, { source: 'estimated' })
         const reportedCostMicros = Number(result.usage?.costMicros)
-        if (Number.isSafeInteger(reportedCostMicros) && reportedCostMicros >= 0) {
-          activeRun.budget.addUsage('costMicros', reportedCostMicros, { source: 'reported' })
-        }
-        activeRun.budget.updateElapsed()
+        activeRun.budget.addUsageBatch([
+          {
+            dimension: 'outputTokens',
+            amount: hasReportedOutputTokens
+              ? reportedOutputTokens
+              : Math.ceil(reply.text.length / 4),
+            source: hasReportedOutputTokens ? 'reported' : 'estimated',
+          },
+          { dimension: 'toolCalls', amount: toolCalls.length, source: 'estimated' },
+          ...(Number.isSafeInteger(reportedCostMicros) && reportedCostMicros >= 0
+            ? [{ dimension: 'costMicros', amount: reportedCostMicros, source: 'reported' }]
+            : []),
+          {
+            dimension: 'elapsedMs',
+            value: activeRun.budget.elapsedValue(),
+            source: 'reported',
+          },
+        ])
         this.checkpointRun(group.id, activeRun)
       }
       let attachments = []

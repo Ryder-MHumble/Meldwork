@@ -3,6 +3,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { agentRuntimeError } = require('../src/agent-runtime-contract.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('../src/failure-policy.cjs')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { RunLedger } = require('../src/run-ledger.cjs')
 const { deferred, fixture } = require('./local-workspace-test-helpers.cjs')
@@ -172,6 +173,93 @@ test('unlimited automatic discussion continues past a finite cap until consensus
   assert.equal(workspace.snapshot().messages.some(message => (
     message.system?.key === 'system.autoRoundLimit'
   )), false)
+})
+
+test('unlimited automatic discussion stops at the mandatory Agent-attempt circuit breaker', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} keeps going\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Mandatory circuit breaker', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  const root = workspace.addMessage(group.id, 'user', 'Continue forever')
+  workspace.startAuto({ groupId: group.id, threadRootId: root.id, unlimitedRounds: true })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(calls.length, MAX_RUN_AGENT_ATTEMPTS)
+  assert.equal(finished[0].status, 'circuit-breaker')
+  const terminal = ledger.list(group.id)[0]
+  assert.equal(terminal.status, 'circuit-breaker')
+  assert.equal(terminal.reason, 'circuit_breaker')
+  assert.equal(terminal.attemptHistory.length, MAX_RUN_AGENT_ATTEMPTS)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.runCircuitBreaker'
+      && message.system.params.maxAttempts === MAX_RUN_AGENT_ATTEMPTS
+  )), true)
+
+  const storedWorkspace = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  storedWorkspace.messages = storedWorkspace.messages.filter(message => (
+    message.system?.key !== 'system.runCircuitBreaker'
+  ))
+  fs.writeFileSync(options.storagePath, JSON.stringify(storedWorkspace), 'utf8')
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') }),
+  })
+  assert.equal(restarted.snapshot().messages.some(message => (
+    message.system?.key === 'system.runCircuitBreaker'
+  )), true)
+})
+
+test('transient retries cannot exceed the mandatory Agent-attempt circuit breaker', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const firstCallEntered = deferred()
+  const releaseFirstCall = deferred()
+  options.retrySleep = async () => {}
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    firstCallEntered.resolve()
+    await releaseFirstCall.promise
+    throw Object.assign(new Error('Provider temporarily unavailable'), { statusCode: 503 })
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Retry circuit breaker', agentKinds: ['hermes', 'codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Do not exceed the retry ceiling')
+
+  workspace.startAuto({ groupId: group.id, unlimitedRounds: true })
+  const active = workspace.activeRuns.get(group.id)
+  await firstCallEntered.promise
+  active.attemptHistory = Array.from({ length: MAX_RUN_AGENT_ATTEMPTS - 1 }, (_, index) => ({
+    sequence: index + 1,
+  }))
+  releaseFirstCall.resolve()
+  await active.promise
+
+  assert.equal(calls.length, 1)
+  assert.equal(active.attemptHistory.length, MAX_RUN_AGENT_ATTEMPTS)
+  assert.equal(finished[0].status, 'circuit-breaker')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.runCircuitBreaker'
+  )), true)
 })
 
 test('later group rounds use a compact Harness continuation instead of the bootstrap template', async (t) => {

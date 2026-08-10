@@ -15,8 +15,20 @@ const {
   normalizeKnowledgeBaseHint,
   normalizeSkillHint,
   normalizeTargetKinds,
+  terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 const { mediaGenerationRequest } = require('./media-generation-request.cjs')
+
+function hardBudgetFailure(error) {
+  return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+    || error?.message === 'LOCAL_BUDGET_EXHAUSTED'
+}
+
+function circuitBreakerFailure(error) {
+  return error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+    || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER'
+}
 
 class LocalWorkspaceMessageSubmission {
   constructor(options) {
@@ -548,6 +560,31 @@ class LocalWorkspaceMessageSubmission {
             }
             successfulKinds.add(kind)
           } catch (error) {
+            if (circuitBreakerFailure(error)) {
+              controller.stopReason = 'circuit_breaker'
+              controller.abort()
+              this.addMessage(
+                group.id,
+                'system',
+                `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+                '',
+                threadRootId,
+                {
+                  key: 'system.runCircuitBreaker',
+                  params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+                },
+              )
+              break
+            }
+            if (hardBudgetFailure(error)) {
+              this.recordAgentFailure(group.id, kind, error, threadRootId, reportedFailures)
+              successfulKinds.delete(kind)
+              if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+              if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+              controller.stopReason = 'hard_budget'
+              controller.abort()
+              break
+            }
             if (controller.signal.aborted) {
               this.recordAgentInterruption(
                 group.id,
@@ -580,7 +617,7 @@ class LocalWorkspaceMessageSubmission {
           this.emitChanged()
         }
         if (controller.signal.aborted) {
-          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+          runStatus = terminalRunStatusForReason(controller.stopReason)
           return this.snapshot()
         }
         const successCount = activeKinds.filter(kind => successfulKinds.has(kind)).length
@@ -596,7 +633,7 @@ class LocalWorkspaceMessageSubmission {
           controller.currentKind = ''
           controller.progress = []
           if (controller.signal.aborted) {
-            runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+            runStatus = terminalRunStatusForReason(controller.stopReason)
           } else if (runStatus === 'failed' && successfulKinds.size > 0) runStatus = 'partial'
           await this.finishRun(group.id, controller, runStatus)
         } else {

@@ -22,12 +22,14 @@ const SESSION_REF = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$/
 const SECRET_LIKE_SESSION_REF = /^(?:sk|rk|pk|ghp|github_pat|xox[baprs]?)[_-][A-Za-z0-9_-]{12,}$/i
 const RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const RECOVERABLE_AGENT_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted',
 ])
 const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
   'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
+  'system.agentBudgetExhausted',
 ])
 const RUN_LEDGER_CHECKPOINT_DELAY_MS = 120
 const PROGRESS_TITLES = new Set([
@@ -67,12 +69,25 @@ function terminalStatusPrefix(label, status, reason = '') {
   return `${agent} failed: ${cleanText(reason, MAX_SYSTEM_PARAM_TEXT_CHARS)}`
 }
 
+function budgetTerminalPrefix(label) {
+  const agent = cleanText(label, MAX_SYSTEM_PARAM_TEXT_CHARS)
+  return `${agent} stopped because a hard run budget was exceeded.`
+}
+
+function terminalRunStatusForReason(reason, fallback = 'stopped') {
+  if (reason === 'shutdown') return 'interrupted'
+  if (reason === 'hard_budget') return 'budget-exhausted'
+  if (reason === 'circuit_breaker') return 'circuit-breaker'
+  return RUN_STATUSES.has(fallback) ? fallback : 'stopped'
+}
+
 function terminalStatusPrefixFromMessage(message, fallbackLabel, fallbackStatus, fallbackReason) {
   const key = message?.system?.key
   const label = cleanText(message?.system?.params?.agent, MAX_SYSTEM_PARAM_TEXT_CHARS)
     || fallbackLabel
   if (key === 'system.agentInterrupted') return terminalStatusPrefix(label, 'interrupted')
   if (key === 'system.agentStopped') return terminalStatusPrefix(label, 'stopped')
+  if (key === 'system.agentBudgetExhausted') return budgetTerminalPrefix(label)
   if (key === 'system.agentCallFailed') {
     const reason = cleanText(message?.system?.params?.reason, MAX_SYSTEM_PARAM_TEXT_CHARS)
       || fallbackReason
@@ -184,6 +199,7 @@ module.exports = {
   RUN_STATUSES,
   abortableOperation,
   agentStoppedError,
+  budgetTerminalPrefix,
   cleanCurrentRound,
   cleanElapsedMs,
   cleanProgressSteps,
@@ -195,6 +211,7 @@ module.exports = {
   settleWithin,
   terminalMessageContent,
   terminalMessageContentLimit,
+  terminalRunStatusForReason,
   terminalStatusPrefix,
   terminalStatusPrefixFromMessage,
 }

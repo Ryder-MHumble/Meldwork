@@ -38,6 +38,7 @@ const EXPECTED_EXPORTS = [
   'agentStoppedError',
   'attachmentLimitError',
   'attachmentType',
+  'budgetTerminalPrefix',
   'cleanCurrentRound',
   'cleanElapsedMs',
   'cleanInline',
@@ -63,6 +64,7 @@ const EXPECTED_EXPORTS = [
   'skillHintsPrompt',
   'terminalMessageContent',
   'terminalMessageContentLimit',
+  'terminalRunStatusForReason',
   'terminalStatusPrefix',
   'terminalStatusPrefixFromMessage',
 ]
@@ -87,6 +89,7 @@ test('local workspace input facade forwards domain exports without wrappers', ()
   assert.equal(inputs.abortableOperation, runtimeContracts.abortableOperation)
   assert.equal(inputs.parseAutoReply, runtimeContracts.parseAutoReply)
   assert.equal(inputs.terminalMessageContent, runtimeContracts.terminalMessageContent)
+  assert.equal(inputs.terminalRunStatusForReason, runtimeContracts.terminalRunStatusForReason)
 })
 
 test('local workspace coordinator keeps its public export unchanged', () => {

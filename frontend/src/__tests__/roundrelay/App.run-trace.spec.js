@@ -192,7 +192,7 @@ describe('RoundRelay workbench', () => {
         budget: {
           limits: {
             inputTokens: 4000, outputTokens: null, costMicros: null,
-            toolCalls: 20, outboundBytes: null, elapsedMs: null,
+            toolCalls: 2, outboundBytes: null, elapsedMs: null,
           },
           used: {
             inputTokens: 750, outputTokens: 120, costMicros: 0,
@@ -207,6 +207,10 @@ describe('RoundRelay workbench', () => {
             toolCalls: 'hard', outboundBytes: 'soft', elapsedMs: 'soft',
           },
           startedAt: 1000,
+          exhaustion: {
+            dimension: 'toolCalls', limit: 2, priorUsed: 2, attemptedUsage: 1, used: 3,
+            source: 'estimated', enforcement: 'hard', reason: 'BUDGET_LIMIT_EXCEEDED',
+          },
         },
         agentRuns: [{
           agentRunId: 'agent-runtime-codex',
@@ -245,6 +249,8 @@ describe('RoundRelay workbench', () => {
       .toContain('This run requires your decision')
     expect(wrapper.get('.trace-budget-section').text()).toContain('Input tokens')
     expect(wrapper.get('.trace-budget-section').text()).toContain('750 / 4,000')
+    expect(wrapper.get('.trace-budget-section').text()).toContain('Hard budget stop')
+    expect(wrapper.get('.trace-budget-section').text()).toContain('Prior 2; attempted +1')
     expect(wrapper.get('.trace-agent-control-section').text()).toContain('Agent controls')
 
     await wrapper.findAll('.trace-agent-control-actions button')

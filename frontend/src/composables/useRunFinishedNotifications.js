@@ -1,5 +1,6 @@
 const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted', 'round-limit',
+  'budget-exhausted', 'circuit-breaker',
 ])
 
 export function useRunFinishedNotifications({

@@ -10,6 +10,7 @@ const {
   cleanRunMaxRounds,
   cleanText,
   isSupportedAgentKind,
+  terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
 
 const TASK_ID = /^[A-Za-z0-9._:-]{1,120}$/
@@ -198,7 +199,7 @@ class LocalWorkspaceRunCoordinator {
         groupId,
         controller,
         controller.signal.aborted
-          ? (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped')
+          ? terminalRunStatusForReason(controller.stopReason)
           : 'failed',
       )
     }

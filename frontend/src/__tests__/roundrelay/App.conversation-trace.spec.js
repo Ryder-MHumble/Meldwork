@@ -912,7 +912,7 @@ describe('RoundRelay workbench', () => {
         budget: {
           limits: {
             inputTokens: 4000, outputTokens: null, costMicros: null,
-            toolCalls: 20, outboundBytes: null, elapsedMs: null,
+            toolCalls: 2, outboundBytes: null, elapsedMs: null,
           },
           used: {
             inputTokens: 750, outputTokens: 120, costMicros: 0,
@@ -927,6 +927,10 @@ describe('RoundRelay workbench', () => {
             toolCalls: 'hard', outboundBytes: 'soft', elapsedMs: 'soft',
           },
           startedAt: 1000,
+          exhaustion: {
+            dimension: 'toolCalls', limit: 2, priorUsed: 2, attemptedUsage: 1, used: 3,
+            source: 'estimated', enforcement: 'hard', reason: 'BUDGET_LIMIT_EXCEEDED',
+          },
         },
         agentRuns: [{
           agentRunId: 'agent-direct-gated',
@@ -949,6 +953,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.direct-human-gate-list').text()).toContain('cannot report cost usage')
     expect(wrapper.get('.direct-budget-details').text()).toContain('Input tokens')
     expect(wrapper.get('.direct-budget-details').text()).toContain('750 / 4,000')
+    expect(wrapper.get('.direct-budget-details').text()).toContain('Hard budget stop')
 
     const gateCards = wrapper.findAll('.direct-human-gate-list .human-gate-card')
     await gateCards[0].findAll('button').find(button => button.text() === 'Allow once').trigger('click')

@@ -89,6 +89,7 @@ describe('run event normalization', () => {
       elapsedMs: 'soft',
     },
     startedAt: 1000,
+    exhaustion: null,
     ...overrides,
   })
   const humanGate = (gateId, overrides = {}) => ({
@@ -348,7 +349,20 @@ describe('run event normalization', () => {
     const gateId = `human-gate-${'a'.repeat(64)}`
     const mismatchedGateId = `human-gate-${'b'.repeat(64)}`
     const extraFieldGateId = `human-gate-${'c'.repeat(64)}`
-    const budget = budgetSnapshot()
+    const budget = budgetSnapshot({
+      limits: { ...budgetSnapshot().limits, toolCalls: 2 },
+      used: { ...budgetSnapshot().used, toolCalls: 3 },
+      exhaustion: {
+        dimension: 'toolCalls',
+        limit: 2,
+        priorUsed: 2,
+        attemptedUsage: 1,
+        used: 3,
+        source: 'estimated',
+        enforcement: 'hard',
+        reason: 'BUDGET_LIMIT_EXCEEDED',
+      },
+    })
     const snapshot = normalizeSnapshot({
       agents: [],
       groups: [],
@@ -402,6 +416,7 @@ describe('run event normalization', () => {
       { ...valid, used: { ...valid.used, inputTokens: -1 } },
       { ...valid, source: { ...valid.source, costMicros: 'guessed' } },
       { ...valid, enforcement: { ...valid.enforcement, toolCalls: 'warn' } },
+      { ...valid, exhaustion: { ...valid.exhaustion, used: 4 } },
     ]
 
     for (const budget of malformed) {

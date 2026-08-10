@@ -1,5 +1,6 @@
 const RUN_FINISHED_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const LOCAL_IDENTIFIER = /^[A-Za-z0-9_-]{1,100}$/
 const LOCAL_GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u

@@ -19,6 +19,7 @@ const {
   BUDGET_DIMENSIONS,
   BUDGET_ENFORCEMENTS,
   BUDGET_SOURCES,
+  normalizeBudgetExhaustion,
 } = require('./run-budget.cjs')
 const {
   MAX_ATTEMPT_HISTORY,
@@ -41,7 +42,8 @@ const CONTEXT_FIELDS = new Set([
   'connector', 'connectorEventState',
 ])
 const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
-const BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const REQUIRED_BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const BUDGET_FIELDS = new Set([...REQUIRED_BUDGET_FIELDS, 'exhaustion'])
 const BUDGET_DIMENSION_SET = new Set(BUDGET_DIMENSIONS)
 const BUDGET_SOURCE_SET = new Set(BUDGET_SOURCES)
 const BUDGET_ENFORCEMENT_SET = new Set(BUDGET_ENFORCEMENTS)
@@ -65,6 +67,7 @@ const ORCHESTRATION_WORKFLOWS = new Set(['manual', 'auto'])
 const RUN_STATUSES = new Set([
   'preparing', 'queued', 'running', 'waiting', 'reconciling',
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const AGENT_STATUSES = new Set([
   'queued', 'running', 'waiting',
@@ -76,6 +79,7 @@ const EVENT_STATUSES = new Set([
 ])
 const TERMINAL_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const MODES = new Set(['manual', 'auto'])
 const PERMISSION_MODES = new Set(['read-only', 'workspace-write'])
@@ -290,15 +294,15 @@ function hasExactBudgetDimensions(value) {
 
 function hasValidStoredBudgetSnapshot(input) {
   if (!isRecord(input)
-      || Object.keys(input).length !== BUDGET_FIELDS.size
       || Object.keys(input).some(field => !BUDGET_FIELDS.has(field))
+      || [...REQUIRED_BUDGET_FIELDS].some(field => !hasOwn(input, field))
       || !Number.isSafeInteger(input.startedAt)
       || input.startedAt < 0
       || !hasExactBudgetDimensions(input.limits)
       || !hasExactBudgetDimensions(input.used)
       || !hasExactBudgetDimensions(input.source)
       || !hasExactBudgetDimensions(input.enforcement)) return false
-  return BUDGET_DIMENSIONS.every(dimension => (
+  const dimensionsValid = BUDGET_DIMENSIONS.every(dimension => (
     (input.limits[dimension] === null
       || (Number.isSafeInteger(input.limits[dimension]) && input.limits[dimension] >= 0))
     && Number.isSafeInteger(input.used[dimension])
@@ -306,6 +310,13 @@ function hasValidStoredBudgetSnapshot(input) {
     && BUDGET_SOURCE_SET.has(input.source[dimension])
     && BUDGET_ENFORCEMENT_SET.has(input.enforcement[dimension])
   ))
+  if (!dimensionsValid || !hasOwn(input, 'exhaustion')) return dimensionsValid
+  try {
+    const exhaustion = normalizeBudgetExhaustion(input.exhaustion)
+    return canonicalJson(exhaustion) === canonicalJson(input.exhaustion)
+  } catch {
+    return false
+  }
 }
 
 function hasValidStoredAttemptHistory(input) {
@@ -316,7 +327,7 @@ function hasValidStoredAttemptHistory(input) {
 
 function normalizeBudgetSnapshot(input) {
   if (!hasValidStoredBudgetSnapshot(input)) return null
-  return {
+  const budget = {
     limits: Object.fromEntries(BUDGET_DIMENSIONS.map(dimension => [
       dimension, input.limits[dimension],
     ])),
@@ -331,6 +342,10 @@ function normalizeBudgetSnapshot(input) {
     ])),
     startedAt: input.startedAt,
   }
+  if (hasOwn(input, 'exhaustion')) {
+    budget.exhaustion = input.exhaustion ? { ...input.exhaustion } : null
+  }
+  return budget
 }
 
 function normalizeContinuation(input) {

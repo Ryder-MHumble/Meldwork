@@ -36,7 +36,9 @@ const {
   cleanInline,
   defaultAgentLabel,
   normalizeSessionRef,
+  terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 const {
   loadWorkspaceState,
   saveWorkspaceState,
@@ -717,6 +719,35 @@ class LocalWorkspace extends EventEmitter {
         if (!invocation?.result) throw invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
         successfulKinds.add(kind)
       } catch (error) {
+        if (error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+            || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER') {
+          controller.stopReason = 'circuit_breaker'
+          controller.abort()
+          this.addMessage(
+            group.id,
+            'system',
+            `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+            '',
+            durable.threadRootId,
+            {
+              key: 'system.runCircuitBreaker',
+              params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+            },
+          )
+          break
+        }
+        if (error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+            || error?.message === 'LOCAL_BUDGET_EXHAUSTED') {
+          this.recordAgentFailure(
+            group.id, kind, error, durable.threadRootId, reportedFailures,
+          )
+          if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+          if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+          successfulKinds.delete(kind)
+          controller.stopReason = 'hard_budget'
+          controller.abort()
+          break
+        }
         if (controller.signal.aborted) {
           this.recordAgentInterruption(
             group.id,
@@ -749,7 +780,7 @@ class LocalWorkspace extends EventEmitter {
     }
 
     if (controller.signal.aborted) {
-      return controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+      return terminalRunStatusForReason(controller.stopReason)
     }
     const successCount = activeKinds.filter(kind => successfulKinds.has(kind)).length
     if (!successCount) return 'failed'
@@ -845,8 +876,27 @@ class LocalWorkspace extends EventEmitter {
           await this.finishRun(durable.groupId, controller, 'interrupted')
           return
         }
+        const circuitBreaker = error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+          || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER'
+        const hardBudget = error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+          || error?.message === 'LOCAL_BUDGET_EXHAUSTED'
+        if (hardBudget) controller.stopReason = 'hard_budget'
+        if (circuitBreaker) {
+          controller.stopReason = 'circuit_breaker'
+          this.addMessage(
+            durable.groupId,
+            'system',
+            `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+            '',
+            durable.threadRootId,
+            {
+              key: 'system.runCircuitBreaker',
+              params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+            },
+          )
+        }
         if (durable.continuation.resumeKind === 'agent_slot'
-            && decision.status !== 'rejected') {
+            && decision.status !== 'rejected' && !circuitBreaker) {
           if (!controller.failedKinds.includes(durable.continuation.agentKind)) {
             controller.failedKinds.push(durable.continuation.agentKind)
           }
@@ -857,7 +907,9 @@ class LocalWorkspace extends EventEmitter {
             durable.threadRootId,
             new Set(),
           )
-          controller.stopReason = String(error?.message || 'human_gate_continuation_failed')
+          if (!hardBudget) {
+            controller.stopReason = String(error?.message || 'human_gate_continuation_failed')
+          }
         }
         if (durable.continuation.resumeKind === 'role_review_decision') {
           controller.stopReason = 'LOCAL_WORKFLOW_UNSUPPORTED'
@@ -869,7 +921,9 @@ class LocalWorkspace extends EventEmitter {
         await this.finishRun(
           durable.groupId,
           controller,
-          decision.status === 'rejected' ? 'stopped' : 'failed',
+          decision.status === 'rejected'
+            ? 'stopped'
+            : terminalRunStatusForReason(controller.stopReason, 'failed'),
         )
       } else {
         this.failHumanGateContinuation(gate, error)

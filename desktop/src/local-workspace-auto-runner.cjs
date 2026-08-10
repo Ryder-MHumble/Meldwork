@@ -4,8 +4,10 @@ const {
   cleanText,
   credentialFailure,
   normalizeKnowledgeBaseHint,
+  terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
 const {
+  MAX_RUN_AGENT_ATTEMPTS,
   boundedBackoffDelay,
   normalizeAttemptHistoryEntry,
   normalizeFailure,
@@ -25,6 +27,22 @@ function authenticationFailureText(error) {
 
 function unauthorizedFailure(error) {
   return normalizeFailure(error).category === 'authentication'
+}
+
+function hardBudgetFailure(error) {
+  return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+    || error?.message === 'LOCAL_BUDGET_EXHAUSTED'
+}
+
+function circuitBreakerFailure(error) {
+  return error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+    || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER'
+}
+
+function circuitBreakerError() {
+  return Object.assign(new Error('LOCAL_RUN_CIRCUIT_BREAKER'), {
+    code: 'LOCAL_RUN_CIRCUIT_BREAKER',
+  })
 }
 
 function authenticationFailureStatus(error) {
@@ -195,6 +213,9 @@ class LocalWorkspaceAutoRunner {
     const operationId = options.operationId
     const idempotencyMode = options.idempotencyMode === 'durable' ? 'durable' : 'none'
     for (let attempt = 1; ; attempt += 1) {
+      if (controller.attemptHistory.length >= MAX_RUN_AGENT_ATTEMPTS) {
+        throw circuitBreakerError()
+      }
       const phase = attempt === 1 ? (options.phase || 'initial') : 'transient_retry'
       const phaseAttempt = attempt === 1 ? (options.attempt || 1) : attempt - 1
       try {
@@ -376,6 +397,9 @@ class LocalWorkspaceAutoRunner {
 
   async invokeWithUnauthorizedRecovery(input) {
     const { controller, kind } = input
+    if (controller.attemptHistory.length >= MAX_RUN_AGENT_ATTEMPTS) {
+      throw circuitBreakerError()
+    }
     if (controller.agentSlotKinds.has(kind)) {
       throw new Error('LOCAL_AGENT_ATTEMPT_RUNNING')
     }
@@ -679,6 +703,29 @@ class LocalWorkspaceAutoRunner {
           if (result.consensus) agreementKinds.add(executionKind)
           else agreementKinds.delete(executionKind)
         } catch (error) {
+          if (circuitBreakerFailure(error)) {
+            controller.stopReason = 'circuit_breaker'
+            controller.abort()
+            break
+          }
+          const hardBudget = hardBudgetFailure(error)
+          if (hardBudget) {
+            this.recordAgentFailure(
+              group.id, executionKind, error, threadRootId, reportedFailures,
+            )
+            successfulKinds.delete(executionKind)
+            agreementKinds.delete(executionKind)
+            if (!controller.failedKinds.includes(executionKind)) {
+              controller.failedKinds.push(executionKind)
+            }
+            if (!controller.completedKinds.includes(executionKind)) {
+              controller.completedKinds.push(executionKind)
+            }
+            terminalFailureOccurred = true
+            controller.stopReason = 'hard_budget'
+            controller.abort()
+            break
+          }
           if (controller.signal.aborted) {
             const interruptedKind = controller.currentKind || executionKind
             if (error?.runTrace) {
@@ -754,7 +801,7 @@ class LocalWorkspaceAutoRunner {
 
     let runStatus
     if (controller.signal.aborted) {
-      runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+      runStatus = terminalRunStatusForReason(controller.stopReason)
     } else if (terminalFailureOccurred) runStatus = totalSuccesses > 0 ? 'partial' : 'failed'
     else if (consensusReached) runStatus = 'completed'
     else runStatus = totalSuccesses > 0 ? 'round-limit' : 'failed'
@@ -767,6 +814,19 @@ class LocalWorkspaceAutoRunner {
         '',
         threadRootId,
         { key: 'system.autoRoundLimit', params: { rounds: maxRounds } },
+      )
+    }
+    if (controller.stopReason === 'circuit_breaker') {
+      this.addMessage(
+        group.id,
+        'system',
+        `Automatic discussion stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+        '',
+        threadRootId,
+        {
+          key: 'system.runCircuitBreaker',
+          params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+        },
       )
     }
     return runStatus
@@ -791,7 +851,7 @@ class LocalWorkspaceAutoRunner {
         )
       } catch (error) {
         runStatus = controller.signal.aborted
-          ? (controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped')
+          ? terminalRunStatusForReason(controller.stopReason)
           : 'failed'
         if (!controller.signal.aborted) {
           const rawReason = cleanText(error?.message || error, 2000)
@@ -813,7 +873,7 @@ class LocalWorkspaceAutoRunner {
         controller.currentKind = ''
         controller.progress = []
         if (controller.signal.aborted) {
-          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+          runStatus = terminalRunStatusForReason(controller.stopReason)
         }
         await this.finishRun(group.id, controller, runStatus)
       }

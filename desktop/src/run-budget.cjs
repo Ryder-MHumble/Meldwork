@@ -12,6 +12,10 @@ const BUDGET_SOURCES = Object.freeze(['reported', 'estimated', 'unknown'])
 const BUDGET_SOURCE_SET = new Set(BUDGET_SOURCES)
 const BUDGET_ENFORCEMENTS = Object.freeze(['hard', 'soft'])
 const BUDGET_ENFORCEMENT_SET = new Set(BUDGET_ENFORCEMENTS)
+const BUDGET_EXHAUSTION_FIELDS = new Set([
+  'dimension', 'limit', 'priorUsed', 'attemptedUsage', 'used',
+  'source', 'enforcement', 'reason',
+])
 
 function budgetError(code) {
   return Object.assign(new Error(code), { code })
@@ -52,6 +56,38 @@ function combinedSource(current, next, currentUsed) {
   if (current === 'unknown' || next === 'unknown') return 'unknown'
   if (current === 'estimated' || next === 'estimated') return 'estimated'
   return 'reported'
+}
+
+function normalizeBudgetExhaustion(input) {
+  if (input == null) return null
+  if (!isRecord(input)
+      || Object.keys(input).length !== BUDGET_EXHAUSTION_FIELDS.size
+      || Object.keys(input).some(field => !BUDGET_EXHAUSTION_FIELDS.has(field))) {
+    throw budgetError('RUN_BUDGET_EXHAUSTION_INVALID')
+  }
+  const dimension = dimensionName(input.dimension)
+  const limit = nonnegativeInteger(input.limit, 'RUN_BUDGET_EXHAUSTION_INVALID')
+  const priorUsed = nonnegativeInteger(input.priorUsed, 'RUN_BUDGET_EXHAUSTION_INVALID')
+  const attemptedUsage = nonnegativeInteger(
+    input.attemptedUsage, 'RUN_BUDGET_EXHAUSTION_INVALID',
+  )
+  const used = nonnegativeInteger(input.used, 'RUN_BUDGET_EXHAUSTION_INVALID')
+  const source = sourceName(input.source)
+  const enforcement = enforcementName(input.enforcement)
+  if (enforcement !== 'hard' || input.reason !== 'BUDGET_LIMIT_EXCEEDED'
+      || used !== priorUsed + attemptedUsage || used <= limit) {
+    throw budgetError('RUN_BUDGET_EXHAUSTION_INVALID')
+  }
+  return Object.freeze({
+    dimension,
+    limit,
+    priorUsed,
+    attemptedUsage,
+    used,
+    source,
+    enforcement,
+    reason: 'BUDGET_LIMIT_EXCEEDED',
+  })
 }
 
 function normalizeRunBudgetConfiguration(input = {}) {
@@ -109,6 +145,7 @@ class RunBudget {
     this.used = {}
     this.source = {}
     this.enforcement = {}
+    this.exhaustion = normalizeBudgetExhaustion(options.exhaustion)
     for (const dimension of BUDGET_DIMENSIONS) {
       const requestedLimit = options.limits?.[dimension]
       this.limits[dimension] = requestedLimit == null
@@ -126,7 +163,7 @@ class RunBudget {
     }
   }
 
-  decision(dimension, nextUsed, source) {
+  decision(dimension, nextUsed, source, attemptedUsage = null) {
     const limit = this.limits[dimension]
     const enforcement = this.enforcement[dimension]
     const base = {
@@ -148,8 +185,13 @@ class RunBudget {
     }
     const exhausted = nextUsed > limit
     if (enforcement === 'hard' && exhausted) {
-      throw exhaustedError({
+      const priorUsed = this.used[dimension]
+      return Object.freeze({
         ...base,
+        priorUsed,
+        attemptedUsage: attemptedUsage == null
+          ? Math.max(0, nextUsed - priorUsed)
+          : nonnegativeInteger(attemptedUsage, 'RUN_BUDGET_USAGE_INVALID'),
         action: 'terminal',
         reason: 'BUDGET_LIMIT_EXCEEDED',
         exhausted: true,
@@ -164,14 +206,31 @@ class RunBudget {
       ? this.used[dimension]
       : nonnegativeInteger(nextUsedValue, 'RUN_BUDGET_USAGE_INVALID')
     const source = sourceName(options.source, this.source[dimension])
-    return this.decision(dimension, nextUsed, source)
+    const decision = this.decision(dimension, nextUsed, source)
+    if (decision.action === 'terminal') throw exhaustedError(decision)
+    return decision
   }
 
   setUsed(dimensionValue, value, options = {}) {
     const dimension = dimensionName(dimensionValue)
     const nextUsed = nonnegativeInteger(value, 'RUN_BUDGET_USAGE_INVALID')
     const source = sourceName(options.source, this.source[dimension])
-    const decision = this.decision(dimension, nextUsed, source)
+    const decision = this.decision(dimension, nextUsed, source, options.attemptedUsage)
+    if (decision.action === 'terminal') {
+      this.used[dimension] = nextUsed
+      this.source[dimension] = source
+      this.exhaustion = normalizeBudgetExhaustion({
+        dimension,
+        limit: decision.limit,
+        priorUsed: decision.priorUsed,
+        attemptedUsage: decision.attemptedUsage,
+        used: nextUsed,
+        source,
+        enforcement: decision.enforcement,
+        reason: decision.reason,
+      })
+      throw exhaustedError(decision)
+    }
     if (decision.action !== 'allow') return decision
     this.used[dimension] = nextUsed
     this.source[dimension] = source
@@ -183,12 +242,75 @@ class RunBudget {
     const increment = nonnegativeInteger(amount, 'RUN_BUDGET_USAGE_INVALID')
     const nextSource = sourceName(options.source, 'reported')
     const source = combinedSource(this.source[dimension], nextSource, this.used[dimension])
-    return this.setUsed(dimension, this.used[dimension] + increment, { source })
+    return this.setUsed(dimension, this.used[dimension] + increment, {
+      source,
+      attemptedUsage: increment,
+    })
+  }
+
+  addUsageBatch(entries) {
+    if (!Array.isArray(entries) || !entries.length) {
+      throw budgetError('RUN_BUDGET_USAGE_INVALID')
+    }
+    const updates = entries.map((entry) => {
+      if (!isRecord(entry)) throw budgetError('RUN_BUDGET_USAGE_INVALID')
+      const dimension = dimensionName(entry.dimension)
+      const hasAmount = Object.hasOwn(entry, 'amount')
+      const hasValue = Object.hasOwn(entry, 'value')
+      if (hasAmount === hasValue) throw budgetError('RUN_BUDGET_USAGE_INVALID')
+      const priorUsed = this.used[dimension]
+      const nextUsed = hasAmount
+        ? priorUsed + nonnegativeInteger(entry.amount, 'RUN_BUDGET_USAGE_INVALID')
+        : nonnegativeInteger(entry.value, 'RUN_BUDGET_USAGE_INVALID')
+      if (!Number.isSafeInteger(nextUsed)) throw budgetError('RUN_BUDGET_USAGE_INVALID')
+      const nextSource = sourceName(entry.source, 'reported')
+      const source = combinedSource(this.source[dimension], nextSource, priorUsed)
+      return {
+        dimension,
+        priorUsed,
+        nextUsed,
+        source,
+        attemptedUsage: Math.max(0, nextUsed - priorUsed),
+      }
+    })
+    if (new Set(updates.map(update => update.dimension)).size !== updates.length) {
+      throw budgetError('RUN_BUDGET_USAGE_INVALID')
+    }
+    const decisions = updates.map(update => this.decision(
+      update.dimension,
+      update.nextUsed,
+      update.source,
+      update.attemptedUsage,
+    ))
+    const pendingGate = decisions.find(decision => decision.action === 'human_gate')
+    if (pendingGate) return pendingGate
+    for (const update of updates) {
+      this.used[update.dimension] = update.nextUsed
+      this.source[update.dimension] = update.source
+    }
+    const terminal = decisions.find(decision => decision.action === 'terminal')
+    if (terminal) {
+      this.exhaustion = normalizeBudgetExhaustion({
+        dimension: terminal.dimension,
+        limit: terminal.limit,
+        priorUsed: terminal.priorUsed,
+        attemptedUsage: terminal.attemptedUsage,
+        used: terminal.used,
+        source: terminal.source,
+        enforcement: terminal.enforcement,
+        reason: terminal.reason,
+      })
+      throw exhaustedError(terminal)
+    }
+    return Object.freeze(decisions)
+  }
+
+  elapsedValue() {
+    return Math.max(0, Math.floor(this.now() - this.startedAt))
   }
 
   updateElapsed() {
-    const elapsed = Math.max(0, Math.floor(this.now() - this.startedAt))
-    return this.setUsed('elapsedMs', elapsed, { source: 'reported' })
+    return this.setUsed('elapsedMs', this.elapsedValue(), { source: 'reported' })
   }
 
   approveUnobservable(dimensionValue) {
@@ -212,6 +334,7 @@ class RunBudget {
       source: { ...this.source },
       enforcement: { ...this.enforcement },
       startedAt: this.startedAt,
+      exhaustion: this.exhaustion ? { ...this.exhaustion } : null,
     }
   }
 }
@@ -221,5 +344,6 @@ module.exports = {
   BUDGET_ENFORCEMENTS,
   BUDGET_SOURCES,
   RunBudget,
+  normalizeBudgetExhaustion,
   normalizeRunBudgetConfiguration,
 }

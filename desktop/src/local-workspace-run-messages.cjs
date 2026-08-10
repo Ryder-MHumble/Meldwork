@@ -3,6 +3,7 @@ const { normalizeTraceCapsule } = require('./run-harness.cjs')
 const {
   AGENT_LABELS,
   MAX_SYSTEM_PARAM_TEXT_CHARS,
+  budgetTerminalPrefix,
   cleanText,
   terminalMessageContent,
   terminalStatusPrefix,
@@ -28,20 +29,37 @@ class LocalWorkspaceRunMessages {
       this.checkpointRun(groupId, controller)
     }
     const streamedConclusion = this.streamedConclusion(groupId, agentRunId)
+    const hardBudget = reason === 'LOCAL_BUDGET_EXHAUSTED'
+      && error?.decision?.action === 'terminal'
     const content = terminalMessageContent(
-      terminalStatusPrefix(label, 'failed', reason),
+      hardBudget
+        ? budgetTerminalPrefix(label)
+        : terminalStatusPrefix(label, 'failed', reason),
       streamedConclusion,
     )
     const failureKey = `${kind}:${reason}:${createHash('sha256').update(content).digest('hex')}`
     if (!reportedFailures || !reportedFailures.has(failureKey)) {
       reportedFailures?.add(failureKey)
+      const system = hardBudget
+        ? {
+            key: 'system.agentBudgetExhausted',
+            params: {
+              agent: label,
+              dimension: error.decision.dimension,
+              limit: error.decision.limit,
+              priorUsed: error.decision.priorUsed,
+              attemptedUsage: error.decision.attemptedUsage,
+              used: error.decision.used,
+            },
+          }
+        : { key: 'system.agentCallFailed', params: { agent: label, reason } }
       this.addMessage(
         groupId,
         'system',
         content,
         kind,
         threadRootId,
-        { key: 'system.agentCallFailed', params: { agent: label, reason } },
+        system,
         { trace: error?.runTrace },
       )
     }

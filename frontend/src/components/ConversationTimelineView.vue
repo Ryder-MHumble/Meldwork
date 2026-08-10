@@ -955,7 +955,7 @@ function humanGateOptionLabel(option) {
 
 function budgetRows(budget) {
   if (!budget) return []
-  return BUDGET_DIMENSIONS.map((dimension) => {
+  const rows = BUDGET_DIMENSIONS.map((dimension) => {
     const used = budget.used[dimension]
     const limit = budget.limits[dimension]
     return {
@@ -970,6 +970,22 @@ function budgetRows(budget) {
         || budget.enforcement[dimension] === 'hard',
     }
   }).filter(row => row.meaningful)
+  const exhaustion = budget.exhaustion
+  if (exhaustion) {
+    rows.unshift({
+      dimension: `exhaustion:${exhaustion.dimension}`,
+      label: `${t(`trace.budgetDimension.${exhaustion.dimension}`)} · ${t('trace.budgetExhaustion')}`,
+      usage: t('trace.budgetUsage', {
+        used: formatBudgetNumber(exhaustion.used),
+        limit: formatBudgetNumber(exhaustion.limit),
+      }),
+      meta: t('trace.budgetAttempt', {
+        prior: formatBudgetNumber(exhaustion.priorUsed),
+        attempted: formatBudgetNumber(exhaustion.attemptedUsage),
+      }),
+    })
+  }
+  return rows
 }
 
 function formatBudgetNumber(value) {

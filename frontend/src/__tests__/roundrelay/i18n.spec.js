@@ -47,6 +47,9 @@ describe('RoundRelay i18n', () => {
     expect(t('humanGate.option.acceptArtifact')).toBe('Accept Artifact')
     expect(t('trace.retryAgent')).toBe('Retry Agent')
     expect(t('trace.budgetDimension.toolCalls')).toBe('Tool calls')
+    expect(t('trace.budgetExhaustion')).toBe('Hard budget stop')
+    expect(t('run.status.circuitBreaker')).toBe('Circuit breaker stopped')
+    expect(t('system.agentBudgetExhausted', { agent: 'Codex' })).toContain('hard run budget')
 
     setLocale('zh')
     expect(t('humanGate.waiting')).toBe('等待你的决定')
@@ -57,6 +60,9 @@ describe('RoundRelay i18n', () => {
     expect(t('humanGate.option.acceptArtifact')).toBe('接受产物')
     expect(t('trace.retryAgent')).toBe('重试 Agent')
     expect(t('trace.budgetDimension.toolCalls')).toBe('工具调用')
+    expect(t('trace.budgetExhaustion')).toBe('硬预算停止')
+    expect(t('run.status.circuitBreaker')).toBe('已触发熔断器')
+    expect(t('system.agentBudgetExhausted', { agent: 'Codex' })).toContain('硬预算上限')
   })
 
   it('maps every stable desktop error code from direct and wrapped errors', () => {

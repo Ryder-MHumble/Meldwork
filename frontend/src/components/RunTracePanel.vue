@@ -630,7 +630,7 @@ function humanGateOptionLabel(option) {
 
 function normalizedBudgetRows(budget) {
   if (!budget) return []
-  return BUDGET_DIMENSIONS.map((dimension) => {
+  const rows = BUDGET_DIMENSIONS.map((dimension) => {
     const used = budget.used[dimension]
     const limit = budget.limits[dimension]
     return {
@@ -645,6 +645,22 @@ function normalizedBudgetRows(budget) {
         || budget.enforcement[dimension] === 'hard',
     }
   }).filter(row => row.meaningful)
+  const exhaustion = budget.exhaustion
+  if (exhaustion) {
+    rows.unshift({
+      dimension: `exhaustion:${exhaustion.dimension}`,
+      label: `${t(`trace.budgetDimension.${exhaustion.dimension}`)} · ${t('trace.budgetExhaustion')}`,
+      usage: t('trace.budgetUsage', {
+        used: formatBudgetNumber(exhaustion.used),
+        limit: formatBudgetNumber(exhaustion.limit),
+      }),
+      meta: t('trace.budgetAttempt', {
+        prior: formatBudgetNumber(exhaustion.priorUsed),
+        attempted: formatBudgetNumber(exhaustion.attemptedUsage),
+      }),
+    })
+  }
+  return rows
 }
 
 function formatBudgetNumber(value) {
@@ -721,7 +737,7 @@ function eventTitle(event) {
 function statusTone(status) {
   const value = String(status || '').toLowerCase()
   if (['completed', 'succeeded'].includes(value)) return 'completed'
-  if (['failed', 'timeout'].includes(value)) return 'failed'
+  if (['failed', 'timeout', 'budget-exhausted', 'circuit-breaker'].includes(value)) return 'failed'
   if (['partial', 'cancelled', 'stopped', 'interrupted'].includes(value)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(value)) return 'running'
   return 'queued'
@@ -743,6 +759,8 @@ function statusLabel(status) {
     stopped: 'stopped',
     timeout: 'timeout',
     interrupted: 'interrupted',
+    'budget-exhausted': 'budgetExhausted',
+    'circuit-breaker': 'circuitBreaker',
   }[String(status || '').toLowerCase()] || 'unknown'
   return t(`run.status.${key}`)
 }

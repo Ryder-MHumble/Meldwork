@@ -31,6 +31,7 @@ module.exports = {
   USER_ATTACHMENT_MIME_TYPES: messageRecords.USER_ATTACHMENT_MIME_TYPES,
   abortableOperation: runtimeContracts.abortableOperation,
   agentStoppedError: runtimeContracts.agentStoppedError,
+  budgetTerminalPrefix: runtimeContracts.budgetTerminalPrefix,
   attachmentLimitError: messageRecords.attachmentLimitError,
   attachmentType: messageRecords.attachmentType,
   cleanCurrentRound: runtimeContracts.cleanCurrentRound,
@@ -58,6 +59,7 @@ module.exports = {
   skillHintsPrompt: messageRecords.skillHintsPrompt,
   terminalMessageContent: runtimeContracts.terminalMessageContent,
   terminalMessageContentLimit: runtimeContracts.terminalMessageContentLimit,
+  terminalRunStatusForReason: runtimeContracts.terminalRunStatusForReason,
   terminalStatusPrefix: runtimeContracts.terminalStatusPrefix,
   terminalStatusPrefixFromMessage: runtimeContracts.terminalStatusPrefixFromMessage,
 }

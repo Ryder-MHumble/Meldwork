@@ -593,7 +593,11 @@ class RunLedger {
     if (TERMINAL_STATUSES.has(requestedStatus)) {
       for (const agentRun of agentRuns) {
         if (TERMINAL_STATUSES.has(agentRun.status)) continue
-        agentRun.status = requestedStatus === 'round-limit' ? 'partial' : requestedStatus
+        agentRun.status = requestedStatus === 'round-limit'
+          ? 'partial'
+          : (requestedStatus === 'budget-exhausted'
+              ? 'failed'
+              : (requestedStatus === 'circuit-breaker' ? 'stopped' : requestedStatus))
         agentRun.lastActivityAt = this.timestamp()
         agentRun.finishedAt = agentRun.lastActivityAt
         agentRun.silent = false

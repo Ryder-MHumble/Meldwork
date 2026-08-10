@@ -755,9 +755,9 @@ test('hard budget exhaustion is terminal and is not retried', async (t) => {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
   options.runLedger = ledger
-  let attempts = 0
-  options.runAgent = async (_agent, prompt, workdir, runOptions) => {
-    attempts += 1
+  const attempts = []
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    attempts.push(agent.kind)
     await runOptions.onOutboundPayload(createLegacyOutboundPayload({
       prompt,
       command: '/tmp/mock-agent',
@@ -766,39 +766,76 @@ test('hard budget exhaustion is terminal and is not retried', async (t) => {
       stdin: prompt,
       promptMode: 'stdin',
     }))
-    return { text: 'Must not complete', sessionRef: 'codex-session' }
+    if (agent.kind === 'hermes') {
+      runOptions.onProgress({ id: 'write-1', title: 'write_file', status: 'completed' })
+    }
+    return { text: `${agent.kind} result`, sessionRef: `${agent.kind}-session` }
   }
   const workspace = new LocalWorkspace(options)
   const finished = []
   workspace.on('run-finished', event => finished.push(event))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Hard budget terminal', agentKinds: ['codex'], workdir: directory,
+    name: 'Hard budget terminal',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
   })
 
   await workspace.sendMessage({
     groupId: group.id,
     text: 'Exceed the outbound budget once',
-    targetKinds: ['codex'],
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
     budget: {
-      limits: { outboundBytes: 1 },
-      enforcement: { outboundBytes: 'hard' },
+      limits: { toolCalls: 0 },
+      enforcement: { toolCalls: 'hard' },
     },
   })
 
   const terminal = ledger.list(group.id)[0]
-  assert.equal(attempts, 1)
+  assert.deepEqual(attempts, ['codex', 'hermes'])
   assert.equal(finished.length, 1)
-  assert.equal(finished[0].status, 'failed')
-  assert.equal(terminal.status, 'failed')
-  assert.equal(terminal.agentRuns.length, 1)
-  assert.equal(terminal.agentRuns[0].reason, 'LOCAL_BUDGET_EXHAUSTED')
+  assert.equal(finished[0].status, 'budget-exhausted')
+  assert.equal(terminal.status, 'budget-exhausted')
+  assert.equal(terminal.reason, 'hard_budget')
+  assert.equal(terminal.permissionMode, 'workspace-write')
+  assert.equal(terminal.agentRuns.length, 2)
+  assert.equal(terminal.agentRuns[0].status, 'completed')
+  assert.equal(terminal.agentRuns[1].reason, 'LOCAL_BUDGET_EXHAUSTED')
+  assert.equal(terminal.budget.used.toolCalls, 1)
+  assert.deepEqual(terminal.budget.exhaustion, {
+    dimension: 'toolCalls',
+    limit: 0,
+    priorUsed: 0,
+    attemptedUsage: 1,
+    used: 1,
+    source: 'estimated',
+    enforcement: 'hard',
+    reason: 'BUDGET_LIMIT_EXCEEDED',
+  })
   assert.equal(workspace.snapshot().humanGates.length, 0)
   assert.equal(workspace.snapshot().messages.some(message => (
-    message.role === 'agent' || message.content === 'Must not complete'
+    message.role === 'agent' && message.agentKind === 'codex'
+  )), true)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.agentKind === 'workbuddy'
   )), false)
   assert.equal(workspace.snapshot().messages.some(message => (
-    message.system?.key === 'system.agentCallFailed'
-      && message.system.params.reason === 'LOCAL_BUDGET_EXHAUSTED'
+    message.system?.key === 'system.agentBudgetExhausted'
+      && message.system.params.dimension === 'toolCalls'
+  )), true)
+
+  const storedWorkspace = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  storedWorkspace.messages = storedWorkspace.messages.filter(message => (
+    message.system?.key !== 'system.agentBudgetExhausted'
+  ))
+  fs.writeFileSync(options.storagePath, JSON.stringify(storedWorkspace), 'utf8')
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') }),
+  })
+  assert.equal(restarted.snapshot().messages.some(message => (
+    message.system?.key === 'system.agentBudgetExhausted'
+      && message.system.params.attemptedUsage === 1
   )), true)
 })
