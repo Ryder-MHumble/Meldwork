@@ -94,7 +94,7 @@ function normalizeHumanGate(value) {
   if (!HUMAN_GATE_ID.test(gateId) || !runId || !agentRunId || !kind || !summary
       || runId !== input?.runId || agentRunId !== input?.agentRunId || kind !== input?.agentKind
       || !HUMAN_GATE_OPTION_ID.test(runId) || !HUMAN_GATE_OPTION_ID.test(agentRunId)
-      || !['permission', 'budget', 'decision'].includes(type)
+      || !['permission', 'budget', 'decision', 'retry'].includes(type)
       || status !== 'pending'
       || summary !== input?.summary
       || /[\u0000-\u001f\u007f]/u.test(summary)

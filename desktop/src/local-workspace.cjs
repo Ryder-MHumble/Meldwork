@@ -254,6 +254,14 @@ class LocalWorkspace extends EventEmitter {
       finishRun: (...args) => this.finishRun(...args),
       checkpointRun: (...args) => this.checkpointRun(...args),
       hasRunLedger: () => Boolean(this.runLedger),
+      requestHumanGate: (...args) => this.requestHumanGate(...args),
+      completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
+      retryContract: kind => ({
+        idempotencyMode: this.detectedAgents.find(agent => agent.kind === kind)?.idempotencyMode
+          === 'durable'
+          ? 'durable'
+          : 'none',
+      }),
       retryBaseDelayMs: options.retryBaseDelayMs,
       retryMaxDelayMs: options.retryMaxDelayMs,
       retrySleep: options.retrySleep,
@@ -586,7 +594,7 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async replayAgentSlot(group, durable, controller, gate, decision, request) {
-    if (!['budget', 'permission'].includes(gate?.type)) {
+    if (!['budget', 'permission', 'retry'].includes(gate?.type)) {
       throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
     }
     const message = this.state.messages.find(candidate => (
@@ -631,7 +639,12 @@ class LocalWorkspace extends EventEmitter {
               'Do not repeat actions completed before that request.',
               'Continue only after the Harness applies the persisted decision to the exact reissued request.',
             ].join(' ')
-          : '',
+          : (gate.type === 'retry'
+              ? [
+                  'The user explicitly approved one replay after an earlier attempt had an uncertain outcome.',
+                  'Reuse the durable operation identity supplied by the Harness.',
+                ].join(' ')
+              : ''),
       },
       reportedFailures: new Set(),
       mode: durable.mode,
@@ -766,7 +779,7 @@ class LocalWorkspace extends EventEmitter {
       }
       const request = this.humanGateStore.request(gate.gateId)
       let replayedResult = null
-      if (gate.type === 'permission') {
+      if (gate.type === 'permission' || gate.type === 'retry') {
         if (decision.status === 'rejected') {
           this.resetAgentSession(group, durable.continuation.agentKind, true, durable.taskId)
           if (!controller.completedKinds.includes(durable.continuation.agentKind)) {
@@ -775,6 +788,11 @@ class LocalWorkspace extends EventEmitter {
           this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
           await this.finishRun(durable.groupId, controller, 'stopped')
           return
+        }
+        if (gate.type === 'retry' && !this.completeHumanGateContinuation(
+          durable.runId, gate.gateId, 'completed',
+        )) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
         }
         replayedResult = await this.replayAgentSlot(
           group, durable, controller, gate, decision, request,
@@ -810,7 +828,8 @@ class LocalWorkspace extends EventEmitter {
           } : {}),
         }
       }
-      if (!this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+      if (controller.continuation?.gateId === gate.gateId
+          && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
         throw new Error('LOCAL_RUN_PERSIST_FAILED')
       }
       const finalStatus = resumableManual

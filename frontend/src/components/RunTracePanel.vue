@@ -605,11 +605,17 @@ function humanGateSummary(gate) {
     'Agent requests permission to continue a tool action.': 'humanGate.summary.permission',
     'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
     'This run requires a human decision.': 'humanGate.summary.decision',
+    'The previous write-capable Agent attempt may already have changed the workspace.': 'humanGate.summary.retry',
   }[gate?.summary]
   return key ? t(key) : gate?.summary || ''
 }
 
 function humanGateOptionLabel(option) {
+  const optionIdKey = {
+    'retry-once': 'humanGate.option.retryOnce',
+    'cancel-retry': 'humanGate.option.cancelRetry',
+  }[option?.optionId]
+  if (optionIdKey) return t(optionIdKey)
   const key = {
     allow_once: 'humanGate.option.allowOnce',
     allow_always: 'humanGate.option.allowAlways',

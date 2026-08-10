@@ -459,6 +459,8 @@ class LocalAgentConnectors {
         onEvent: input.onRuntimeEvent,
         onOutboundPayload: input.onOutboundPayload,
         onPermissionRequest: input.onPermissionRequest,
+        operationId: input.operationId,
+        idempotencyKey: input.idempotencyKey,
         ...(Object.keys(credentialEnv).length ? { env: credentialEnv } : {}),
       })
       const outcome = String(result?.outcome || 'completed')

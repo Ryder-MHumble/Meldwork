@@ -35,6 +35,25 @@ const {
 
 const MAX_INHERITED_TASK_IDS = 64
 const MAX_ISOLATED_PROMPT_BYTES = 4 * 1024 * 1024
+const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
+
+function attachInvocationFailure(error, input) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error
+  const existing = error.invocationFailure && typeof error.invocationFailure === 'object'
+    ? error.invocationFailure
+    : {}
+  Object.defineProperty(error, 'invocationFailure', {
+    value: Object.freeze({
+      outcomeCertainty: existing.outcomeCertainty || input.outcomeCertainty,
+      sideEffectsPossible: existing.sideEffectsPossible === true || input.sideEffectsPossible === true,
+      operationId: existing.operationId || input.operationId,
+      idempotencyMode: existing.idempotencyMode || input.idempotencyMode,
+    }),
+    enumerable: false,
+    configurable: true,
+  })
+  return error
+}
 
 function isolatedInvocationContext(context) {
   if (context?.sessionPolicy !== 'isolated') return null
@@ -239,6 +258,16 @@ class LocalWorkspaceAgentInvocation {
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
+    const requestedOperationId = String(context.operationId || '')
+    const operationId = OPERATION_ID.test(requestedOperationId)
+      ? requestedOperationId
+      : `agent-operation-${createHash('sha256').update(JSON.stringify({
+          runId: activeRun?.runId || taskId,
+          kind,
+          mode,
+          round,
+        })).digest('hex')}`
+    const idempotencyMode = agent.idempotencyMode === 'durable' ? 'durable' : 'none'
     const resolvedSession = reviewOnly || isolated
       ? {
           key: this.sessionKey(group.id, kind, group.conversationType === 'direct' ? '' : taskId),
@@ -474,6 +503,9 @@ class LocalWorkspaceAgentInvocation {
     let stagedInputs = null
     let generatedMedia = null
     let result
+    let operationStarted = false
+    let sideEffectsStarted = false
+    let terminalFailureKnown = false
     let harnessFinished = false
     let connectorContext = {}
     const finishHarness = (status, finalText = '', runtimeContext = {}) => {
@@ -527,6 +559,7 @@ class LocalWorkspaceAgentInvocation {
         }
       }
       if (allowWrite && context.mediaRequest && this.generateMedia) {
+        sideEffectsStarted = true
         generatedMedia = await abortableOperation(() => this.generateMedia({
           kind,
           request: context.mediaRequest,
@@ -697,6 +730,7 @@ class LocalWorkspaceAgentInvocation {
         },
         signal: agentController.signal,
         sandbox: allowWrite ? 'workspace-write' : 'read-only',
+        operationId,
         onProgress,
         onEvent: emitRuntimeEvent,
         onOutboundPayload: recordOutboundPayload,
@@ -808,12 +842,16 @@ class LocalWorkspaceAgentInvocation {
       runPromise = Promise.resolve().then(async () => {
         const reusedSessionRef = sessionRef
         try {
+          operationStarted = true
+          if (allowWrite) sideEffectsStarted = true
           return await runCurrentSession()
         } catch (error) {
           if (agentController.signal.aborted || !reusedSessionRef
               || resumedPermission
               || error?.message !== 'LOCAL_AGENT_SESSION_INVALID') throw error
           rebuildFreshSession()
+          operationStarted = true
+          if (allowWrite) sideEffectsStarted = true
           return await runCurrentSession()
         }
       })
@@ -821,6 +859,8 @@ class LocalWorkspaceAgentInvocation {
       const pending = [runPromise, watchdogPromise]
       if (parentAbortPromise) pending.push(parentAbortPromise)
       result = await Promise.race(pending)
+      terminalFailureKnown = ['failed', 'cancelled']
+        .includes(String(result?.outcome || ''))
       if (agentController.signal.aborted) throw agentStoppedError()
       if (resumedPermissionError) throw resumedPermissionError
       if (resumedPermission && !resumedPermissionUsed) {
@@ -1027,7 +1067,14 @@ class LocalWorkspaceAgentInvocation {
           configurable: true,
         })
       }
-      throw error
+      throw attachInvocationFailure(error, {
+        outcomeCertainty: terminalFailureKnown
+          ? 'known_failed'
+          : (operationStarted || sideEffectsStarted ? 'unknown_outcome' : 'not_started'),
+        sideEffectsPossible: allowWrite && sideEffectsStarted,
+        operationId,
+        idempotencyMode,
+      })
     } finally {
       agentCallbacksClosed = true
       clearTimeout(watchdogTimer)

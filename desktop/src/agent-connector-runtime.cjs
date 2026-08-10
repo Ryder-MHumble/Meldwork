@@ -166,6 +166,7 @@ class AgentConnectorRuntime {
         connectorVersion: manifest.connectorVersion,
         upstreamVersion: instance.upstreamVersion,
         acpAvailable: manifest.transport.type === 'acp',
+        idempotencyMode: manifest.invocation.idempotencyMode || 'none',
       })
     })
   }
@@ -189,6 +190,16 @@ class AgentConnectorRuntime {
 
     const execution = this.registry.resolveExecution(instanceId)
     const connector = this.registry.runSnapshot(instanceId)
+    const requestedOperationId = String(options.operationId || '')
+    if (connector.capabilities.idempotencyMode === 'durable'
+        && !PUBLIC_ID.test(requestedOperationId)) {
+      fail('AGENT_CONNECTOR_OPERATION_ID_REQUIRED')
+    }
+    const operationId = PUBLIC_ID.test(requestedOperationId)
+      ? requestedOperationId
+      : `agent-operation-${crypto.createHash('sha256')
+          .update(canonicalJson({ runId, agentRunId, instanceId }))
+          .digest('hex')}`
     const provenance = {
       ...execution.provenance,
       runId,
@@ -233,6 +244,8 @@ class AgentConnectorRuntime {
       credentialRefId: execution.credentialRef,
       runId,
       agentRunId,
+      operationId,
+      idempotencyKey: operationId,
       prompt: promptText,
       workdir: resolvedWorkdir,
       permissionMode,

@@ -125,6 +125,7 @@ const connectorRunSnapshotSchema = z.strictObject({
     eventTypes: uniqueList(z.enum(RUN_EVENT_TYPES), RUN_EVENT_TYPES.length),
     usage: usageSchema,
     outboundDestinations: uniqueList(outboundDestinationSchema, 16),
+    idempotencyMode: z.enum(['none', 'durable']).optional(),
   }),
 })
 
@@ -334,6 +335,7 @@ class AgentConnectorRegistry {
         eventTypes: manifest.eventTypes,
         usage: manifest.usage,
         outboundDestinations: manifest.outboundDestinations,
+        idempotencyMode: manifest.invocation.idempotencyMode || 'none',
       },
     })
   }

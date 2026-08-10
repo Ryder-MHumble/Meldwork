@@ -143,7 +143,10 @@ const manifestContentFields = {
   description: descriptionSchema,
   transport: transportSchema,
   upstream: upstreamSchema,
-  invocation: z.strictObject({ recipeId: publicIdSchema }),
+  invocation: z.strictObject({
+    recipeId: publicIdSchema,
+    idempotencyMode: z.enum(['none', 'durable']).optional(),
+  }),
   domains: uniqueArray(publicIdSchema, MAX_LIST_ITEMS, 1),
   session: sessionSchema,
   inputTypes: uniqueArray(z.enum([

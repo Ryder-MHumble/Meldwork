@@ -1,3 +1,5 @@
+const { createHash } = require('node:crypto')
+
 const {
   cleanText,
   credentialFailure,
@@ -7,6 +9,7 @@ const {
   boundedBackoffDelay,
   normalizeAttemptHistoryEntry,
   normalizeFailure,
+  normalizeFailureOutcome,
   retryDecision,
 } = require('./failure-policy.cjs')
 const { mediaGenerationRequest } = require('./media-generation-request.cjs')
@@ -94,6 +97,15 @@ class LocalWorkspaceAutoRunner {
     this.hasRunLedger = typeof options.hasRunLedger === 'function'
       ? options.hasRunLedger
       : () => false
+    this.requestHumanGate = typeof options.requestHumanGate === 'function'
+      ? options.requestHumanGate
+      : null
+    this.completeHumanGateContinuation = typeof options.completeHumanGateContinuation === 'function'
+      ? options.completeHumanGateContinuation
+      : null
+    this.retryContract = typeof options.retryContract === 'function'
+      ? options.retryContract
+      : () => ({ idempotencyMode: 'none' })
     this.retryBaseDelayMs = Number.isFinite(options.retryBaseDelayMs)
       ? Math.max(1, Math.floor(options.retryBaseDelayMs))
       : 250
@@ -124,6 +136,16 @@ class LocalWorkspaceAutoRunner {
     })
   }
 
+  operationIdFor(controller, kind, mode) {
+    const digest = createHash('sha256').update(JSON.stringify({
+      runId: controller.runId,
+      kind,
+      mode,
+      round: controller.currentRound || 0,
+    })).digest('hex')
+    return `agent-operation-${digest}`
+  }
+
   recordAttempt(group, controller, input) {
     const history = Array.isArray(controller.attemptHistory) ? controller.attemptHistory : []
     const previousSequence = history.at(-1)?.sequence || 0
@@ -138,6 +160,12 @@ class LocalWorkspaceAutoRunner {
       recoveryAgentKind: input.recoveryAgentKind || '',
       finalOutcome: input.finalOutcome,
       timestamp: Date.now(),
+      ...(input.outcomeCertainty ? { outcomeCertainty: input.outcomeCertainty } : {}),
+      ...(Object.hasOwn(input, 'sideEffectsPossible')
+        ? { sideEffectsPossible: input.sideEffectsPossible }
+        : {}),
+      ...(input.operationId ? { operationId: input.operationId } : {}),
+      ...(input.idempotencyMode ? { idempotencyMode: input.idempotencyMode } : {}),
     })
     if (!entry) throw new Error('LOCAL_RUN_ATTEMPT_INVALID')
     controller.attemptHistory = [...history, entry].slice(-256)
@@ -164,6 +192,8 @@ class LocalWorkspaceAutoRunner {
   }
 
   async invokeTransiently(invokeSource, group, kind, controller, options = {}) {
+    const operationId = options.operationId
+    const idempotencyMode = options.idempotencyMode === 'durable' ? 'durable' : 'none'
     for (let attempt = 1; ; attempt += 1) {
       const phase = attempt === 1 ? (options.phase || 'initial') : 'transient_retry'
       const phaseAttempt = attempt === 1 ? (options.attempt || 1) : attempt - 1
@@ -178,6 +208,9 @@ class LocalWorkspaceAutoRunner {
           backoffMs: options.successBackoffMs || 0,
           recoveryAgentKind: options.recoveryAgentKind || '',
           finalOutcome: 'succeeded',
+          sideEffectsPossible: group.allowWrite === true,
+          operationId,
+          idempotencyMode,
         })
         return result
       } catch (error) {
@@ -195,6 +228,12 @@ class LocalWorkspaceAutoRunner {
         }
         if (unauthorizedFailure(error)) throw error
         const failure = normalizeFailure(error)
+        const safety = normalizeFailureOutcome(error, {
+          category: failure.category,
+          sideEffectsPossible: group.allowWrite === true,
+          operationId,
+          idempotencyMode,
+        })
         if (failure.category === 'cancellation') throw error
         // Session recovery is owned by LocalWorkspaceAgentInvocation so a stale
         // native Session gets exactly one fresh attempt across every run mode.
@@ -203,7 +242,68 @@ class LocalWorkspaceAutoRunner {
           maxAttempts: 4,
           baseDelayMs: this.retryBaseDelayMs,
           maxDelayMs: this.retryMaxDelayMs,
+          safety,
         })
+        if (decision.action === 'human_gate') {
+          this.recordAttempt(group, controller, {
+            agentKind: options.agentKind || kind,
+            phase,
+            attempt: phaseAttempt,
+            failureCategory: failure.category,
+            policyAction: 'human_gate',
+            backoffMs: decision.delayMs,
+            recoveryAgentKind: options.recoveryAgentKind || '',
+            finalOutcome: 'failed',
+            ...safety,
+          })
+          if (!this.requestHumanGate || !error?.runTrace?.agentRunId) {
+            throw new Error('LOCAL_RUN_RETRY_GATE_INVALID')
+          }
+          const gate = await this.requestHumanGate({
+            type: 'retry',
+            runId: controller.runId,
+            agentRunId: error.runTrace.agentRunId,
+            agentKind: options.agentKind || kind,
+            summary: 'The previous write-capable Agent attempt may already have changed the workspace.',
+            options: [
+              { optionId: 'retry-once', name: 'Retry once', kind: 'allow_once' },
+              { optionId: 'cancel-retry', name: 'Do not retry', kind: 'reject_once' },
+            ],
+            request: {
+              failureCategory: failure.category,
+              outcomeCertainty: safety.outcomeCertainty,
+              sideEffectsPossible: safety.sideEffectsPossible,
+              operationId: safety.operationId,
+              idempotencyMode: safety.idempotencyMode,
+            },
+          }, {
+            signal: controller.signal,
+            preserveOnAbort: () => controller.stopReason === 'shutdown',
+            continuation: {
+              resumeKind: 'agent_slot',
+              agentRunId: error.runTrace.agentRunId,
+              agentKind: options.agentKind || kind,
+              round: controller.currentRound || 0,
+            },
+          })
+          if (gate.status !== 'approved') {
+            this.completeHumanGateContinuation?.(controller.runId, gate.gateId, 'cancelled')
+            controller.stopReason = 'human_gate_rejected'
+            controller.abort()
+            throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+          }
+          if (this.completeHumanGateContinuation?.(
+            controller.runId, gate.gateId, 'completed',
+          ) !== true && this.hasRunLedger()) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
+          this.markRuntimeCredential(kind, 'unknown')
+          try { await this.refreshAgents() } catch {
+            if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+          }
+          await this.sleep(decision.delayMs, controller.signal)
+          continue
+        }
         if (decision.action !== 'retry') {
           this.recordAttempt(group, controller, {
             agentKind: options.agentKind || kind,
@@ -215,6 +315,7 @@ class LocalWorkspaceAutoRunner {
             backoffMs: options.failureBackoffMs || 0,
             recoveryAgentKind: options.recoveryAgentKind || '',
             finalOutcome: 'failed',
+            ...safety,
           })
           throw error
         }
@@ -227,6 +328,7 @@ class LocalWorkspaceAutoRunner {
           backoffMs: decision.delayMs,
           recoveryAgentKind: options.recoveryAgentKind || '',
           finalOutcome: 'failed',
+          ...safety,
         })
         this.markRuntimeCredential(kind, 'unknown')
         try { await this.refreshAgents() } catch {
@@ -293,11 +395,15 @@ class LocalWorkspaceAutoRunner {
     context,
     mode = 'auto',
   }) {
+    const operationId = this.operationIdFor(controller, kind, mode)
+    const contract = this.retryContract(kind) || {}
+    const idempotencyMode = contract.idempotencyMode === 'durable' ? 'durable' : 'none'
     const invokeSource = async () => {
       this.setCurrentAgent(controller, kind)
       return this.invokeAgent(group, kind, mode, controller.signal, threadRootId, {
         ...context,
         deferCredentialFailure: true,
+        operationId,
       })
     }
     let phase = 'initial'
@@ -308,6 +414,8 @@ class LocalWorkspaceAutoRunner {
           result: await this.invokeTransiently(invokeSource, group, kind, controller, {
             phase,
             attempt: phaseAttempt,
+            operationId,
+            idempotencyMode,
           }),
           removed: false,
         }
@@ -332,6 +440,11 @@ class LocalWorkspaceAutoRunner {
           failureCategory: 'authentication',
           policyAction: 'fail',
           finalOutcome: 'failed',
+          ...normalizeFailureOutcome(error, {
+            sideEffectsPossible: group.allowWrite === true,
+            operationId,
+            idempotencyMode,
+          }),
         })
         this.resetAgentSession(group, kind, false, controller.taskId)
         throw sanitizedAuthenticationError(error)

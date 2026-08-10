@@ -5,7 +5,7 @@ const { createAgentConnectorManifest } = require('../src/agent-connector-manifes
 const { AgentConnectorRegistry } = require('../src/agent-connector-registry.cjs')
 const { AgentConnectorRuntime } = require('../src/agent-connector-runtime.cjs')
 
-function manifestInput() {
+function manifestInput(overrides = {}) {
   return {
     connectorId: 'external.review-agent',
     connectorVersion: '1.0.0',
@@ -38,11 +38,12 @@ function manifestInput() {
       slots: [{ slotId: 'account', type: 'oauth', required: true }],
     },
     license: 'Apache-2.0',
+    ...overrides,
   }
 }
 
-function runtimeFixture(handler) {
-  const manifest = createAgentConnectorManifest(manifestInput())
+function runtimeFixture(handler, overrides = {}) {
+  const manifest = createAgentConnectorManifest(manifestInput(overrides))
   const registry = new AgentConnectorRegistry({
     approvedRecipeIds: ['external.review-agent.run'],
     approvedExternalManifestIds: [manifest.manifestId],
@@ -152,4 +153,40 @@ test('fails closed when a recipe, permission mode, or terminal event is missing'
   )
   assert.equal(recipeStates.length, 1)
   assert.equal(recipeStates[0].connector.connectorVersion, '1.0.0')
+})
+
+test('passes one durable operation ID through repeated idempotent Connector calls', async () => {
+  const received = []
+  const { runtime } = runtimeFixture(async (input) => {
+    received.push({
+      operationId: input.operationId,
+      idempotencyKey: input.idempotencyKey,
+      mode: input.connector.capabilities.idempotencyMode,
+    })
+    input.emit({
+      eventId: `${input.agentRunId}:completed`,
+      cursor: `${input.agentRunId}:completed`,
+      sequence: 1,
+      type: 'Completed',
+      outcome: 'completed',
+    })
+    return { text: 'done', sessionRef: '' }
+  }, {
+    invocation: { recipeId: 'external.review-agent.run', idempotencyMode: 'durable' },
+    permissionModes: ['read-only', 'workspace-write'],
+  })
+  const [agent] = runtime.detectAgents()
+  const operationId = `agent-operation-${'c'.repeat(64)}`
+
+  await runtime.run(agent, 'Write once', '/tmp/workspace', {
+    runId: 'run-1', agentRunId: 'agent-run-1', sandbox: 'workspace-write', operationId,
+  })
+  await runtime.run(agent, 'Write once', '/tmp/workspace', {
+    runId: 'run-1', agentRunId: 'agent-run-2', sandbox: 'workspace-write', operationId,
+  })
+
+  assert.deepEqual(received, [
+    { operationId, idempotencyKey: operationId, mode: 'durable' },
+    { operationId, idempotencyKey: operationId, mode: 'durable' },
+  ])
 })

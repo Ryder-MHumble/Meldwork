@@ -6,6 +6,7 @@ const {
   normalizeAttemptHistory,
   normalizeAttemptHistoryEntry,
   normalizeFailure,
+  normalizeFailureOutcome,
   parseRetryAfter,
   retryDecision,
 } = require('../src/failure-policy.cjs')
@@ -153,4 +154,32 @@ test('retries only transient categories and stops at the total attempt bound', (
   ))
   assert.equal(cancelled.category, 'cancellation')
   assert.equal(retryDecision(cancelled).action, 'fail')
+})
+
+test('requires approval before retrying side-effectful ambiguous failures', () => {
+  const error = Object.assign(new Error('socket reset after dispatch'), {
+    code: 'ECONNRESET',
+    invocationFailure: {
+      outcomeCertainty: 'unknown_outcome',
+      sideEffectsPossible: true,
+      operationId: `agent-operation-${'a'.repeat(64)}`,
+      idempotencyMode: 'none',
+    },
+  })
+  const failure = normalizeFailure(error)
+  const safety = normalizeFailureOutcome(error)
+
+  assert.deepEqual(safety, {
+    outcomeCertainty: 'unknown_outcome',
+    sideEffectsPossible: true,
+    operationId: `agent-operation-${'a'.repeat(64)}`,
+    idempotencyMode: 'none',
+  })
+  assert.equal(retryDecision(failure, { safety }).action, 'human_gate')
+  assert.equal(retryDecision(failure, {
+    safety: { ...safety, idempotencyMode: 'durable' },
+  }).action, 'retry')
+  assert.equal(retryDecision(failure, {
+    safety: { ...safety, outcomeCertainty: 'not_started', sideEffectsPossible: false },
+  }).action, 'retry')
 })

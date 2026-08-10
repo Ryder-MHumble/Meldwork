@@ -6,6 +6,25 @@ const { agentRuntimeError } = require('../src/agent-runtime-contract.cjs')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { RunLedger } = require('../src/run-ledger.cjs')
 const { deferred, fixture } = require('./local-workspace-test-helpers.cjs')
+
+function pendingHumanGate(workspace, timeoutMs = 2000) {
+  const current = workspace.listHumanGates({ pendingOnly: true })[0]
+  if (current) return Promise.resolve(current)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      workspace.off('changed', changed)
+      reject(new Error('TEST_HUMAN_GATE_TIMEOUT'))
+    }, timeoutMs)
+    const changed = () => {
+      const gate = workspace.listHumanGates({ pendingOnly: true })[0]
+      if (!gate) return
+      clearTimeout(timer)
+      workspace.off('changed', changed)
+      resolve(gate)
+    }
+    workspace.on('changed', changed)
+  })
+}
 test('auto send preflights atomically, persists one root, and starts at round one', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -991,7 +1010,70 @@ test('automatic dialogue honors bounded Retry-After backoff and recovers', async
     'hermes', 'hermes', 'hermes', 'hermes', 'codex',
   ])
   assert.deepEqual(delays, [4, 4, 4])
+  assert.equal(new Set(calls.slice(0, 4).map(call => call.runOptions.operationId)).size, 1)
   assert.equal(finished[0].status, 'completed')
+})
+
+test('write-capable unknown outcomes wait for approval before replaying', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const outputPath = path.join(directory, 'write-attempts.txt')
+  let codexAttempts = 0
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'codex') {
+      codexAttempts += 1
+      fs.appendFileSync(outputPath, `attempt-${codexAttempts}\n`)
+      if (codexAttempts === 1) {
+        throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+      }
+    }
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Ambiguous write retry',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  workspace.addMessage(group.id, 'user', 'Write exactly once unless I approve a retry')
+  const gatePromise = pendingHumanGate(workspace)
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  const active = workspace.activeRuns.get(group.id)
+  const gate = await gatePromise
+
+  assert.equal(gate.type, 'retry')
+  assert.equal(codexAttempts, 1)
+  assert.equal(fs.readFileSync(outputPath, 'utf8'), 'attempt-1\n')
+  const waiting = ledger.get(gate.runId)
+  const ambiguous = waiting.attemptHistory.at(-1)
+  assert.deepEqual({
+    policyAction: ambiguous.policyAction,
+    outcomeCertainty: ambiguous.outcomeCertainty,
+    sideEffectsPossible: ambiguous.sideEffectsPossible,
+    idempotencyMode: ambiguous.idempotencyMode,
+  }, {
+    policyAction: 'human_gate',
+    outcomeCertainty: 'unknown_outcome',
+    sideEffectsPossible: true,
+    idempotencyMode: 'none',
+  })
+  assert.match(ambiguous.operationId, /^agent-operation-[a-f0-9]{64}$/)
+
+  workspace.decideHumanGate(gate.gateId, { optionId: 'retry-once' })
+  await active.promise
+
+  assert.equal(codexAttempts, 2)
+  assert.equal(calls[0].runOptions.operationId, calls[1].runOptions.operationId)
+  assert.equal(fs.readFileSync(outputPath, 'utf8'), 'attempt-1\nattempt-2\n')
 })
 
 test('automatic dialogue exhausts bounded transient retries before continuing', async (t) => {

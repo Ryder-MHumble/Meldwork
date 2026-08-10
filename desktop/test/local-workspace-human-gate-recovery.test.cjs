@@ -269,6 +269,57 @@ test('legacy Role Review continuations fail closed without reading workflow data
   assert.equal(calls.length, 0)
 })
 
+test('retry approval survives restart and reuses the durable operation ID once', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const operationIds = []
+  let invocations = 0
+  options.runLedger = ledger
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    invocations += 1
+    operationIds.push(runOptions.operationId)
+    if (invocations === 1) {
+      throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+    }
+    return { text: 'approved retry completed', sessionRef: 'retry-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Durable retry approval',
+    agentKinds: ['codex'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace)
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Do not replay this uncertain write without approval',
+    targetKinds: ['codex'],
+  })
+  const gate = await gatePromise
+
+  await workspace.stopAll()
+  await send
+  assert.equal(invocations, 1)
+  assert.equal(ledger.get(gate.runId).status, 'waiting')
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(invocations, 1)
+
+  restarted.decideHumanGate(gate.gateId, { optionId: 'retry-once' })
+  const terminal = await waitForRunStatus(restartedLedger, gate.runId, 'completed')
+
+  assert.equal(invocations, 2)
+  assert.equal(operationIds[0], operationIds[1])
+  assert.equal(terminal.continuation.state, 'completed')
+})
+
 test('restart resumes a durable Gate decision whose continuation checkpoint stayed pending once', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

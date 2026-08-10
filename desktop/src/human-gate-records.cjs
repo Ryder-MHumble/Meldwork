@@ -35,7 +35,7 @@ const optionSchema = z.strictObject({
 })
 
 const baseFields = {
-  type: z.enum(['permission', 'budget', 'decision']),
+  type: z.enum(['permission', 'budget', 'decision', 'retry']),
   runId: z.string().regex(PUBLIC_ID),
   agentRunId: z.string().regex(PUBLIC_ID),
   agentKind: z.string().regex(PUBLIC_ID),

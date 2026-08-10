@@ -60,6 +60,10 @@ function attemptHistory() {
     backoffMs: 250,
     recoveryAgentKind: '',
     finalOutcome: 'failed',
+    outcomeCertainty: 'unknown_outcome',
+    sideEffectsPossible: true,
+    operationId: `agent-operation-${'a'.repeat(64)}`,
+    idempotencyMode: 'none',
     timestamp: 1000,
   }, {
     sequence: 2,
@@ -71,6 +75,9 @@ function attemptHistory() {
     backoffMs: 250,
     recoveryAgentKind: 'codex',
     finalOutcome: 'succeeded',
+    sideEffectsPossible: false,
+    operationId: `agent-operation-${'b'.repeat(64)}`,
+    idempotencyMode: 'durable',
     timestamp: 1100,
   }]
 }
@@ -104,6 +111,7 @@ test('rejects malformed durable attempt history without changing the Run', (t) =
   for (const value of [
     [{ ...attemptHistory()[0], phase: 'raw_retry' }],
     [{ ...attemptHistory()[0], failureCategory: 'HTTP 401 private-token' }],
+    [{ ...attemptHistory()[0], outcomeCertainty: 'maybe' }],
     [attemptHistory()[1], attemptHistory()[0]],
   ]) {
     assert.throws(

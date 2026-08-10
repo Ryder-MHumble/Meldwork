@@ -50,7 +50,7 @@ const CONTINUATION_FIELDS = new Set([
   'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
   'round', 'createdAt', 'updatedAt',
 ])
-const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision'])
+const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry'])
 const CONTINUATION_RESUME_KINDS = new Set(['agent_slot', 'role_review_decision'])
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
