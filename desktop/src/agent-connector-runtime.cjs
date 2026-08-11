@@ -280,6 +280,8 @@ class AgentConnectorRuntime {
         label: instance.label,
         version: instance.upstreamVersion,
         installed: true,
+        available: true,
+        invocable: true,
         custom: true,
         compatibilityState: 'compatible',
         connectorInstanceId: instance.instanceId,
