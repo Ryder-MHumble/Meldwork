@@ -16,8 +16,8 @@ Meldwork is not about opening more AI windows. It is about letting complex work 
 
 <p align="center">
   <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.4/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
-  · <a href="LICENSE">AGPL-3.0 license</a>
-  · <a href="COMMERCIAL_USE.md">Commercial use</a>
+  · <a href="LICENSE">Non-commercial source license</a>
+  · <a href="COMMERCIAL_USE.md">Commercial permission</a>
 </p>
 
 ## Install the desktop client
@@ -35,7 +35,7 @@ If the latest Release includes a DMG, it can be downloaded and installed locally
 
 | Local Agent discovery | Direct multimodal work | Targeted multi-Agent review |
 | --- | --- | --- |
-| [![Meldwork detecting local Agent CLIs](docs/assets/meldwork-agent-discovery.png)](docs/assets/meldwork-agent-discovery.png) | [![A direct Agent conversation returning image, audio, and document outputs](docs/assets/meldwork-direct-multimodal.png)](docs/assets/meldwork-direct-multimodal.png) | [![A group conversation with targeted Agent replies](docs/assets/meldwork-group-collaboration.png)](docs/assets/meldwork-group-collaboration.png) |
+| [![Meldwork detecting local Agent CLIs](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![A direct Agent conversation returning image, audio, and document outputs](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) | [![A group conversation with targeted Agent replies](assets/meldwork-multi-agent-review.png)](assets/meldwork-multi-agent-review.png) |
 | Detect supported Agent CLIs without presenting startup as an error state. | Keep prompts, generated media, files, permissions, and compatible native sessions in one direct conversation. | Ask only the selected Agents to respond, then inspect or collapse each reply independently. |
 
 Click any screenshot to view it at full resolution.
@@ -124,6 +124,6 @@ npm --prefix desktop test
 
 ## License
 
-Meldwork Community Edition is open source under the [GNU Affero General Public License v3.0 only](LICENSE). The AGPL permits commercial use, modification, and redistribution while requiring covered source to remain available when modified versions are distributed or offered over a network.
+Meldwork is source-available under the [Meldwork Non-Commercial Source License](LICENSE). You may inspect, run, modify, and share the software for non-commercial purposes, but commercial use is not permitted without prior written permission from the copyright holder.
 
-Organizations that need proprietary redistribution, closed-source embedding, or a separately licensed commercial edition can request a commercial license; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md). Third-party attribution is recorded in [NOTICE](NOTICE).
+Commercial use includes resale, paid hosting, managed services, consulting or outsourcing use, closed-source embedding, and business operations by or for a for-profit organization. To request permission or a separate commercial license, see [COMMERCIAL_USE.md](COMMERCIAL_USE.md). Third-party attribution is recorded in [NOTICE](NOTICE).

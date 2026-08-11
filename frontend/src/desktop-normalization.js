@@ -4,6 +4,7 @@ const AGENT_KIND = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
 const CONTEXT_RECORD_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 const CONTEXT_PACK_ID = /^context-pack-[a-f0-9]{64}$/
 const DELIVERY_RECORD_ID = /^delivery-record-[a-f0-9]{64}$/
+const SHA256 = /^[a-f0-9]{64}$/
 const SESSION_SCOPES = new Set(['task', 'conversation', 'group', 'unknown-legacy', 'none'])
 const SESSION_ORIGINS = new Set(['created', 'resumed', 'migrated', 'unknown-legacy', 'none'])
 const SESSION_PROVENANCE_COMPLETENESS = new Set(['complete', 'partial', 'unknown-legacy'])
@@ -179,6 +180,19 @@ function normalizeTraceContext(value) {
     includedCount: nonNegativeInteger(input.includedCount, 1000) ?? 0,
     omittedCount: nonNegativeInteger(input.omittedCount, 100000) ?? 0,
     charCount: nonNegativeInteger(input.charCount, 1000000) ?? 0,
+  }
+  if (['bootstrap', 'continuation'].includes(input.contextMode)) {
+    context.contextMode = input.contextMode
+  }
+  for (const field of ['promptChars', 'sourceCount', 'promptBytes', 'wirePayloadBytes']) {
+    const maximum = field === 'sourceCount' ? 1000 : 10000000
+    const normalized = nonNegativeInteger(input[field], maximum)
+    if (normalized !== null) context[field] = normalized
+  }
+  for (const field of ['sourceHash', 'promptHash', 'wirePayloadHash']) {
+    if (typeof input[field] === 'string' && SHA256.test(input[field])) {
+      context[field] = input[field]
+    }
   }
   if (input.sessionRotated === true) context.sessionRotated = true
   const contextPackId = normalizedContextPackId(input.contextPackId)

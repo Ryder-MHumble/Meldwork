@@ -492,7 +492,40 @@
               <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
             </header>
             <p>{{ humanGateSummary(gate) }}</p>
-            <div class="human-gate-options">
+            <form
+              v-if="gate.type === 'input'"
+              class="human-gate-input"
+              @submit.prevent="submitHumanGateInput(gate)"
+            >
+              <input
+                v-model="humanGateResponses[gate.gateId]"
+                type="text"
+                maxlength="32768"
+                :placeholder="t('humanGate.inputPlaceholder')"
+                :aria-label="t('humanGate.inputLabel')"
+                :disabled="humanGateDecisionPending(gate.gateId)"
+              />
+              <div class="human-gate-options">
+                <button
+                  class="compact primary-button"
+                  type="submit"
+                  :disabled="humanGateDecisionPending(gate.gateId) || !humanGateResponse(gate.gateId)"
+                >
+                  <CheckmarkCircleOutline />
+                  {{ t('humanGate.option.submitInput') }}
+                </button>
+                <button
+                  class="compact secondary-button"
+                  type="button"
+                  :disabled="humanGateDecisionPending(gate.gateId)"
+                  @click="cancelHumanGateInput(gate)"
+                >
+                  <CloseCircleOutline />
+                  {{ t('humanGate.option.cancelInput') }}
+                </button>
+              </div>
+            </form>
+            <div v-else class="human-gate-options">
               <button
                 v-for="option in gate.options"
                 :key="option.optionId"
@@ -647,7 +680,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AttachOutline,
   ArchiveOutline,
@@ -784,6 +817,7 @@ const directRunBudget = computed(() => props.controller.directRunBudget?.value |
 const humanGateDecisionPendingIds = computed(() => (
   props.controller.humanGateDecisionPendingIds?.value || []
 ))
+const humanGateResponses = reactive({})
 const directBudgetRows = computed(() => budgetRows(directRunBudget.value))
 const USER_MESSAGE_COLLAPSE_HEIGHT = 216
 const userMessageElements = new Map()
@@ -917,8 +951,24 @@ function decideHumanGate(payload) {
   return props.controller.decideHumanGate?.(payload)
 }
 
+function humanGateResponse(gateId) {
+  return String(humanGateResponses[gateId] || '').trim()
+}
+
+function submitHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'respond')
+  const response = humanGateResponse(gate?.gateId)
+  if (!option || !response) return false
+  return decideHumanGate({ gateId: gate.gateId, optionId: option.optionId, response })
+}
+
+function cancelHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'reject')
+  return option ? decideHumanGate({ gateId: gate.gateId, optionId: option.optionId }) : false
+}
+
 function optionApprovesHumanGate(option) {
-  return ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+  return ['allow_once', 'allow_always', 'accept', 'respond'].includes(option?.kind)
 }
 
 function humanGateDecisionPending(gateId) {
@@ -930,11 +980,17 @@ function humanGateSummary(gate) {
     'Agent requests permission to continue a tool action.': 'humanGate.summary.permission',
     'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
     'This run requires a human decision.': 'humanGate.summary.decision',
+    'The previous write-capable Agent attempt may already have changed the workspace.': 'humanGate.summary.retry',
   }[gate?.summary]
   return key ? t(key) : gate?.summary || ''
 }
 
 function humanGateOptionLabel(option) {
+  const optionIdKey = {
+    'retry-once': 'humanGate.option.retryOnce',
+    'cancel-retry': 'humanGate.option.cancelRetry',
+  }[option?.optionId]
+  if (optionIdKey) return t(optionIdKey)
   const key = {
     allow_once: 'humanGate.option.allowOnce',
     allow_always: 'humanGate.option.allowAlways',
@@ -949,7 +1005,7 @@ function humanGateOptionLabel(option) {
 
 function budgetRows(budget) {
   if (!budget) return []
-  return BUDGET_DIMENSIONS.map((dimension) => {
+  const rows = BUDGET_DIMENSIONS.map((dimension) => {
     const used = budget.used[dimension]
     const limit = budget.limits[dimension]
     return {
@@ -964,6 +1020,22 @@ function budgetRows(budget) {
         || budget.enforcement[dimension] === 'hard',
     }
   }).filter(row => row.meaningful)
+  const exhaustion = budget.exhaustion
+  if (exhaustion) {
+    rows.unshift({
+      dimension: `exhaustion:${exhaustion.dimension}`,
+      label: `${t(`trace.budgetDimension.${exhaustion.dimension}`)} · ${t('trace.budgetExhaustion')}`,
+      usage: t('trace.budgetUsage', {
+        used: formatBudgetNumber(exhaustion.used),
+        limit: formatBudgetNumber(exhaustion.limit),
+      }),
+      meta: t('trace.budgetAttempt', {
+        prior: formatBudgetNumber(exhaustion.priorUsed),
+        attempted: formatBudgetNumber(exhaustion.attemptedUsage),
+      }),
+    })
+  }
+  return rows
 }
 
 function formatBudgetNumber(value) {
@@ -1026,6 +1098,16 @@ function formatBudgetNumber(value) {
 .human-gate-options {
   flex-wrap: wrap;
   gap: 7px;
+}
+
+.human-gate-input {
+  display: grid;
+  gap: 10px;
+}
+
+.human-gate-input input {
+  width: 100%;
+  min-width: 0;
 }
 
 .human-gate-options button svg {

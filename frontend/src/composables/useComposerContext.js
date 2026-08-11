@@ -1,4 +1,4 @@
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { parseAgentRoutingPrefix } from '../agent-routing.js'
 import {
   MAX_KNOWLEDGE_BASES,
@@ -47,6 +47,7 @@ export function useComposerContext({
   const selectedSkills = ref([])
   const selectedKnowledgeBases = ref([])
   const discussionMode = ref('auto')
+  const automaticTeamFormation = ref(false)
 
   const addressedAgentKinds = computed(() => {
     const group = activeGroup.value
@@ -58,6 +59,10 @@ export function useComposerContext({
   const composerTargetKinds = computed(() => {
     const group = activeGroup.value
     if (!group) return []
+    if (automaticTeamFormation.value && group.conversationType !== 'direct') {
+      const ready = new Set(mergedCatalog.value.filter(agent => agent.available).map(agent => agent.kind))
+      return group.agentKinds.filter(kind => ready.has(kind))
+    }
     if (group.conversationType !== 'direct' && addressedAgentKinds.value.length) {
       return [...addressedAgentKinds.value]
     }
@@ -70,6 +75,13 @@ export function useComposerContext({
   })
   const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
   const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
+  watch([
+    () => addressedAgentKinds.value.length,
+    () => selectedSkills.value.length,
+    () => selectedKnowledgeBases.value.length,
+  ], values => {
+    if (values.some(Boolean)) automaticTeamFormation.value = false
+  })
   const mentionMenu = useComposerMentionMenu({
     activeGroup,
     activeMentionAgentKind,
@@ -148,7 +160,17 @@ export function useComposerContext({
   }
 
   function isComposerTargetSelected(kind) {
-    return composerTargetKinds.value.includes(kind)
+    return !automaticTeamFormation.value && composerTargetKinds.value.includes(kind)
+  }
+
+  function toggleAutomaticTeamFormation() {
+    if (sending.value || activeRun.value || activeGroup.value?.conversationType === 'direct') return
+    if (
+      addressedAgentKinds.value.length
+      || selectedSkills.value.length
+      || selectedKnowledgeBases.value.length
+    ) return
+    automaticTeamFormation.value = !automaticTeamFormation.value
   }
 
   function handleComposerKeydown(event) {
@@ -169,6 +191,7 @@ export function useComposerContext({
         ...source,
         targetKinds: [...source.targetKinds],
       })),
+      automaticTeamFormation: automaticTeamFormation.value,
     }
   }
 
@@ -190,10 +213,12 @@ export function useComposerContext({
       ...source,
       targetKinds: [...(source.targetKinds || [])],
     }))
+    automaticTeamFormation.value = context?.automaticTeamFormation === true
   }
 
   function resetComposerContext(group) {
     discussionMode.value = group?.conversationType === 'direct' ? 'manual' : 'auto'
+    automaticTeamFormation.value = false
     targetKinds.value = group ? [...group.agentKinds] : []
     clearComposerContext()
   }
@@ -225,6 +250,7 @@ export function useComposerContext({
 
   return {
     activeMentionAgentKind,
+    automaticTeamFormation,
     activeSkillOptionId,
     addressedAgentKinds,
     captureComposerContext,
@@ -265,5 +291,6 @@ export function useComposerContext({
     skillsLoading,
     targetKinds,
     toggleTarget,
+    toggleAutomaticTeamFormation,
   }
 }

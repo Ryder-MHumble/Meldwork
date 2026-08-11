@@ -178,6 +178,9 @@ class CustomAgentStore {
   async run(kind, prompt, workdir, options = {}) {
     const definition = this.definitions.find(item => item.kind === kind)
     if (!definition) throw customAgentError('CUSTOM_AGENT_NOT_FOUND')
+    if (options.sandbox !== 'workspace-write') {
+      throw customAgentError('CUSTOM_AGENT_READ_ONLY_UNSUPPORTED')
+    }
     const executable = executablePath(definition.executable, this.platform)
     const attachments = normalizeAttachments(options.attachments)
     const attachmentContext = attachments.length

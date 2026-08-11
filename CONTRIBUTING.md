@@ -1,8 +1,8 @@
 # Contributing
 
-Meldwork Community Edition is open source under the [GNU Affero General Public License v3.0 only](LICENSE). Contributions are welcome when they improve the local-first desktop product, documentation, tests, or security posture.
+Meldwork is source-available under the [Meldwork Non-Commercial Source License](LICENSE). Contributions are welcome when they improve the local-first desktop product, documentation, tests, or security posture.
 
-Unless a separate written agreement applies, a contribution accepted into this repository is available under AGPL-3.0-only. The project may also offer separately licensed commercial editions. Before external code is incorporated into a separately licensed commercial build, the maintainer will require a reviewed contributor-license agreement that grants the necessary relicensing rights. Opening a pull request by itself does not transfer copyright or silently grant those additional rights.
+Unless a separate written agreement applies, a contribution accepted into this repository is available under the repository license. The project may also offer separately licensed commercial editions. Before external code is incorporated into a separately licensed commercial build, the maintainer may require a reviewed contributor-license agreement that grants the necessary relicensing rights. Opening a pull request by itself does not transfer copyright or silently grant those additional rights.
 
 ## Ground Rules
 
@@ -15,4 +15,4 @@ Unless a separate written agreement applies, a contribution accepted into this r
 
 ## Commercial Editions
 
-The AGPL Community Edition remains available under its open-source terms. Commercial editions, proprietary integrations, support, and other paid offerings may use separate terms; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md).
+Commercial use of Meldwork requires prior written permission. Commercial editions, proprietary integrations, support, and other paid offerings may use separate terms; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md).

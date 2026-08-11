@@ -23,9 +23,10 @@ test('tracks every supported dimension with explicit limits, usage, source, and 
   assert.equal(snapshot.source.costMicros, 'estimated')
   assert.equal(snapshot.enforcement.inputTokens, 'hard')
   assert.equal(snapshot.enforcement.costMicros, 'soft')
+  assert.equal(snapshot.exhaustion, null)
 })
 
-test('throws a typed terminal failure before mutating an observable hard budget', () => {
+test('commits attempted usage before throwing a typed hard budget failure', () => {
   const budget = new RunBudget({
     startedAt: 0,
     limits: { outboundBytes: 10 },
@@ -33,17 +34,48 @@ test('throws a typed terminal failure before mutating an observable hard budget'
   })
   assert.equal(budget.addUsage('outboundBytes', 10).action, 'allow')
 
-  assert.throws(
-    () => budget.addUsage('outboundBytes', 1),
-    error => error.code === 'LOCAL_BUDGET_EXHAUSTED'
+  assert.throws(() => budget.addUsage('outboundBytes', 1), error => (
+    error.code === 'LOCAL_BUDGET_EXHAUSTED'
       && error.failure.category === 'budget'
       && error.failure.retryable === false
       && error.decision.action === 'terminal'
       && error.decision.dimension === 'outboundBytes'
       && error.decision.limit === 10
-      && error.decision.used === 11,
-  )
-  assert.equal(budget.snapshot().used.outboundBytes, 10)
+      && error.decision.priorUsed === 10
+      && error.decision.attemptedUsage === 1
+      && error.decision.used === 11
+  ))
+  assert.equal(budget.snapshot().used.outboundBytes, 11)
+  assert.deepEqual(budget.snapshot().exhaustion, {
+    dimension: 'outboundBytes',
+    limit: 10,
+    priorUsed: 10,
+    attemptedUsage: 1,
+    used: 11,
+    source: 'reported',
+    enforcement: 'hard',
+    reason: 'BUDGET_LIMIT_EXCEEDED',
+  })
+})
+
+test('atomically records every dimension from the action that breached a hard budget', () => {
+  const budget = new RunBudget({
+    startedAt: 0,
+    limits: { toolCalls: 0 },
+    source: { toolCalls: 'estimated' },
+  })
+
+  assert.throws(() => budget.addUsageBatch([
+    { dimension: 'outputTokens', amount: 12, source: 'reported' },
+    { dimension: 'toolCalls', amount: 1, source: 'estimated' },
+    { dimension: 'costMicros', amount: 25, source: 'reported' },
+  ]), { message: 'LOCAL_BUDGET_EXHAUSTED' })
+
+  const snapshot = budget.snapshot()
+  assert.equal(snapshot.used.outputTokens, 12)
+  assert.equal(snapshot.used.toolCalls, 1)
+  assert.equal(snapshot.used.costMicros, 25)
+  assert.equal(snapshot.exhaustion.dimension, 'toolCalls')
 })
 
 test('returns a Human Gate decision when a hard budget is not observable', () => {
@@ -142,5 +174,6 @@ test('uses a fake clock for elapsed usage and has no elapsed limit by default', 
   })
   now = 2101
   assert.throws(() => limited.updateElapsed(), { message: 'LOCAL_BUDGET_EXHAUSTED' })
-  assert.equal(limited.snapshot().used.elapsedMs, 0)
+  assert.equal(limited.snapshot().used.elapsedMs, 101)
+  assert.equal(limited.snapshot().exhaustion.attemptedUsage, 101)
 })

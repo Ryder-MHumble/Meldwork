@@ -16,6 +16,7 @@ const { LocalWorkspaceContextPacks } = require('./local-workspace-context-packs.
 const { LocalWorkspaceMessageSubmission } = require('./local-workspace-message-submission.cjs')
 const { LocalWorkspaceRunCoordinator } = require('./local-workspace-run-coordinator.cjs')
 const { LocalWorkspaceRunMessages } = require('./local-workspace-run-messages.cjs')
+const { AgentRouter } = require('./agent-routing.cjs')
 const {
   clearSessionState,
   openClawSessionRef,
@@ -36,7 +37,9 @@ const {
   cleanInline,
   defaultAgentLabel,
   normalizeSessionRef,
+  terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 const {
   loadWorkspaceState,
   saveWorkspaceState,
@@ -88,6 +91,8 @@ class LocalWorkspace extends EventEmitter {
     this.createId = options.createId || randomUUID
     this.createRunId = options.createRunId || randomUUID
     this.runLedger = options.runLedger || null
+    this.workspaceRecovery = this.load()
+    this.state = this.workspaceRecovery.state
     const privateRoot = path.join(path.dirname(this.storagePath), 'roundrelay-private')
     this.contentBlobStore = options.contentBlobStore || new ContentBlobStore({
       rootPath: path.join(privateRoot, 'content-blobs'),
@@ -117,16 +122,17 @@ class LocalWorkspace extends EventEmitter {
       contentBlobStore: this.contentBlobStore,
       contextPackStore: this.contextPackStore,
     })
-    this.runLedger?.reconcileContextPacks?.(
-      contextPackId => this.contextPackStore.get(contextPackId),
-    )
+    if (this.workspaceRecovery.trusted) {
+      this.runLedger?.reconcileContextPacks?.(
+        contextPackId => this.contextPackStore.get(contextPackId),
+      )
+    }
     this.detectedAgents = []
     this.preparingRuns = new Map()
     this.activeRuns = new Map()
     this.runCheckpointTimers = new Map()
     this.humanGateWaitTails = new Map()
     this.shuttingDown = false
-    this.state = this.load()
     this.agentCatalog = new LocalWorkspaceAgentCatalog({
       state: () => this.state,
       detectedAgents: () => this.detectedAgents,
@@ -134,10 +140,15 @@ class LocalWorkspace extends EventEmitter {
       detectAgents: () => this.detectAgentsFn(),
       credentialState: (...args) => this.credentialStateFn(...args),
       sharedProviderReady: kind => this.sharedProviderReadyFn(kind),
+      attachmentSupport: kind => this.attachmentSupportFn(kind),
       save: () => this.save(),
       emitChanged: () => this.emitChanged(),
       snapshot: () => this.snapshot(),
       now: () => this.now(),
+    })
+    this.agentRouter = options.agentRouter || new AgentRouter({
+      attachmentSupport: kind => this.attachmentSupportFn(kind),
+      fitMatrix: options.agentFitMatrix,
     })
     this.runLedgerCoordinator = new LocalWorkspaceRunLedger({
       runLedger: this.runLedger,
@@ -168,6 +179,9 @@ class LocalWorkspace extends EventEmitter {
       emitChanged: () => this.emitChanged(),
       emit: (...args) => this.emit(...args),
       runBudgetDefaults: this.runBudgetDefaults,
+      retryBaseDelayMs: options.retryBaseDelayMs,
+      retryMaxDelayMs: options.retryMaxDelayMs,
+      terminalRetrySleep: options.terminalRetrySleep,
     })
     this.conversations = new LocalWorkspaceConversations({
       state: () => this.state,
@@ -248,6 +262,14 @@ class LocalWorkspace extends EventEmitter {
       finishRun: (...args) => this.finishRun(...args),
       checkpointRun: (...args) => this.checkpointRun(...args),
       hasRunLedger: () => Boolean(this.runLedger),
+      requestHumanGate: (...args) => this.requestHumanGate(...args),
+      completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
+      retryContract: kind => ({
+        idempotencyMode: this.detectedAgents.find(agent => agent.kind === kind)?.idempotencyMode
+          === 'durable'
+          ? 'durable'
+          : 'none',
+      }),
       retryBaseDelayMs: options.retryBaseDelayMs,
       retryMaxDelayMs: options.retryMaxDelayMs,
       retrySleep: options.retrySleep,
@@ -284,11 +306,16 @@ class LocalWorkspace extends EventEmitter {
       resetAgentSession: (...args) => this.resetAgentSession(...args),
       refreshAgents: () => this.refreshAgents(),
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
+      checkpointRun: (...args) => this.checkpointRun(...args),
+      hasRunLedger: () => Boolean(this.runLedger),
+      routeAgents: input => this.agentRouter.route(input),
     })
-    this.humanGateCoordinator.reconcileDecisions?.()
-    this.restoreInterruptedRuns()
-    this.humanGateCoordinator.reconcileOrphans?.()
-    this.resumeReadyHumanGates()
+    if (this.workspaceRecovery.trusted) {
+      this.humanGateCoordinator.reconcileDecisions?.()
+      this.restoreInterruptedRuns()
+      this.humanGateCoordinator.reconcileOrphans?.()
+      this.resumeReadyHumanGates()
+    }
   }
 
   agentLabel(kind) {
@@ -300,6 +327,9 @@ class LocalWorkspace extends EventEmitter {
   }
 
   save() {
+    if (!this.workspaceRecovery.trusted) {
+      throw new Error(this.workspaceRecovery.diagnostic || 'LOCAL_WORKSPACE_STATE_UNTRUSTED')
+    }
     saveWorkspaceState(this.storagePath, this.state)
   }
 
@@ -316,11 +346,12 @@ class LocalWorkspace extends EventEmitter {
   }
 
   scheduleRunCheckpoint(groupId, controller) {
+    if (this.shuttingDown) return
     this.runLedgerCoordinator.schedule(groupId, controller)
   }
 
   finishRunCheckpoint(groupId, controller, status) {
-    this.runLedgerCoordinator.finish(groupId, controller, status)
+    return this.runLedgerCoordinator.finish(groupId, controller, status)
   }
 
   snapshot() {
@@ -412,6 +443,12 @@ class LocalWorkspace extends EventEmitter {
         round: input.round || 0,
         createdAt: timestamp,
         updatedAt: timestamp,
+        ...(input.requestId ? {
+          requestId: input.requestId,
+          requestHash: record.requestHash,
+          sessionRefHash: input.sessionRefHash,
+          sessionProvenanceHash: input.sessionProvenanceHash,
+        } : {}),
       }
       controller.waitingGateIds.add(record.gateId)
       if (this.runLedger && this.checkpointRun(groupId, controller, 'waiting') !== true) {
@@ -507,10 +544,18 @@ class LocalWorkspace extends EventEmitter {
         || gate.agentKind !== continuation.agentKind) return false
     if (continuation.state !== 'pending' && gate.status === 'pending') return false
     try {
+      const request = this.humanGateStore.request(gate.gateId)
+      const connectorBound = gate.type === 'input' || request?.source === 'connector'
+      if (connectorBound && (
+        continuation.requestId !== request.requestId
+        || continuation.requestHash !== gate.requestHash
+        || continuation.sessionRefHash !== request.sessionRefHash
+        || continuation.sessionProvenanceHash !== request.sessionProvenanceHash
+      )) return false
       const pack = this.contextPackStore.get(runRecord.contextPackId)
       return pack.taskId === runRecord.taskId
         && this.state.groups.some(group => group.id === runRecord.groupId)
-        && Boolean(this.humanGateStore.request(gate.gateId))
+        && Boolean(request)
     } catch {
       return false
     }
@@ -543,8 +588,40 @@ class LocalWorkspace extends EventEmitter {
     return !durable.threadRootId || durable.taskId === durable.threadRootId
   }
 
+  canResumeOrchestration(durable, workflow) {
+    const cursor = durable?.orchestration
+    const continuation = durable?.continuation
+    const supportedCursor = workflow === 'auto'
+      ? [1, 2, 3].includes(cursor?.version)
+      : cursor?.version === 1
+    if (durable?.mode !== workflow || !supportedCursor || cursor.workflow !== workflow
+        || cursor.currentKind !== continuation?.agentKind
+        || !cursor.activeKinds.includes(cursor.currentKind)) return false
+    const targetKinds = Array.isArray(durable.targetKinds) ? durable.targetKinds : []
+    if (workflow === 'auto' && (
+      durable.currentRound < 1 || continuation?.round !== durable.currentRound
+    )) return false
+    if (workflow === 'manual' && continuation?.round !== 0) return false
+    return cursor.activeKinds.length > 0
+      && cursor.activeKinds.every(kind => targetKinds.includes(kind))
+      && cursor.pendingKinds.every(kind => cursor.activeKinds.includes(kind))
+      && !cursor.pendingKinds.includes(cursor.currentKind)
+      && !cursor.successfulKinds.includes(cursor.currentKind)
+      && cursor.successfulKinds.every(kind => cursor.activeKinds.includes(kind))
+      && cursor.pendingKinds.every(kind => !cursor.successfulKinds.includes(kind))
+      && cursor.agreementKinds.every(kind => cursor.successfulKinds.includes(kind))
+  }
+
+  canResumeManualOrchestration(durable) {
+    return this.canResumeOrchestration(durable, 'manual')
+  }
+
+  canResumeAutoOrchestration(durable) {
+    return this.canResumeOrchestration(durable, 'auto')
+  }
+
   async replayAgentSlot(group, durable, controller, gate, decision, request) {
-    if (!['budget', 'permission'].includes(gate?.type)) {
+    if (!['budget', 'permission', 'retry', 'input'].includes(gate?.type)) {
       throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
     }
     const message = this.state.messages.find(candidate => (
@@ -563,11 +640,12 @@ class LocalWorkspace extends EventEmitter {
     const knowledge = await this.validateKnowledgeBaseSelectionsFn(
       [durable.continuation.agentKind], message.knowledgeBaseHints || [],
     )
+    const activeKinds = controller.orchestration?.activeKinds || durable.targetKinds
     const recovered = await this.autoRunner.invokeWithUnauthorizedRecovery({
       group,
       kind: durable.continuation.agentKind,
       controller,
-      activeKinds: durable.targetKinds,
+      activeKinds,
       threadRootId: durable.threadRootId,
       context: {
         attachments: attachments.map(attachment => attachment.path),
@@ -577,9 +655,14 @@ class LocalWorkspace extends EventEmitter {
         resumedGate: {
           gateId: gate.gateId,
           type: gate.type,
+          agentRunId: gate.agentRunId,
           status: decision.status,
           optionId: decision.optionId,
-          ...(gate.type === 'permission' ? { request } : {}),
+          ...(['permission', 'input'].includes(gate.type) ? {
+            request,
+            requestHash: gate.requestHash,
+          } : {}),
+          ...(gate.type === 'input' ? { response: decision.response } : {}),
           used: false,
         },
         runtimeInstruction: gate.type === 'permission'
@@ -588,7 +671,14 @@ class LocalWorkspace extends EventEmitter {
               'Do not repeat actions completed before that request.',
               'Continue only after the Harness applies the persisted decision to the exact reissued request.',
             ].join(' ')
-          : '',
+          : (gate.type === 'input'
+              ? 'Resume the exact pending Connector input request with the persisted user response.'
+              : (gate.type === 'retry'
+              ? [
+                  'The user explicitly approved one replay after an earlier attempt had an uncertain outcome.',
+                  'Reuse the durable operation identity supplied by the Harness.',
+                ].join(' ')
+              : '')),
       },
       reportedFailures: new Set(),
       mode: durable.mode,
@@ -600,6 +690,135 @@ class LocalWorkspace extends EventEmitter {
     return recovered.result
   }
 
+  async continueManualOrchestration(group, durable, controller) {
+    const cursor = controller.orchestration
+    const message = this.state.messages.find(candidate => (
+      candidate.groupId === group.id
+      && candidate.role === 'user'
+      && [durable.taskId, durable.threadRootId].includes(candidate.id)
+    ))
+    if (!message || cursor?.version !== 1 || cursor.workflow !== 'manual'
+        || cursor.currentKind || cursor.pendingKinds.some(kind => !cursor.activeKinds.includes(kind))) {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const attachments = await this.resolveAttachments(message.attachments || [])
+    const activeKinds = [...cursor.activeKinds]
+    const successfulKinds = new Set(cursor.successfulKinds)
+    const pendingKinds = [...cursor.pendingKinds]
+    const reportedFailures = new Set()
+
+    while (pendingKinds.length) {
+      const kind = pendingKinds.shift()
+      if (!activeKinds.includes(kind) || controller.signal.aborted) continue
+      controller.currentKind = kind
+      controller.progress = []
+      controller.orchestration = {
+        ...controller.orchestration,
+        currentKind: kind,
+        pendingKinds: [...pendingKinds],
+        successfulKinds: [...successfulKinds],
+      }
+      if (this.checkpointRun(group.id, controller) !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      this.emitChanged()
+      try {
+        const skills = await this.validateSkillSelectionsFn(
+          kind,
+          (message.skillHints || []).filter(skill => skill.targetKind === kind),
+        )
+        const knowledge = await this.validateKnowledgeBaseSelectionsFn(
+          [kind],
+          (message.knowledgeBaseHints || []).filter(source => source.targetKinds?.includes(kind))
+            .map(source => ({ ...source, targetKinds: [kind] })),
+        )
+        const invocation = await this.autoRunner.invokeWithUnauthorizedRecovery({
+          group,
+          kind,
+          controller,
+          activeKinds,
+          threadRootId: durable.threadRootId,
+          context: {
+            attachments: attachments.map(attachment => attachment.path),
+            attachmentSnapshots: attachments,
+            skillHints: skills,
+            knowledgeBaseHints: knowledge,
+            contextOptions: { focusUserMessageId: message.id },
+          },
+          reportedFailures,
+          mode: 'manual',
+        })
+        if (!invocation?.result) throw invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+        successfulKinds.add(kind)
+      } catch (error) {
+        if (error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+            || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER') {
+          controller.stopReason = 'circuit_breaker'
+          controller.abort()
+          this.addMessage(
+            group.id,
+            'system',
+            `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+            '',
+            durable.threadRootId,
+            {
+              key: 'system.runCircuitBreaker',
+              params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+            },
+          )
+          break
+        }
+        if (error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+            || error?.message === 'LOCAL_BUDGET_EXHAUSTED') {
+          this.recordAgentFailure(
+            group.id, kind, error, durable.threadRootId, reportedFailures,
+          )
+          if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+          if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+          successfulKinds.delete(kind)
+          controller.stopReason = 'hard_budget'
+          controller.abort()
+          break
+        }
+        if (controller.signal.aborted) {
+          this.recordAgentInterruption(
+            group.id,
+            kind,
+            error,
+            durable.threadRootId,
+            controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped',
+            reportedFailures,
+          )
+          if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+          break
+        }
+        this.recordAgentFailure(group.id, kind, error, durable.threadRootId, reportedFailures)
+        if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+        successfulKinds.delete(kind)
+      }
+      if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+      controller.currentKind = ''
+      controller.progress = []
+      controller.orchestration = {
+        ...controller.orchestration,
+        currentKind: '',
+        pendingKinds: [...pendingKinds],
+        successfulKinds: [...successfulKinds],
+      }
+      if (this.checkpointRun(group.id, controller) !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      this.emitChanged()
+    }
+
+    if (controller.signal.aborted) {
+      return terminalRunStatusForReason(controller.stopReason)
+    }
+    const successCount = activeKinds.filter(kind => successfulKinds.has(kind)).length
+    if (!successCount) return 'failed'
+    return successCount === activeKinds.length ? 'completed' : 'partial'
+  }
+
   async resumeHumanGateDecision(gate, decision) {
     const durable = this.runLedger?.get?.(gate.runId)
     if (!this.canResumeHumanGateRecord(durable, gate)) {
@@ -609,41 +828,119 @@ class LocalWorkspace extends EventEmitter {
     try {
       controller = this.runCoordinator.resume(durable)
       const group = this.getGroup(durable.groupId)
+      const resumableManual = this.canResumeManualOrchestration(durable)
+      const resumableAuto = this.canResumeAutoOrchestration(durable)
+      const resumableTaskGraphDecision = durable.continuation.resumeKind === 'role_review_decision'
+        && durable.mode === 'auto'
+        && durable.orchestration?.version === 3
+        && durable.orchestration?.template === 'task-graph'
       if (durable.continuation.resumeKind === 'agent_slot'
           && decision.status === 'approved'
-          && !this.canFinalizeReplayedAgentSlot(durable)) {
+          && !this.canFinalizeReplayedAgentSlot(durable)
+          && !resumableManual
+          && !resumableAuto) {
         throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
       }
-      if (durable.continuation.resumeKind === 'role_review_decision') {
+      if (durable.continuation.resumeKind === 'role_review_decision'
+          && !resumableTaskGraphDecision) {
         throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
       }
+      if (resumableTaskGraphDecision) {
+        const finalStatus = await this.autoRunner.resumeDecision(
+          group, durable, controller, decision,
+        )
+        await this.finishRun(durable.groupId, controller, finalStatus)
+        return
+      }
       const request = this.humanGateStore.request(gate.gateId)
-      if (gate.type === 'permission') {
+      let replayedResult = null
+      if (gate.type === 'permission' || gate.type === 'retry' || gate.type === 'input') {
         if (decision.status === 'rejected') {
           this.resetAgentSession(group, durable.continuation.agentKind, true, durable.taskId)
           if (!controller.completedKinds.includes(durable.continuation.agentKind)) {
             controller.completedKinds.push(durable.continuation.agentKind)
           }
           this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
-          this.finishRun(durable.groupId, controller, 'stopped')
+          await this.finishRun(durable.groupId, controller, 'stopped')
           return
         }
-        await this.replayAgentSlot(group, durable, controller, gate, decision, request)
+        if (gate.type === 'retry' && !this.completeHumanGateContinuation(
+          durable.runId, gate.gateId, 'completed',
+        )) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
+        replayedResult = await this.replayAgentSlot(
+          group, durable, controller, gate, decision, request,
+        )
       } else if (gate.type === 'budget' && decision.status !== 'approved') {
         throw new Error('LOCAL_BUDGET_REJECTED')
       } else {
-        await this.replayAgentSlot(group, durable, controller, gate, decision, request)
+        replayedResult = await this.replayAgentSlot(
+          group, durable, controller, gate, decision, request,
+        )
       }
-      this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')
-      this.finishRun(durable.groupId, controller, 'completed')
+      if (resumableManual || resumableAuto) {
+        const successfulKinds = new Set(controller.orchestration.successfulKinds)
+        successfulKinds.add(durable.continuation.agentKind)
+        controller.currentKind = ''
+        controller.orchestration = {
+          ...controller.orchestration,
+          currentKind: '',
+          successfulKinds: [...successfulKinds],
+          ...(resumableAuto ? {
+            agreementKinds: replayedResult?.consensus
+              ? [...new Set([
+                  ...controller.orchestration.agreementKinds,
+                  durable.continuation.agentKind,
+                ])]
+              : controller.orchestration.agreementKinds.filter(
+                  kind => kind !== durable.continuation.agentKind,
+                ),
+            attachmentRecipients: [...new Set([
+              ...controller.orchestration.attachmentRecipients,
+              durable.continuation.agentKind,
+            ])],
+          } : {}),
+        }
+      }
+      if (controller.continuation?.gateId === gate.gateId
+          && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      const finalStatus = resumableManual
+        ? await this.continueManualOrchestration(group, durable, controller)
+        : (resumableAuto
+            ? await this.autoRunner.resume(group, durable, controller, replayedResult)
+            : 'completed')
+      await this.finishRun(durable.groupId, controller, finalStatus)
     } catch (error) {
       if (controller) {
+        if (error?.code === 'LOCAL_RUN_TERMINAL_PERSIST_FAILED') return
         if (controller.signal.aborted && controller.stopReason === 'shutdown') {
-          this.finishRun(durable.groupId, controller, 'interrupted')
+          await this.finishRun(durable.groupId, controller, 'interrupted')
           return
         }
+        const circuitBreaker = error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+          || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER'
+        const hardBudget = error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+          || error?.message === 'LOCAL_BUDGET_EXHAUSTED'
+        if (hardBudget) controller.stopReason = 'hard_budget'
+        if (circuitBreaker) {
+          controller.stopReason = 'circuit_breaker'
+          this.addMessage(
+            durable.groupId,
+            'system',
+            `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+            '',
+            durable.threadRootId,
+            {
+              key: 'system.runCircuitBreaker',
+              params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+            },
+          )
+        }
         if (durable.continuation.resumeKind === 'agent_slot'
-            && decision.status !== 'rejected') {
+            && decision.status !== 'rejected' && !circuitBreaker) {
           if (!controller.failedKinds.includes(durable.continuation.agentKind)) {
             controller.failedKinds.push(durable.continuation.agentKind)
           }
@@ -654,7 +951,9 @@ class LocalWorkspace extends EventEmitter {
             durable.threadRootId,
             new Set(),
           )
-          controller.stopReason = String(error?.message || 'human_gate_continuation_failed')
+          if (!hardBudget) {
+            controller.stopReason = String(error?.message || 'human_gate_continuation_failed')
+          }
         }
         if (durable.continuation.resumeKind === 'role_review_decision') {
           controller.stopReason = 'LOCAL_WORKFLOW_UNSUPPORTED'
@@ -663,7 +962,13 @@ class LocalWorkspace extends EventEmitter {
           durable.runId, gate.gateId,
           decision.status === 'rejected' ? 'cancelled' : 'failed',
         )
-        this.finishRun(durable.groupId, controller, decision.status === 'rejected' ? 'stopped' : 'failed')
+        await this.finishRun(
+          durable.groupId,
+          controller,
+          decision.status === 'rejected'
+            ? 'stopped'
+            : terminalRunStatusForReason(controller.stopReason, 'failed'),
+        )
       } else {
         this.failHumanGateContinuation(gate, error)
       }
@@ -1019,15 +1324,15 @@ class LocalWorkspace extends EventEmitter {
 
   startAutoRunner(
     group, targetKinds, threadRootId, maxRounds, reservation = null, preparedContext = null,
-    unlimitedRounds = false,
+    unlimitedRounds = false, taskGraph = null,
   ) {
     return this.autoRunner.start(
       group, targetKinds, threadRootId, maxRounds, reservation, preparedContext, unlimitedRounds,
+      taskGraph,
     )
   }
 
   async sendMessage(input) {
-    if (input?.workflow) throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
     return this.messageSubmission.send(input)
   }
 
@@ -1056,7 +1361,11 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async stopAll() {
-    return this.runCoordinator.stopAll()
+    for (const timer of this.runCheckpointTimers.values()) clearTimeout(timer)
+    this.runCheckpointTimers.clear()
+    await this.runCoordinator.stopAll()
+    for (const timer of this.runCheckpointTimers.values()) clearTimeout(timer)
+    this.runCheckpointTimers.clear()
   }
 }
 

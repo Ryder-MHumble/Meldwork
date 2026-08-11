@@ -27,6 +27,11 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(codex.installed, true)
   assert.equal(codex.available, true)
   assert.equal(codex.showInSidebar, true)
+  assert.deepEqual(Object.keys(codex.capabilities).sort(), [
+    'contextLimitChars', 'costBand', 'domains', 'inputTypes', 'latencyBand',
+    'outputTypes', 'permissionModes', 'resumable', 'task', 'toolClasses',
+  ])
+  assert.ok(codex.capabilities.domains.includes('software-development'))
   assert.equal(hermes.installed, true)
   assert.equal(hermes.available, false)
   assert.equal(hermes.credentialState, 'missing')
@@ -183,7 +188,7 @@ test('an explicit internal code-review task runs once and remains read-only', as
     '',
     { taskType: 'code_review' },
   )
-  workspace.finishRun(group.id, controller, 'completed')
+  await workspace.finishRun(group.id, controller, 'completed')
 
   assert.equal(result.message.content, 'Review completed.')
   assert.equal(result.message.trace.context.externalRunRef, 'ocr-review-123')
@@ -220,6 +225,7 @@ test('Custom Agent kinds keep their dynamic label across execution and reload', 
   await workspace.sendMessage({ groupId: group.id, text: 'Review this change', targetKinds: [kind] })
 
   assert.match(calls[0].prompt, /as Repository Reviewer\./)
+  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
   const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
   assert.equal(reply.agentKind, kind)
   assert.equal(reply.senderName, 'Repository Reviewer')
@@ -228,6 +234,20 @@ test('Custom Agent kinds keep their dynamic label across execution and reload', 
   assert.equal(reloaded.snapshot().groups[0].directAgentKind, kind)
   assert.equal(reloaded.snapshot().messages.find(message => message.role === 'agent').senderName,
     'Repository Reviewer')
+
+  await reloaded.refreshAgents()
+  const writeGroup = reloaded.createGroup({
+    name: 'Writable review',
+    agentKinds: [kind],
+    allowWrite: true,
+    workdir: directory,
+  })
+  await reloaded.sendMessage({
+    groupId: writeGroup.id,
+    text: 'Apply the approved change',
+    targetKinds: [kind],
+  })
+  assert.equal(calls.at(-1).runOptions.sandbox, 'workspace-write')
 })
 
 test('shared Provider readiness skips slow native probes while a profile is active', async (t) => {
@@ -426,7 +446,74 @@ test('groups and messages persist without exposing executable paths', async (t) 
   assert.equal(restored.snapshot().groups[0].name, '本地测试群')
   assert.equal(restored.snapshot().messages.length, 2)
   assert.deepEqual(restored.snapshot().messages[0].targetKinds, ['codex'])
+  assert.equal(restored.snapshot().messages[0].routingDecision.mode, 'explicit')
   assert.equal('executable' in workspace.snapshot().agents[0], false)
+})
+
+test('invalid explicit targets fail before Task or message persistence', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Strict targets', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  for (const [targetKinds, code] of [
+    [['codex', 'codex'], 'LOCAL_MESSAGE_TARGET_DUPLICATE'],
+    [['unknown-agent'], 'LOCAL_MESSAGE_TARGET_UNKNOWN'],
+    [['qwen'], 'LOCAL_MESSAGE_TARGET_OUT_OF_GROUP'],
+  ]) {
+    await assert.rejects(workspace.sendMessage({
+      groupId: group.id, text: 'Must not persist', targetKinds,
+    }), { message: code })
+  }
+  workspace.markRuntimeCredential('hermes', 'missing')
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id, text: 'Unavailable target', targetKinds: ['hermes'],
+  }), { message: 'LOCAL_AGENT_UNAVAILABLE' })
+
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.length, 0)
+  assert.equal(workspace.runLedger?.list?.().length || 0, 0)
+})
+
+test('opt-in automatic routing persists the smallest evidence-ranked team', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.agentFitMatrix = {
+    version: 'fit-matrix-test-v1',
+    entries: [
+      { kind: 'codex', domains: ['general'], score: 60, confidence: 0.8, sampleSize: 10 },
+      { kind: 'hermes', domains: ['general'], score: 90, confidence: 0.9, sampleSize: 12 },
+    ],
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Automatic routing', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Choose the smallest suitable team.',
+    targetKinds: [],
+    routingMode: 'automatic',
+  })
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['hermes'])
+  const root = workspace.snapshot().messages.find(message => message.role === 'user')
+  assert.deepEqual(root.targetKinds, ['hermes'])
+  assert.equal(root.routingDecision.mode, 'automatic')
+  assert.equal(root.routingDecision.rationale, 'evidence-ranked-team')
+  assert.equal(root.routingDecision.evidenceVersion, 'fit-matrix-test-v1')
+  assert.deepEqual(root.routingDecision.selectedKinds, ['hermes'])
+
+  const restored = new LocalWorkspace(options)
+  assert.deepEqual(
+    restored.snapshot().messages.find(message => message.role === 'user').routingDecision,
+    root.routingDecision,
+  )
 })
 
 test('all supported workspace versions preserve stored or omitted read-only permission', (t) => {
@@ -513,6 +600,50 @@ test('Skills are validated and injected only into their selected target Agent', 
     { message: 'LOCAL_MESSAGE_TARGET_REQUIRED' },
   )
   assert.equal(workspace.snapshot().messages.filter(message => message.role === 'user').length, 1)
+})
+
+test('Skill contracts block permission escalation before the Agent process starts', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'codex', name: 'Codex CLI', executable: '/tmp/codex', version: '0.137.0',
+  }]
+  const selected = {
+    targetKind: 'codex', namespace: 'global', slug: 'writer', name: 'Writer',
+  }
+  options.validateSkillSelections = (_kind, selections) => selections.map((selection) => {
+    const runtime = { ...selection }
+    Object.defineProperty(runtime, 'approvedSkillManifest', {
+      enumerable: false,
+      value: {
+        schemaVersion: 1,
+        recordType: 'meldwork-skill-manifest',
+        identity: { id: 'global/writer', version: '1.0.0' },
+        origin: { type: 'local-unsigned', publisher: 'Local author' },
+        agents: [{ kind: 'codex', minVersion: '0.130.0', maxVersion: '0.200.0' }],
+        inputTypes: ['text'],
+        tools: ['filesystem'],
+        credentials: [],
+        permissionMode: 'workspace-write',
+        networkDestinations: [],
+        sideEffectClass: 'local-write',
+      },
+    })
+    return runtime
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Read-only Skill', agentKinds: ['codex'], workdir: directory, allowWrite: false,
+  })
+
+  await assert.rejects(workspace.sendMessage({
+    groupId: group.id,
+    text: 'Use the writer Skill',
+    targetKinds: ['codex'],
+    skillHints: [selected],
+  }), { message: 'LOCAL_SKILL_PERMISSION_ESCALATION' })
+  assert.equal(calls.length, 0)
 })
 
 test('Knowledge bases are validated, persisted, and injected only into selected Agents', async (t) => {
@@ -1120,7 +1251,7 @@ test('stopAll records an in-flight Agent and its ledger checkpoint as interrupte
   assert.equal(terminalCheckpoint.agentRuns[0].status, 'interrupted')
 })
 
-test('a stale controller cannot clear a newer active run for the same group', (t) => {
+test('a stale controller cannot clear a newer active run for the same group', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1129,10 +1260,10 @@ test('a stale controller cannot clear a newer active run for the same group', (t
   workspace.activeRuns.set('group-id', first)
   workspace.activeRuns.set('group-id', second)
 
-  workspace.finishRun('group-id', first, 'completed')
+  await workspace.finishRun('group-id', first, 'completed')
   assert.equal(workspace.activeRuns.get('group-id'), second)
 
-  workspace.finishRun('group-id', second, 'stopped')
+  await workspace.finishRun('group-id', second, 'stopped')
   assert.equal(workspace.activeRuns.has('group-id'), false)
 })
 
@@ -1443,6 +1574,149 @@ test('every built-in conversational Agent can generate each media type when targ
     requests.map(request => request.mimeType)
   )))
   assert.equal(JSON.stringify(replies).includes(directory), false)
+})
+
+test('group media requests fall back to the target Agent when the shared Provider lacks a media model', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = {
+    id: 'native-agent-image', name: 'native-agent-image.png', mimeType: 'image/png', size: 128,
+  }
+  const error = new Error('MEDIA_GENERATION_MODEL_UNAVAILABLE')
+  error.code = 'MEDIA_GENERATION_MODEL_UNAVAILABLE'
+  options.generateMedia = async () => { throw error }
+  options.captureAgentOutputs = async () => ({ marker: 'before-native-media' })
+  options.importAgentOutputs = async () => [generated]
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Native media fallback', workdir: directory, allowWrite: true,
+    conversationType: 'group', agentKinds: ['codex', 'hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: '请生成一张赛博朋克城市图片',
+    targetKinds: ['codex'], mode: 'manual',
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.kind, 'codex')
+  assert.match(calls[0].prompt, /shared media generator was unavailable/i)
+  assert.match(calls[0].prompt, /native media-generation tools or installed local skills/i)
+  assert.match(calls[0].prompt, /\.meldwork-output\//)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.deepEqual(reply.attachments, [generated])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'system' && /MEDIA_GENERATION_MODEL_UNAVAILABLE/.test(message.content)
+  )), false)
+})
+
+test('group media requests recover when native Agent media fallback reports provider model failure', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = {
+    id: 'recovered-group-video', name: 'recovered-group-video.mp4', mimeType: 'video/mp4', size: 128,
+  }
+  let generationCount = 0
+  options.generateMedia = async (input) => {
+    generationCount += 1
+    if (generationCount === 1) {
+      const error = new Error('MEDIA_GENERATION_MODEL_UNAVAILABLE')
+      error.code = 'MEDIA_GENERATION_MODEL_UNAVAILABLE'
+      throw error
+    }
+    input.onEvent({
+      id: 'media-recovered',
+      type: 'tool_result_summary',
+      status: 'completed',
+      title: 'video_generation',
+    })
+    return { type: 'video', filename: generated.name }
+  }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: 'Codex failed: The configured Providers do not offer the required media model. Use a Provider credential with access to that image, audio, or video model.',
+      sessionRef: runOptions.sessionRef || 'codex-session',
+      outcome: 'completed',
+    }
+  }
+  options.captureAgentOutputs = async () => ({ marker: 'before-recovery' })
+  options.importAgentOutputs = async () => (generationCount >= 2 ? [generated] : [])
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Recovered group media', workdir: directory, allowWrite: true,
+    conversationType: 'group', agentKinds: ['codex', 'hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Generate a short product demo video',
+    targetKinds: ['codex'],
+    mode: 'manual',
+  })
+
+  assert.equal(generationCount, 2)
+  assert.equal(calls.length, 1)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.equal(reply.content, `Meldwork generated and attached ${generated.name}.`)
+  assert.deepEqual(reply.attachments, [generated])
+})
+
+test('direct media requests fall back to the chat Agent when the shared Provider lacks a media model', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = {
+    id: 'native-direct-image', name: 'native-direct-image.png', mimeType: 'image/png', size: 128,
+  }
+  const error = new Error('MEDIA_GENERATION_MODEL_UNAVAILABLE')
+  error.code = 'MEDIA_GENERATION_MODEL_UNAVAILABLE'
+  options.generateMedia = async () => { throw error }
+  options.captureAgentOutputs = async () => ({ marker: 'before-native-media' })
+  options.importAgentOutputs = async () => [generated]
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const direct = workspace.createGroup({
+    name: 'Native direct media fallback', workdir: directory, allowWrite: true,
+    conversationType: 'direct', directAgentKind: 'hermes', agentKinds: ['hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: direct.id, text: '请生成一张赛博朋克城市图片',
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.kind, 'hermes')
+  assert.match(calls[0].prompt, /shared media generator was unavailable/i)
+  assert.match(calls[0].prompt, /native media-generation tools or installed local skills/i)
+  assert.match(calls[0].prompt, /\.meldwork-output\//)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.deepEqual(reply.attachments, [generated])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'system' && /MEDIA_GENERATION_MODEL_UNAVAILABLE/.test(message.content)
+  )), false)
+})
+
+test('new direct and group conversations default to workspace-write permission', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+
+  const group = workspace.createGroup({
+    name: 'Default writable group', agentKinds: ['codex'], workdir: directory,
+  })
+  const direct = workspace.createGroup({
+    conversationType: 'direct', directAgentKind: 'hermes', agentKinds: ['hermes'], workdir: directory,
+  })
+  const readOnly = workspace.createGroup({
+    name: 'Explicit read only', agentKinds: ['codex'], workdir: directory, allowWrite: false,
+  })
+
+  assert.equal(group.allowWrite, true)
+  assert.equal(direct.allowWrite, true)
+  assert.equal(readOnly.allowWrite, false)
 })
 
 test('read-only conversations forbid false media claims and do not scan for generated files', async (t) => {
@@ -1935,7 +2209,7 @@ test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
   assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
 })
 
-test('group write authorization defaults off and is passed to local CLIs only after opt-in', async (t) => {
+test('group write authorization defaults on and can still be explicitly disabled', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1944,19 +2218,19 @@ test('group write authorization defaults off and is passed to local CLIs only af
     name: '写入授权', agentKinds: ['codex', 'kimi'], workdir: directory,
   })
 
-  await workspace.sendMessage({ groupId: group.id, text: '默认只读', targetKinds: ['codex'] })
-  assert.equal(calls[0].runOptions.sandbox, 'read-only')
-  assert.match(calls[0].prompt, /read-only/i)
-  workspace.updateGroup(group.id, { allowWrite: true })
-  await workspace.sendMessage({ groupId: group.id, text: '显式授权', targetKinds: ['kimi'] })
+  await workspace.sendMessage({ groupId: group.id, text: '默认授权', targetKinds: ['codex'] })
+  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
+  assert.match(calls[0].prompt, /execute the work instead of returning only a plan/i)
+  workspace.updateGroup(group.id, { allowWrite: false })
+  await workspace.sendMessage({ groupId: group.id, text: '显式只读', targetKinds: ['kimi'] })
 
-  assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
-  assert.match(calls[1].prompt, /execute the work instead of returning only a plan/i)
+  assert.equal(calls[1].runOptions.sandbox, 'read-only')
+  assert.match(calls[1].prompt, /read-only/i)
   const restored = new LocalWorkspace(options)
-  assert.equal(restored.snapshot().groups[0].allowWrite, true)
+  assert.equal(restored.snapshot().groups[0].allowWrite, false)
 })
 
-test('direct conversations also default to read-only', async (t) => {
+test('direct conversations also default to workspace-write', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1971,8 +2245,8 @@ test('direct conversations also default to read-only', async (t) => {
 
   await workspace.sendMessage({ groupId: direct.id, text: '只读私聊' })
 
-  assert.equal(direct.allowWrite, false)
-  assert.equal(calls[0].runOptions.sandbox, 'read-only')
+  assert.equal(direct.allowWrite, true)
+  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
 })
 
 test('group settings cannot change execution context during an active run', async (t) => {

@@ -1,5 +1,6 @@
 const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
   'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
+  'system.agentBudgetExhausted',
 ])
 
 export function responseVersionRootId(message) {
@@ -26,7 +27,7 @@ export function retainedTraceEvents(events) {
 export function runStatusTone(status) {
   const normalized = String(status || '').trim().toLowerCase()
   if (['completed', 'succeeded'].includes(normalized)) return 'completed'
-  if (['failed', 'timeout'].includes(normalized)) return 'failed'
+  if (['failed', 'timeout', 'budget-exhausted', 'circuit-breaker'].includes(normalized)) return 'failed'
   if (['partial', 'round-limit', 'stopped', 'cancelled', 'interrupted'].includes(normalized)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(normalized)) return 'running'
   return 'queued'
@@ -43,7 +44,9 @@ export function durableRunTurnStatus(run) {
   }
   const statuses = [...latestAttempts.values()].map(attempt => attempt.status)
   const terminalStatus = String(run?.terminalStatus || '')
-  if (terminalStatus === 'timeout') return 'timeout'
+  if (['timeout', 'budget-exhausted', 'circuit-breaker'].includes(terminalStatus)) {
+    return terminalStatus
+  }
   if (terminalStatus === 'stopped' || statuses.some(status => ['stopped', 'cancelled'].includes(status))) {
     return 'stopped'
   }
@@ -59,7 +62,8 @@ export function durableRunTurnStatus(run) {
 }
 
 export function isAgentFailureMessage(message) {
-  return message?.role === 'system' && message?.system?.key === 'system.agentCallFailed'
+  return message?.role === 'system'
+    && ['system.agentCallFailed', 'system.agentBudgetExhausted'].includes(message?.system?.key)
 }
 
 export function isAgentTerminalMessage(message) {
@@ -72,6 +76,8 @@ export function durableGroupTerminalStatus(message) {
     'system.autoRoundLimit': 'round-limit',
     'system.autoTimeout': 'timeout',
     'system.autoStopped': 'stopped',
+    'system.agentBudgetExhausted': 'budget-exhausted',
+    'system.runCircuitBreaker': 'circuit-breaker',
   }[message?.system?.key] || ''
 }
 
@@ -101,6 +107,9 @@ export function terminalSystemFallback(message) {
   if (!agent) return ''
   if (key === 'system.agentStopped') return `${agent} was stopped.`
   if (key === 'system.agentInterrupted') return `${agent} was interrupted when Meldwork closed.`
+  if (key === 'system.agentBudgetExhausted') {
+    return `${agent} stopped because a hard run budget was exceeded.`
+  }
   const reason = String(message.system?.params?.reason || '').trim()
   return reason ? `${agent} failed: ${reason}` : ''
 }

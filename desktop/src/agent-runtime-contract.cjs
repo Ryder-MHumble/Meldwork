@@ -16,19 +16,155 @@ const NON_TERMINAL_OUTCOMES = new Set([
 const SUCCESSFUL_OUTCOMES = new Set(['partial', 'completed'])
 const EXTERNAL_RUN_REF = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,255}$/
 
+const AGENT_CAPABILITY_DOMAINS = Object.freeze([
+  'general', 'software-development', 'software-review', 'research',
+  'document-production', 'tool-use', 'automation',
+])
+const AGENT_INPUT_TYPES = Object.freeze([
+  'text', 'image', 'audio', 'video', 'file', 'structured-data',
+])
+const AGENT_OUTPUT_TYPES = Object.freeze(['text', 'artifact', 'evidence'])
+const AGENT_TOOL_CLASSES = Object.freeze([
+  'agent-native', 'filesystem', 'filesystem-read', 'shell', 'network', 'browser',
+])
+const AGENT_PERMISSION_MODES = Object.freeze(['read-only', 'workspace-write'])
+const AGENT_LATENCY_BANDS = Object.freeze(['low', 'medium', 'high', 'unknown'])
+const AGENT_COST_BANDS = Object.freeze(['low', 'medium', 'high', 'unknown'])
+
+function capabilityProfile(input) {
+  return Object.freeze({
+    task: input.task,
+    domains: Object.freeze([...input.domains]),
+    inputTypes: Object.freeze([...input.inputTypes]),
+    outputTypes: Object.freeze([...input.outputTypes]),
+    toolClasses: Object.freeze([...input.toolClasses]),
+    permissionModes: Object.freeze([...input.permissionModes]),
+    latencyBand: input.latencyBand,
+    costBand: input.costBand,
+    contextLimitChars: input.contextLimitChars,
+    resumable: input.resumable,
+  })
+}
+
+function generalProfile(overrides = {}) {
+  return capabilityProfile({
+    task: 'general',
+    domains: ['general'],
+    inputTypes: ['text', 'file'],
+    outputTypes: ['text', 'artifact', 'evidence'],
+    toolClasses: ['agent-native'],
+    permissionModes: ['read-only', 'workspace-write'],
+    latencyBand: 'unknown',
+    costBand: 'unknown',
+    contextLimitChars: 20000,
+    resumable: true,
+    ...overrides,
+  })
+}
+
 const AGENT_RUNTIME_CAPABILITIES = Object.freeze({
-  codex: { task: 'general', resumable: true },
-  hermes: { task: 'general', resumable: true },
-  openclaw: { task: 'general', resumable: true },
-  workbuddy: { task: 'general', resumable: true },
-  kimi: { task: 'general', resumable: true },
-  mimo: { task: 'general', resumable: true },
-  claude: { task: 'general', resumable: true },
-  gemini: { task: 'general', resumable: true },
-  opencode: { task: 'general', resumable: true },
-  qwen: { task: 'general', resumable: true },
-  opencodereview: { task: 'code_review', resumable: false },
+  codex: generalProfile({
+    domains: ['general', 'software-development', 'software-review', 'tool-use'],
+    inputTypes: ['text', 'image', 'file'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  hermes: generalProfile({
+    domains: ['general', 'research', 'document-production', 'tool-use'],
+    inputTypes: ['text', 'image', 'file'],
+  }),
+  openclaw: generalProfile({
+    domains: ['general', 'research', 'tool-use', 'automation'],
+  }),
+  workbuddy: generalProfile({
+    domains: ['general', 'software-development', 'document-production'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  kimi: generalProfile({
+    domains: ['general', 'software-development', 'research', 'document-production'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  mimo: generalProfile({
+    domains: ['general', 'software-development'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  claude: generalProfile({
+    domains: ['general', 'software-development', 'research', 'document-production'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  gemini: generalProfile({
+    domains: ['general', 'research', 'document-production'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  opencode: generalProfile({
+    domains: ['general', 'software-development'],
+    inputTypes: ['text', 'image', 'file'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  qwen: generalProfile({
+    domains: ['general', 'software-development', 'research'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
+  opencodereview: capabilityProfile({
+    task: 'code_review',
+    domains: ['software-review'],
+    inputTypes: ['text'],
+    outputTypes: ['text', 'evidence'],
+    toolClasses: ['filesystem-read'],
+    permissionModes: ['read-only'],
+    latencyBand: 'unknown',
+    costBand: 'unknown',
+    contextLimitChars: 20000,
+    resumable: false,
+  }),
 })
+
+const DEFAULT_RUNTIME_CAPABILITIES = generalProfile({ resumable: false })
+
+function boundedValues(value, allowed, fallback) {
+  if (!Array.isArray(value) || !value.length) return [...fallback]
+  const selected = [...new Set(value.filter(item => allowed.includes(item)))]
+  return selected.length ? selected : [...fallback]
+}
+
+function agentRuntimeCapabilities(kind, options = {}) {
+  const base = AGENT_RUNTIME_CAPABILITIES[kind] || DEFAULT_RUNTIME_CAPABILITIES
+  const declared = options.agent?.routingCapabilities
+  const support = options.attachmentSupport || {}
+  const supportedInputs = [
+    ...(declared?.inputTypes || base.inputTypes),
+    ...AGENT_INPUT_TYPES.filter(type => type !== 'text' && Number(support[type]) > 0),
+    ...(Number(support.file) > 0 ? ['image', 'audio', 'video', 'file'] : []),
+  ]
+  const domains = boundedValues(declared?.domains, AGENT_CAPABILITY_DOMAINS, base.domains)
+  const task = domains.length === 1 && domains[0] === 'software-review'
+    ? 'code_review'
+    : base.task
+  return capabilityProfile({
+    task,
+    domains,
+    inputTypes: boundedValues(supportedInputs, AGENT_INPUT_TYPES, base.inputTypes),
+    outputTypes: boundedValues(
+      declared?.outputTypes, AGENT_OUTPUT_TYPES, base.outputTypes,
+    ),
+    toolClasses: boundedValues(
+      declared?.toolClasses, AGENT_TOOL_CLASSES, base.toolClasses,
+    ),
+    permissionModes: boundedValues(
+      declared?.permissionModes, AGENT_PERMISSION_MODES, base.permissionModes,
+    ),
+    latencyBand: AGENT_LATENCY_BANDS.includes(declared?.latencyBand)
+      ? declared.latencyBand
+      : base.latencyBand,
+    costBand: AGENT_COST_BANDS.includes(declared?.costBand)
+      ? declared.costBand
+      : base.costBand,
+    contextLimitChars: Number.isSafeInteger(declared?.contextLimitChars)
+      && declared.contextLimitChars > 0
+      ? Math.min(4 * 1024 * 1024, declared.contextLimitChars)
+      : base.contextLimitChars,
+    resumable: typeof declared?.resumable === 'boolean' ? declared.resumable : base.resumable,
+  })
+}
 
 function normalizeOutcome(value) {
   const outcome = String(value || '')
@@ -132,18 +268,20 @@ function requireTerminalAgentResult(result) {
   return normalized
 }
 
-function agentRuntimeCapabilities(kind) {
-  return AGENT_RUNTIME_CAPABILITIES[kind]
-    || { task: 'general', resumable: false }
-}
-
 function isReviewOnlyAgentKind(kind) {
   return agentRuntimeCapabilities(kind).task === 'code_review'
 }
 
 module.exports = {
   AGENT_OUTCOMES,
+  AGENT_CAPABILITY_DOMAINS,
+  AGENT_COST_BANDS,
+  AGENT_INPUT_TYPES,
+  AGENT_LATENCY_BANDS,
+  AGENT_OUTPUT_TYPES,
+  AGENT_PERMISSION_MODES,
   AGENT_RUNTIME_CAPABILITIES,
+  AGENT_TOOL_CLASSES,
   NON_TERMINAL_OUTCOMES,
   SUCCESSFUL_OUTCOMES,
   agentRuntimeCapabilities,

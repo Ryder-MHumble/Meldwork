@@ -98,6 +98,39 @@ test('accepts one idempotent decision and rejects conflicting decisions', (t) =>
   }), { message: 'HUMAN_GATE_DECISION_INVALID' })
 })
 
+test('persists an input response without exposing it through the public Gate', (t) => {
+  const { store } = fixture(t)
+  const pending = store.create({
+    type: 'input',
+    runId: 'run-input',
+    agentRunId: 'agent-run-input',
+    agentKind: 'custom-input',
+    summary: 'Which release channel should this run use?',
+    options: [
+      { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+      { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+    ],
+    createdAt: '2026-08-04T00:00:00.000Z',
+    request: { requestId: 'request-1' },
+  })
+  const decided = store.decide(pending.gateId, {
+    status: 'approved',
+    optionId: 'submit-input',
+    actorId: 'local-user',
+    decidedAt: '2026-08-04T00:01:00.000Z',
+    response: 'stable',
+  })
+
+  assert.equal(decided.decision.response, 'stable')
+  assert.equal(Object.hasOwn(publicHumanGate(decided).decision, 'response'), false)
+  assert.throws(() => decideHumanGateRecord(createHumanGateRecord(gateInput(
+    store.contentBlobStore,
+  )), {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+    decidedAt: '2026-08-04T00:01:00.000Z', response: 'unexpected',
+  }), { message: 'HUMAN_GATE_SCHEMA_INVALID' })
+})
+
 test('persists private requests, pending state, and decisions across restart', (t) => {
   const { contentBlobStore, storagePath, store } = fixture(t)
   const created = store.create({
@@ -236,4 +269,43 @@ test('fails closed for secret-bearing public summaries and missing request blobs
   )
   fs.unlinkSync(blobPath)
   assert.throws(() => store.get(created.gateId), { message: 'HUMAN_GATE_REQUEST_NOT_FOUND' })
+})
+
+test('quarantines malformed records individually and preserves unrelated valid Gates', (t) => {
+  const { contentBlobStore, storagePath, store } = fixture(t)
+  const malformed = store.create({
+    type: 'permission', runId: 'run-bad', agentRunId: 'agent-run-bad', agentKind: 'codex',
+    summary: 'Malformed later.',
+    options: [{ optionId: 'reject', name: 'Reject', kind: 'reject' }],
+    createdAt: '2026-08-04T00:00:00.000Z', request: { requestId: 'bad' },
+  })
+  const missingBlob = store.create({
+    type: 'permission', runId: 'run-missing', agentRunId: 'agent-run-missing', agentKind: 'codex',
+    summary: 'Missing request later.',
+    options: [{ optionId: 'reject', name: 'Reject', kind: 'reject' }],
+    createdAt: '2026-08-04T00:01:00.000Z', request: { requestId: 'missing' },
+  })
+  const valid = store.create({
+    type: 'permission', runId: 'run-valid', agentRunId: 'agent-run-valid', agentKind: 'codex',
+    summary: 'Keep this Gate.',
+    options: [{ optionId: 'reject', name: 'Reject', kind: 'reject' }],
+    createdAt: '2026-08-04T00:02:00.000Z', request: { requestId: 'valid' },
+  })
+  const persisted = JSON.parse(fs.readFileSync(storagePath, 'utf8'))
+  persisted.gates.find(gate => gate.gateId === malformed.gateId).summary = ''
+  fs.writeFileSync(storagePath, `${JSON.stringify(persisted, null, 2)}\n`)
+  const missingBlobPath = path.join(
+    contentBlobStore.rootPath, 'sha256', missingBlob.requestRef.hash.slice(0, 2),
+    missingBlob.requestRef.hash,
+  )
+  fs.unlinkSync(missingBlobPath)
+
+  const restarted = new HumanGateStore({ storagePath, contentBlobStore })
+
+  assert.deepEqual(restarted.list().map(gate => gate.gateId), [valid.gateId])
+  assert.equal(restarted.quarantined.length, 2)
+  assert.equal(fs.existsSync(`${storagePath}.quarantine.json`), true)
+  assert.deepEqual(JSON.parse(fs.readFileSync(storagePath, 'utf8')).gates.map(gate => gate.gateId), [
+    valid.gateId,
+  ])
 })

@@ -1,6 +1,7 @@
 const path = require('node:path')
 const { isReviewOnlyAgentKind } = require('./agent-runtime-contract.cjs')
 const { normalizeTraceCapsule } = require('./run-harness.cjs')
+const { normalizeRoutingDecision } = require('./agent-routing.cjs')
 const {
   MAX_MESSAGE_ATTACHMENTS,
   cleanElapsedMs,
@@ -90,7 +91,7 @@ class LocalWorkspaceConversations {
       topic: cleanText(input.topic, 200),
       agentKinds,
       workdir,
-      allowWrite: input.allowWrite === true,
+      allowWrite: input.allowWrite !== false,
       createdAt: timestamp,
       updatedAt: timestamp,
     }
@@ -270,10 +271,12 @@ class LocalWorkspaceConversations {
         .map(normalizeKnowledgeBaseHint)
         .filter(Boolean)
       const targetKinds = normalizeTargetKinds(metadata.targetKinds)
+      const routingDecision = normalizeRoutingDecision(metadata.routingDecision)
       if (attachments.length) message.attachments = attachments
       if (skillHints.length) message.skillHints = skillHints
       if (knowledgeBaseHints.length) message.knowledgeBaseHints = knowledgeBaseHints
       if (targetKinds.length) message.targetKinds = targetKinds
+      if (routingDecision) message.routingDecision = routingDecision
     }
     return this.commit((state) => {
       state.messages.push(message)

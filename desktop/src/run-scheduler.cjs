@@ -129,7 +129,42 @@ class RunScheduler {
 
   async withLease(input, operation) {
     if (typeof operation !== 'function') throw schedulerError('RUN_SCHEDULER_OPERATION_REQUIRED')
-    const lease = await this.acquire(input)
+    let activeLease = await this.acquire(input)
+    let closed = false
+    const lease = Object.freeze({
+      get leaseId() { return activeLease?.leaseId || '' },
+      get taskId() { return activeLease?.taskId || '' },
+      get workspaceKey() { return activeLease?.workspaceKey || '' },
+      get queuedAt() { return activeLease?.queuedAt || 0 },
+      get acquiredAt() { return activeLease?.acquiredAt || 0 },
+      release: () => {
+        if (closed) return false
+        closed = true
+        const current = activeLease
+        activeLease = null
+        return current?.release() || false
+      },
+      suspend: async (waitingOperation) => {
+        if (typeof waitingOperation !== 'function') {
+          throw schedulerError('RUN_SCHEDULER_OPERATION_REQUIRED')
+        }
+        if (closed || !activeLease) throw schedulerError('RUN_SCHEDULER_LEASE_INACTIVE')
+        activeLease.release()
+        activeLease = null
+        let result
+        let failure
+        try {
+          result = await waitingOperation()
+        } catch (error) {
+          failure = error
+        }
+        if (!closed && !input?.signal?.aborted) {
+          activeLease = await this.acquire(input)
+        }
+        if (failure) throw failure
+        return result
+      },
+    })
     try {
       return await operation(lease)
     } finally {

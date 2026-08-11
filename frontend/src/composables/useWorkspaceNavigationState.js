@@ -1,5 +1,25 @@
 import { computed, ref, watch } from 'vue'
 
+const ACTIVE_RUN_PHASES = new Set(['preparing', 'running', 'waiting'])
+const TERMINAL_AGENT_STATUSES = new Set([
+  'completed', 'succeeded', 'failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted',
+])
+
+function runStillActive(run) {
+  if (!ACTIVE_RUN_PHASES.has(String(run?.phase || '').toLowerCase())) return false
+  const targetKinds = Array.isArray(run?.targetKinds) ? run.targetKinds : []
+  if (!targetKinds.length || run?.mode === 'auto') return true
+  const completed = new Set(Array.isArray(run?.completedKinds) ? run.completedKinds : [])
+  const latestStatusByKind = new Map()
+  for (const agent of Array.isArray(run?.agentRuns) ? run.agentRuns : []) {
+    if (!agent?.kind) continue
+    latestStatusByKind.set(agent.kind, String(agent.status || '').toLowerCase())
+  }
+  return targetKinds.some(kind => (
+    !completed.has(kind) && !TERMINAL_AGENT_STATUSES.has(latestStatusByKind.get(kind))
+  ))
+}
+
 export function useWorkspaceNavigationState({
   clearSidebarDeleteState,
   closeCollapsedGroupMenu,
@@ -75,7 +95,12 @@ export function useWorkspaceNavigationState({
   }
 
   function isGroupRunning(id) {
-    return snapshot.value.runningGroupIds.includes(id)
+    const groupRuns = (Array.isArray(snapshot.value.runs) ? snapshot.value.runs : [])
+      .filter(run => run?.groupId === id)
+    if (groupRuns.length) return groupRuns.some(runStillActive)
+    const hasConversationActivity = (Array.isArray(snapshot.value.messages) ? snapshot.value.messages : [])
+      .some(message => message?.groupId === id)
+    return hasConversationActivity && snapshot.value.runningGroupIds.includes(id)
   }
 
   function openPendingRequestedGroup() {

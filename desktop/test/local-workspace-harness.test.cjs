@@ -9,7 +9,64 @@ const { AgentConnectorRuntime } = require('../src/agent-connector-runtime.cjs')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { createLegacyOutboundPayload } = require('../src/outbound-payload.cjs')
 const { RunLedger } = require('../src/run-ledger.cjs')
+const { RunScheduler } = require('../src/run-scheduler.cjs')
 const { deferred, fixture } = require('./local-workspace-test-helpers.cjs')
+
+function inputConnectorRuntime(handler) {
+  const manifest = createAgentConnectorManifest({
+    connectorId: 'external.input-agent',
+    connectorVersion: '1.0.0',
+    kind: 'agent',
+    label: 'External Input Agent',
+    description: 'External input continuation sample.',
+    transport: { type: 'http', protocol: 'event-stream' },
+    upstream: { id: 'input-service', minVersion: '3.0.0', maxVersion: '3.4.0' },
+    invocation: { recipeId: 'external.input-agent.run', idempotencyMode: 'durable' },
+    domains: ['general'],
+    session: { supported: true, resume: true, cancel: true, checkpoint: true },
+    inputTypes: ['text'],
+    permissionModes: ['read-only'],
+    eventProtocolVersion: 1,
+    eventTypes: [
+      'Permission', 'SourceUsed', 'Artifact', 'Evidence', 'Usage',
+      'WaitingInput', 'Completed', 'Failed', 'Cancelled',
+    ],
+    usage: {
+      inputTokens: true, outputTokens: true, costMicros: true,
+      toolCalls: true, outboundBytes: true, elapsedMs: true,
+    },
+    outboundDestinations: ['https://input.example.com'],
+    credentials: { mode: 'none', slots: [] },
+    license: 'Apache-2.0',
+  })
+  const registry = new AgentConnectorRegistry({
+    approvedRecipeIds: ['external.input-agent.run'],
+    approvedExternalManifestIds: [manifest.manifestId],
+  })
+  registry.registerExternal(manifest)
+  registry.registerInstance({
+    instanceId: 'custom-bbbbbbbbbbbbbbbb',
+    connectorId: manifest.connectorId,
+    connectorVersion: manifest.connectorVersion,
+    upstreamVersion: '3.2.0',
+    label: 'Input account',
+    credentialRef: null,
+  })
+  return new AgentConnectorRuntime({
+    registry,
+    recipes: { 'external.input-agent.run': handler },
+  })
+}
+
+async function waitForPendingGate(workspace, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const gate = workspace.listHumanGates({ pendingOnly: true })[0]
+    if (gate) return gate
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  throw new Error('TEST_HUMAN_GATE_TIMEOUT')
+}
 test('Harness streams per-Agent events, persists a compact trace, and hands evidence to the next Agent', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -161,6 +218,7 @@ test('external Connectors bypass the legacy runner and persist trusted provenanc
           cwd: input.workdir,
           stdin: input.prompt,
           promptMode: 'stdin',
+          destination: 'https://review.example.com/v1',
         }))
         input.emit({
           eventId: 'source-1', cursor: 'cursor-1', sequence: 1,
@@ -219,6 +277,192 @@ test('external Connectors bypass the legacy runner and persist trusted provenanc
   const restarted = new RunLedger({ storagePath: ledgerPath, now: () => 2000 })
   assert.equal(restarted.snapshotError instanceof Error, true)
   assert.deepEqual(restarted.get(message.trace.runId).agentRuns[0].context, storedContext)
+})
+
+test('Connector input Gates release scheduler capacity and resume the exact Session response', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const scheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 2, globalLimit: 1 })
+  const resumes = []
+  const connectorRuntime = inputConnectorRuntime(async (input) => {
+    if (!input.resume) {
+      input.emit({
+        eventId: 'waiting-input', cursor: 'waiting-input', sequence: 1,
+        type: 'WaitingInput', requestId: 'release-channel', prompt: 'Choose release channel',
+      })
+      return { sessionRef: 'input-session' }
+    }
+    resumes.push({ resume: input.resume, sessionRef: input.sessionRef })
+    input.emit({
+      eventId: 'completed-input', cursor: 'completed-input', sequence: 1,
+      type: 'Completed', outcome: 'completed',
+    })
+    return { text: `release:${input.resume.response}`, sessionRef: input.sessionRef }
+  })
+  options.detectAgents = async () => [
+    ...connectorRuntime.detectAgents(),
+    { kind: 'codex', name: 'Codex CLI', executable: '/tmp/codex', version: '1' },
+  ]
+  options.connectorRuntime = connectorRuntime
+  options.runScheduler = scheduler
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  options.runAgent = async () => ({
+    text: 'Capacity remained available', sessionRef: 'codex-session', outcome: 'completed',
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const connectorGroup = workspace.createGroup({
+    name: 'Input Gate', agentKinds: ['custom-bbbbbbbbbbbbbbbb'], workdir: directory,
+  })
+  const secondConnectorGroup = workspace.createGroup({
+    name: 'Second Input Gate', agentKinds: ['custom-bbbbbbbbbbbbbbbb'], workdir: directory,
+  })
+  const otherGroup = workspace.createGroup({
+    name: 'Capacity check', agentKinds: ['codex'], workdir: directory,
+  })
+  const connectorSend = workspace.sendMessage({
+    groupId: connectorGroup.id,
+    text: 'Prepare release',
+    targetKinds: ['custom-bbbbbbbbbbbbbbbb'],
+  })
+  const gate = await waitForPendingGate(workspace)
+  const secondConnectorSend = workspace.sendMessage({
+    groupId: secondConnectorGroup.id,
+    text: 'Prepare second release',
+    targetKinds: ['custom-bbbbbbbbbbbbbbbb'],
+  })
+  const gateDeadline = Date.now() + 3000
+  while (Date.now() < gateDeadline
+      && workspace.listHumanGates({ pendingOnly: true }).length < 2) {
+    await new Promise(resolve => setTimeout(resolve, 10))
+  }
+  const secondGate = workspace.listHumanGates({ pendingOnly: true })
+    .find(candidate => candidate.gateId !== gate.gateId)
+
+  assert.equal(gate.type, 'input')
+  assert.equal(secondGate?.type, 'input')
+  assert.equal(scheduler.snapshot().active.global, 0)
+  await workspace.sendMessage({
+    groupId: otherGroup.id,
+    text: 'Use capacity while the other Run waits',
+    targetKinds: ['codex'],
+  })
+  workspace.decideHumanGate(gate.gateId, {
+    optionId: 'submit-input', response: 'stable',
+  })
+  workspace.decideHumanGate(secondGate.gateId, {
+    optionId: 'submit-input', response: 'canary',
+  })
+  await Promise.all([connectorSend, secondConnectorSend])
+
+  assert.equal(scheduler.snapshot().active.global, 0)
+  assert.equal(resumes.length, 2)
+  assert.equal(resumes.every(item => item.sessionRef === 'input-session'), true)
+  assert.equal(resumes.every(item => item.resume.requestId === 'release-channel'), true)
+  assert.deepEqual(resumes.map(item => item.resume.response).sort(), ['canary', 'stable'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'agent' && message.content === 'release:stable'
+  )), true)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'agent' && message.content === 'release:canary'
+  )), true)
+})
+
+test('Connector input Gate survives shutdown and repeated restart without double execution', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  let initialCalls = 0
+  let resumedCalls = 0
+  const connectorRuntime = inputConnectorRuntime(async (input) => {
+    if (!input.resume) {
+      initialCalls += 1
+      input.emit({
+        eventId: 'waiting-restart', cursor: 'waiting-restart', sequence: 1,
+        type: 'WaitingInput', requestId: 'restart-answer', prompt: 'Confirm restart answer',
+      })
+      return { sessionRef: 'restart-input-session' }
+    }
+    resumedCalls += 1
+    input.emit({
+      eventId: 'completed-restart', cursor: 'completed-restart', sequence: 1,
+      type: 'Completed', outcome: 'completed',
+    })
+    return { text: `restart:${input.resume.response}`, sessionRef: input.sessionRef }
+  })
+  options.detectAgents = async () => connectorRuntime.detectAgents()
+  options.connectorRuntime = connectorRuntime
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart Input Gate', agentKinds: ['custom-bbbbbbbbbbbbbbbb'], workdir: directory,
+  })
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Wait across restart',
+    targetKinds: ['custom-bbbbbbbbbbbbbbbb'],
+  })
+  const gate = await waitForPendingGate(workspace)
+  const historicalAgentRunIds = options.runLedger.get(gate.runId).agentRuns
+    .map(agentRun => agentRun.agentRunId)
+  await workspace.stopAll()
+  await send
+  assert.equal(initialCalls, 1)
+
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(gate.gateId, {
+    optionId: 'submit-input', response: 'confirmed',
+  })
+  const deadline = Date.now() + 5000
+  while (Date.now() < deadline && resumedCalls < 1) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.equal(resumedCalls, 1)
+  while (Date.now() < deadline && restarted.runLedger.get(gate.runId)?.status !== 'completed') {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.equal(restarted.runLedger.get(gate.runId)?.status, 'completed')
+  const completedRun = restarted.runLedger.get(gate.runId)
+  const completedAgentRunIds = completedRun.agentRuns.map(agentRun => agentRun.agentRunId)
+  assert.equal(historicalAgentRunIds.every(id => completedAgentRunIds.includes(id)), true)
+  assert.equal(new Set(completedAgentRunIds).size, completedAgentRunIds.length)
+  assert.equal(
+    completedRun.agentRuns.at(-1).eventCursor
+      > Math.max(0, ...completedRun.agentRuns.slice(0, -1).map(run => run.eventCursor)),
+    true,
+  )
+  while (Date.now() < deadline && restarted.activeRuns.size > 0) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  assert.equal(restarted.activeRuns.size, 0)
+  assert.equal(restarted.snapshot().messages.some(message => (
+    message.role === 'agent' && message.content === 'restart:confirmed'
+  )), true)
+
+  const secondLedger = new RunLedger({ storagePath: ledgerPath })
+  assert.equal(secondLedger.loadError, null, String(
+    secondLedger.loadError?.cause?.message || secondLedger.loadError?.message || '',
+  ))
+  assert.equal(secondLedger.snapshotError, null, String(
+    secondLedger.snapshotError?.cause?.message || secondLedger.snapshotError?.message || '',
+  ))
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: secondLedger,
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual({ initialCalls, resumedCalls }, { initialCalls: 1, resumedCalls: 1 })
+  assert.deepEqual(
+    secondLedger.get(gate.runId).agentRuns.map(agentRun => agentRun.agentRunId),
+    completedAgentRunIds,
+  )
 })
 
 test('isolated invocations use only the approved prompt and retain workflow Outcome refs', async (t) => {
@@ -295,7 +539,7 @@ test('isolated invocations use only the approved prompt and retain workflow Outc
       outcomeRefs: requestedOutcomeRefs,
     },
   )
-  workspace.finishRun(group.id, controller, 'completed')
+  await workspace.finishRun(group.id, controller, 'completed')
 
   assert.equal(calls.length, 1)
   assert.equal(captureCalls, 0)
@@ -1516,13 +1760,15 @@ test('resuming automatic discussion fails closed when its running checkpoint is 
   assert.deepEqual(workspace.snapshot().runningGroupIds, [])
 })
 
-test('Run Ledger finalization retries the full terminal snapshot before finish', async (t) => {
+test('Run Ledger finalization automatically retries the full terminal snapshot before finish', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledgerPath = path.join(directory, 'run-ledger.json')
   const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
   options.runLedger = ledger
   const workspace = new LocalWorkspace(options)
+  const finishedEvents = []
+  workspace.on('run-finished', event => finishedEvents.push(event))
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Retry terminal checkpoint', agentKinds: ['codex'], workdir: directory,
@@ -1567,15 +1813,14 @@ test('Run Ledger finalization retries the full terminal snapshot before finish',
     output: 'Fresh terminal output',
   }]
 
-  workspace.finishRunCheckpoint(group.id, controller, 'completed')
-  assert.equal(ledger.get(controller.runId).status, 'running')
-  assert.equal(ledger.get(controller.runId).agentRuns[0].output, 'Stale output')
-
-  workspace.finishRunCheckpoint(group.id, controller, 'completed')
+  await workspace.finishRun(group.id, controller, 'completed')
   const finished = ledger.get(controller.runId)
   assert.equal(finished.status, 'completed')
   assert.equal(finished.agentRuns[0].status, 'completed')
   assert.equal(finished.agentRuns[0].output, 'Fresh terminal output')
+  assert.equal(workspace.activeRuns.has(group.id), false)
+  assert.equal(finishedEvents.length, 1)
+  assert.equal(finishedEvents[0].status, 'completed')
 })
 
 test('a Unicode group identifier preserves native sessions and every runtime path', async (t) => {
@@ -1669,6 +1914,37 @@ test('conversation deletion remains retryable when a corrupt Run Ledger blocks c
   workspace.deleteGroup(group.id)
   assert.equal(workspace.snapshot().groups.some(item => item.id === group.id), false)
   assert.equal(deleteAttempts, 2)
+})
+
+test('malformed workspace state enters read-only recovery without touching valid Ledger data', (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  fs.writeFileSync(options.storagePath, '{partially-written')
+  const ledgerCalls = []
+  options.runLedger = {
+    reconcileContextPacks: () => ledgerCalls.push('reconcileContextPacks'),
+    recoverInterrupted: () => ledgerCalls.push('recoverInterrupted'),
+    list: () => [{ runId: 'run-1', groupId: 'group-1', status: 'completed' }],
+    deleteGroup: groupId => ledgerCalls.push(`deleteGroup:${groupId}`),
+  }
+
+  const workspace = new LocalWorkspace(options)
+  const firstSnapshot = workspace.snapshot()
+  const restarted = new LocalWorkspace(options)
+
+  assert.deepEqual(ledgerCalls, [])
+  assert.deepEqual(firstSnapshot.recovery, {
+    state: 'read-only',
+    status: 'corrupt',
+    diagnostic: 'LOCAL_WORKSPACE_STATE_CORRUPT',
+  })
+  assert.deepEqual(restarted.snapshot().recovery, firstSnapshot.recovery)
+  assert.equal(fs.readFileSync(options.storagePath, 'utf8'), '{partially-written')
+  assert.throws(
+    () => workspace.save(),
+    { message: 'LOCAL_WORKSPACE_STATE_CORRUPT' },
+  )
+  assert.equal(fs.readFileSync(options.storagePath, 'utf8'), '{partially-written')
 })
 
 test('conversation state rolls back when workspace deletion persistence fails', async (t) => {
@@ -1803,6 +2079,71 @@ test('restart recovery persists the last nonterminal Agent trace as interrupted'
   assert.equal(interrupted.trace.summary, 'Located the failing lifecycle boundary.')
   assert.deepEqual(interrupted.trace.sourceMessageIds, [root.id])
   assert.equal(interrupted.trace.context.omittedCount, 2)
+})
+
+test('restart never downgrades an already completed conversation result from a stale Run', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  const group = initial.createGroup({
+    name: 'Completed result recovery', agentKinds: ['codex'], workdir: directory,
+  })
+  const root = initial.addMessage(group.id, 'user', 'Keep the completed result')
+  const contextPack = initial.createContextPack({
+    group,
+    taskId: root.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: root,
+  })
+  initial.addMessage(
+    group.id,
+    'agent',
+    'Durable completed answer',
+    'codex',
+    root.id,
+    null,
+    {
+      trace: {
+        runId: 'run-stale-terminal',
+        agentRunId: 'run-stale-terminal:0:codex:agent-1',
+        round: 0,
+        status: 'completed',
+      },
+    },
+  )
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => 1000 })
+  ledger.checkpoint({
+    runId: 'run-stale-terminal',
+    taskId: root.id,
+    contextPackId: contextPack.contextPackId,
+    contextPackState: 'captured',
+    groupId: group.id,
+    threadRootId: root.id,
+    targetKinds: ['codex'],
+    status: 'running',
+    agentRuns: [{
+      agentRunId: 'run-stale-terminal:0:codex:agent-1',
+      kind: 'codex',
+      round: 0,
+      status: 'running',
+      output: 'Durable completed answer',
+    }],
+  })
+
+  const restored = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath, now: () => 2000 }),
+  })
+  const result = restored.snapshot().messages.find(message => (
+    message.trace?.agentRunId === 'run-stale-terminal:0:codex:agent-1'
+  ))
+
+  assert.equal(result.role, 'agent')
+  assert.equal(result.content, 'Durable completed answer')
+  assert.equal(result.trace.status, 'completed')
 })
 
 test('restart reconciles after recovery message persistence fails and then deduplicates', async (t) => {

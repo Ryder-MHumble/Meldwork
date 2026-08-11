@@ -226,6 +226,7 @@ test('restores multiple credential-bearing accounts and drops invalid references
     runId: 'run-3', agentRunId: 'agent-run-3', sandbox: 'read-only',
   })
   assert.equal(calls.at(-1)[3].env.OPENAI_API_KEY, 'connector-secret-a')
+  assert.equal(calls.at(-1)[3].connectorCredentialIsolation, true)
   assert.equal(Object.hasOwn(calls.at(-1)[3], 'credentialRefId'), false)
 
   const records = createInstanceStore().listRecords()

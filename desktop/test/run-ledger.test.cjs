@@ -5,6 +5,11 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { RunLedger } = require('../src/run-ledger.cjs')
+const {
+  appendHandoff,
+  emptyCollaborationState,
+} = require('../src/collaboration-records.cjs')
+const { createTaskGraph, createTaskGraphCursor } = require('../src/task-graph-records.cjs')
 
 test('keeps the ledger facade limited to RunLedger', () => {
   assert.deepEqual(Object.keys(require('../src/run-ledger.cjs')), ['RunLedger'])
@@ -60,6 +65,10 @@ function attemptHistory() {
     backoffMs: 250,
     recoveryAgentKind: '',
     finalOutcome: 'failed',
+    outcomeCertainty: 'unknown_outcome',
+    sideEffectsPossible: true,
+    operationId: `agent-operation-${'a'.repeat(64)}`,
+    idempotencyMode: 'none',
     timestamp: 1000,
   }, {
     sequence: 2,
@@ -71,9 +80,125 @@ function attemptHistory() {
     backoffMs: 250,
     recoveryAgentKind: 'codex',
     finalOutcome: 'succeeded',
+    sideEffectsPossible: false,
+    operationId: `agent-operation-${'b'.repeat(64)}`,
+    idempotencyMode: 'durable',
     timestamp: 1100,
   }]
 }
+
+test('loads exact v1 orchestration cursors and persists strict v2 collaboration state', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const baseCursor = {
+    workflow: 'auto',
+    currentKind: '',
+    pendingKinds: ['codex', 'hermes'],
+    activeKinds: ['codex', 'hermes'],
+    successfulKinds: [],
+    agreementKinds: [],
+    attachmentRecipients: [],
+    totalSuccesses: 0,
+    terminalFailureOccurred: false,
+  }
+  const legacy = ledger.checkpoint({
+    ...runRecord('run-orchestration-v1', 'group-orchestration-v1'),
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: 1,
+    maxRounds: 2,
+    orchestration: { version: 1, ...baseCursor },
+  })
+  assert.deepEqual(legacy.orchestration, { version: 1, ...baseCursor })
+
+  const collaboration = appendHandoff(emptyCollaborationState(), {
+    source: { type: 'harness' },
+    destination: { agentKind: 'codex', role: 'primary' },
+    objective: 'Assess the release.',
+    selectedEntryIds: [],
+    expectedOutput: 'One conclusion.',
+    acceptanceCriteria: ['Use selected state only.'],
+    provenance: {
+      runId: 'run-orchestration-v2',
+      taskId: 'run-orchestration-v2-task',
+      round: 1,
+      agentRunId: null,
+      artifactIds: [],
+      evidenceIds: [],
+    },
+    createdAt: 1000,
+  })
+  const current = ledger.checkpoint({
+    ...runRecord('run-orchestration-v2', 'group-orchestration-v2'),
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: 1,
+    maxRounds: 2,
+    orchestration: { version: 2, ...baseCursor, collaboration },
+  })
+  assert.deepEqual(current.orchestration.collaboration, collaboration)
+
+  const restarted = new RunLedger({ storagePath, now: () => 1100 })
+  assert.deepEqual(restarted.get(legacy.runId).orchestration, legacy.orchestration)
+  assert.deepEqual(restarted.get(current.runId).orchestration, current.orchestration)
+  assert.throws(() => ledger.checkpoint({
+    ...runRecord('run-orchestration-invalid', 'group-orchestration-invalid'),
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: 1,
+    maxRounds: 2,
+    orchestration: { version: 1, ...baseCursor, collaboration },
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+})
+
+test('persists strict v3 task-graph cursors without weakening v1 and v2 loading', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const graph = createTaskGraph({
+    template: 'task-graph',
+    nodes: [{
+      nodeId: 'primary-codex', role: 'primary', agentKind: 'codex',
+      dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce a durable conclusion.',
+      acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+      terminal: true, parallel: false, decisionOptions: [],
+    }],
+  }, ['codex'])
+  const taskGraph = createTaskGraphCursor(graph, 1000)
+  const saved = ledger.checkpoint({
+    ...runRecord('run-orchestration-v3', 'group-orchestration-v3'),
+    mode: 'auto',
+    currentRound: 0,
+    maxRounds: 2,
+    orchestration: {
+      version: 3,
+      workflow: 'auto',
+      template: 'task-graph',
+      currentKind: '',
+      pendingKinds: ['codex'],
+      activeKinds: ['codex'],
+      successfulKinds: [],
+      agreementKinds: [],
+      attachmentRecipients: [],
+      totalSuccesses: 0,
+      terminalFailureOccurred: false,
+      collaboration: emptyCollaborationState(),
+      taskGraph,
+    },
+  })
+  assert.equal(saved.orchestration.version, 3)
+  assert.deepEqual(saved.orchestration.taskGraph, taskGraph)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration,
+    saved.orchestration,
+  )
+  assert.throws(() => ledger.checkpoint({
+    runId: saved.runId,
+    orchestration: {
+      ...saved.orchestration,
+      taskGraph: { ...taskGraph, terminalState: 'accepted' },
+    },
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+})
 
 test('persists sanitized attempt history through journal recovery and restart', (t) => {
   const { storagePath } = fixture(t)
@@ -104,6 +229,7 @@ test('rejects malformed durable attempt history without changing the Run', (t) =
   for (const value of [
     [{ ...attemptHistory()[0], phase: 'raw_retry' }],
     [{ ...attemptHistory()[0], failureCategory: 'HTTP 401 private-token' }],
+    [{ ...attemptHistory()[0], outcomeCertainty: 'maybe' }],
     [attemptHistory()[1], attemptHistory()[0]],
   ]) {
     assert.throws(
@@ -129,10 +255,20 @@ test('persists strict budget snapshots through the journal and restart', (t) => 
   const { storagePath } = fixture(t)
   const ledger = new RunLedger({ storagePath, now: () => 1000 })
   const budget = budgetSnapshot({
-    limits: { ...budgetSnapshot().limits, inputTokens: 4000 },
+    limits: { ...budgetSnapshot().limits, inputTokens: 4000, toolCalls: 1 },
     used: { ...budgetSnapshot().used, inputTokens: 750, toolCalls: 2 },
     source: { ...budgetSnapshot().source, inputTokens: 'estimated', toolCalls: 'reported' },
-    enforcement: { ...budgetSnapshot().enforcement, inputTokens: 'hard' },
+    enforcement: { ...budgetSnapshot().enforcement, inputTokens: 'hard', toolCalls: 'hard' },
+    exhaustion: {
+      dimension: 'toolCalls',
+      limit: 1,
+      priorUsed: 1,
+      attemptedUsage: 1,
+      used: 2,
+      source: 'reported',
+      enforcement: 'hard',
+      reason: 'BUDGET_LIMIT_EXCEEDED',
+    },
   })
 
   const saved = ledger.checkpoint({
@@ -468,6 +604,14 @@ test('loads equivalent Session provenance regardless of stored field order', (t)
       kind: 'codex',
       status: 'completed',
       context: {
+        contextMode: 'continuation',
+        promptChars: 1200,
+        promptBytes: 1280,
+        promptHash: 'c'.repeat(64),
+        sourceCount: 3,
+        sourceHash: 'd'.repeat(64),
+        wirePayloadBytes: 1500,
+        wirePayloadHash: 'e'.repeat(64),
         contextPackId,
         deliveryRecordIds: [deliveryRecordId],
         sessionProvenance: {
@@ -1178,13 +1322,24 @@ test('retention evicts the oldest terminal record before active records', (t) =>
 
   add('active-next', 'running')
   assert.deepEqual(ledger.list().map(record => record.runId), [
-    'active-next', 'active-new', 'active-old',
+    'active-next', 'active-new', 'terminal-new', 'active-old',
   ])
 
   add('active-last', 'running')
   assert.deepEqual(ledger.list().map(record => record.runId), [
-    'active-last', 'active-next', 'active-new',
+    'active-last', 'active-next', 'active-new', 'terminal-new', 'active-old',
   ])
+  assert.deepEqual(
+    new RunLedger({ storagePath, maxRuns: 3 }).list().map(record => record.runId),
+    ['active-last', 'active-next', 'active-new', 'terminal-new', 'active-old'],
+  )
+
+  ledger.finish('active-last', 'completed')
+  assert.deepEqual(ledger.list().map(record => record.runId), [
+    'active-last', 'active-next', 'active-new', 'active-old',
+  ])
+  assert.equal(ledger.get('active-last').status, 'completed')
+  assert.equal(new RunLedger({ storagePath, maxRuns: 3 }).get('active-last').status, 'completed')
 })
 
 test('deleteGroup removes only matching records and persists the result', (t) => {
@@ -1590,6 +1745,12 @@ test('rejects persisted enums and bounded numbers that normalization would chang
     ['omitted-overflow', record => { record.agentRuns[0].context.omittedCount = 100001 }],
     ['chars-negative', record => { record.agentRuns[0].context.charCount = -1 }],
     ['chars-overflow', record => { record.agentRuns[0].context.charCount = 1000001 }],
+    ['source-count-negative', record => { record.agentRuns[0].context.sourceCount = -1 }],
+    ['prompt-bytes-overflow', record => { record.agentRuns[0].context.promptBytes = 10000001 }],
+    ['wire-bytes-fractional', record => { record.agentRuns[0].context.wirePayloadBytes = 1.5 }],
+    ['source-hash-invalid', record => { record.agentRuns[0].context.sourceHash = 'invalid' }],
+    ['prompt-hash-invalid', record => { record.agentRuns[0].context.promptHash = 'invalid' }],
+    ['wire-hash-invalid', record => { record.agentRuns[0].context.wirePayloadHash = 'invalid' }],
   ]
 
   for (const [index, [name, mutate]] of cases.entries()) {

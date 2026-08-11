@@ -109,6 +109,35 @@ describe('composer context', () => {
     scope.stop()
   })
 
+  it('keeps automatic team formation opt-in and disables it for explicit context', async () => {
+    const { activeGroup, composer, scope } = createComposer({
+      mergedCatalog: ref([
+        { kind: 'codex', label: 'Codex', available: true },
+        { kind: 'hermes', label: 'Hermes', available: true },
+      ]),
+    })
+    activeGroup.value = {
+      id: 'group-review',
+      conversationType: 'group',
+      agentKinds: ['codex', 'hermes'],
+    }
+    composer.resetComposerContext(activeGroup.value)
+    composer.discussionMode.value = 'manual'
+
+    expect(composer.automaticTeamFormation.value).toBe(false)
+    composer.toggleAutomaticTeamFormation()
+    expect(composer.automaticTeamFormation.value).toBe(true)
+    expect(composer.composerTargetKinds.value).toEqual(['codex', 'hermes'])
+
+    composer.selectedAgentKinds.value = ['codex']
+    await nextTick()
+    expect(composer.automaticTeamFormation.value).toBe(false)
+
+    composer.toggleAutomaticTeamFormation()
+    expect(composer.automaticTeamFormation.value).toBe(false)
+    scope.stop()
+  })
+
   it('keeps explicit targets ahead of tags and natural-language routing', () => {
     const group = { agentKinds: ['codex', 'hermes'] }
     const catalog = [

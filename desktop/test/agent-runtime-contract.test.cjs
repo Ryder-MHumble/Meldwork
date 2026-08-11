@@ -17,6 +17,14 @@ test('runtime capabilities cover every supported built-in Agent', () => {
   for (const kind of ALLOWED_KINDS) {
     const capabilities = AGENT_RUNTIME_CAPABILITIES[kind]
     assert.ok(['general', 'code_review'].includes(capabilities.task), kind)
+    assert.ok(capabilities.domains.length, kind)
+    assert.ok(capabilities.inputTypes.includes('text'), kind)
+    assert.ok(capabilities.outputTypes.includes('text'), kind)
+    assert.ok(capabilities.toolClasses.length, kind)
+    assert.ok(capabilities.permissionModes.length, kind)
+    assert.ok(['low', 'medium', 'high', 'unknown'].includes(capabilities.latencyBand), kind)
+    assert.ok(['low', 'medium', 'high', 'unknown'].includes(capabilities.costBand), kind)
+    assert.ok(Number.isSafeInteger(capabilities.contextLimitChars), kind)
     assert.equal(typeof capabilities.resumable, 'boolean', kind)
   }
   assert.equal(isReviewOnlyAgentKind('opencodereview'), true)

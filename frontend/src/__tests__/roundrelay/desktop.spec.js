@@ -89,6 +89,7 @@ describe('run event normalization', () => {
       elapsedMs: 'soft',
     },
     startedAt: 1000,
+    exhaustion: null,
     ...overrides,
   })
   const humanGate = (gateId, overrides = {}) => ({
@@ -250,6 +251,14 @@ describe('run event normalization', () => {
         includedCount: 3,
         omittedCount: 7,
         charCount: 1200,
+        contextMode: 'continuation',
+        promptChars: 1400,
+        promptBytes: 1500,
+        promptHash: 'b'.repeat(64),
+        sourceCount: 4,
+        sourceHash: 'c'.repeat(64),
+        wirePayloadBytes: 1800,
+        wirePayloadHash: 'd'.repeat(64),
         sessionRotated: true,
         contextPackId,
         deliveryRecordIds: [deliveryRecordIds[0], 'invalid-record', ...deliveryRecordIds, deliveryRecordIds[9]],
@@ -269,6 +278,14 @@ describe('run event normalization', () => {
         includedCount: 3,
         omittedCount: 7,
         charCount: 1200,
+        contextMode: 'continuation',
+        promptChars: 1400,
+        promptBytes: 1500,
+        promptHash: 'b'.repeat(64),
+        sourceCount: 4,
+        sourceHash: 'c'.repeat(64),
+        wirePayloadBytes: 1800,
+        wirePayloadHash: 'd'.repeat(64),
         sessionRotated: true,
         contextPackId,
         deliveryRecordIds: deliveryRecordIds.slice(-8),
@@ -348,7 +365,20 @@ describe('run event normalization', () => {
     const gateId = `human-gate-${'a'.repeat(64)}`
     const mismatchedGateId = `human-gate-${'b'.repeat(64)}`
     const extraFieldGateId = `human-gate-${'c'.repeat(64)}`
-    const budget = budgetSnapshot()
+    const budget = budgetSnapshot({
+      limits: { ...budgetSnapshot().limits, toolCalls: 2 },
+      used: { ...budgetSnapshot().used, toolCalls: 3 },
+      exhaustion: {
+        dimension: 'toolCalls',
+        limit: 2,
+        priorUsed: 2,
+        attemptedUsage: 1,
+        used: 3,
+        source: 'estimated',
+        enforcement: 'hard',
+        reason: 'BUDGET_LIMIT_EXCEEDED',
+      },
+    })
     const snapshot = normalizeSnapshot({
       agents: [],
       groups: [],
@@ -393,6 +423,29 @@ describe('run event normalization', () => {
     })])
   })
 
+  it('accepts a strict pending input Gate without exposing response data', () => {
+    const gateId = `human-gate-${'d'.repeat(64)}`
+    const inputGate = humanGate(gateId, {
+      type: 'input',
+      summary: 'Choose release channel',
+      options: [
+        { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+        { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+      ],
+    })
+    const snapshot = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: [],
+      runs: [{
+        runId: 'run-gated', groupId: 'group-gated', targetKinds: ['codex'],
+        waitingGateIds: [gateId],
+        agentRuns: [{ agentRunId: 'agent-gated', kind: 'codex', status: 'waiting' }],
+      }],
+      humanGates: [inputGate, { ...inputGate, response: 'must-not-cross-the-bridge' }],
+    })
+
+    expect(snapshot.humanGates).toEqual([inputGate])
+  })
+
   it('drops budget snapshots with extra or missing fields', () => {
     const valid = budgetSnapshot()
     const malformed = [
@@ -402,6 +455,7 @@ describe('run event normalization', () => {
       { ...valid, used: { ...valid.used, inputTokens: -1 } },
       { ...valid, source: { ...valid.source, costMicros: 'guessed' } },
       { ...valid, enforcement: { ...valid.enforcement, toolCalls: 'warn' } },
+      { ...valid, exhaustion: { ...valid.exhaustion, used: 4 } },
     ]
 
     for (const budget of malformed) {

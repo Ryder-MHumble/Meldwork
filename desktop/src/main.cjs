@@ -5,6 +5,7 @@ const { AttachmentStore } = require('./attachment-store.cjs')
 const { ContentBlobStore } = require('./content-blob-store.cjs')
 const { ContextPackStore } = require('./context-pack-store.cjs')
 const { OutcomeStore } = require('./outcome-store.cjs')
+const FROZEN_AGENT_FIT_MATRIX = require('./eval-data/agent-fit-matrix.v1.json')
 const {
   MEDIA_SCHEME,
   attachmentIdsFromSnapshot,
@@ -21,6 +22,7 @@ const { detectAgents, imageAttachmentLimit, runAgent } = require('./cli-adapters
 const { AgentInstaller } = require('./agent-installer.cjs')
 const { AgentConnectorInstanceStore } = require('./agent-connector-instance-store.cjs')
 const { LocalAgentConnectors } = require('./agent-connector-local.cjs')
+const { AgentConnectorPackageStore } = require('./agent-connector-package-store.cjs')
 const { CloudAgentOperationStore } = require('./cloud-agent-operation-store.cjs')
 const {
   CloudAgentRuntime,
@@ -53,6 +55,7 @@ const { RunLedger } = require('./run-ledger.cjs')
 const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
 const { LocalSkillSnapshotSelections } = require('./local-skill-snapshot-selections.cjs')
 const { LocalSkillSnapshotStore } = require('./local-skill-snapshot.cjs')
+const { LocalSkillTrustStore } = require('./local-skill-trust-store.cjs')
 const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
 const {
   knowledgeBaseSelectionHint,
@@ -90,6 +93,7 @@ let knowledgeBaseStatusPromise = null
 const knowledgeBaseSourcesCache = new Map()
 let attachmentStore = null
 let skillCatalog = null
+let skillTrustStore = null
 let shutdownStarted = false
 let quitCleanup = null
 let cachedAppIcon
@@ -225,6 +229,37 @@ function providerOptions(kind, context = {}) {
   )
 }
 
+function mediaFallbackProviders(env = process.env) {
+  const apiKey = String(
+    env.ZGCI_MEDIA_API_KEY
+      || env.ZGCI_API_KEY
+      || env.ZCGI_API_KEY
+      || env.ZGCI_LLM_API_KEY
+      || '',
+  ).trim()
+  if (!apiKey) return []
+  const baseUrl = String(env.ZGCI_MEDIA_BASE_URL || 'https://hub.zgci.org/v1')
+    .trim()
+    .replace(/\/+$/, '')
+    .replace(/\/chat\/completions$/i, '')
+  let parsed
+  try { parsed = new URL(baseUrl) } catch { return [] }
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
+      || parsed.search || parsed.hash) {
+    return []
+  }
+  return [{
+    kind: 'zgci-media',
+    status: {
+      configured: true,
+      provider: 'ZGCI Media',
+      baseUrl,
+      model: 'glm',
+    },
+    credentials: { OPENAI_API_KEY: apiKey },
+  }]
+}
+
 function workspaceStoragePath(userData = app.getPath('userData')) {
   return path.join(userData, 'roundrelay-workspace.json')
 }
@@ -311,22 +346,30 @@ async function validateKnowledgeBaseSelections(targetKinds, selections) {
 }
 
 async function runCoreAgent(agent, prompt, workdir, options = {}) {
+  const connectorCredentialIsolation = options.connectorCredentialIsolation === true
+  const runOptions = { ...options }
+  delete runOptions.connectorCredentialIsolation
   const status = providerStore.status(agent.kind)
-  const nativeRuntime = agent.kind === 'openclaw' && !status.configured
+  const nativeRuntime = !connectorCredentialIsolation
+    && agent.kind === 'openclaw' && !status.configured
     ? await resolveNativeOpenClawRuntime({ executable: agent.executable })
     : null
-  const injected = providerOptions(agent.kind, {
-    ...options,
-    workdir,
-    storageRoot: app.getPath('userData'),
-    nativeRuntime,
-  })
-  const nativeEnv = agent.kind === 'openclaw'
+  const injected = connectorCredentialIsolation
+    ? {}
+    : providerOptions(agent.kind, {
+        ...runOptions,
+        workdir,
+        storageRoot: app.getPath('userData'),
+        nativeRuntime,
+      })
+  const nativeEnv = connectorCredentialIsolation || agent.kind === 'openclaw'
     ? {}
     : nativeCredentialEnvironment(agent.kind)
-  const callerEnv = agent.kind === 'openclaw' ? {} : options.env
+  const callerEnv = connectorCredentialIsolation || agent.kind !== 'openclaw'
+    ? runOptions.env
+    : {}
   return runAgent(agent, prompt, workdir, {
-    ...options,
+    ...runOptions,
     ...injected,
     env: { ...nativeEnv, ...callerEnv, ...injected.env },
   })
@@ -337,11 +380,64 @@ function localAttachmentSupport(kind) {
     return { image: 4, audio: 4, video: 4, file: 4 }
   }
   const connectorSupport = agentConnectors?.attachmentSupport(kind)
-  if (connectorSupport) return { ...connectorSupport, file: 4 }
+  if (connectorSupport) return connectorSupport
   return {
     image: imageAttachmentLimit(kind),
     file: kind === 'opencodereview' ? 0 : 4,
   }
+}
+
+async function requestLocalSkillTrust({ binding, coordinates, manifest }) {
+  const locale = String(app.getLocale?.() || '').toLowerCase()
+  const compatibility = manifest.agents.map(agent => (
+    `${agent.kind} ${agent.minVersion} - ${agent.maxVersion}`
+  )).join(', ')
+  const credentials = manifest.credentials.map(item => (
+    `${item.credentialId} (${item.type})`
+  )).join(', ') || (locale.startsWith('zh') ? '无' : 'None')
+  const destinations = manifest.networkDestinations.join(', ')
+    || (locale.startsWith('zh') ? '无' : 'None')
+  const tools = manifest.tools.join(', ') || (locale.startsWith('zh') ? '无' : 'None')
+  const detail = locale.startsWith('zh')
+    ? [
+        `Skill：${coordinates.name} (${manifest.identity.id} ${manifest.identity.version})`,
+        `来源：${manifest.origin.type} / ${manifest.origin.publisher}`,
+        `适配 Agent：${compatibility}`,
+        `输入类型：${manifest.inputTypes.join(', ')}`,
+        `工具：${tools}`,
+        `权限：${manifest.permissionMode}`,
+        `凭据：${credentials}`,
+        `外联目标：${destinations}`,
+        `副作用等级：${manifest.sideEffectClass}`,
+        `清单哈希：${binding.contractHash}`,
+        `内容哈希：${binding.contentHash}`,
+      ].join('\n')
+    : [
+        `Skill: ${coordinates.name} (${manifest.identity.id} ${manifest.identity.version})`,
+        `Origin: ${manifest.origin.type} / ${manifest.origin.publisher}`,
+        `Compatible Agents: ${compatibility}`,
+        `Input types: ${manifest.inputTypes.join(', ')}`,
+        `Tools: ${tools}`,
+        `Permission: ${manifest.permissionMode}`,
+        `Credentials: ${credentials}`,
+        `Network destinations: ${destinations}`,
+        `Side-effect class: ${manifest.sideEffectClass}`,
+        `Manifest hash: ${binding.contractHash}`,
+        `Content hash: ${binding.contentHash}`,
+      ].join('\n')
+  const decision = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: locale.startsWith('zh') ? '批准本地 Skill' : 'Approve Local Skill',
+    message: locale.startsWith('zh')
+      ? '这是未签名的本地 Skill。仅在确认来源和权限范围后批准。'
+      : 'This is an unsigned local Skill. Approve only after verifying its origin and permissions.',
+    detail,
+    buttons: locale.startsWith('zh') ? ['批准', '取消'] : ['Approve', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  })
+  return decision.response === 0
 }
 
 function createWorkspace() {
@@ -354,10 +450,15 @@ function createWorkspace() {
     contentBlobStore,
     rootPath: path.join(privateRoot, 'skill-snapshots'),
   })
+  skillTrustStore = new LocalSkillTrustStore({
+    storagePath: path.join(privateRoot, 'skill-trust-audit.jsonl'),
+  })
   const skillSnapshotSelections = new LocalSkillSnapshotSelections({
     catalog: skillCatalog,
     snapshotStore: skillSnapshotStore,
     contentBlobStore,
+    trustStore: skillTrustStore,
+    requestTrust: requestLocalSkillTrust,
   })
   knowledgeConnectors = new LocalKnowledgeConnectors({
     contentBlobStore,
@@ -366,6 +467,9 @@ function createWorkspace() {
   })
   agentConnectors = new LocalAgentConnectors({
     manifestDirectory: path.join(app.getPath('userData'), 'agent-connectors', 'manifests'),
+    packageStore: new AgentConnectorPackageStore({
+      rootPath: path.join(privateRoot, 'agent-connector-packages'),
+    }),
     instanceStore: new AgentConnectorInstanceStore({
       instanceStoragePath: path.join(app.getPath('userData'), 'agent-connectors', 'instances.json'),
       credentialStoragePath: path.join(privateRoot, 'agent-connector-credentials.json'),
@@ -404,6 +508,7 @@ function createWorkspace() {
       excludedKinds,
       statusFor: candidateKind => providerStore.status(candidateKind),
       credentialsFor: candidateKind => providerStore.envForAgent(candidateKind),
+      fallbackProviders: mediaFallbackProviders(),
     }),
   })
   const localWorkspace = new LocalWorkspace({
@@ -413,6 +518,7 @@ function createWorkspace() {
       rootPath: path.join(privateRoot, 'context-packs'),
     }),
     outcomeStore,
+    agentFitMatrix: FROZEN_AGENT_FIT_MATRIX,
     runLedger: cloudAgentRuntime.workspaceLedger(),
     detectAgents: async () => {
       const [installedAgents, customAgents] = await Promise.all([
@@ -446,6 +552,7 @@ function createWorkspace() {
     runAgent: async (agent, prompt, workdir, options = {}) => {
       if (customAgentStore.has(agent.kind)) {
         return customAgentStore.run(agent.kind, prompt, workdir, {
+          sandbox: options.sandbox,
           signal: options.signal,
           onProgress: options.onProgress,
           onEvent: options.onEvent,
@@ -481,7 +588,16 @@ async function localAgentCatalog() {
       const support = localAttachmentSupport(agent.kind)
       return {
         ...agent,
-        available: Boolean(agent.installed && state?.available),
+        versionIdentified: Boolean(agent.installed && (state?.versionIdentified
+          ?? agent.versionIdentified ?? agent.resolvedVersion)),
+        compatible: Boolean(agent.installed && (state?.compatible
+          ?? agent.compatible ?? agent.compatibilityState === 'compatible')),
+        configured: Boolean(agent.installed && state?.configured),
+        authenticated: Boolean(agent.installed && state?.authenticated),
+        invocable: Boolean(agent.installed && state?.invocable),
+        recentlyVerified: Boolean(agent.installed && state?.recentlyVerified),
+        capabilities: state?.capabilities || agent.capabilities || null,
+        available: Boolean(agent.installed && state?.invocable),
         credentialState: agent.installed ? (state?.credentialState || 'unknown') : 'missing',
         availabilitySource: agent.installed ? (state?.availabilitySource || 'unverified') : 'none',
         showInSidebar: Boolean(agent.installed && state?.showInSidebar),
@@ -613,6 +729,7 @@ function registerIpc() {
     localAgentCatalog,
     openExternalUrl,
     getOutcomeStore: () => workspace?.outcomeStore,
+    getSkillTrustStore: () => skillTrustStore,
     providerStore,
     providerAgentKind,
     refreshLocalAgentState,

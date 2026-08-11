@@ -8,7 +8,9 @@ const { serializeAgentConnectorManifest } = require('../src/agent-connector-mani
 const {
   SAMPLE_AGENT_CONNECTOR_MANIFEST,
   SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST,
+  SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE,
 } = require('../src/agent-connector-local.cjs')
+const { serializeAgentConnectorPackage } = require('../src/agent-connector-package-store.cjs')
 const {
   LOCAL_IPC_CHANNELS,
   PROVIDER_AGENT_KINDS,
@@ -128,6 +130,10 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     harness.workspaceInstances[0].input.runLedger.storagePath,
     path.join(directory, 'roundrelay-run-ledger.json'),
   )
+  assert.match(
+    harness.workspaceInstances[0].input.agentFitMatrix.matrixId,
+    /^fit-matrix-[a-f0-9]{64}$/,
+  )
   assert.equal(harness.workspaceInstances[0].refreshCount, 0)
   assert.equal(harness.providerInstances[0].input.storagePath,
     path.join(directory, 'roundrelay-provider.json'))
@@ -159,6 +165,15 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
     harness.skillSnapshotSelectionInstances[0].input.catalog,
     harness.skillCatalogInstances[0],
   )
+  assert.equal(
+    harness.skillSnapshotSelectionInstances[0].input.trustStore,
+    harness.skillTrustStoreInstances[0],
+  )
+  assert.equal(
+    harness.skillTrustStoreInstances[0].input.storagePath,
+    path.join(directory, 'roundrelay-private', 'skill-trust-audit.jsonl'),
+  )
+  assert.equal(typeof harness.skillSnapshotSelectionInstances[0].input.requestTrust, 'function')
   const selectedSkills = [{
     targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
   }]
@@ -309,6 +324,7 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
     serializeAgentConnectorManifest(SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST),
   )
   const options = {
+    providerConfigured: true,
     detectedAgents: [{
       kind: 'codex', name: 'Codex CLI', executable: '/private/bin/codex',
       version: 'codex-cli 0.147.0', compatibilityState: 'compatible',
@@ -346,6 +362,18 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
   )
   assert.doesNotMatch(JSON.stringify(result), /credential-ref|connector-main-secret/i)
   assert.equal(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'connector-main-secret-a')
+  assert.equal(Object.hasOwn(harness.runAgentCalls.at(-1)[3].env, 'OPENAI_BASE_URL'), false)
+  assert.equal(Object.hasOwn(harness.runAgentCalls.at(-1)[3].env, 'OPENAI_MODEL'), false)
+  assert.equal(Object.hasOwn(harness.runAgentCalls.at(-1)[3], 'connectorCredentialIsolation'), false)
+
+  await workspace.input.connectorRuntime.run(
+    agents.find(agent => agent.kind === second.instanceId),
+    'Review with account B',
+    directory,
+    { runId: 'run-account-b', agentRunId: 'agent-run-account-b', sandbox: 'read-only' },
+  )
+  assert.equal(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'connector-main-secret-b')
+  assert.notEqual(harness.runAgentCalls.at(-1)[3].env.OPENAI_API_KEY, 'provider-key')
 
   const instanceFile = fs.readFileSync(
     path.join(directory, 'agent-connectors', 'instances.json'),
@@ -387,6 +415,116 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
       credentials: { unexpected: 'connector-main-secret-c' },
     }),
     { message: 'AGENT_CONNECTOR_CREDENTIAL_INVALID' },
+  )
+})
+
+test('Agent Connector package IPC keeps paths private and requires native approval', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-package-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const packagePath = path.join(directory, 'local-echo.connector.json')
+  fs.writeFileSync(
+    packagePath,
+    serializeAgentConnectorPackage(SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE),
+  )
+  const { harness } = loadMain(directory, {
+    dialogResult: { canceled: false, filePaths: [packagePath] },
+    messageBoxResult: { response: 0 },
+  })
+  await harness.ready()
+  const invoke = name => harness.ipcHandlers.get(`local-agent-connector:${name}`)
+  const imported = await invoke('import')(harness.event())
+  assert.equal(imported.canceled, false)
+  assert.equal(imported.package.state, 'imported')
+  assert.equal(imported.package.origin.filename, path.basename(packagePath))
+  assert.doesNotMatch(JSON.stringify(imported), new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  const packageId = SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE.packageId
+  const approved = await invoke('approve')(harness.event(), packageId)
+  assert.equal(approved.canceled, false)
+  assert.equal(approved.package.state, 'approved')
+  const approvalOptions = harness.dialogCalls.at(-1)[1]
+  assert.match(approvalOptions.detail, /Meldwork/)
+  assert.match(approvalOptions.detail, /Transport: cli\/json/)
+  assert.match(approvalOptions.detail, /Permissions: read-only/)
+  assert.match(approvalOptions.detail, /Credential slots: None/)
+  assert.match(approvalOptions.detail, /Outbound destinations: None/)
+  assert.doesNotMatch(approvalOptions.detail, new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  assert.equal((await invoke('install')(harness.event(), packageId)).state, 'installed')
+  const configured = await invoke('configure')(harness.event(), {
+    manifestId: SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE.manifest.manifestId,
+    label: 'Main-process echo',
+    credentials: null,
+  })
+  const tested = await invoke('test')(harness.event(), configured.instanceId)
+  assert.equal(tested.passed, true)
+  assert.equal(Object.hasOwn(tested, 'text'), false)
+  assert.equal(harness.runAgentCalls.length, 0)
+  assert.deepEqual((await invoke('audit')(harness.event(), packageId)).map(event => event.action), [
+    'imported', 'approved', 'installed',
+  ])
+  assert.equal((await invoke('disable')(harness.event(), packageId)).state, 'disabled')
+  assert.equal((await invoke('install')(harness.event(), packageId)).state, 'installed')
+  assert.equal((await invoke('revoke')(harness.event(), packageId)).state, 'revoked')
+  await invoke('delete')(harness.event(), configured.instanceId)
+  assert.equal((await invoke('remove')(harness.event(), packageId)).state, 'removed')
+})
+
+test('unsigned Skill trust uses native approval and exposes only review and revocation', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-skill-trust-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const bindingId = `skill-trust-binding-${'a'.repeat(64)}`
+  const record = {
+    bindingId,
+    state: 'approved',
+    decisionId: `skill-trust-decision-${'b'.repeat(64)}`,
+  }
+  const { harness } = loadMain(directory, {
+    messageBoxResult: { response: 0 },
+    skillTrustRecords: [record],
+  })
+  await harness.ready()
+  const manifest = {
+    identity: { id: 'global/review', version: '1.0.0' },
+    origin: { type: 'local-unsigned', publisher: 'Local author' },
+    agents: [{ kind: 'codex', minVersion: '0.100.0', maxVersion: '1.0.0' }],
+    inputTypes: ['text'],
+    tools: ['filesystem'],
+    credentials: [],
+    permissionMode: 'read-only',
+    networkDestinations: [],
+    sideEffectClass: 'none',
+  }
+  const approved = await harness.skillSnapshotSelectionInstances[0].input.requestTrust({
+    binding: {
+      bindingId,
+      contractHash: 'c'.repeat(64),
+      contentHash: 'd'.repeat(64),
+    },
+    coordinates: {
+      targetKind: 'codex', namespace: 'global', slug: 'review', name: 'Review',
+    },
+    manifest,
+  })
+  assert.equal(approved, true)
+  const approvalOptions = harness.dialogCalls.at(-1)[1]
+  assert.match(approvalOptions.detail, /Skill: Review \(global\/review 1\.0\.0\)/)
+  assert.match(approvalOptions.detail, /Permission: read-only/)
+  assert.match(approvalOptions.detail, /Side-effect class: none/)
+  assert.doesNotMatch(approvalOptions.detail, new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-skill-trust:list')(harness.event()),
+    [record],
+  )
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-skill-trust:revoke')(harness.event(), bindingId),
+    { bindingId, revoked: true },
+  )
+  assert.deepEqual(harness.skillTrustStoreInstances[0].revocations, [bindingId])
+  assert.throws(
+    () => harness.ipcHandlers.get('local-skill-trust:revoke')(harness.event(), { bindingId }),
+    { message: 'LOCAL_SKILL_TRUST_REQUEST_INVALID' },
   )
 })
 
@@ -435,6 +573,7 @@ test('Custom Agent IPC keeps executable paths private and refreshes the local ca
     'Review this change',
     '/tmp/project',
     {
+      sandbox: 'read-only',
       signal,
       attachments: ['/tmp/project/input.txt'],
       onProgress: () => {},
@@ -450,6 +589,7 @@ test('Custom Agent IPC keeps executable paths private and refreshes the local ca
   assert.equal(runPrompt, 'Review this change')
   assert.equal(runWorkdir, '/tmp/project')
   assert.equal(runOptions.signal, signal)
+  assert.equal(runOptions.sandbox, 'read-only')
   assert.deepEqual(runOptions.attachments, ['/tmp/project/input.txt'])
   assert.equal(runOptions.onOutboundPayload, onOutboundPayload)
   assert.equal(harness.runAgentCalls.length, 0)
@@ -771,6 +911,10 @@ test('workspace run IPC requires an explicit non-empty Agent target contract', a
       channel,
     )
   }
+  await assert.doesNotReject(() => harness.ipcHandlers.get('local-workspace:send')(
+    harness.event(),
+    { groupId: 'group-1', text: 'Route the work', targetKinds: [], routingMode: 'automatic' },
+  ))
 })
 
 test('workspace stop IPC forwards only a validated group and run pair', async (t) => {
@@ -836,12 +980,20 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
   const decide = harness.ipcHandlers.get('local-workspace:decide-human-gate')
   const workspace = harness.workspaceInstances[0]
   const gateId = `human-gate-${'b'.repeat(64)}`
+  const inputGateId = `human-gate-${'c'.repeat(64)}`
   workspace.state.humanGates = [{
     gateId,
     options: [
       { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
       { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
       { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+    ],
+  }, {
+    gateId: inputGateId,
+    type: 'input',
+    options: [
+      { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+      { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
     ],
   }]
 
@@ -851,9 +1003,18 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
   assert.deepEqual(await decide(harness.event(), gateId, {
     optionId: 'reopen-task',
   }), { gateId, status: 'rejected', optionId: 'reopen-task' })
+  assert.deepEqual(await decide(harness.event(), inputGateId, {
+    optionId: 'submit-input', response: 'stable',
+  }), {
+    gateId: inputGateId, status: 'approved', optionId: 'submit-input', response: 'stable',
+  })
   assert.deepEqual(workspace.humanGateDecisionCalls, [
     { gateId, decision: { status: 'approved', optionId: 'allow-once' } },
     { gateId, decision: { status: 'rejected', optionId: 'reopen-task' } },
+    {
+      gateId: inputGateId,
+      decision: { status: 'approved', optionId: 'submit-input', response: 'stable' },
+    },
   ])
 
   for (const [invalidGateId, decision] of [
@@ -862,6 +1023,9 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
     [gateId, { status: 'approved', optionId: '../allow' }],
     [gateId, { status: 'approved', optionId: 'allow-once', actorId: 'renderer' }],
     [gateId, { status: 'approved', optionId: 'reopen-task' }],
+    [gateId, { optionId: 'allow-once', response: 'unexpected' }],
+    [inputGateId, { optionId: 'submit-input' }],
+    [inputGateId, { optionId: 'cancel-input', response: 'unexpected' }],
     [gateId, { optionId: 'missing-option' }],
   ]) {
     await assert.rejects(
@@ -869,7 +1033,7 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
       { message: 'HUMAN_GATE_DECISION_INVALID' },
     )
   }
-  assert.equal(workspace.humanGateDecisionCalls.length, 2)
+  assert.equal(workspace.humanGateDecisionCalls.length, 3)
 })
 
 test('Cloud Agent IPC exposes only validated continuation and cancel actions', async (t) => {

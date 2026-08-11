@@ -43,6 +43,8 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-workspace:default-directory',
   'local-agent-installer:catalog',
   'local-agent-installer:skills',
+  'local-skill-trust:list',
+  'local-skill-trust:revoke',
   'local-agent-installer:state',
   'local-agent-installer:start',
   'local-agent-installer:cancel',
@@ -50,8 +52,19 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-custom-agent:create',
   'local-custom-agent:delete',
   'local-agent-connector:list',
+  'local-agent-connector:packages',
+  'local-agent-connector:import',
+  'local-agent-connector:inspect',
+  'local-agent-connector:audit',
+  'local-agent-connector:approve',
+  'local-agent-connector:install',
+  'local-agent-connector:disable',
+  'local-agent-connector:revoke',
+  'local-agent-connector:upgrade',
+  'local-agent-connector:remove',
   'local-agent-connector:configure',
   'local-agent-connector:delete',
+  'local-agent-connector:test',
   'local-attachments:pick',
   'local-attachments:import',
   'local-attachments:preview',
@@ -113,6 +126,7 @@ function loadMain(userData, options = {}) {
   const skillCatalogInstances = []
   const skillSnapshotStoreInstances = []
   const skillSnapshotSelectionInstances = []
+  const skillTrustStoreInstances = []
   const cloudAgentRuntimeInstances = []
   const cloudAgentOperationStoreInstances = []
   const channelInboxStoreInstances = []
@@ -513,6 +527,21 @@ function loadMain(userData, options = {}) {
     }
   }
 
+  class TestLocalSkillTrustStore {
+    constructor(input) {
+      this.input = input
+      this.records = options.skillTrustRecords || []
+      this.revocations = []
+      skillTrustStoreInstances.push(this)
+    }
+
+    list() { return this.records }
+    revoke(bindingId) {
+      this.revocations.push(bindingId)
+      return { bindingId, revoked: true }
+    }
+  }
+
   class TestProviderStore {
     constructor(input) {
       this.input = input
@@ -709,6 +738,10 @@ function loadMain(userData, options = {}) {
         dialogCalls.push(args)
         return options.dialogResult || { canceled: true, filePaths: [] }
       },
+      showMessageBox: async (...args) => {
+        dialogCalls.push(args)
+        return options.messageBoxResult || { response: 1 }
+      },
     },
     ipcMain: {
       handle: (name, listener) => ipcHandlers.set(name, listener),
@@ -798,6 +831,7 @@ function loadMain(userData, options = {}) {
     './local-skill-snapshot-selections.cjs': {
       LocalSkillSnapshotSelections: TestLocalSkillSnapshotSelections,
     },
+    './local-skill-trust-store.cjs': { LocalSkillTrustStore: TestLocalSkillTrustStore },
     './openclaw-runtime.cjs': {
       managedOpenClawOptions: input => ({ env: { MANAGED_OPENCLAW: JSON.stringify(input) } }),
       nativeOpenClawOptions: input => ({ env: { NATIVE_OPENCLAW: JSON.stringify(input) } }),
@@ -878,6 +912,7 @@ function loadMain(userData, options = {}) {
         skillCatalogInstances,
         skillSnapshotStoreInstances,
         skillSnapshotSelectionInstances,
+        skillTrustStoreInstances,
         windows,
         workspaceInstances,
         exitCalls,

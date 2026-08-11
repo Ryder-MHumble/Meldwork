@@ -49,7 +49,31 @@ class HumanGateStore {
       throw storeError('HUMAN_GATE_STORAGE_PATH_UNSAFE')
     }
     this.contentBlobStore = contentBlobStore
+    this.quarantined = []
     this.records = this.load()
+  }
+
+  validateRequest(record) {
+    if (!this.contentBlobStore.has(record.requestRef)) {
+      throw storeError('HUMAN_GATE_REQUEST_NOT_FOUND')
+    }
+    const bytes = this.contentBlobStore.read(record.requestRef)
+    const text = bytes.toString('utf8')
+    const parsed = JSON.parse(text)
+    if (canonicalJson(parsed) !== text) throw storeError('HUMAN_GATE_REQUEST_TAMPERED')
+    return parsed
+  }
+
+  quarantine(entries) {
+    if (!entries.length) return
+    this.quarantined = entries
+    try {
+      atomicWritePrivateFile(`${this.storagePath}.quarantine.json`, `${JSON.stringify({
+        version: 1,
+        quarantinedAt: new Date().toISOString(),
+        entries,
+      }, null, 2)}\n`)
+    } catch { /* Loading valid unrelated Gates must not depend on diagnostics. */ }
   }
 
   load() {
@@ -58,10 +82,26 @@ class HumanGateStore {
       if (!bytes.length || bytes.length > 4 * 1024 * 1024) return []
       const parsed = JSON.parse(bytes.toString('utf8'))
       if (parsed?.version !== STORE_VERSION || !Array.isArray(parsed.gates)) return []
-      const records = parsed.gates.slice(-MAX_GATES).map(parseHumanGateRecord)
-      if (new Set(records.map(record => record.gateId)).size !== records.length) return []
-      for (const record of records) {
-        if (!this.contentBlobStore.has(record.requestRef)) return []
+      const records = []
+      const gateIds = new Set()
+      const quarantined = []
+      for (const [index, candidate] of parsed.gates.slice(-MAX_GATES).entries()) {
+        try {
+          const record = parseHumanGateRecord(candidate)
+          if (gateIds.has(record.gateId)) throw storeError('HUMAN_GATE_DUPLICATE')
+          this.validateRequest(record)
+          gateIds.add(record.gateId)
+          records.push(record)
+        } catch (error) {
+          quarantined.push({
+            index,
+            code: String(error?.code || error?.message || 'HUMAN_GATE_RECORD_INVALID').slice(0, 120),
+          })
+        }
+      }
+      this.quarantine(quarantined)
+      if (quarantined.length) {
+        try { this.save(records) } catch { /* Valid Gates remain available in memory. */ }
       }
       try { fs.chmodSync(this.storagePath, 0o600) } catch { /* Windows may ignore modes. */ }
       return records
@@ -106,15 +146,11 @@ class HumanGateStore {
 
   request(gateId) {
     const record = this.get(gateId)
-    let parsed
     try {
-      const bytes = this.contentBlobStore.read(record.requestRef)
-      parsed = JSON.parse(bytes.toString('utf8'))
-      if (canonicalJson(parsed) !== bytes.toString('utf8')) throw new Error('non-canonical')
+      return this.validateRequest(record)
     } catch (error) {
       throw storeError('HUMAN_GATE_REQUEST_TAMPERED', error)
     }
-    return parsed
   }
 
   decide(gateId, decision) {

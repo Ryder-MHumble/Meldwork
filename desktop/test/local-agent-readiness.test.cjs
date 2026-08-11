@@ -112,6 +112,16 @@ test('OpenClaw readiness uses the official model status when auth is stored outs
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-readiness-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
+  fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
+    providers: {
+      provider: {
+        baseUrl: 'https://provider.example/v1',
+        api: 'openai-completions',
+        apiKey: 'native-openclaw-secret',
+        models: [{ id: 'model', name: 'Model', input: ['text'] }],
+      },
+    },
+  }))
   const calls = []
   try {
     const result = await resolveNativeCredentialState('openclaw', {
@@ -452,6 +462,14 @@ test('OpenClaw native runtime rejects unsafe status and Provider descriptors', a
       }),
       { message: 'OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE' },
     )
+    assert.deepEqual(await resolveNativeCredentialState('openclaw', {
+      home,
+      env: {},
+      executable: '/tmp/openclaw',
+      execFileFn: async () => ({ stdout: JSON.stringify(status) }),
+    }), {
+      state: 'unknown', source: 'native-runtime-unavailable',
+    })
   }
 
   if (process.platform !== 'win32') {

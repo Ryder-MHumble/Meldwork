@@ -25,6 +25,8 @@ export function useConversationTimelineLabels({
       interrupted: 'interrupted',
       'not-started': 'notStarted',
       'round-limit': 'roundLimit',
+      'budget-exhausted': 'budgetExhausted',
+      'circuit-breaker': 'circuitBreaker',
     }[normalized] || 'unknown'
     return t(`run.status.${key}`)
   }

@@ -581,7 +581,7 @@ test('Hermes detection records unavailable ACP when the capability check fails',
   }])
 })
 
-test('Agent detection ignores blank output and startup warnings before the version line', async () => {
+test('Agent detection ignores ANSI warnings with unrelated versions before the product version', async () => {
   const found = await detectAgents({
     platform: 'darwin',
     env: {},
@@ -592,8 +592,8 @@ test('Agent detection ignores blank output and startup warnings before the versi
       incompatibilityProbe: '',
     }),
     execFileFn: async () => ({
-      stdout: '  \n',
-      stderr: 'experimental startup warning\nKimi Code 0.19.2\n',
+      stdout: '\u001b[33mWarning: Node.js 22.5.1 is experimental\u001b[0m\n',
+      stderr: '\u001b[32mKimi Code 0.19.2\u001b[0m\n',
     }),
   })
 
@@ -796,14 +796,19 @@ test('Agent detection records the required capability or protocol that is unavai
   assert.equal(kimi[0].incompatibilityProbe, 'kimi-acp')
 })
 
-test('Agent detection retains installed CLIs with unrecognized version output as incompatible', async () => {
+test('Agent detection probes capabilities when the product version is unrecognized', async () => {
+  let calls = 0
   const found = await detectAgents({
     platform: 'darwin',
     env: {},
     resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
-    execFileFn: async () => ({ stdout: 'Please log in first\n', stderr: '' }),
+    execFileFn: async () => {
+      calls += 1
+      return { stdout: 'Please log in first\n', stderr: '' }
+    },
   })
 
+  assert.equal(calls, 3)
   assert.deepEqual(found, [{
     kind: 'kimi',
     name: 'Kimi CLI',
@@ -812,7 +817,41 @@ test('Agent detection retains installed CLIs with unrecognized version output as
     resolvedVersion: '',
     supportedVersionRange: '0.19.2..0.32.0',
     compatibilityState: 'incompatible',
-    incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+    incompatibilityReason: 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING',
+    incompatibilityProbe: 'kimi-stream',
+  }])
+})
+
+test('Agent detection keeps ambiguous product versions unknown after successful capability probes', async () => {
+  let capabilityCalls = 0
+  const found = await detectAgents({
+    platform: 'darwin',
+    env: {},
+    resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
+    probeAgentCapabilitiesFn: async () => {
+      capabilityCalls += 1
+      return {
+        compatibilityState: 'compatible',
+        incompatibilityReason: '',
+        incompatibilityProbe: '',
+      }
+    },
+    execFileFn: async () => ({
+      stdout: 'Kimi Code 0.19.2\nKimi Code 0.20.0\n',
+      stderr: '',
+    }),
+  })
+
+  assert.equal(capabilityCalls, 1)
+  assert.deepEqual(found, [{
+    kind: 'kimi',
+    name: 'Kimi CLI',
+    executable: '/tmp/kimi',
+    version: '',
+    resolvedVersion: '',
+    supportedVersionRange: '0.19.2..0.32.0',
+    compatibilityState: 'unknown',
+    incompatibilityReason: '',
     incompatibilityProbe: '',
   }])
 })

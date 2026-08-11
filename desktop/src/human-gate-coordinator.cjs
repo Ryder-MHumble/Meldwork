@@ -4,7 +4,7 @@ const {
 } = require('./human-gate-records.cjs')
 const { HumanGateStore } = require('./human-gate-store.cjs')
 
-const APPROVED_OPTION_KINDS = new Set(['allow_once', 'allow_always', 'accept'])
+const APPROVED_OPTION_KINDS = new Set(['allow_once', 'allow_always', 'accept', 'respond'])
 const REJECTED_OPTION_KINDS = new Set(['reject_once', 'reject_always', 'reject', 'reopen'])
 
 function gateError(code) {
@@ -44,13 +44,84 @@ class HumanGateCoordinator {
     this.onResumeFailed = typeof options.onResumeFailed === 'function'
       ? options.onResumeFailed
       : () => {}
+    this.setTimeout = typeof options.setTimeout === 'function' ? options.setTimeout : setTimeout
+    this.clearTimeout = typeof options.clearTimeout === 'function' ? options.clearTimeout : clearTimeout
     this.waiters = new Map()
+    this.expiryTimers = new Map()
     this.resumePromises = new Map()
     this.reconciledDecisionIds = new Set()
   }
 
   list(options = {}) {
     return this.store.list(options)
+  }
+
+  expiryDelay(record) {
+    if (!record?.expiresAt) return null
+    const expiresAt = Date.parse(record.expiresAt)
+    const current = Date.parse(this.now())
+    if (!Number.isFinite(expiresAt) || !Number.isFinite(current)) return 0
+    return Math.max(0, expiresAt - current)
+  }
+
+  clearExpiry(gateId) {
+    const timer = this.expiryTimers.get(gateId)
+    if (timer) this.clearTimeout(timer)
+    this.expiryTimers.delete(gateId)
+  }
+
+  expire(record) {
+    const current = this.store.get(record.gateId)
+    if (current.status !== 'pending') return current
+    const rejected = rejectedOption(current)
+    const expired = this.store.decide(current.gateId, {
+      status: 'rejected',
+      optionId: rejected.optionId,
+      actorId: 'meldwork-system',
+      decidedAt: this.now(),
+    })
+    this.clearExpiry(expired.gateId)
+    try {
+      this.onResumed(expired, expired.decision)
+    } catch (error) {
+      this.store.rollbackDecision(expired.gateId, expired.decision)
+      try { this.onChanged() } catch {}
+      throw error
+    }
+    const waiter = this.waiters.get(expired.gateId)
+    if (waiter) {
+      this.waiters.delete(expired.gateId)
+      waiter.signal?.removeEventListener('abort', waiter.abortHandler)
+      waiter.resolve(expired.decision)
+      this.reconciledDecisionIds.add(expired.gateId)
+    } else {
+      const resumed = Promise.resolve().then(() => (
+        this.onOrphanDecision(expired, expired.decision)
+      )).catch((error) => {
+        this.onResumeFailed(expired, error)
+      }).finally(() => {
+        this.resumePromises.delete(expired.gateId)
+      })
+      this.resumePromises.set(expired.gateId, resumed)
+    }
+    this.onChanged()
+    return expired
+  }
+
+  armExpiry(record) {
+    const delay = this.expiryDelay(record)
+    if (delay === null) return false
+    if (delay === 0) {
+      this.expire(record)
+      return true
+    }
+    const timer = this.setTimeout(() => {
+      this.expiryTimers.delete(record.gateId)
+      try { this.expire(record) } catch { /* The pending Gate remains retryable. */ }
+    }, delay)
+    timer?.unref?.()
+    this.expiryTimers.set(record.gateId, timer)
+    return true
   }
 
   async wait(input = {}, options = {}) {
@@ -71,6 +142,7 @@ class HumanGateCoordinator {
         const waiter = this.waiters.get(record.gateId)
         if (!waiter) return
         this.waiters.delete(record.gateId)
+        this.clearExpiry(record.gateId)
         if (options.preserveOnAbort?.() === true) {
           try { this.onChanged() } catch {}
           reject(gateError('LOCAL_AGENT_EXECUTION_STOPPED'))
@@ -100,11 +172,13 @@ class HumanGateCoordinator {
     })
     try {
       this.onWaiting(record, options.continuation || null)
+      this.armExpiry(record)
       this.onChanged()
     } catch (error) {
       const waiter = this.waiters.get(record.gateId)
       if (waiter?.abortHandler === abortHandler) this.waiters.delete(record.gateId)
       options.signal?.removeEventListener('abort', abortHandler)
+      this.clearExpiry(record.gateId)
       throw error
     }
     try {
@@ -123,12 +197,21 @@ class HumanGateCoordinator {
     if (Object.hasOwn(input, 'status') && input.status !== status) {
       throw gateError('HUMAN_GATE_DECISION_INVALID')
     }
+    const response = typeof input.response === 'string' ? input.response.trim() : ''
+    if ((current.type === 'input' && status === 'approved' && !response)
+        || response.length > 32 * 1024
+        || (current.type !== 'input' && Object.hasOwn(input, 'response'))
+        || (status !== 'approved' && Object.hasOwn(input, 'response'))) {
+      throw gateError('HUMAN_GATE_DECISION_INVALID')
+    }
     const record = this.store.decide(normalizedGateId, {
       status,
       optionId: option.optionId,
       actorId: input.actorId || 'local-user',
       decidedAt: input.decidedAt || this.now(),
+      ...(response ? { response } : {}),
     })
+    this.clearExpiry(record.gateId)
     try {
       this.onResumed(record, record.decision)
     } catch (error) {
@@ -192,6 +275,10 @@ class HumanGateCoordinator {
     for (const pending of this.store.list({ pendingOnly: true })) {
       if (this.waiters.has(pending.gateId)) continue
       const record = this.store.get(pending.gateId)
+      if (this.expiryDelay(record) === 0) {
+        reconciled.push(publicHumanGate(this.expire(record)))
+        continue
+      }
       let resumable = false
       try { resumable = this.canResume(record) === true } catch {}
       if (resumable) {

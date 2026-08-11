@@ -3,9 +3,184 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { agentRuntimeError } = require('../src/agent-runtime-contract.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('../src/failure-policy.cjs')
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { RunLedger } = require('../src/run-ledger.cjs')
 const { deferred, fixture } = require('./local-workspace-test-helpers.cjs')
+
+function pendingHumanGate(workspace, timeoutMs = 2000) {
+  const current = workspace.listHumanGates({ pendingOnly: true })[0]
+  if (current) return Promise.resolve(current)
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      workspace.off('changed', changed)
+      reject(new Error('TEST_HUMAN_GATE_TIMEOUT'))
+    }, timeoutMs)
+    const changed = () => {
+      const gate = workspace.listHumanGates({ pendingOnly: true })[0]
+      if (!gate) return
+      clearTimeout(timer)
+      workspace.off('changed', changed)
+      resolve(gate)
+    }
+    workspace.on('changed', changed)
+  })
+}
+
+function graphNode(overrides = {}) {
+  return {
+    nodeId: 'primary-codex', role: 'primary', agentKind: 'codex',
+    dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce one durable conclusion.',
+    acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+    terminal: false, parallel: false, decisionOptions: [],
+    ...overrides,
+  }
+}
+
+function evidenceTaskGraph() {
+  return {
+    template: 'task-graph',
+    nodes: [
+      graphNode({ parallel: true }),
+      graphNode({ nodeId: 'primary-hermes', agentKind: 'hermes', parallel: true }),
+      graphNode({
+        nodeId: 'review-workbuddy', role: 'reviewer', agentKind: 'workbuddy',
+        dependsOn: ['primary-codex', 'primary-hermes'],
+        inputNodeIds: ['primary-codex', 'primary-hermes'],
+        expectedOutput: 'Review both Primary results independently.',
+      }),
+      graphNode({
+        nodeId: 'decide-kimi', role: 'arbiter', agentKind: 'kimi',
+        dependsOn: ['review-workbuddy'], inputNodeIds: ['review-workbuddy'],
+        expectedOutput: 'Resolve the reviewed conflict using typed Evidence.',
+        terminal: true,
+      }),
+    ],
+  }
+}
+
+test('task graph runs independent branches in parallel and completes from typed Evidence', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const primaryBarrier = deferred()
+  let activePrimaries = 0
+  let maxActivePrimaries = 0
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (['codex', 'hermes'].includes(agent.kind)) {
+      activePrimaries += 1
+      maxActivePrimaries = Math.max(maxActivePrimaries, activePrimaries)
+      if (activePrimaries === 2) primaryBarrier.resolve()
+      await primaryBarrier.promise
+      activePrimaries -= 1
+    }
+    return {
+      text: agent.kind === 'codex'
+        ? 'Release is ready.'
+        : (agent.kind === 'hermes' ? 'Release is blocked.' : `${agent.kind} typed decision.`),
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Evidence task graph',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Assess release readiness with independent review.',
+    mode: 'auto',
+    maxRounds: 6,
+    targetKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workflow: evidenceTaskGraph(),
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(maxActivePrimaries, 2)
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'workbuddy', 'kimi',
+  ])
+  assert.equal(calls.every(call => !call.prompt.includes('ROUNDRELAY_CONSENSUS')), true)
+  assert.equal(calls[2].runOptions.sessionRef, '')
+  assert.match(calls[2].prompt, /ROUNDRELAY_TASK_GRAPH_V1/)
+  assert.match(calls[2].prompt, /\[conflict\]/)
+  assert.equal(calls[3].runOptions.sessionRef, '')
+
+  const durable = ledger.list(group.id)[0]
+  assert.equal(durable.status, 'completed')
+  assert.equal(durable.orchestration.version, 3)
+  assert.equal(durable.orchestration.taskGraph.terminalState, 'accepted')
+  const states = Object.fromEntries(durable.orchestration.taskGraph.nodeStates.map(state => (
+    [state.nodeId, state]
+  )))
+  assert.equal(states['review-workbuddy'].attention, 'review')
+  assert.equal(states['decide-kimi'].attention, 'decision')
+  assert.equal(durable.orchestration.taskGraph.nodeStates.every(state => (
+    state.status === 'accepted'
+  )), true)
+  assert.equal(durable.orchestration.collaboration.entries.some(entry => (
+    entry.entryType === 'decision'
+    && entry.refs.some(reference => durable.orchestration.collaboration.entries.some(
+      candidate => candidate.entryId === reference && candidate.entryType === 'conflict',
+    ))
+  )), true)
+  assert.equal(workspace.snapshot().messages.filter(message => (
+    message.threadRootId === started.threadRootId && message.role === 'agent'
+  )).length, 4)
+})
+
+test('task graph Human node uses a typed decision instead of Agent consensus', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Human decision graph', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  const graph = {
+    template: 'task-graph',
+    nodes: [
+      graphNode(),
+      graphNode({
+        nodeId: 'human-release', role: 'human', agentKind: null,
+        dependsOn: ['primary-codex'], inputNodeIds: ['primary-codex'],
+        expectedOutput: 'Approve or reject the release decision.',
+        acceptance: { requireConclusion: false, minArtifactRefs: 0, minEvidenceRefs: 0 },
+        terminal: true,
+        decisionOptions: [
+          { optionId: 'approve-release', name: 'Approve release', kind: 'allow_once' },
+          { optionId: 'reject-release', name: 'Reject release', kind: 'reject_once' },
+        ],
+      }),
+    ],
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Prepare a release decision.',
+    mode: 'auto', maxRounds: 4, targetKinds: ['codex', 'hermes'], workflow: graph,
+  })
+  const gate = await pendingHumanGate(workspace)
+  assert.equal(gate.type, 'decision')
+  assert.equal(ledger.get(gate.runId).orchestration.taskGraph.nodeStates[1].status, 'waiting')
+  workspace.decideHumanGate(gate.gateId, {
+    status: 'approved', optionId: 'approve-release', actorId: 'local-user',
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  const durable = ledger.get(gate.runId)
+  assert.equal(durable.status, 'completed')
+  assert.equal(durable.continuation.state, 'completed')
+  assert.equal(durable.orchestration.taskGraph.nodeStates[1].decisionOptionId, 'approve-release')
+  assert.equal(calls.length, 1)
+})
 test('auto send preflights atomically, persists one root, and starts at round one', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -99,6 +274,70 @@ test('auto send preflights atomically, persists one root, and starts at round on
   assert.equal(finished[0].status, 'completed')
 })
 
+test('automatic Primary Reviewer Arbiter flow uses selective typed collaboration state', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const conclusions = {
+    codex: 'The release is ready after tests.',
+    hermes: 'The release is blocked by missing package proof.',
+    workbuddy: 'The release is ready because package proof is present.',
+  }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${conclusions[agent.kind]}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Typed collaboration',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+  })
+
+  const started = await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Assess release readiness using the available evidence.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'workbuddy'])
+  assert.match(calls[0].prompt, /Role: primary/)
+  assert.match(calls[0].prompt, /Selected blackboard entries: \(none\)/)
+  assert.match(calls[1].prompt, /Role: reviewer/)
+  assert.match(calls[1].prompt, /The release is ready after tests\./)
+  assert.match(calls[2].prompt, /Role: arbiter/)
+  assert.match(calls[2].prompt, /\[conflict\]/)
+  assert.match(calls[2].prompt, /missing package proof/)
+  assert.doesNotMatch(calls[2].prompt, /Recent conversation across the group:\n(?:Codex|Hermes):/)
+
+  const messages = workspace.snapshot().messages.filter(message => message.role === 'agent')
+  const arbiterMessage = messages.find(message => message.agentKind === 'workbuddy')
+  const transcriptOnly = workspace.packedPromptContext(group.id, '', started.threadRootId, {
+    beforeMessageId: arbiterMessage.id,
+    focusUserMessageId: started.threadRootId,
+  })
+  assert.ok(transcriptOnly.context.includedCount > arbiterMessage.trace.context.includedCount)
+  assert.ok(transcriptOnly.context.charCount > arbiterMessage.trace.context.charCount)
+  assert.deepEqual(arbiterMessage.trace.sourceMessageIds, [started.threadRootId])
+
+  const durable = ledger.list(group.id)[0]
+  assert.equal(durable.orchestration.version, 2)
+  assert.deepEqual(durable.orchestration.collaboration.handoffs.map(handoff => (
+    handoff.destination.role
+  )), ['primary', 'reviewer', 'arbiter'])
+  assert.equal(durable.orchestration.collaboration.entries.some(entry => (
+    entry.entryType === 'conflict'
+  )), true)
+})
+
 test('unlimited automatic discussion continues past a finite cap until consensus', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -155,6 +394,93 @@ test('unlimited automatic discussion continues past a finite cap until consensus
   )), false)
 })
 
+test('unlimited automatic discussion stops at the mandatory Agent-attempt circuit breaker', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} keeps going\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Mandatory circuit breaker', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  const root = workspace.addMessage(group.id, 'user', 'Continue forever')
+  workspace.startAuto({ groupId: group.id, threadRootId: root.id, unlimitedRounds: true })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(calls.length, MAX_RUN_AGENT_ATTEMPTS)
+  assert.equal(finished[0].status, 'circuit-breaker')
+  const terminal = ledger.list(group.id)[0]
+  assert.equal(terminal.status, 'circuit-breaker')
+  assert.equal(terminal.reason, 'circuit_breaker')
+  assert.equal(terminal.attemptHistory.length, MAX_RUN_AGENT_ATTEMPTS)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.runCircuitBreaker'
+      && message.system.params.maxAttempts === MAX_RUN_AGENT_ATTEMPTS
+  )), true)
+
+  const storedWorkspace = JSON.parse(fs.readFileSync(options.storagePath, 'utf8'))
+  storedWorkspace.messages = storedWorkspace.messages.filter(message => (
+    message.system?.key !== 'system.runCircuitBreaker'
+  ))
+  fs.writeFileSync(options.storagePath, JSON.stringify(storedWorkspace), 'utf8')
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') }),
+  })
+  assert.equal(restarted.snapshot().messages.some(message => (
+    message.system?.key === 'system.runCircuitBreaker'
+  )), true)
+})
+
+test('transient retries cannot exceed the mandatory Agent-attempt circuit breaker', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const firstCallEntered = deferred()
+  const releaseFirstCall = deferred()
+  options.retrySleep = async () => {}
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    firstCallEntered.resolve()
+    await releaseFirstCall.promise
+    throw Object.assign(new Error('Provider temporarily unavailable'), { statusCode: 503 })
+  }
+  const workspace = new LocalWorkspace(options)
+  const finished = []
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Retry circuit breaker', agentKinds: ['hermes', 'codex'], workdir: directory,
+  })
+  workspace.addMessage(group.id, 'user', 'Do not exceed the retry ceiling')
+
+  workspace.startAuto({ groupId: group.id, unlimitedRounds: true })
+  const active = workspace.activeRuns.get(group.id)
+  await firstCallEntered.promise
+  active.attemptHistory = Array.from({ length: MAX_RUN_AGENT_ATTEMPTS - 1 }, (_, index) => ({
+    sequence: index + 1,
+  }))
+  releaseFirstCall.resolve()
+  await active.promise
+
+  assert.equal(calls.length, 1)
+  assert.equal(active.attemptHistory.length, MAX_RUN_AGENT_ATTEMPTS)
+  assert.equal(finished[0].status, 'circuit-breaker')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.runCircuitBreaker'
+  )), true)
+})
+
 test('later group rounds use a compact Harness continuation instead of the bootstrap template', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -189,9 +515,9 @@ test('later group rounds use a compact Harness continuation instead of the boots
   assert.match(calls[2].prompt, /Harness-compressed shared context/)
   assert.doesNotMatch(calls[2].prompt, /You are participating in the local|Group topic:/)
   assert.doesNotMatch(calls[2].prompt, /Deliverable capture contract|Stable user instructions and constraints:/)
-  assert.match(calls[2].prompt, /Hermes: hermes round 2/)
+  assert.match(calls[2].prompt, /\[claim\].*hermes round 2/)
   assert.match(calls[2].prompt, /请围绕这个主题进行两轮讨论/)
-  assert.ok(calls[2].prompt.length < calls[0].prompt.length)
+  assert.ok(calls[2].prompt.length < 12000)
   assert.equal(calls[2].runOptions.sessionRef, 'codex-session')
   assert.equal(calls[3].runOptions.sessionRef, 'hermes-session')
 
@@ -991,7 +1317,70 @@ test('automatic dialogue honors bounded Retry-After backoff and recovers', async
     'hermes', 'hermes', 'hermes', 'hermes', 'codex',
   ])
   assert.deepEqual(delays, [4, 4, 4])
+  assert.equal(new Set(calls.slice(0, 4).map(call => call.runOptions.operationId)).size, 1)
   assert.equal(finished[0].status, 'completed')
+})
+
+test('write-capable unknown outcomes wait for approval before replaying', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const outputPath = path.join(directory, 'write-attempts.txt')
+  let codexAttempts = 0
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'codex') {
+      codexAttempts += 1
+      fs.appendFileSync(outputPath, `attempt-${codexAttempts}\n`)
+      if (codexAttempts === 1) {
+        throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+      }
+    }
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Ambiguous write retry',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  workspace.addMessage(group.id, 'user', 'Write exactly once unless I approve a retry')
+  const gatePromise = pendingHumanGate(workspace)
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  const active = workspace.activeRuns.get(group.id)
+  const gate = await gatePromise
+
+  assert.equal(gate.type, 'retry')
+  assert.equal(codexAttempts, 1)
+  assert.equal(fs.readFileSync(outputPath, 'utf8'), 'attempt-1\n')
+  const waiting = ledger.get(gate.runId)
+  const ambiguous = waiting.attemptHistory.at(-1)
+  assert.deepEqual({
+    policyAction: ambiguous.policyAction,
+    outcomeCertainty: ambiguous.outcomeCertainty,
+    sideEffectsPossible: ambiguous.sideEffectsPossible,
+    idempotencyMode: ambiguous.idempotencyMode,
+  }, {
+    policyAction: 'human_gate',
+    outcomeCertainty: 'unknown_outcome',
+    sideEffectsPossible: true,
+    idempotencyMode: 'none',
+  })
+  assert.match(ambiguous.operationId, /^agent-operation-[a-f0-9]{64}$/)
+
+  workspace.decideHumanGate(gate.gateId, { optionId: 'retry-once' })
+  await active.promise
+
+  assert.equal(codexAttempts, 2)
+  assert.equal(calls[0].runOptions.operationId, calls[1].runOptions.operationId)
+  assert.equal(fs.readFileSync(outputPath, 'utf8'), 'attempt-1\nattempt-2\n')
 })
 
 test('automatic dialogue exhausts bounded transient retries before continuing', async (t) => {

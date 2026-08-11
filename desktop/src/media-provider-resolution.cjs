@@ -18,9 +18,22 @@ function mediaProviderScore(type, requestedKind, candidateKind, status = {}) {
 
 function resolveMediaProvider({
   requestedKind, type, kinds, statusFor, credentialsFor, excludedKinds = [],
+  fallbackProviders = [],
 }) {
   const excluded = new Set(excludedKinds)
-  const candidates = [...new Set([requestedKind, 'codex', ...(kinds || [])])]
+  const configuredFallbacks = (Array.isArray(fallbackProviders) ? fallbackProviders : [])
+    .map((provider) => {
+      const kind = String(provider?.kind || '').trim()
+      if (!kind || excluded.has(kind)) return null
+      const status = provider?.status
+      const credentials = provider?.credentials
+      return status?.configured && credentials?.OPENAI_API_KEY
+        ? { kind, status, credentials, fallback: true }
+        : null
+    })
+    .filter(Boolean)
+  const candidates = [
+    ...[...new Set([requestedKind, 'codex', ...(kinds || [])])]
     .filter(kind => kind && !excluded.has(kind))
     .map((kind) => {
       try {
@@ -30,14 +43,16 @@ function resolveMediaProvider({
         return null
       }
     })
-    .filter(Boolean)
+    .filter(Boolean),
+    ...configuredFallbacks,
+  ]
     .sort((left, right) => (
       mediaProviderScore(type, requestedKind, right.kind, right.status)
       - mediaProviderScore(type, requestedKind, left.kind, left.status)
     ))
   for (const candidate of candidates) {
     try {
-      const credentials = credentialsFor(candidate.kind)
+      const credentials = candidate.fallback ? candidate.credentials : credentialsFor(candidate.kind)
       if (!credentials?.OPENAI_API_KEY) continue
       return {
         apiKey: credentials.OPENAI_API_KEY,
