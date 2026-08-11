@@ -23,6 +23,7 @@ export function useConversationExecution({
   roundSettingsOpen,
   safeAttachmentPayload,
   sending,
+  sendingGroupIds,
   serializeComposerContext,
   showError,
   snapshot,
@@ -32,6 +33,13 @@ export function useConversationExecution({
   captureComposerContext,
   clearComposerContext,
 }) {
+  function setGroupSending(groupId, value) {
+    const next = new Set(sendingGroupIds.value)
+    if (value) next.add(groupId)
+    else next.delete(groupId)
+    sendingGroupIds.value = next
+  }
+
   const canSendMessage = computed(() => (
     composerTargetsReady.value
     && (composerMode.value !== 'auto' || composerTargetKinds.value.length >= 2)
@@ -74,7 +82,7 @@ export function useConversationExecution({
     clearComposerContext()
     composerAttachments.value = []
     roundSettingsOpen.value = false
-    sending.value = true
+    setGroupSending(groupId, true)
     try {
       await workspace.value.send({
         groupId,
@@ -99,7 +107,7 @@ export function useConversationExecution({
       }
       showError(error)
     } finally {
-      sending.value = false
+      setGroupSending(groupId, false)
     }
   }
 

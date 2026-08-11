@@ -6,6 +6,55 @@ const LOCAL_IDENTIFIER = /^[A-Za-z0-9_-]{1,100}$/
 const LOCAL_GROUP_IDENTIFIER = /^[^\u0000-\u001f\u007f]{1,100}$/u
 const LOCAL_RUN_IDENTIFIER = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 
+function runNotificationCopy(payload, locale) {
+  const zh = locale.startsWith('zh')
+  const completed = payload.completedKinds.length
+  const failed = payload.failedKinds.length
+  if (zh) {
+    return ({
+      completed: {
+        title: 'Meldwork · 运行完成',
+        body: completed ? `${completed} 个 Agent 已完成回复` : '会话运行已完成',
+      },
+      partial: {
+        title: 'Meldwork · 部分完成',
+        body: `${completed} 个 Agent 完成，${failed} 个未完成`,
+      },
+      failed: {
+        title: 'Meldwork · 运行失败',
+        body: failed ? `${failed} 个 Agent 运行失败，请打开会话查看详情` : '会话运行失败，请打开查看详情',
+      },
+      stopped: { title: 'Meldwork · 运行已停止', body: '会话已按请求停止' },
+      timeout: { title: 'Meldwork · 运行超时', body: '会话超过时间限制，已停止运行' },
+      'round-limit': { title: 'Meldwork · 已达轮次上限', body: '自动讨论已达到设定轮次' },
+      interrupted: { title: 'Meldwork · 运行中断', body: '未完成的会话运行已中断' },
+      'budget-exhausted': { title: 'Meldwork · 预算已用完', body: '本次运行已达到预算上限' },
+      'circuit-breaker': { title: 'Meldwork · 运行已暂停', body: '连续失败触发保护机制，请打开会话查看详情' },
+    })[payload.status]
+  }
+  const agents = count => `${count} Agent${count === 1 ? '' : 's'}`
+  return ({
+    completed: {
+      title: 'Meldwork · Run completed',
+      body: completed ? `${agents(completed)} completed the reply` : 'Conversation run completed',
+    },
+    partial: {
+      title: 'Meldwork · Partially completed',
+      body: `${agents(completed)} completed, ${agents(failed)} did not`,
+    },
+    failed: {
+      title: 'Meldwork · Run failed',
+      body: failed ? `${agents(failed)} failed. Open the conversation for details` : 'Conversation run failed. Open it for details',
+    },
+    stopped: { title: 'Meldwork · Run stopped', body: 'The conversation was stopped as requested' },
+    timeout: { title: 'Meldwork · Run timed out', body: 'The conversation exceeded its time limit and stopped' },
+    'round-limit': { title: 'Meldwork · Round limit reached', body: 'The automatic discussion reached its configured round limit' },
+    interrupted: { title: 'Meldwork · Run interrupted', body: 'The unfinished conversation run was interrupted' },
+    'budget-exhausted': { title: 'Meldwork · Budget exhausted', body: 'This run reached its configured budget limit' },
+    'circuit-breaker': { title: 'Meldwork · Run paused', body: 'Repeated failures triggered protection. Open the conversation for details' },
+  })[payload.status]
+}
+
 function createRunNotificationCoordinator({
   Notification,
   app,
@@ -104,9 +153,10 @@ function createRunNotificationCoordinator({
         && (typeof availableWindow.isFocused !== 'function' || availableWindow.isFocused())) return
     if (typeof Notification !== 'function' || Notification.isSupported?.() === false) return
     const locale = String(app.getLocale?.() || '').toLowerCase()
+    const copy = runNotificationCopy(payload, locale)
     const notification = new Notification({
-      title: 'Meldwork',
-      body: locale.startsWith('zh') ? '会话运行已结束' : 'Conversation run finished',
+      title: copy.title,
+      body: copy.body,
       icon: appIconImage() || appIconPath(),
     })
     notification.on('click', () => openRunResult(payload.groupId))

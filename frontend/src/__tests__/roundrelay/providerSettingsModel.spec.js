@@ -47,6 +47,7 @@ describe('Provider settings model', () => {
 
   it('keeps native readiness restricted to verified local evidence', () => {
     expect(nativeProviderReady(agent({ ready: true, availabilitySource: 'native-cli' }))).toBe(true)
+    expect(nativeProviderReady(agent({ ready: true, availabilitySource: 'native-shell' }))).toBe(true)
     expect(nativeProviderReady(agent({ ready: true, availabilitySource: 'provider-profile' }))).toBe(false)
     expect(supportsExternalProvider(agent())).toBe(true)
     expect(supportsExternalProvider({ kind: 'custom-0123456789abcdef' })).toBe(false)
