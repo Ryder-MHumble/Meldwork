@@ -4,7 +4,7 @@
   "private": true,
   "description": "A local-first desktop workspace for multi-Agent collaboration",
   "author": "Ryder-MHumble",
-  "license": "AGPL-3.0-only",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "src/main.cjs",
   "scripts": {
     "build:frontend": "npm --prefix ../frontend run build:desktop",

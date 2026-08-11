@@ -48,7 +48,7 @@ const SAMPLE_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest({
   },
   outboundDestinations: [],
   credentials: { mode: 'none', slots: [] },
-  license: 'AGPL-3.0-only',
+  license: 'LicenseRef-Meldwork-NC',
 })
 const SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest({
   connectorId: 'external.codex-provider-sample',
@@ -81,7 +81,7 @@ const SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest(
     mode: 'credential-ref',
     slots: [{ slotId: 'openai-api-key', type: 'api-key', required: true }],
   },
-  license: 'AGPL-3.0-only',
+  license: 'LicenseRef-Meldwork-NC',
 })
 const APPROVED_AGENT_CONNECTOR_MANIFESTS = Object.freeze([
   SAMPLE_AGENT_CONNECTOR_MANIFEST,
@@ -116,7 +116,7 @@ const SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_MANIFEST = createAgentConnectorManifest(
   },
   outboundDestinations: [],
   credentials: { mode: 'none', slots: [] },
-  license: 'AGPL-3.0-only',
+  license: 'LicenseRef-Meldwork-NC',
 })
 const SAMPLE_LOCAL_ECHO_AGENT_CONNECTOR_PACKAGE = createAgentConnectorPackage({
   publisher: { id: 'meldwork', name: 'Meldwork' },
