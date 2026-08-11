@@ -495,6 +495,32 @@ describe('RoundRelay workbench', () => {
         },
       )
       state.runningGroupIds = ['running-direct', 'running-group']
+      state.runs.push(
+        {
+          runId: 'run-running-direct',
+          groupId: 'running-direct',
+          phase: 'running',
+          targetKinds: ['codex'],
+          agentRuns: [{
+            agentRunId: 'agent-running-direct',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+        {
+          runId: 'run-running-group',
+          groupId: 'running-group',
+          phase: 'running',
+          targetKinds: ['codex', 'hermes'],
+          agentRuns: [{
+            agentRunId: 'agent-running-group-codex',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+      )
     })
 
     const directBars = wrapper.get('.direct-session-row .run-mark .run-agent-bars')
@@ -509,6 +535,112 @@ describe('RoundRelay workbench', () => {
     const collapsedGroup = [...document.body.querySelectorAll('.collapsed-group-option')]
       .find(option => option.textContent.includes('Running group'))
     expect(collapsedGroup.querySelectorAll('.run-agent-bars i')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
+  it('keeps running sidebar sessions focused on status until the conversation is selected', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'running-direct',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Running direct',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'running-group',
+          conversationType: 'group',
+          name: 'Running group',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:01:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+      state.runningGroupIds = ['running-direct', 'running-group']
+      state.runs.push(
+        {
+          runId: 'run-running-direct',
+          groupId: 'running-direct',
+          phase: 'running',
+          targetKinds: ['codex'],
+          agentRuns: [{
+            agentRunId: 'agent-running-direct',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+        {
+          runId: 'run-running-group',
+          groupId: 'running-group',
+          phase: 'running',
+          targetKinds: ['codex', 'hermes'],
+          agentRuns: [{
+            agentRunId: 'agent-running-group-codex',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+      )
+    })
+
+    const directRow = wrapper.get('.direct-session-row')
+    expect(directRow.find('.run-mark .run-agent-bars').exists()).toBe(true)
+    expect(directRow.findAll('.direct-session-action')).toHaveLength(0)
+
+    const groupRow = wrapper.get('.group-conversation-row')
+    expect(groupRow.find('.run-mark .run-agent-bars').exists()).toBe(true)
+    expect(groupRow.findAll('.direct-session-action')).toHaveLength(0)
+
+    await directRow.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const selectedDirectRow = wrapper.get('.direct-session-row.active')
+    expect(selectedDirectRow.find('.run-mark').exists()).toBe(false)
+    const directActions = selectedDirectRow.findAll('.direct-session-action')
+    expect(directActions).toHaveLength(2)
+    expect(directActions[0].attributes()).toHaveProperty('disabled')
+    expect(directActions[1].attributes()).toHaveProperty('disabled')
+
+    await wrapper.get('.group-conversation-row .conversation-link').trigger('click')
+    await flushPromises()
+    const selectedGroupRow = wrapper.get('.group-conversation-row.active')
+    expect(selectedGroupRow.find('.run-mark').exists()).toBe(false)
+    const groupActions = selectedGroupRow.findAll('.direct-session-action')
+    expect(groupActions).toHaveLength(2)
+    expect(groupActions[0].attributes()).toHaveProperty('disabled')
+    expect(groupActions[1].attributes()).toHaveProperty('disabled')
+    wrapper.unmount()
+  })
+
+  it('does not show running bars for a new empty group with a stale running id', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'empty-stale-group',
+        conversationType: 'group',
+        name: 'Empty stale group',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:02:00Z',
+        updatedAt: '2026-07-29T08:02:00Z',
+      })
+      state.runningGroupIds = ['empty-stale-group']
+    })
+
+    const groupRow = wrapper.get('.group-conversation-row')
+    expect(groupRow.text()).toContain('Empty stale group')
+    expect(groupRow.find('.run-mark').exists()).toBe(false)
     wrapper.unmount()
   })
 

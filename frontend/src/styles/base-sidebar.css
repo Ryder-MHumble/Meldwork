@@ -407,7 +407,7 @@
   min-width: 0;
   height: 34px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 18px 24px 24px;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 2px;
   padding: 0 3px 0 6px;
@@ -488,6 +488,7 @@
   transition: opacity 0.14s ease, transform 0.16s ease, background 0.14s ease, color 0.14s ease;
 }
 
+.direct-session-row.active .direct-session-action,
 .direct-session-row:hover .direct-session-action,
 .direct-session-row:focus-within .direct-session-action {
   opacity: 0.62;
@@ -522,7 +523,16 @@
 }
 
 .direct-session-spacer {
+  width: 0;
+}
+
+.direct-session-row > .run-mark {
   width: 18px;
+  justify-self: end;
+}
+
+.direct-session-row.active > .run-mark {
+  display: none;
 }
 
 .conversation-link {
@@ -569,6 +579,7 @@
   transition: opacity 0.14s ease, transform 0.16s ease;
 }
 
+.group-conversation-row.active .group-conversation-actions,
 .group-conversation-row:hover .group-conversation-actions,
 .group-conversation-row:focus-within .group-conversation-actions {
   opacity: 1;
@@ -576,6 +587,7 @@
   transform: translateY(-50%) translateX(0);
 }
 
+.group-conversation-row.active .conversation-link > .run-mark,
 .group-conversation-row:hover .conversation-link > .run-mark,
 .group-conversation-row:focus-within .conversation-link > .run-mark {
   opacity: 0;

@@ -15,6 +15,8 @@ function createNavigation() {
   const snapshot = ref({
     groups: [group('group-1')],
     runningGroupIds: [],
+    messages: [],
+    runs: [],
   })
   const dependencies = {
     clearSidebarDeleteState: vi.fn(),
@@ -81,5 +83,30 @@ describe('workspace navigation state', () => {
 
     expect(navigation.activeView.value).toBe('home')
     expect(navigation.selectedGroupId.value).toBe('')
+  })
+
+  it('ignores stale running ids for empty groups without a live run', () => {
+    const { navigation, snapshot } = createNavigation()
+    snapshot.value = {
+      ...snapshot.value,
+      runningGroupIds: ['group-1'],
+      runs: [],
+      messages: [],
+    }
+
+    expect(navigation.isGroupRunning('group-1')).toBe(false)
+
+    snapshot.value = {
+      ...snapshot.value,
+      runs: [{
+        runId: 'run-1',
+        groupId: 'group-1',
+        phase: 'running',
+        targetKinds: ['codex'],
+        agentRuns: [{ agentRunId: 'agent-1', kind: 'codex', status: 'running' }],
+      }],
+    }
+
+    expect(navigation.isGroupRunning('group-1')).toBe(true)
   })
 })
