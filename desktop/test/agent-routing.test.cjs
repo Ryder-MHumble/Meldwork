@@ -107,6 +107,31 @@ test('explicit specialized Agents are not assigned an invented general-domain re
   )
 })
 
+test('explicit Connector Agents use their declared runtime capabilities', () => {
+  const connector = agent('custom-bbbbbbbbbbbbbbbb', {
+    capabilities: {
+      domains: ['software-review'],
+      inputTypes: ['text'],
+      permissionModes: ['read-only'],
+      session: { supported: true, resume: true },
+      eventTypes: ['SourceUsed', 'Evidence', 'Completed'],
+    },
+  })
+  const decision = new AgentRouter().route(request({
+    agents: [connector],
+    group: {
+      id: 'group-routing',
+      agentKinds: [connector.kind],
+      allowWrite: false,
+    },
+    input: { targetKinds: [connector.kind] },
+    inputTypes: ['text'],
+  }))
+
+  assert.deepEqual(decision.selectedKinds, [connector.kind])
+  assert.deepEqual(decision.candidates[0].exclusions, [])
+})
+
 test('automatic routing chooses the smallest suitable approved team', () => {
   const router = new AgentRouter()
   const single = router.route(request({

@@ -250,6 +250,7 @@ test('external Connectors bypass the legacy runner and persist trusted provenanc
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Connector trace', agentKinds: ['custom-aaaaaaaaaaaaaaaa'], workdir: directory,
+    allowWrite: false,
   })
 
   await workspace.sendMessage({
@@ -314,9 +315,11 @@ test('Connector input Gates release scheduler capacity and resume the exact Sess
   await workspace.refreshAgents()
   const connectorGroup = workspace.createGroup({
     name: 'Input Gate', agentKinds: ['custom-bbbbbbbbbbbbbbbb'], workdir: directory,
+    allowWrite: false,
   })
   const secondConnectorGroup = workspace.createGroup({
     name: 'Second Input Gate', agentKinds: ['custom-bbbbbbbbbbbbbbbb'], workdir: directory,
+    allowWrite: false,
   })
   const otherGroup = workspace.createGroup({
     name: 'Capacity check', agentKinds: ['codex'], workdir: directory,
@@ -398,6 +401,7 @@ test('Connector input Gate survives shutdown and repeated restart without double
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Restart Input Gate', agentKinds: ['custom-bbbbbbbbbbbbbbbb'], workdir: directory,
+    allowWrite: false,
   })
   const send = workspace.sendMessage({
     groupId: group.id,
@@ -1631,7 +1635,7 @@ test('the durable Task link exists before the Agent process starts', async (t) =
   workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   group = workspace.createGroup({
-    name: 'Durable Task link', agentKinds: ['codex'], workdir: directory,
+    name: 'Durable Task link', agentKinds: ['codex'], workdir: directory, allowWrite: false,
   })
 
   await workspace.sendMessage({

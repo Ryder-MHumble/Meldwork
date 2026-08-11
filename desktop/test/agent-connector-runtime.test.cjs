@@ -115,6 +115,8 @@ test('discovers and runs an approved external Connector with trusted durable pro
   const agents = runtime.detectAgents()
   assert.deepEqual(agents.map(agent => agent.kind), ['custom-aaaaaaaaaaaaaaaa'])
   assert.equal(agents[0].connectorInstanceId, 'custom-aaaaaaaaaaaaaaaa')
+  assert.equal(agents[0].available, true)
+  assert.equal(agents[0].invocable, true)
   assert.equal(Object.hasOwn(agents[0], 'credentialRef'), false)
 
   const result = await runtime.run(agents[0], 'Review the change', '/tmp/workspace', {

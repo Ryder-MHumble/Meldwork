@@ -126,9 +126,38 @@ function boundedValues(value, allowed, fallback) {
   return selected.length ? selected : [...fallback]
 }
 
+function declaredRoutingCapabilities(agent) {
+  if (agent?.routingCapabilities && typeof agent.routingCapabilities === 'object') {
+    return agent.routingCapabilities
+  }
+  const declared = agent?.capabilities
+  if (!declared || typeof declared !== 'object') return null
+  return {
+    domains: declared.domains,
+    inputTypes: declared.inputTypes,
+    outputTypes: [
+      'text',
+      ...(Array.isArray(declared.eventTypes) && declared.eventTypes.includes('Artifact')
+        ? ['artifact']
+        : []),
+      ...(Array.isArray(declared.eventTypes) && (
+        declared.eventTypes.includes('Evidence') || declared.eventTypes.includes('SourceUsed')
+      ) ? ['evidence'] : []),
+    ],
+    toolClasses: declared.toolClasses || ['agent-native'],
+    permissionModes: declared.permissionModes,
+    latencyBand: declared.latencyBand,
+    costBand: declared.costBand,
+    contextLimitChars: declared.contextLimitChars,
+    resumable: typeof declared.resumable === 'boolean'
+      ? declared.resumable
+      : declared.session?.resume === true,
+  }
+}
+
 function agentRuntimeCapabilities(kind, options = {}) {
   const base = AGENT_RUNTIME_CAPABILITIES[kind] || DEFAULT_RUNTIME_CAPABILITIES
-  const declared = options.agent?.routingCapabilities
+  const declared = declaredRoutingCapabilities(options.agent)
   const support = options.attachmentSupport || {}
   const supportedInputs = [
     ...(declared?.inputTypes || base.inputTypes),
