@@ -79,6 +79,24 @@ test('accepts non-Codex Agents and resolves media independently from the chat ru
   assert.deepEqual(providerRequests, [['hermes', 'image']])
 })
 
+test('maps ZGCI image requests to the deployed Qwen Image model', async (t) => {
+  const calls = []
+  const { workdir, runtime } = fixture(t, async (url, init = {}) => {
+    calls.push([String(url), init])
+    return response(JSON.stringify({ data: [{ b64_json: PNG.toString('base64') }] }))
+  }, {
+    apiKey: 'stored-zgci-credential', baseUrl: 'https://hub.zgci.org/v1', model: 'glm',
+  })
+
+  const result = await runtime.generate({
+    kind: 'codex', request: { type: 'image', prompt: 'a geometric poster' }, workdir,
+  })
+
+  assert.equal(result.filename, 'generated-image-media-id.png')
+  assert.equal(calls[0][0], 'https://hub.zgci.org/v1/images/generations')
+  assert.equal(JSON.parse(calls[0][1].body).model, 'Qwen-Image-2512')
+})
+
 test('writes binary audio output and uses the audio endpoint', async (t) => {
   const { workdir, runtime } = fixture(t, async (url) => {
     assert.equal(String(url), 'https://api.openai.com/v1/audio/speech')
@@ -157,15 +175,18 @@ test('uses the current ZGCI H3 videos workflow and model mapping', async (t) => 
   const calls = []
   const { workdir, runtime } = fixture(t, async (url, init = {}) => {
     calls.push([String(url), init])
-    if (String(url).endsWith('/video/generations')) {
-      return response(JSON.stringify({ id: 'zgci-task', status: 'queued' }))
-    }
-    if (String(url).endsWith('/videos/zgci-task')) {
+    if (String(url).endsWith('/query/video_generation')) {
       return response(JSON.stringify({
-        id: 'zgci-task', status: 'completed',
+        task_id: 'zgci-task', status: 'completed', file_id: 'zgci-file',
       }))
     }
-    return response(MP4, { headers: { 'content-type': 'video/mp4' } })
+    if (String(url).endsWith('/video_generation')) {
+      return response(JSON.stringify({ task_id: 'zgci-task', status: 'queued' }))
+    }
+    if (String(url).endsWith('/files/retrieve')) {
+      return response(MP4, { headers: { 'content-type': 'video/mp4' } })
+    }
+    throw new Error(`Unexpected request: ${url}`)
   }, {
     apiKey: 'stored-zgci-credential',
     baseUrl: 'https://hub.zgci.org/v1',
@@ -178,14 +199,16 @@ test('uses the current ZGCI H3 videos workflow and model mapping', async (t) => 
 
   assert.equal(result.filename, 'generated-video-media-id.mp4')
   assert.deepEqual(calls.map(([url]) => url), [
-    'https://hub.zgci.org/v1/video/generations',
-    'https://hub.zgci.org/v1/videos/zgci-task',
-    'https://hub.zgci.org/v1/videos/zgci-task/content',
+    'https://hub.zgci.org/v1/video_generation',
+    'https://hub.zgci.org/v1/query/video_generation',
+    'https://hub.zgci.org/v1/files/retrieve',
   ])
   assert.deepEqual(JSON.parse(calls[0][1].body), {
-    model: 'minimax-h3', prompt: 'a calm city sunrise', seconds: '4', size: '1280x720',
+    model: 'H3', prompt: 'a calm city sunrise', duration_seconds: 8,
+    size: '1280x720', fps: 24,
   })
-  assert.equal(calls[2][1].headers.Authorization, 'Bearer stored-zgci-credential')
+  assert.deepEqual(JSON.parse(calls[1][1].body), { task_id: 'zgci-task' })
+  assert.deepEqual(JSON.parse(calls[2][1].body), { file_id: 'zgci-file' })
 })
 
 test('maps ZGCI audio requests to CosyVoice', async (t) => {
@@ -206,7 +229,7 @@ test('maps ZGCI audio requests to CosyVoice', async (t) => {
   assert.equal(result.filename, 'generated-audio-media-id.wav')
   assert.equal(calls[0][0], 'https://hub.zgci.org/v1/audio/speech')
   assert.deepEqual(JSON.parse(calls[0][1].body), {
-    model: 'cosy-voice',
+    model: 'CosyVoice3-0.5B',
     input: '欢迎使用 Meldwork',
     voice: 'mm_Southern_Young_Man',
     response_format: 'wav',
@@ -272,7 +295,7 @@ test('falls back to another secure Provider when the first lacks the media model
       sourceKind: 'openclaw',
     },
     {
-      apiKey: 'media-key', baseUrl: 'https://hub.zgci.org/v1', model: 'glm',
+      apiKey: 'media-key', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1',
       sourceKind: 'opencodereview',
     },
   ]
@@ -287,7 +310,7 @@ test('falls back to another secure Provider when the first lacks the media model
           error: { code: 'model_not_found', message: 'No available channel for model minimax-h3' },
         }), { status: 503 })
       }
-      if (String(_url).endsWith('/video/generations')) {
+      if (String(_url).endsWith('/videos')) {
         return response(JSON.stringify({ id: 'video-1', status: 'completed' }))
       }
       return response(MP4, { headers: { 'content-type': 'video/mp4' } })

@@ -37,6 +37,11 @@ const {
 
 const MAX_INHERITED_TASK_IDS = 64
 const MAX_ISOLATED_PROMPT_BYTES = 4 * 1024 * 1024
+
+function canUseNativeMediaFallback(error) {
+  const code = String(error?.code || error?.message || '')
+  return /^(?:MEDIA_GENERATION_(?:PROVIDER_UNAVAILABLE|MODEL_UNAVAILABLE|NETWORK_FAILED|INVALID_RESPONSE|FAILED|DOWNLOAD_FAILED)|MEDIA_GENERATION_(?:HTTP|DOWNLOAD_HTTP)_\d+)$/.test(code)
+}
 const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
 
 function attachInvocationFailure(error, input) {
@@ -629,6 +634,7 @@ class LocalWorkspaceAgentInvocation {
     let artifactOutputBaseline = null
     let stagedInputs = null
     let generatedMedia = null
+    let nativeMediaFallback = false
     let result
     let operationStarted = false
     let sideEffectsStarted = false
@@ -718,13 +724,18 @@ class LocalWorkspaceAgentInvocation {
       }
       if (allowWrite && context.mediaRequest && this.generateMedia) {
         sideEffectsStarted = true
-        generatedMedia = await abortableOperation(() => this.generateMedia({
-          kind,
-          request: context.mediaRequest,
-          workdir: group.workdir,
-          signal: agentController.signal,
-          onEvent: emitRuntimeEvent,
-        }), agentController.signal)
+        try {
+          generatedMedia = await abortableOperation(() => this.generateMedia({
+            kind,
+            request: context.mediaRequest,
+            workdir: group.workdir,
+            signal: agentController.signal,
+            onEvent: emitRuntimeEvent,
+          }), agentController.signal)
+        } catch (error) {
+          if (agentController.signal.aborted || !canUseNativeMediaFallback(error)) throw error
+          nativeMediaFallback = true
+        }
       }
       const nativeImageLimit = Math.max(
         0,
@@ -755,6 +766,13 @@ class LocalWorkspaceAgentInvocation {
             stagedAgentInputPrompt(stagedInputs),
             generatedMedia
               ? `Meldwork generated and will attach ${generatedMedia.filename}. Confirm the delivered media briefly; do not claim a different file was created.`
+              : '',
+            nativeMediaFallback
+              ? [
+                  'Meldwork shared media generator was unavailable. Use your native media-generation tools or installed local skills to fulfill the current request.',
+                  'Write or copy every real generated media file into .meldwork-output/ so Meldwork can validate and attach it to the reply.',
+                  'Do not return only a prompt and do not claim success unless a real media file was created. If no native media tool is available, explain that accurately.',
+                ].join('\n')
               : '',
             runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
             regenerationInstruction

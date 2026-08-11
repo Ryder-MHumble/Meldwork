@@ -1576,6 +1576,41 @@ test('every built-in conversational Agent can generate each media type when targ
   assert.equal(JSON.stringify(replies).includes(directory), false)
 })
 
+test('group media requests fall back to the target Agent when the shared Provider lacks a media model', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = {
+    id: 'native-agent-image', name: 'native-agent-image.png', mimeType: 'image/png', size: 128,
+  }
+  const error = new Error('MEDIA_GENERATION_MODEL_UNAVAILABLE')
+  error.code = 'MEDIA_GENERATION_MODEL_UNAVAILABLE'
+  options.generateMedia = async () => { throw error }
+  options.captureAgentOutputs = async () => ({ marker: 'before-native-media' })
+  options.importAgentOutputs = async () => [generated]
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Native media fallback', workdir: directory, allowWrite: true,
+    conversationType: 'group', agentKinds: ['codex', 'hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: '请生成一张赛博朋克城市图片',
+    targetKinds: ['codex'], mode: 'manual',
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.kind, 'codex')
+  assert.match(calls[0].prompt, /shared media generator was unavailable/i)
+  assert.match(calls[0].prompt, /native media-generation tools or installed local skills/i)
+  assert.match(calls[0].prompt, /\.meldwork-output\//)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.deepEqual(reply.attachments, [generated])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'system' && /MEDIA_GENERATION_MODEL_UNAVAILABLE/.test(message.content)
+  )), false)
+})
+
 test('read-only conversations forbid false media claims and do not scan for generated files', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
