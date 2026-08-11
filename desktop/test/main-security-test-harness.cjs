@@ -813,6 +813,10 @@ function loadMain(userData, options = {}) {
     './attachment-store.cjs': { AttachmentStore: TestAttachmentStore },
     './local-agent-readiness.cjs': {
       nativeCredentialEnvironment: kind => options.nativeEnvironment?.(kind) || {},
+      resolveNativeShellEnvironment: async input => options.nativeShellEnvironment?.(input) || ({
+        env: { PATH: process.env.PATH || '' },
+        source: 'process',
+      }),
       resolveNativeOpenClawRuntime: async input => options.nativeOpenClawRuntime?.(input) || ({
         model: 'native/model',
         provider: {

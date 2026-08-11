@@ -25,19 +25,56 @@ const OPENCLAW_PROVIDER_APIS = new Set([
 ])
 const OPENCLAW_MODEL_INPUTS = new Set(['text', 'image', 'audio', 'video'])
 const MAX_CREDENTIAL_FILE_BYTES = 2 * 1024 * 1024
+const MAX_SHELL_ENV_BYTES = 256 * 1024
+const SHELL_ENV_CACHE_TTL_MS = 30000
+const SHELL_ENV_MARKER = '__ROUNDRELAY_NATIVE_ENV_V1__'
 const CREDENTIAL_ENV_KEYS = Object.freeze({
   codex: ['OPENAI_API_KEY'],
   hermes: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'],
   openclaw: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'],
-  workbuddy: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
-  kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY'],
-  mimo: [],
+  workbuddy: ['CODEBUDDY_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY', 'KIMI_MODEL_API_KEY', 'OPENAI_API_KEY'],
+  mimo: ['MIMO_API_KEY'],
   claude: ['ANTHROPIC_API_KEY'],
   qwen: ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY'],
   opencode: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'],
   opencodereview: ['OCR_LLM_TOKEN', 'OPENAI_API_KEY'],
 })
+const RUNTIME_ENV_KEYS = Object.freeze({
+  codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
+  hermes: [
+    'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY',
+    'OPENAI_BASE_URL', 'OPENAI_MODEL', 'HERMES_INFERENCE_PROVIDER', 'HERMES_INFERENCE_MODEL',
+  ],
+  openclaw: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'],
+  workbuddy: [
+    'CODEBUDDY_API_KEY', 'CODEBUDDY_BASE_URL', 'CODEBUDDY_MODEL',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'ANTHROPIC_API_KEY',
+  ],
+  kimi: [
+    'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'KIMI_MODEL_API_KEY',
+    'KIMI_MODEL_BASE_URL', 'KIMI_MODEL_NAME',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL',
+  ],
+  mimo: ['MIMO_API_KEY', 'MIMO_BASE_URL', 'MIMO_MODEL'],
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL'],
+  qwen: ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_MODEL'],
+  opencode: [
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY',
+    'OPENAI_BASE_URL', 'OPENAI_MODEL',
+  ],
+  opencodereview: [
+    'OCR_LLM_TOKEN', 'OCR_LLM_URL', 'OCR_LLM_MODEL', 'OCR_USE_ANTHROPIC',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL',
+  ],
+})
+const SHELL_ENV_KEYS = Object.freeze([...new Set([
+  'PATH',
+  ...Object.values(RUNTIME_ENV_KEYS).flat(),
+])])
+let shellEnvironmentCache = null
 
 function readCredentialFile(filename) {
   try {
@@ -53,9 +90,18 @@ function containsCredential(value) {
   if (!value || typeof value !== 'object') return false
   if (Array.isArray(value)) return value.some(containsCredential)
   return Object.entries(value).some(([key, child]) => {
-    if (CREDENTIAL_FIELD.test(key) && typeof child === 'string' && child.trim()) return true
+    if (CREDENTIAL_FIELD.test(key) && credentialLiteral(child)) return true
     return child && typeof child === 'object' && containsCredential(child)
   })
+}
+
+function credentialLiteral(value) {
+  if (typeof value !== 'string') return false
+  const candidate = value.trim()
+  if (!candidate) return false
+  if (/^\$(?:[A-Z_][A-Z0-9_]*|\{[A-Z_][A-Z0-9_]*\})$/i.test(candidate)) return false
+  if (/^(?:env|secretref-env|__env__):[A-Z_][A-Z0-9_]*$/i.test(candidate)) return false
+  return !/^[A-Z_][A-Z0-9_]*(?:API_KEY|TOKEN|CREDENTIAL)$/i.test(candidate)
 }
 
 function jsonContainsCredential(filename) {
@@ -73,7 +119,7 @@ function textContainsCredential(filename) {
       const match = line.match(/^\s*([A-Za-z][A-Za-z0-9_-]*)\s*[:=]\s*(.+?)\s*$/)
       if (!match || !CREDENTIAL_FIELD.test(match[1])) return false
       const value = match[2].replace(/^['"]|['"]$/g, '').trim()
-      return Boolean(value && !/^\$\{[^}]+\}$/.test(value))
+      return credentialLiteral(value)
     })
   } catch {
     return false
@@ -82,28 +128,141 @@ function textContainsCredential(filename) {
 
 function nativeCredentialEnvironment(kind, env = process.env) {
   const result = {}
+  for (const key of RUNTIME_ENV_KEYS[kind] || []) {
+    if (typeof env[key] === 'string' && env[key].trim()) result[key] = env[key]
+  }
+  return result
+}
+
+function nativeCredentialKeyEnvironment(kind, env = process.env) {
+  const result = {}
   for (const key of CREDENTIAL_ENV_KEYS[kind] || []) {
     if (typeof env[key] === 'string' && env[key].trim()) result[key] = env[key]
   }
   return result
 }
 
+function allowedShellEnvironment(env = process.env) {
+  const result = {}
+  for (const key of SHELL_ENV_KEYS) {
+    const value = env[key]
+    if (typeof value !== 'string' || !value || value.length > MAX_SHELL_ENV_BYTES) continue
+    result[key] = value
+  }
+  return result
+}
+
+function nativeShellCommand() {
+  const keys = SHELL_ENV_KEYS.join(' ')
+  return [
+    `printf '${SHELL_ENV_MARKER}\\0'`,
+    `for __roundrelay_key in ${keys}; do`,
+    '  eval "__roundrelay_value=\\${$__roundrelay_key-}"',
+    '  if [ -n "$__roundrelay_value" ]; then',
+    "    printf '%s=%s\\0' \"$__roundrelay_key\" \"$__roundrelay_value\"",
+    '  fi',
+    'done',
+  ].join('\n')
+}
+
+function parseNativeShellEnvironment(output) {
+  const text = String(output || '')
+  const marker = `${SHELL_ENV_MARKER}\u0000`
+  const start = text.indexOf(marker)
+  if (start < 0) return {}
+  const allowed = new Set(SHELL_ENV_KEYS)
+  const result = {}
+  for (const entry of text.slice(start + marker.length).split('\u0000')) {
+    const separator = entry.indexOf('=')
+    if (separator <= 0) continue
+    const key = entry.slice(0, separator)
+    const value = entry.slice(separator + 1)
+    if (!allowed.has(key) || !value || value.length > MAX_SHELL_ENV_BYTES) continue
+    result[key] = value
+  }
+  return result
+}
+
+async function queryNativeShellEnvironment(options = {}) {
+  const source = options.env || process.env
+  const platform = options.platform || process.platform
+  const home = options.home || os.homedir()
+  const fallback = allowedShellEnvironment(source)
+  if (platform === 'win32') return { env: fallback, source: 'process' }
+  const shell = String(options.shell || source.SHELL || (platform === 'darwin' ? '/bin/zsh' : '/bin/sh'))
+  const shellName = path.basename(shell)
+  if (!path.isAbsolute(shell) || !['bash', 'sh', 'zsh'].includes(shellName)) {
+    return { env: fallback, source: 'process' }
+  }
+  const execFileFn = options.execFileFn || execFileAsync
+  const childEnv = probeEnvironment('', { ...options, env: source, home, platform })
+  childEnv.SHELL = shell
+  childEnv.TERM = 'dumb'
+  childEnv.NO_COLOR = '1'
+  try {
+    const result = await execFileFn(
+      shell,
+      [shellName === 'sh' ? '-lc' : '-lic', nativeShellCommand()],
+      {
+        timeout: 5000,
+        maxBuffer: MAX_SHELL_ENV_BYTES,
+        windowsHide: true,
+        env: childEnv,
+      },
+    )
+    const loaded = parseNativeShellEnvironment(result.stdout)
+    return {
+      env: { ...fallback, ...loaded },
+      source: Object.keys(loaded).some(key => key !== 'PATH') ? 'native-shell' : 'process',
+    }
+  } catch {
+    return { env: fallback, source: 'process' }
+  }
+}
+
+function resolveNativeShellEnvironment(options = {}) {
+  const useCache = options.cache !== false && !options.execFileFn
+  if (!useCache) return queryNativeShellEnvironment(options)
+  const source = options.env || process.env
+  const platform = options.platform || process.platform
+  const home = options.home || os.homedir()
+  const shell = String(options.shell || source.SHELL || '')
+  const key = [platform, home, shell, String(source.PATH || '')].join('\u0000')
+  const now = Date.now()
+  if (shellEnvironmentCache?.key === key && shellEnvironmentCache.expiresAt > now) {
+    return shellEnvironmentCache.promise
+  }
+  const promise = queryNativeShellEnvironment(options)
+  shellEnvironmentCache = { key, expiresAt: now + SHELL_ENV_CACHE_TTL_MS, promise }
+  return promise
+}
+
 function nativeCredentialState(kind, options = {}) {
   const home = options.home || os.homedir()
   const env = options.env || process.env
-  if (Object.keys(nativeCredentialEnvironment(kind, env)).length) {
-    return { state: 'ready', source: 'native-credential' }
+  if (Object.keys(nativeCredentialKeyEnvironment(kind, env)).length) {
+    return {
+      state: 'ready',
+      source: options.credentialSource === 'native-shell' ? 'native-shell' : 'native-credential',
+    }
   }
 
   const jsonFiles = {
-    codex: [path.join(home, '.codex', 'auth.json')],
-    hermes: [path.join(home, '.hermes', 'auth.json')],
+    codex: [path.join(home, '.codex', 'auth.json'), path.join(home, '.codex', 'config.json')],
+    hermes: [path.join(home, '.hermes', 'auth.json'), path.join(home, '.hermes', 'config.json')],
     openclaw: [path.join(home, '.openclaw', 'openclaw.json')],
     workbuddy: [path.join(home, '.workbuddy', 'models.json')],
     kimi: [path.join(home, '.kimi-code', 'credentials', 'kimi-code.json')],
-    claude: [path.join(home, '.claude', '.credentials.json')],
-    qwen: [path.join(home, '.qwen', 'oauth_creds.json')],
-    gemini: [path.join(home, '.gemini', 'oauth_creds.json')],
+    claude: [
+      path.join(home, '.claude', '.credentials.json'),
+      path.join(home, '.claude', 'settings.json'),
+      path.join(home, '.claude', 'settings.local.json'),
+    ],
+    qwen: [path.join(home, '.qwen', 'oauth_creds.json'), path.join(home, '.qwen', 'settings.json')],
+    gemini: [
+      path.join(home, '.gemini', 'oauth_creds.json'),
+      path.join(home, '.gemini', 'settings.json'),
+    ],
     opencode: [path.join(home, '.local', 'share', 'opencode', 'auth.json')],
     opencodereview: [path.join(home, '.opencodereview', 'config.json')],
   }[kind] || []
@@ -112,11 +271,28 @@ function nativeCredentialState(kind, options = {}) {
   }
 
   const textFiles = {
-    hermes: [path.join(home, '.hermes', '.env')],
+    codex: [path.join(home, '.codex', '.env'), path.join(home, '.codex', 'config.toml')],
+    hermes: [
+      path.join(home, '.hermes', '.env'),
+      path.join(home, '.hermes', 'config.yaml'),
+      path.join(home, '.hermes', 'config.yml'),
+    ],
+    openclaw: [path.join(home, '.openclaw', '.env')],
+    workbuddy: [path.join(home, '.workbuddy', '.env')],
     kimi: [
       path.join(home, '.kimi', 'config.toml'),
       path.join(home, '.kimi-code', 'config.toml'),
+      path.join(home, '.kimi-code', '.env'),
     ],
+    mimo: [path.join(home, '.mimo', '.env'), path.join(home, '.mimocode', '.env')],
+    claude: [path.join(home, '.claude', '.env')],
+    qwen: [path.join(home, '.qwen', '.env')],
+    gemini: [path.join(home, '.gemini', '.env')],
+    opencode: [
+      path.join(home, '.opencode', '.env'),
+      path.join(home, '.config', 'opencode', '.env'),
+    ],
+    opencodereview: [path.join(home, '.opencodereview', '.env')],
   }[kind] || []
   if (textFiles.some(textContainsCredential)) {
     return { state: 'ready', source: 'native-credential' }
@@ -125,7 +301,7 @@ function nativeCredentialState(kind, options = {}) {
   return { state: 'unknown', source: 'unverified' }
 }
 
-function probeEnvironment(options = {}) {
+function probeEnvironment(kind, options = {}) {
   const source = options.env || process.env
   const platform = options.platform || process.platform
   const home = options.home || os.homedir()
@@ -142,6 +318,7 @@ function probeEnvironment(options = {}) {
   if (platform === 'win32') env.USERPROFILE ||= home
   else env.HOME = home
   env.PATH = searchPath({ platform, env: source, home })
+  Object.assign(env, nativeCredentialEnvironment(kind, source))
   return env
 }
 
@@ -262,13 +439,14 @@ function parseOpenClawStatus(output, options = {}) {
   }
 }
 
-function resolveOpenClawRuntimeStatus(status) {
+function resolveOpenClawRuntimeStatus(status, options = {}) {
   if (!status?.runtime || status.credentialState?.state !== 'ready') return null
   const parts = openClawModelParts(status.runtime.model)
   if (!parts) return null
   return parseOpenClawModelsFile(
     readOpenClawModelsFile(status.runtime),
     status.runtime.model,
+    options,
   )
 }
 
@@ -328,13 +506,30 @@ function sanitizedOpenClawModel(input, modelId) {
   return model
 }
 
-function openClawApiKey(input) {
+function openClawEnvKey(input) {
+  const allowed = new Set(CREDENTIAL_ENV_KEYS.openclaw)
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const key = String(input.id || '').trim()
+    return input.source === 'env' && allowed.has(key) ? key : ''
+  }
+  if (typeof input !== 'string') return ''
+  const match = input.trim().match(/^(?:([A-Z][A-Z0-9_]*)|\$([A-Z][A-Z0-9_]*)|\$\{([A-Z][A-Z0-9_]*)\})$/)
+  const key = match?.slice(1).find(Boolean) || ''
+  return allowed.has(key) ? key : ''
+}
+
+function openClawApiKey(input, env = process.env) {
+  const envKey = openClawEnvKey(input)
+  if (envKey) {
+    const value = String(env[envKey] || '').trim()
+    return value && value.length <= 8192 ? value : ''
+  }
   if (typeof input !== 'string' || isOpenClawSecretReference(input)) return ''
   const value = input.trim()
   return value && value.length <= 8192 ? value : ''
 }
 
-function parseOpenClawModelsFile(output, modelRef) {
+function parseOpenClawModelsFile(output, modelRef, options = {}) {
   try {
     const parts = openClawModelParts(modelRef)
     const catalog = JSON.parse(String(output || '').trim())
@@ -342,7 +537,7 @@ function parseOpenClawModelsFile(output, modelRef) {
     if (!parts || !provider || typeof provider !== 'object' || Array.isArray(provider)) return null
     const baseUrl = openClawBaseUrl(provider.baseUrl)
     const api = String(provider.api || '').trim()
-    const apiKey = openClawApiKey(provider.apiKey)
+    const apiKey = openClawApiKey(provider.apiKey, options.env)
     const model = Array.isArray(provider.models)
       ? provider.models.map(candidate => sanitizedOpenClawModel(candidate, parts.modelId)).find(Boolean)
       : null
@@ -402,7 +597,7 @@ async function queryOpenClawStatus(options = {}) {
     const result = await execFileFn(prepared.command, prepared.args, {
       timeout: 7000,
       windowsHide: true,
-      env: probeEnvironment(options),
+      env: probeEnvironment('openclaw', options),
     })
     return parseOpenClawStatus(result.stdout, options)
   } catch (error) {
@@ -413,7 +608,7 @@ async function queryOpenClawStatus(options = {}) {
 async function resolveNativeOpenClawRuntime(options = {}) {
   const status = await queryOpenClawStatus(options)
   try {
-    const runtime = resolveOpenClawRuntimeStatus(status)
+    const runtime = resolveOpenClawRuntimeStatus(status, options)
     if (runtime) return runtime
   } catch { /* fail closed below */ }
   throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
@@ -429,7 +624,7 @@ async function queryMimoAuthState(options = {}) {
     const result = await execFileFn(prepared.command, prepared.args, {
       timeout: 5000,
       windowsHide: true,
-      env: probeEnvironment(options),
+      env: probeEnvironment('mimo', options),
     })
     return mimoAuthState(result.stdout)
   } catch (error) {
@@ -438,15 +633,15 @@ async function queryMimoAuthState(options = {}) {
 }
 
 async function resolveNativeCredentialState(kind, options = {}) {
-  if (kind === 'mimo') {
-    return await queryMimoAuthState(options) || { state: 'unknown', source: 'unverified' }
-  }
   const current = nativeCredentialState(kind, options)
+  if (kind === 'mimo') {
+    return await queryMimoAuthState(options) || current
+  }
   if (kind === 'openclaw') {
     const status = await queryOpenClawStatus(options)
     if (status?.credentialState?.state === 'missing') return status.credentialState
     try {
-      if (resolveOpenClawRuntimeStatus(status)) {
+      if (resolveOpenClawRuntimeStatus(status, options)) {
         return { state: 'ready', source: 'native-auth-status' }
       }
     } catch { /* fail closed below */ }
@@ -455,7 +650,7 @@ async function resolveNativeCredentialState(kind, options = {}) {
       : { state: 'unknown', source: 'native-runtime-unavailable' }
   }
   if (kind !== 'claude' || !options.executable
-      || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current
+      || Object.keys(nativeCredentialKeyEnvironment(kind, options.env)).length) return current
 
   const platform = options.platform || process.platform
   const prepareCommandFn = options.prepareCommandFn || prepareCommand
@@ -465,7 +660,7 @@ async function resolveNativeCredentialState(kind, options = {}) {
     const result = await execFileFn(prepared.command, prepared.args, {
       timeout: 5000,
       windowsHide: true,
-      env: probeEnvironment(options),
+      env: probeEnvironment('claude', options),
     })
     return claudeAuthState(result.stdout) || current
   } catch (error) {
@@ -478,4 +673,5 @@ module.exports = {
   nativeCredentialState,
   resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
+  resolveNativeShellEnvironment,
 }

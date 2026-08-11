@@ -610,19 +610,26 @@ test('Agent detection ignores ANSI warnings with unrelated versions before the p
   }])
 })
 
-test('Agent detection keeps unsupported versions installed but incompatible', async () => {
+test('Agent detection accepts newer versions when required capabilities are available', async () => {
   let calls = 0
   const found = await detectAgents({
     platform: 'darwin',
     env: {},
     resolveExecutableFn: async kind => kind === 'codex' ? '/tmp/codex' : null,
-    execFileFn: async () => {
+    execFileFn: async (_command, args) => {
       calls += 1
-      return { stdout: 'codex-cli 0.147.0\n', stderr: '' }
+      if (args[0] === '--version') return { stdout: 'codex-cli 0.147.0\n', stderr: '' }
+      if (args.includes('resume')) {
+        return { stdout: '--json --skip-git-repo-check', stderr: '' }
+      }
+      return {
+        stdout: '--json --sandbox --skip-git-repo-check --image read-only workspace-write',
+        stderr: '',
+      }
     },
   })
 
-  assert.equal(calls, 1)
+  assert.equal(calls, 3)
   assert.deepEqual(found, [{
     kind: 'codex',
     name: 'Codex CLI',
@@ -630,8 +637,8 @@ test('Agent detection keeps unsupported versions installed but incompatible', as
     version: 'codex-cli 0.147.0',
     resolvedVersion: '0.147.0',
     supportedVersionRange: '0.137.0..0.146.0',
-    compatibilityState: 'incompatible',
-    incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
     incompatibilityProbe: '',
   }])
 })
@@ -663,7 +670,7 @@ test('Agent detection accepts the validated ChatGPT-bundled Codex prerelease', a
   assert.equal(found[0].incompatibilityReason, '')
 })
 
-test('Agent detection skips an unsupported Codex before the compatible ChatGPT bundle', async () => {
+test('Agent detection keeps the first newer Codex when its capabilities are compatible', async () => {
   const unsupported = '/tools/codex'
   const bundled = '/Applications/ChatGPT.app/Contents/Resources/codex'
   const found = await detectAgents({
@@ -695,8 +702,8 @@ test('Agent detection skips an unsupported Codex before the compatible ChatGPT b
   })
 
   assert.equal(found.length, 1)
-  assert.equal(found[0].executable, bundled)
-  assert.equal(found[0].resolvedVersion, '0.146.0-alpha.9.2')
+  assert.equal(found[0].executable, unsupported)
+  assert.equal(found[0].resolvedVersion, '0.147.0')
   assert.equal(found[0].compatibilityState, 'compatible')
 })
 
@@ -733,7 +740,7 @@ test('Agent detection skips a capability-incompatible Codex before the compatibl
   assert.equal(found[0].compatibilityState, 'compatible')
 })
 
-test('Agent detection retains the first incompatible Codex when no candidate is compatible', async () => {
+test('Agent detection retains the first capability-incompatible Codex when no candidate works', async () => {
   const first = '/tools/codex'
   const bundled = '/Applications/ChatGPT.app/Contents/Resources/codex'
   const found = await detectAgents({
@@ -760,7 +767,8 @@ test('Agent detection retains the first incompatible Codex when no candidate is 
   assert.equal(found[0].executable, first)
   assert.equal(found[0].resolvedVersion, '0.147.0')
   assert.equal(found[0].compatibilityState, 'incompatible')
-  assert.equal(found[0].incompatibilityReason, 'LOCAL_AGENT_VERSION_UNSUPPORTED')
+  assert.equal(found[0].incompatibilityReason, 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING')
+  assert.equal(found[0].incompatibilityProbe, 'codex-exec')
 })
 
 test('Agent detection records the required capability or protocol that is unavailable', async () => {
@@ -822,7 +830,7 @@ test('Agent detection probes capabilities when the product version is unrecogniz
   }])
 })
 
-test('Agent detection keeps ambiguous product versions unknown after successful capability probes', async () => {
+test('Agent detection accepts ambiguous product versions after successful capability probes', async () => {
   let capabilityCalls = 0
   const found = await detectAgents({
     platform: 'darwin',
@@ -850,7 +858,7 @@ test('Agent detection keeps ambiguous product versions unknown after successful 
     version: '',
     resolvedVersion: '',
     supportedVersionRange: '0.19.2..0.32.0',
-    compatibilityState: 'unknown',
+    compatibilityState: 'compatible',
     incompatibilityReason: '',
     incompatibilityProbe: '',
   }])

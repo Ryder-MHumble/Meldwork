@@ -98,12 +98,13 @@ function childEnvironment(agent, workdir, options, platform) {
       && options.sandbox !== 'workspace-write'
     ? { OPENCODE_PERMISSION: OPENCODE_READ_ONLY_PERMISSION }
     : {}
+  const source = { ...process.env, ...options.env }
   return {
     ...systemChildEnvironment(process.env, platform),
     ...options.env,
     ...hermesSafetyEnv,
     ...openCodeSafetyEnv,
-    PATH: searchPath({ platform }),
+    PATH: searchPath({ platform, env: source }),
   }
 }
 
