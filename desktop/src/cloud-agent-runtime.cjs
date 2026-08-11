@@ -19,6 +19,7 @@ const MAX_PROMPT_BYTES = 4 * 1024 * 1024
 const MAX_SUBMIT_RESULT_BYTES = 4 * 1024 * 1024
 const TERMINAL_RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const TERMINAL_EVENT_STATUSES = new Set(['completed', 'partial', 'failed', 'cancelled'])
 const REQUIRED_LEDGER_METHODS = [

@@ -60,6 +60,7 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
   assert.equal(api.platform, process.platform)
   assert.equal(Object.isFrozen(api.localAgentProvider), true)
   assert.equal(Object.isFrozen(api.localAgentConnector), true)
+  assert.equal(Object.isFrozen(api.localSkillTrust), true)
   assert.equal(Object.isFrozen(api.cloudAgent), true)
   assert.equal(Object.isFrozen(api.localOutcome), true)
   assert.deepEqual(Object.keys(api.localOutcome), ['recordAdoption'])
@@ -112,19 +113,45 @@ test('local preload exposes the local-only RoundRelay API and narrow Provider me
 
   assert.deepEqual(
     Object.keys(api.localAgentConnector).sort(),
-    ['configure', 'delete', 'list'],
+    [
+      'approve', 'audit', 'configure', 'delete', 'disable', 'import', 'inspect',
+      'install', 'list', 'packages', 'remove', 'revoke', 'test', 'upgrade',
+    ].sort(),
   )
+  const packageId = `connector-package-${'b'.repeat(64)}`
   const configuration = {
     manifestId: `connector-manifest-${'a'.repeat(64)}`,
     label: 'Review account',
     credentials: { account: 'renderer-entered-secret' },
   }
   await api.localAgentConnector.list()
+  await api.localAgentConnector.packages()
+  await api.localAgentConnector.import()
+  await api.localAgentConnector.inspect(packageId)
+  await api.localAgentConnector.audit(packageId)
+  await api.localAgentConnector.approve(packageId)
+  await api.localAgentConnector.install(packageId)
   await api.localAgentConnector.configure(configuration)
+  await api.localAgentConnector.test('custom-0123456789abcdef')
+  await api.localAgentConnector.disable(packageId)
+  await api.localAgentConnector.revoke(packageId)
+  await api.localAgentConnector.upgrade(packageId)
+  await api.localAgentConnector.remove(packageId)
   await api.localAgentConnector.delete('custom-0123456789abcdef')
   assert.deepEqual(invocations, [
     { channel: 'local-agent-connector:list', args: [] },
+    { channel: 'local-agent-connector:packages', args: [] },
+    { channel: 'local-agent-connector:import', args: [] },
+    { channel: 'local-agent-connector:inspect', args: [packageId] },
+    { channel: 'local-agent-connector:audit', args: [packageId] },
+    { channel: 'local-agent-connector:approve', args: [packageId] },
+    { channel: 'local-agent-connector:install', args: [packageId] },
     { channel: 'local-agent-connector:configure', args: [configuration] },
+    { channel: 'local-agent-connector:test', args: ['custom-0123456789abcdef'] },
+    { channel: 'local-agent-connector:disable', args: [packageId] },
+    { channel: 'local-agent-connector:revoke', args: [packageId] },
+    { channel: 'local-agent-connector:upgrade', args: [packageId] },
+    { channel: 'local-agent-connector:remove', args: [packageId] },
     {
       channel: 'local-agent-connector:delete',
       args: ['custom-0123456789abcdef'],
@@ -332,6 +359,20 @@ test('local preload exposes only the narrow Agent installer methods', async () =
   ])
 })
 
+test('local preload exposes only review and revocation for Skill trust', async () => {
+  const { api, invocations } = loadPreload('file:')
+  const bindingId = `skill-trust-binding-${'a'.repeat(64)}`
+
+  assert.equal(Object.isFrozen(api.localSkillTrust), true)
+  assert.deepEqual(Object.keys(api.localSkillTrust).sort(), ['list', 'revoke'])
+  await api.localSkillTrust.list()
+  await api.localSkillTrust.revoke(bindingId)
+  assert.deepEqual(invocations, [
+    { channel: 'local-skill-trust:list', args: [] },
+    { channel: 'local-skill-trust:revoke', args: [bindingId] },
+  ])
+})
+
 test('local preload exposes only create and delete for Custom Agents', async () => {
   const { api, invocations } = loadPreload('file:')
 
@@ -467,6 +508,7 @@ test('remote preload does not expose local credentials, workspace, or installer 
   assert.equal('cloudAgent' in api, false)
   assert.equal('localOutcome' in api, false)
   assert.equal('agentInstaller' in api, false)
+  assert.equal('localSkillTrust' in api, false)
   assert.equal('customAgent' in api, false)
   assert.equal('localAttachments' in api, false)
   assert.equal('localAgentProvider' in api, false)

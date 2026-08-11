@@ -35,7 +35,7 @@ const optionSchema = z.strictObject({
 })
 
 const baseFields = {
-  type: z.enum(['permission', 'budget', 'decision']),
+  type: z.enum(['permission', 'budget', 'decision', 'retry', 'input']),
   runId: z.string().regex(PUBLIC_ID),
   agentRunId: z.string().regex(PUBLIC_ID),
   agentKind: z.string().regex(PUBLIC_ID),
@@ -48,6 +48,7 @@ const baseFields = {
     }
   }),
   createdAt: z.string().datetime(),
+  expiresAt: z.string().datetime().optional(),
 }
 
 const decisionSchema = z.strictObject({
@@ -55,6 +56,7 @@ const decisionSchema = z.strictObject({
   optionId: z.string().regex(OPTION_ID),
   actorId: z.string().regex(PUBLIC_ID),
   decidedAt: z.string().datetime(),
+  response: z.string().min(1).max(32 * 1024).optional(),
 })
 
 const gateInputSchema = z.strictObject(baseFields)
@@ -74,6 +76,13 @@ const gateRecordSchema = z.strictObject({
   }
   if (record.status !== 'pending' && record.decision?.status !== record.status) {
     context.addIssue({ code: 'custom', path: ['decision'], message: 'decision status mismatch' })
+  }
+  if (record.type === 'input' && record.decision?.status === 'approved'
+      && !record.decision.response) {
+    context.addIssue({ code: 'custom', path: ['decision', 'response'], message: 'input response missing' })
+  }
+  if (record.type !== 'input' && record.decision?.response !== undefined) {
+    context.addIssue({ code: 'custom', path: ['decision', 'response'], message: 'unexpected input response' })
   }
   if (record.decision
       && !record.options.some(option => option.optionId === record.decision.optionId)
@@ -171,7 +180,12 @@ function publicHumanGate(recordInput) {
     status: record.status,
     createdAt: record.createdAt,
     ...(record.decision ? {
-      decision: Object.freeze({ ...record.decision }),
+      decision: Object.freeze({
+        status: record.decision.status,
+        optionId: record.decision.optionId,
+        actorId: record.decision.actorId,
+        decidedAt: record.decision.decidedAt,
+      }),
       decidedAt: record.decision.decidedAt,
     } : {}),
   })

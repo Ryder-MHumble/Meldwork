@@ -9,7 +9,7 @@
 - Added read-only staging when an Agent lacks native support for a selected attachment type.
 - Removed the superseded Role Review module and kept review as a bounded two-Agent group workflow.
 - Completed Agent, Knowledge, mock Cloud, and Channel framework contracts while keeping production Cloud and Channel connectors disabled by default.
-- Changed the Community Edition license from PolyForm Noncommercial 1.0.0 to AGPL-3.0-only, with separate commercial licensing available for proprietary use cases.
+- Changed the repository license to the Meldwork Non-Commercial Source License, with commercial use requiring separate written permission.
 - Set the permanent macOS Bundle ID to `com.rydersun.meldwork` before the first public release.
 - Upgraded Electron from 39.8.5 to 39.8.10 and refreshed vulnerable development-only transitive dependencies; complete frontend and desktop dependency audits now report zero known vulnerabilities.
 

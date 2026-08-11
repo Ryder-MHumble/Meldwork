@@ -16,8 +16,8 @@
 
 <p align="center">
   <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.4/Meldwork-0.1.0-arm64.dmg"><strong>下载 macOS DMG 安装包</strong></a>
-  · <a href="LICENSE">AGPL-3.0 开源许可证</a>
-  · <a href="COMMERCIAL_USE.md">商业使用说明</a>
+  · <a href="LICENSE">非商用源码许可</a>
+  · <a href="COMMERCIAL_USE.md">商业授权说明</a>
 </p>
 
 ## 先装客户端，再开始工作
@@ -35,7 +35,7 @@
 
 | 本地 Agent 检测 | 单聊中的多模态产物 | 指定 Agent 的群聊复核 |
 | --- | --- | --- |
-| [![Meldwork 正在检测本地 Agent CLI](docs/assets/meldwork-agent-discovery.png)](docs/assets/meldwork-agent-discovery.png) | [![Agent 在单聊中返回图片、音频和文档产物](docs/assets/meldwork-direct-multimodal.png)](docs/assets/meldwork-direct-multimodal.png) | [![多个指定 Agent 在群聊中分别回复](docs/assets/meldwork-group-collaboration.png)](docs/assets/meldwork-group-collaboration.png) |
+| [![Meldwork 正在检测本地 Agent CLI](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![Agent 在单聊中返回图片、音频和文档产物](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) | [![多个指定 Agent 在群聊中分别回复](assets/meldwork-multi-agent-review.png)](assets/meldwork-multi-agent-review.png) |
 | 检测受支持的 Agent CLI，用明确的启动动画表达“正在准备”，而不是制造报错感。 | Prompt、生成媒体、文件、权限和兼容的原生 Session 都留在同一条单聊中。 | 只让用户点名的 Agent 参与，并可单独查看或收起每个 Agent 的回复。 |
 
 单击任意截图可以查看完整尺寸。
@@ -123,6 +123,6 @@ npm --prefix desktop test
 
 ## 许可证
 
-Meldwork 社区版采用 [GNU Affero General Public License v3.0 only](LICENSE) 开源。AGPL 允许个人和公司商用、修改与分发，但分发修改版本或通过网络向用户提供修改版本时，需要按照许可证提供对应源代码。
+Meldwork 采用 [Meldwork 非商用源码许可](LICENSE)。你可以为个人学习、研究、评估、安全审查等非商用目的查看、运行、修改和分享本项目，但未经版权所有者事先书面许可，不得用于商业目的。
 
-需要闭源分发、嵌入专有产品，或使用单独授权商业版的组织，可以申请商业许可证，详见 [COMMERCIAL_USE.md](COMMERCIAL_USE.md)。第三方标识归属见 [NOTICE](NOTICE)。
+商业使用包括转售、付费托管、托管服务、咨询或外包交付、闭源嵌入，以及由营利组织或为营利组织开展的业务使用。需要商用、集成、分发或单独商业许可，请先查看 [COMMERCIAL_USE.md](COMMERCIAL_USE.md) 并取得授权。第三方标识归属见 [NOTICE](NOTICE)。

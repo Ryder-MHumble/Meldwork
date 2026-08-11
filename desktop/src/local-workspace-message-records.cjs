@@ -1,6 +1,7 @@
 const path = require('node:path')
 const { normalizeContentBlobRef } = require('./content-blob-store.cjs')
 const { normalizeTraceCapsule } = require('./run-harness.cjs')
+const { normalizeRoutingDecision } = require('./agent-routing.cjs')
 const {
   CUSTOM_AGENT_KIND,
   MAX_SYSTEM_PARAM_TEXT_CHARS,
@@ -267,10 +268,12 @@ function normalizeLoadedMessage(input) {
       .map(normalizeKnowledgeBaseHint)
       .filter(Boolean)
     const targetKinds = normalizeTargetKinds(input.targetKinds)
+    const routingDecision = normalizeRoutingDecision(input.routingDecision)
     if (attachments.length) message.attachments = attachments
     if (skillHints.length) message.skillHints = skillHints
     if (knowledgeBaseHints.length) message.knowledgeBaseHints = knowledgeBaseHints
     if (targetKinds.length) message.targetKinds = targetKinds
+    if (routingDecision) message.routingDecision = routingDecision
   }
   return message
 }

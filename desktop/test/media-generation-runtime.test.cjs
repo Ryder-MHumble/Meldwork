@@ -79,6 +79,24 @@ test('accepts non-Codex Agents and resolves media independently from the chat ru
   assert.deepEqual(providerRequests, [['hermes', 'image']])
 })
 
+test('maps ZGCI image requests to the advertised qwen-image model', async (t) => {
+  const calls = []
+  const { workdir, runtime } = fixture(t, async (url, init = {}) => {
+    calls.push([String(url), init])
+    return response(JSON.stringify({ data: [{ b64_json: PNG.toString('base64') }] }))
+  }, {
+    apiKey: 'stored-zgci-credential', baseUrl: 'https://hub.zgci.org/v1', model: 'glm',
+  })
+
+  const result = await runtime.generate({
+    kind: 'codex', request: { type: 'image', prompt: 'a geometric poster' }, workdir,
+  })
+
+  assert.equal(result.filename, 'generated-image-media-id.png')
+  assert.equal(calls[0][0], 'https://hub.zgci.org/v1/images/generations')
+  assert.equal(JSON.parse(calls[0][1].body).model, 'qwen-image')
+})
+
 test('writes binary audio output and uses the audio endpoint', async (t) => {
   const { workdir, runtime } = fixture(t, async (url) => {
     assert.equal(String(url), 'https://api.openai.com/v1/audio/speech')
@@ -153,7 +171,7 @@ test('uses the legacy H3 submit, status, and content endpoints with secure provi
   }
 })
 
-test('uses the current ZGCI H3 videos workflow and model mapping', async (t) => {
+test('uses the ZGCI OpenAI-compatible H3 workflow and advertised model', async (t) => {
   const calls = []
   const { workdir, runtime } = fixture(t, async (url, init = {}) => {
     calls.push([String(url), init])
@@ -272,7 +290,7 @@ test('falls back to another secure Provider when the first lacks the media model
       sourceKind: 'openclaw',
     },
     {
-      apiKey: 'media-key', baseUrl: 'https://hub.zgci.org/v1', model: 'glm',
+      apiKey: 'media-key', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4.1',
       sourceKind: 'opencodereview',
     },
   ]
@@ -287,7 +305,7 @@ test('falls back to another secure Provider when the first lacks the media model
           error: { code: 'model_not_found', message: 'No available channel for model minimax-h3' },
         }), { status: 503 })
       }
-      if (String(_url).endsWith('/video/generations')) {
+      if (String(_url).endsWith('/videos')) {
         return response(JSON.stringify({ id: 'video-1', status: 'completed' }))
       }
       return response(MP4, { headers: { 'content-type': 'video/mp4' } })

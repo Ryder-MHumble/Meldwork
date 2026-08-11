@@ -15,8 +15,22 @@ const {
   normalizeKnowledgeBaseHint,
   normalizeSkillHint,
   normalizeTargetKinds,
+  terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 const { mediaGenerationRequest } = require('./media-generation-request.cjs')
+const { createTaskGraph } = require('./task-graph-records.cjs')
+const { assertLocalSkillExecution } = require('./local-skill-contract.cjs')
+
+function hardBudgetFailure(error) {
+  return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
+    || error?.message === 'LOCAL_BUDGET_EXHAUSTED'
+}
+
+function circuitBreakerFailure(error) {
+  return error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
+    || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER'
+}
 
 class LocalWorkspaceMessageSubmission {
   constructor(options) {
@@ -48,6 +62,9 @@ class LocalWorkspaceMessageSubmission {
     this.resetAgentSession = options.resetAgentSession
     this.refreshAgents = options.refreshAgents
     this.consumeAgentControl = options.consumeAgentControl
+    this.checkpointRun = options.checkpointRun
+    this.hasRunLedger = options.hasRunLedger || (() => false)
+    this.routeAgents = options.routeAgents
   }
 
   async resolveAttachments(attachmentRefs, signal) {
@@ -98,7 +115,7 @@ class LocalWorkspaceMessageSubmission {
     }
   }
 
-  async preflight(targetKinds, input, reservation) {
+  async preflight(group, targetKinds, input, reservation) {
     const text = cleanText(input.text)
     const attachments = await this.resolveAttachments(input.attachments || [], reservation.signal)
     if (reservation.signal.aborted || this.isShuttingDown()) {
@@ -121,6 +138,20 @@ class LocalWorkspaceMessageSubmission {
       }
       if (!Array.isArray(validated) || validated.some(skill => skill?.targetKind !== kind)) {
         throw new Error('LOCAL_SKILL_SELECTION_INVALID')
+      }
+      const agent = this.detectedAgents().find(candidate => candidate.kind === kind)
+      for (const skill of validated) {
+        if (!skill?.approvedSkillManifest) continue
+        assertLocalSkillExecution(skill.approvedSkillManifest, {
+          kind,
+          version: agent?.resolvedVersion || agent?.version,
+          inputTypes: ['text', ...new Set(attachments.map(attachment => (
+            attachmentType(attachment.mimeType)
+          )).filter(Boolean))],
+          capabilities: agent?.capabilities,
+          permissionMode: group.allowWrite === true ? 'workspace-write' : 'read-only',
+          credentialIds: [],
+        })
       }
       const publicHints = validated.map(normalizeSkillHint).filter(Boolean)
       if (publicHints.length !== validated.length) {
@@ -172,14 +203,18 @@ class LocalWorkspaceMessageSubmission {
     const mode = input.mode === 'auto' && group.conversationType !== 'direct'
       ? 'auto'
       : 'manual'
-    if (input.targetKinds != null && !Array.isArray(input.targetKinds)) {
-      throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
-    }
-    const requested = Array.isArray(input.targetKinds) && input.targetKinds.length
-      ? normalizeTargetKinds(input.targetKinds)
-      : group.agentKinds
-    const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
-    if (!targetKinds.length) throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
+    const inputTypes = ['text', ...new Set((Array.isArray(input.attachments)
+      ? input.attachments
+      : []).map(attachment => attachmentType(attachment?.mimeType)).filter(Boolean))]
+    const routingDecision = this.routeAgents({
+      agents: this.detectedAgents(),
+      group,
+      input,
+      mode,
+      inputTypes,
+      minContextChars: Math.max(1, cleanText(input.text).length),
+    })
+    const targetKinds = routingDecision.selectedKinds
     if (mode === 'auto' && targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     if (input.mentionedAgentKinds != null && !Array.isArray(input.mentionedAgentKinds)) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
@@ -187,11 +222,6 @@ class LocalWorkspaceMessageSubmission {
     const mentionedAgentKinds = normalizeTargetKinds(input.mentionedAgentKinds)
     if (mentionedAgentKinds.some(kind => !targetKinds.includes(kind))) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
-    }
-    if (mode === 'auto' && targetKinds.some(kind => (
-      !this.detectedAgents().some(agent => agent.kind === kind && agent.available)
-    ))) {
-      throw new Error('LOCAL_AGENT_UNAVAILABLE')
     }
     if (input.skillHints != null && !Array.isArray(input.skillHints)) {
       throw new Error('LOCAL_SKILL_SELECTION_INVALID')
@@ -222,6 +252,18 @@ class LocalWorkspaceMessageSubmission {
     const maxRounds = mode === 'auto' && !unlimitedRounds
       ? normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
       : 0
+    let taskGraph = null
+    if (input.workflow != null) {
+      if (mode !== 'auto') throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      if (input.workflow?.template !== 'task-graph') {
+        throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      }
+      try {
+        taskGraph = createTaskGraph(input.workflow, targetKinds)
+      } catch {
+        throw new Error('LOCAL_WORKFLOW_INVALID')
+      }
+    }
     const requestedThreadRootId = mode === 'manual' ? cleanText(input.threadRootId, 100) : ''
     const regenerateMessageId = cleanText(input.regenerateMessageId, 100)
     if (input.regenerateMessageId != null && !regenerateMessageId) {
@@ -237,6 +279,8 @@ class LocalWorkspaceMessageSubmission {
       maxRounds,
       requestedThreadRootId,
       regenerateMessageId,
+      routingDecision,
+      taskGraph,
     }
   }
 
@@ -324,6 +368,8 @@ class LocalWorkspaceMessageSubmission {
       maxRounds,
       requestedThreadRootId,
       regenerateMessageId,
+      routingDecision,
+      taskGraph,
     } = this.validateInput(group, input)
     const regeneration = this.resolveRegeneration(group, regenerateMessageId, targetKinds)
     const reservation = this.reserveRun(
@@ -350,6 +396,7 @@ class LocalWorkspaceMessageSubmission {
       const reportedFailures = new Set()
       try {
         const prepared = await this.preflight(
+          group,
           targetKinds,
           regeneration ? this.regenerationInput(input, regeneration, targetKinds[0]) : input,
           reservation,
@@ -368,6 +415,7 @@ class LocalWorkspaceMessageSubmission {
               skillHints: prepared.skillHints,
               knowledgeBaseHints: prepared.storedKnowledgeBaseHints,
               targetKinds,
+              routingDecision,
             },
           )
           try {
@@ -384,6 +432,7 @@ class LocalWorkspaceMessageSubmission {
             )
             controller = this.startAutoRunner(
               group, targetKinds, userMessage.id, maxRounds, reservation, prepared, unlimitedRounds,
+              taskGraph,
             )
           } catch (error) {
             try {
@@ -415,6 +464,7 @@ class LocalWorkspaceMessageSubmission {
             skillHints: prepared.skillHints,
             knowledgeBaseHints: prepared.storedKnowledgeBaseHints,
             targetKinds: group.conversationType === 'direct' ? [] : targetKinds,
+            routingDecision,
           },
         )
         const threadRootId = regeneration
@@ -434,6 +484,18 @@ class LocalWorkspaceMessageSubmission {
           )
           if (regeneration) {
             this.resetAgentSession(group, targetKinds[0], true, userMessage.id)
+          }
+          reservation.orchestration = {
+            version: 1,
+            workflow: 'manual',
+            currentKind: '',
+            pendingKinds: [...targetKinds],
+            activeKinds: [...targetKinds],
+            successfulKinds: [],
+            agreementKinds: [],
+            attachmentRecipients: [],
+            totalSuccesses: 0,
+            terminalFailureOccurred: false,
           }
           controller = this.beginRun(
             group.id, 'manual', targetKinds, threadRootId, reservation,
@@ -459,6 +521,16 @@ class LocalWorkspaceMessageSubmission {
           if (controller.signal.aborted) break
           controller.currentKind = kind
           controller.progress = []
+          controller.orchestration = {
+            ...controller.orchestration,
+            currentKind: kind,
+            pendingKinds: [...pendingKinds],
+            activeKinds: [...activeKinds],
+            successfulKinds: [...successfulKinds],
+          }
+          if (this.hasRunLedger() && this.checkpointRun(group.id, controller) !== true) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
           this.emitChanged()
           try {
             const invocation = await this.invokeWithRecovery({
@@ -524,6 +596,31 @@ class LocalWorkspaceMessageSubmission {
             }
             successfulKinds.add(kind)
           } catch (error) {
+            if (circuitBreakerFailure(error)) {
+              controller.stopReason = 'circuit_breaker'
+              controller.abort()
+              this.addMessage(
+                group.id,
+                'system',
+                `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+                '',
+                threadRootId,
+                {
+                  key: 'system.runCircuitBreaker',
+                  params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+                },
+              )
+              break
+            }
+            if (hardBudgetFailure(error)) {
+              this.recordAgentFailure(group.id, kind, error, threadRootId, reportedFailures)
+              successfulKinds.delete(kind)
+              if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+              if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
+              controller.stopReason = 'hard_budget'
+              controller.abort()
+              break
+            }
             if (controller.signal.aborted) {
               this.recordAgentInterruption(
                 group.id,
@@ -543,10 +640,20 @@ class LocalWorkspaceMessageSubmission {
           if (!controller.completedKinds.includes(kind)) controller.completedKinds.push(kind)
           controller.currentKind = ''
           controller.progress = []
+          controller.orchestration = {
+            ...controller.orchestration,
+            currentKind: '',
+            pendingKinds: [...pendingKinds],
+            activeKinds: [...activeKinds],
+            successfulKinds: [...successfulKinds],
+          }
+          if (this.hasRunLedger() && this.checkpointRun(group.id, controller) !== true) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
           this.emitChanged()
         }
         if (controller.signal.aborted) {
-          runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+          runStatus = terminalRunStatusForReason(controller.stopReason)
           return this.snapshot()
         }
         const successCount = activeKinds.filter(kind => successfulKinds.has(kind)).length
@@ -562,9 +669,9 @@ class LocalWorkspaceMessageSubmission {
           controller.currentKind = ''
           controller.progress = []
           if (controller.signal.aborted) {
-            runStatus = controller.stopReason === 'shutdown' ? 'interrupted' : 'stopped'
+            runStatus = terminalRunStatusForReason(controller.stopReason)
           } else if (runStatus === 'failed' && successfulKinds.size > 0) runStatus = 'partial'
-          this.finishRun(group.id, controller, runStatus)
+          await this.finishRun(group.id, controller, runStatus)
         } else {
           this.releasePreparation(group.id, reservation)
         }
@@ -589,6 +696,17 @@ class LocalWorkspaceMessageSubmission {
     const maxRounds = unlimitedRounds
       ? 0
       : normalizeAutoRounds(input.maxRounds ?? input.maxTurns)
+    let taskGraph = null
+    if (input.workflow != null) {
+      if (input.workflow?.template !== 'task-graph') {
+        throw new Error('LOCAL_WORKFLOW_UNSUPPORTED')
+      }
+      try {
+        taskGraph = createTaskGraph(input.workflow, targetKinds)
+      } catch {
+        throw new Error('LOCAL_WORKFLOW_INVALID')
+      }
+    }
     const state = this.state()
     const latestRoot = state.messages.findLast(message => (
       message.groupId === group.id && message.role === 'user' && !message.threadRootId
@@ -619,6 +737,7 @@ class LocalWorkspaceMessageSubmission {
       )
       this.startAutoRunner(
         group, targetKinds, threadRootId, maxRounds, reservation, null, unlimitedRounds,
+        taskGraph,
       )
     } catch (error) {
       this.releasePreparation(group.id, reservation)

@@ -120,7 +120,11 @@ function officialModel(type, provider) {
     return { image: 'gpt-image-1', audio: 'gpt-4o-mini-tts', video: 'sora-2' }[type]
   }
   if (host === 'hub.zgci.org') {
-    return { image: 'qwen-image', audio: 'cosy-voice', video: 'minimax-h3' }[type]
+    return {
+      image: 'qwen-image',
+      audio: 'cosy-voice',
+      video: 'minimax-h3',
+    }[type]
   }
   return provider.model
 }

@@ -4,6 +4,7 @@ import { MAX_ATTACHMENTS } from './useComposerAttachments.js'
 export function useConversationExecution({
   activeGroup,
   activeRun,
+  automaticTeamFormation,
   attachmentLimitMessage,
   composerAttachmentSupported,
   composerAttachments,
@@ -78,7 +79,8 @@ export function useConversationExecution({
       await workspace.value.send({
         groupId,
         text,
-        targetKinds: targets,
+        targetKinds: automaticTeamFormation.value ? [] : targets,
+        ...(automaticTeamFormation.value ? { routingMode: 'automatic' } : {}),
         ...(mentionedAgentKinds.length ? { mentionedAgentKinds } : {}),
         skillHints,
         knowledgeBaseHints,

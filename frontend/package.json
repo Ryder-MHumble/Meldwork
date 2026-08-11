@@ -4,7 +4,7 @@
   "private": true,
   "description": "Meldwork local-first multi-Agent collaboration workspace",
   "author": "Ryder-MHumble",
-  "license": "AGPL-3.0-only",
+  "license": "SEE LICENSE IN LICENSE",
   "engines": {
     "node": ">=20.19.0"
   },

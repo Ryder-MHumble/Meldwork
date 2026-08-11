@@ -129,3 +129,54 @@ test('withLease releases capacity in finally after success or failure', async ()
   assert.match(result, /^lease-\d+$/)
   assert.equal(scheduler.snapshot().active.global, 0)
 })
+
+test('suspended leases release capacity and reacquire it before continuing', async () => {
+  const scheduler = new RunScheduler({
+    taskLimit: 2, workspaceLimit: 2, globalLimit: 1,
+  })
+  let resumeWaiting
+  const waiting = new Promise(resolve => { resumeWaiting = resolve })
+  const order = []
+  const first = scheduler.withLease(
+    { taskId: 'task-1', workspaceKey: 'workspace-a' },
+    async (lease) => {
+      order.push('first-acquired')
+      await lease.suspend(async () => {
+        order.push('first-suspended')
+        await waiting
+      })
+      order.push('first-reacquired')
+    },
+  )
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scheduler.snapshot().active.global, 0)
+
+  await scheduler.withLease(
+    { taskId: 'task-2', workspaceKey: 'workspace-b' },
+    async () => { order.push('second-completed') },
+  )
+  resumeWaiting()
+  await first
+
+  assert.deepEqual(order, [
+    'first-acquired', 'first-suspended', 'second-completed', 'first-reacquired',
+  ])
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('four suspended global leases consume no capacity while waiting', async () => {
+  const scheduler = new RunScheduler({
+    taskLimit: 4, workspaceLimit: 4, globalLimit: 4,
+  })
+  const releases = []
+  const suspended = Array.from({ length: 4 }, (_, index) => scheduler.withLease({
+    taskId: `task-${index}`,
+    workspaceKey: `workspace-${index}`,
+  }, lease => lease.suspend(() => new Promise((resolve) => { releases[index] = resolve }))))
+  while (releases.length < 4) await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(scheduler.snapshot().active.global, 0)
+  for (const release of releases) release()
+  await Promise.all(suspended)
+  assert.equal(scheduler.snapshot().active.global, 0)
+})

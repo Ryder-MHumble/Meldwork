@@ -1,4 +1,31 @@
 const VERSION_PATTERN = /\bv?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z][0-9A-Za-z.-]*))?(?:\+[0-9A-Za-z][0-9A-Za-z.-]*)?\b/
+const ANSI_PATTERN = /\x1b\[[0-?]*[ -\/]*[@-~]/g
+const AGENT_VERSION_IDENTITIES = Object.freeze({
+  codex: [/\bcodex(?:-cli)?\b/i],
+  hermes: [/\bhermes(?:\s+agent)?\b/i],
+  openclaw: [/\bopenclaw\b/i],
+  workbuddy: [/\b(?:workbuddy|codebuddy)\b/i],
+  kimi: [/\bkimi(?:\s+code)?\b/i],
+  mimo: [/\bmimo(?:\s+code)?\b/i, /\bmimocode\b/i],
+  claude: [/\bclaude(?:\s+code)?\b/i],
+  gemini: [/\bgemini(?:\s+cli)?\b/i],
+  opencode: [/\bopencode\b/i, /\bopen\s+code\b/i],
+  qwen: [/\bqwen(?:\s+code)?\b/i],
+  opencodereview: [/\bopen[-\s]?code[-\s]?review\b/i],
+})
+const AGENT_EXECUTABLE_NAMES = Object.freeze({
+  codex: ['codex'],
+  hermes: ['hermes'],
+  openclaw: ['openclaw'],
+  workbuddy: ['codebuddy'],
+  kimi: ['kimi'],
+  mimo: ['mimo'],
+  claude: ['claude'],
+  gemini: ['gemini'],
+  opencode: ['opencode'],
+  qwen: ['qwen'],
+  opencodereview: ['ocr'],
+})
 
 const AGENT_COMPATIBILITY = Object.freeze({
   codex: profile('0.137.0', '0.146.0', [
@@ -99,6 +126,81 @@ function extractAgentVersion(value) {
   return `${match[1]}.${match[2]}.${match[3]}${match[4] ? `-${match[4]}` : ''}`
 }
 
+function normalizedVersionLines(outputs) {
+  return (Array.isArray(outputs) ? outputs : [outputs])
+    .flatMap(output => String(output || '').replace(ANSI_PATTERN, '').split(/\r?\n/))
+    .map(line => line.trim())
+    .filter(Boolean)
+}
+
+function uniqueVersionCandidate(lines) {
+  const candidates = lines
+    .map(line => ({ line, resolvedVersion: extractAgentVersion(line) }))
+    .filter(candidate => candidate.resolvedVersion)
+  const versions = [...new Set(candidates.map(candidate => candidate.resolvedVersion))]
+  return versions.length === 1
+    ? candidates.find(candidate => candidate.resolvedVersion === versions[0])
+    : null
+}
+
+function versionMatches(line) {
+  const pattern = new RegExp(VERSION_PATTERN.source, 'g')
+  return [...line.matchAll(pattern)].map((match) => ({
+    index: match.index,
+    end: match.index + match[0].length,
+    resolvedVersion: extractAgentVersion(match[0]),
+  }))
+}
+
+function identifiedVersionCandidate(kind, lines) {
+  const identities = AGENT_VERSION_IDENTITIES[kind] || []
+  const candidates = []
+  for (const line of lines) {
+    const identityMatches = identities.map(identity => identity.exec(line)).filter(Boolean)
+    const versions = versionMatches(line)
+    const weighted = []
+    for (const identity of identityMatches) {
+      const identityEnd = identity.index + identity[0].length
+      for (const version of versions) {
+        const distance = version.end <= identity.index
+          ? identity.index - version.end
+          : version.index >= identityEnd
+            ? version.index - identityEnd
+            : 0
+        weighted.push({ ...version, distance })
+      }
+    }
+    const closestDistance = Math.min(...weighted.map(candidate => candidate.distance))
+    const closestVersions = [...new Set(weighted
+      .filter(candidate => candidate.distance === closestDistance)
+      .map(candidate => candidate.resolvedVersion))]
+    if (closestVersions.length === 1) {
+      candidates.push({ line, resolvedVersion: closestVersions[0] })
+    }
+  }
+  const versions = [...new Set(candidates.map(candidate => candidate.resolvedVersion))]
+  return versions.length === 1
+    ? candidates.find(candidate => candidate.resolvedVersion === versions[0])
+    : null
+}
+
+function executableIdentifiesAgent(kind, executable) {
+  const basename = String(executable || '')
+    .split(/[\\/]/).at(-1)?.replace(/\.(?:bat|cmd|com|exe)$/i, '').toLowerCase()
+  return (AGENT_EXECUTABLE_NAMES[kind] || []).includes(basename)
+}
+
+function identifyAgentVersion(kind, outputs, options = {}) {
+  const lines = normalizedVersionLines(outputs)
+  const identified = identifiedVersionCandidate(kind, lines)
+  if (identified) return identified
+
+  if (!executableIdentifiesAgent(kind, options.executable)) return null
+  return uniqueVersionCandidate(lines.filter(line => (
+    new RegExp(`^v?${VERSION_PATTERN.source}$`, 'i').test(line)
+  )))
+}
+
 function compareReleaseVersions(left, right) {
   const parse = (value) => {
     const match = String(value || '').match(/^(\d+)\.(\d+)\.(\d+)$/)
@@ -123,8 +225,8 @@ function assessAgentVersion(kind, rawVersion) {
   if (!contract || !resolvedVersion) {
     return {
       ...base,
-      compatibilityState: 'incompatible',
-      incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
+      compatibilityState: 'unknown',
+      incompatibilityReason: '',
     }
   }
   const supported = contract.exactVersion
@@ -155,4 +257,5 @@ module.exports = {
   assessAgentVersion,
   capabilityProbes,
   extractAgentVersion,
+  identifyAgentVersion,
 }

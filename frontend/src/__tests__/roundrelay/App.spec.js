@@ -495,6 +495,32 @@ describe('RoundRelay workbench', () => {
         },
       )
       state.runningGroupIds = ['running-direct', 'running-group']
+      state.runs.push(
+        {
+          runId: 'run-running-direct',
+          groupId: 'running-direct',
+          phase: 'running',
+          targetKinds: ['codex'],
+          agentRuns: [{
+            agentRunId: 'agent-running-direct',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+        {
+          runId: 'run-running-group',
+          groupId: 'running-group',
+          phase: 'running',
+          targetKinds: ['codex', 'hermes'],
+          agentRuns: [{
+            agentRunId: 'agent-running-group-codex',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+      )
     })
 
     const directBars = wrapper.get('.direct-session-row .run-mark .run-agent-bars')
@@ -509,6 +535,112 @@ describe('RoundRelay workbench', () => {
     const collapsedGroup = [...document.body.querySelectorAll('.collapsed-group-option')]
       .find(option => option.textContent.includes('Running group'))
     expect(collapsedGroup.querySelectorAll('.run-agent-bars i')).toHaveLength(3)
+    wrapper.unmount()
+  })
+
+  it('keeps running sidebar sessions focused on status until the conversation is selected', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'running-direct',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Running direct',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'running-group',
+          conversationType: 'group',
+          name: 'Running group',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:01:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+      state.runningGroupIds = ['running-direct', 'running-group']
+      state.runs.push(
+        {
+          runId: 'run-running-direct',
+          groupId: 'running-direct',
+          phase: 'running',
+          targetKinds: ['codex'],
+          agentRuns: [{
+            agentRunId: 'agent-running-direct',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+        {
+          runId: 'run-running-group',
+          groupId: 'running-group',
+          phase: 'running',
+          targetKinds: ['codex', 'hermes'],
+          agentRuns: [{
+            agentRunId: 'agent-running-group-codex',
+            kind: 'codex',
+            round: 0,
+            status: 'running',
+          }],
+        },
+      )
+    })
+
+    const directRow = wrapper.get('.direct-session-row')
+    expect(directRow.find('.run-mark .run-agent-bars').exists()).toBe(true)
+    expect(directRow.findAll('.direct-session-action')).toHaveLength(0)
+
+    const groupRow = wrapper.get('.group-conversation-row')
+    expect(groupRow.find('.run-mark .run-agent-bars').exists()).toBe(true)
+    expect(groupRow.findAll('.direct-session-action')).toHaveLength(0)
+
+    await directRow.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    const selectedDirectRow = wrapper.get('.direct-session-row.active')
+    expect(selectedDirectRow.find('.run-mark').exists()).toBe(false)
+    const directActions = selectedDirectRow.findAll('.direct-session-action')
+    expect(directActions).toHaveLength(2)
+    expect(directActions[0].attributes()).toHaveProperty('disabled')
+    expect(directActions[1].attributes()).toHaveProperty('disabled')
+
+    await wrapper.get('.group-conversation-row .conversation-link').trigger('click')
+    await flushPromises()
+    const selectedGroupRow = wrapper.get('.group-conversation-row.active')
+    expect(selectedGroupRow.find('.run-mark').exists()).toBe(false)
+    const groupActions = selectedGroupRow.findAll('.direct-session-action')
+    expect(groupActions).toHaveLength(2)
+    expect(groupActions[0].attributes()).toHaveProperty('disabled')
+    expect(groupActions[1].attributes()).toHaveProperty('disabled')
+    wrapper.unmount()
+  })
+
+  it('does not show running bars for a new empty group with a stale running id', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'empty-stale-group',
+        conversationType: 'group',
+        name: 'Empty stale group',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: true,
+        createdAt: '2026-07-29T08:02:00Z',
+        updatedAt: '2026-07-29T08:02:00Z',
+      })
+      state.runningGroupIds = ['empty-stale-group']
+    })
+
+    const groupRow = wrapper.get('.group-conversation-row')
+    expect(groupRow.text()).toContain('Empty stale group')
+    expect(groupRow.find('.run-mark').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -1192,6 +1324,94 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.findAll('.target-chip')[0].classes()).toContain('selected')
     expect(wrapper.findAll('.target-chip')[1].classes()).not.toContain('selected')
+    wrapper.unmount()
+  })
+
+  it('keeps explicit routing as the default and sends automatic team formation only when enabled', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-1',
+        conversationType: 'group',
+        name: 'Review',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
+    const smartTeam = wrapper.get('.smart-team-trigger')
+    expect(wrapper.find('[data-routing-mode]').exists()).toBe(false)
+    expect(smartTeam.get('.smart-team-label').text()).toBe('Smart team')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('Off')
+    expect(smartTeam.attributes('aria-pressed')).toBe('false')
+    expect(smartTeam.find('.smart-team-icon-state-off').exists()).toBe(true)
+    expect(smartTeam.find('.smart-team-icon-state-on').exists()).toBe(true)
+    expect(wrapper.find('.smart-team-tooltip').exists()).toBe(false)
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
+
+    await wrapper.get('.smart-team-control').trigger('mouseenter')
+    expect(wrapper.get('.smart-team-tooltip').attributes('role')).toBe('tooltip')
+    expect(wrapper.get('.smart-team-tooltip').text()).toContain('Off uses the selected group Agents')
+    await wrapper.get('.smart-team-control').trigger('mouseleave')
+    expect(wrapper.find('.smart-team-tooltip').exists()).toBe(false)
+
+    await wrapper.get('.composer-box textarea').setValue('Use the selected Agents')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.send).toHaveBeenNthCalledWith(1, {
+      groupId: 'group-1',
+      text: 'Use the selected Agents',
+      targetKinds: ['codex', 'hermes'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+
+    await smartTeam.trigger('click')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('On')
+    expect(smartTeam.attributes('aria-pressed')).toBe('true')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Describe the task and Meldwork will choose the right Agent team')
+    expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') !== undefined)).toBe(true)
+
+    await wrapper.get('.smart-team-control').trigger('mouseenter')
+    expect(wrapper.get('.smart-team-tooltip').text()).toContain('ignore manual Agent targets')
+    await wrapper.get('.smart-team-control').trigger('mouseleave')
+
+    await wrapper.get('.composer-box textarea').setValue('Choose the smallest suitable team')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenNthCalledWith(2, {
+      groupId: 'group-1',
+      text: 'Choose the smallest suitable team',
+      targetKinds: [],
+      routingMode: 'automatic',
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'manual',
+      maxRounds: 6,
+    })
+
+    await smartTeam.trigger('click')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('Off')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
+
+    setLocale('zh')
+    await flushPromises()
+    expect(smartTeam.get('.smart-team-label').text()).toBe('智能组队')
+    expect(smartTeam.get('.smart-team-status').text()).toBe('关闭')
+    await wrapper.get('.smart-team-control').trigger('mouseenter')
+    expect(wrapper.get('.smart-team-tooltip').text()).toContain('关闭时使用当前群聊或手动选择的 Agent')
     wrapper.unmount()
   })
 

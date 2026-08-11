@@ -234,14 +234,14 @@ function parseOpenClawStatus(output, options = {}) {
     }
     const requestedAgentDir = String(status?.agentDir || '').trim()
     if (!path.isAbsolute(requestedAgentDir)) {
-      return { credentialState: { state: 'ready', source: 'native-auth-status' } }
+      return { credentialState: { state: 'unknown', source: 'native-runtime-unavailable' } }
     }
     const resolvedHome = fs.realpathSync(path.resolve(options.home || os.homedir()))
     const nativeRoot = path.join(resolvedHome, '.openclaw')
     const nativeRootIdentity = openClawDirectoryIdentity(nativeRoot)
     const agentDir = fs.realpathSync(requestedAgentDir)
     if (!fs.statSync(agentDir).isDirectory() || !pathInside(nativeRoot, agentDir)) {
-      return { credentialState: { state: 'ready', source: 'native-auth-status' } }
+      return { credentialState: { state: 'unknown', source: 'native-runtime-unavailable' } }
     }
     const directoryIdentities = [nativeRootIdentity]
     let current = nativeRoot
@@ -260,6 +260,16 @@ function parseOpenClawStatus(output, options = {}) {
   } catch {
     return null
   }
+}
+
+function resolveOpenClawRuntimeStatus(status) {
+  if (!status?.runtime || status.credentialState?.state !== 'ready') return null
+  const parts = openClawModelParts(status.runtime.model)
+  if (!parts) return null
+  return parseOpenClawModelsFile(
+    readOpenClawModelsFile(status.runtime),
+    status.runtime.model,
+  )
 }
 
 function openClawModelParts(modelRef) {
@@ -402,16 +412,8 @@ async function queryOpenClawStatus(options = {}) {
 
 async function resolveNativeOpenClawRuntime(options = {}) {
   const status = await queryOpenClawStatus(options)
-  if (!status?.runtime || status.credentialState?.state !== 'ready') {
-    throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
-  }
-  const parts = openClawModelParts(status.runtime.model)
-  if (!parts) throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
   try {
-    const runtime = parseOpenClawModelsFile(
-      readOpenClawModelsFile(status.runtime),
-      status.runtime.model,
-    )
+    const runtime = resolveOpenClawRuntimeStatus(status)
     if (runtime) return runtime
   } catch { /* fail closed below */ }
   throw new Error('OPENCLAW_NATIVE_RUNTIME_UNAVAILABLE')
@@ -442,7 +444,15 @@ async function resolveNativeCredentialState(kind, options = {}) {
   const current = nativeCredentialState(kind, options)
   if (kind === 'openclaw') {
     const status = await queryOpenClawStatus(options)
-    return status?.credentialState || current
+    if (status?.credentialState?.state === 'missing') return status.credentialState
+    try {
+      if (resolveOpenClawRuntimeStatus(status)) {
+        return { state: 'ready', source: 'native-auth-status' }
+      }
+    } catch { /* fail closed below */ }
+    return status?.credentialState?.source === 'native-runtime-unavailable'
+      ? status.credentialState
+      : { state: 'unknown', source: 'native-runtime-unavailable' }
   }
   if (kind !== 'claude' || !options.executable
       || Object.keys(nativeCredentialEnvironment(kind, options.env)).length) return current

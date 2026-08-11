@@ -35,6 +35,7 @@ const INCOMPLETE_TOOL_EVENT_TYPES = new Set(['tool_start', 'tool_update'])
 const FAILED_TOOL_STATUSES = new Set(['failed', 'stopped', 'timeout', 'interrupted'])
 const PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const PUBLIC_GROUP_ID = /^[^\u0000-\u001f\u007f]{1,100}$/u
+const SHA256 = /^[a-f0-9]{64}$/
 const MAX_OUTCOME_REFS = 64
 const OUTCOME_REF_PATTERNS = Object.freeze({
   artifactIds: /^artifact-[a-f0-9]{64}$/,
@@ -230,6 +231,16 @@ function normalizeContextStats(input) {
   const promptChars = Number(input.promptChars)
   if (Number.isSafeInteger(promptChars) && promptChars >= 0 && promptChars <= 10000000) {
     context.promptChars = promptChars
+  }
+  for (const field of ['sourceCount', 'promptBytes', 'wirePayloadBytes']) {
+    const value = Number(input[field])
+    if (Number.isSafeInteger(value) && value >= 0 && value <= 10000000) {
+      context[field] = value
+    }
+  }
+  for (const field of ['sourceHash', 'promptHash', 'wirePayloadHash']) {
+    const value = String(input[field] || '')
+    if (SHA256.test(value)) context[field] = value
   }
   if (input.sessionRotated === true) context.sessionRotated = true
   const contextPackId = normalizeContextPackId(input.contextPackId)

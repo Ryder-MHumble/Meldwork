@@ -18,6 +18,7 @@ const {
   MAX_MESSAGE_ATTACHMENTS,
   abortableOperation,
   agentStoppedError,
+  attachmentType,
   cleanText,
   cleanProgressSteps,
   credentialFailure,
@@ -25,6 +26,7 @@ const {
   parseAutoReply,
   settleWithin,
 } = require('./local-workspace-inputs.cjs')
+const { assertLocalSkillExecution } = require('./local-skill-contract.cjs')
 const { outboundWirePayloadBytes } = require('./outbound-payload.cjs')
 const { processRunScheduler } = require('./run-scheduler.cjs')
 const {
@@ -35,6 +37,38 @@ const {
 
 const MAX_INHERITED_TASK_IDS = 64
 const MAX_ISOLATED_PROMPT_BYTES = 4 * 1024 * 1024
+
+function canUseNativeMediaFallback(error) {
+  const code = String(error?.code || error?.message || '')
+  return /^(?:MEDIA_GENERATION_(?:PROVIDER_UNAVAILABLE|MODEL_UNAVAILABLE|NETWORK_FAILED|INVALID_RESPONSE|FAILED|DOWNLOAD_FAILED)|MEDIA_GENERATION_(?:HTTP|DOWNLOAD_HTTP)_\d+)$/.test(code)
+}
+
+function agentReturnedMediaProviderFailure(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return false
+  return /configured providers do not offer the required media model/i.test(normalized)
+    || /use a provider credential with access to (?:that|the) image, audio, or video model/i.test(normalized)
+    || /provider.+(?:does not|do not).+(?:offer|support).+(?:media|image|audio|video).+model/i.test(normalized)
+}
+const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
+
+function attachInvocationFailure(error, input) {
+  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error
+  const existing = error.invocationFailure && typeof error.invocationFailure === 'object'
+    ? error.invocationFailure
+    : {}
+  Object.defineProperty(error, 'invocationFailure', {
+    value: Object.freeze({
+      outcomeCertainty: existing.outcomeCertainty || input.outcomeCertainty,
+      sideEffectsPossible: existing.sideEffectsPossible === true || input.sideEffectsPossible === true,
+      operationId: existing.operationId || input.operationId,
+      idempotencyMode: existing.idempotencyMode || input.idempotencyMode,
+    }),
+    enumerable: false,
+    configurable: true,
+  })
+  return error
+}
 
 function isolatedInvocationContext(context) {
   if (context?.sessionPolicy !== 'isolated') return null
@@ -114,6 +148,72 @@ function matchesResumedPermission(request, resumedGate) {
   return resumedGate.status === 'approved'
     ? selected.kind.startsWith('allow_')
     : selected.kind.startsWith('reject_')
+}
+
+function sha256(value) {
+  return createHash('sha256').update(String(value || '')).digest('hex')
+}
+
+function deliveredPackedContext(packedContext, promptMode) {
+  if (promptMode !== 'continuation') return packedContext
+  return {
+    ...packedContext,
+    sourceMessageIds: packedContext.continuationSourceMessageIds || [],
+    sourceEntries: packedContext.continuationSourceEntries || [],
+    context: packedContext.continuationContext || {
+      includedCount: 0,
+      omittedCount: 0,
+      charCount: 0,
+    },
+  }
+}
+
+function withCollaborationPackage(packedContext, collaborationPackage) {
+  if (!collaborationPackage) return packedContext
+  const text = typeof collaborationPackage.text === 'string'
+    ? collaborationPackage.text
+    : ''
+  if (!text || text.length > 128000 || text.includes('\u0000')) {
+    throw new Error('LOCAL_RUN_COLLABORATION_PACKAGE_INVALID')
+  }
+  return { ...packedContext, collaborationText: text }
+}
+
+function contextSourceProof(contextPack) {
+  const sources = (Array.isArray(contextPack?.sources) ? contextPack.sources : []).map(source => ({
+    type: source.type,
+    sourceId: source.sourceId,
+    contentHash: source.contentHash,
+    targetKinds: source.targetKinds,
+    captureMode: source.captureMode,
+  }))
+  return {
+    sourceCount: sources.length,
+    sourceHash: sha256(canonicalJson(sources)),
+  }
+}
+
+function assertRequiredContextFits(packedContext) {
+  if (!packedContext?.requiredContextOverflow) return
+  const error = new Error('LOCAL_RUN_REQUIRED_CONTEXT_OVERFLOW')
+  error.code = 'LOCAL_RUN_REQUIRED_CONTEXT_OVERFLOW'
+  error.contextOverflow = { ...packedContext.requiredContextOverflow }
+  throw error
+}
+
+function connectorSessionBinding(sessionRef, sessionProvenance) {
+  const stableProvenance = {
+    scope: String(sessionProvenance?.scope || 'none'),
+    originTaskId: String(sessionProvenance?.originTaskId || ''),
+    inheritedTaskIds: Array.isArray(sessionProvenance?.inheritedTaskIds)
+      ? [...sessionProvenance.inheritedTaskIds]
+      : [],
+    completeness: String(sessionProvenance?.completeness || 'complete'),
+  }
+  return {
+    sessionRefHash: sha256(sessionRef),
+    sessionProvenanceHash: sha256(canonicalJson(stableProvenance)),
+  }
 }
 
 class LocalWorkspaceAgentInvocation {
@@ -196,7 +296,7 @@ class LocalWorkspaceAgentInvocation {
         taskId,
         workspaceKey,
         signal: agentController.signal,
-      }, () => {
+      }, (lease) => {
         if (signal && queuedAbortHandler) {
           signal.removeEventListener('abort', queuedAbortHandler)
           queuedAbortHandler = null
@@ -208,7 +308,7 @@ class LocalWorkspaceAgentInvocation {
           signal,
           threadRootId,
           context,
-          { agentController, registration },
+          { agentController, registration, lease },
         )
       })
     } finally {
@@ -234,11 +334,43 @@ class LocalWorkspaceAgentInvocation {
     const internal = context.internal === true
     if (internal && !isolated) throw new Error('LOCAL_RUN_INTERNAL_CONTEXT_INVALID')
     const allowWrite = group.allowWrite === true && !reviewOnly && !isolated
+    const skillInputTypes = new Set(['text'])
+    for (const attachment of context.attachmentSnapshots || []) {
+      const type = attachmentType(attachment?.mimeType)
+      if (type) skillInputTypes.add(type)
+    }
+    for (const skill of context.skillHints || []) {
+      if (!skill?.approvedSkillManifest) continue
+      assertLocalSkillExecution(skill.approvedSkillManifest, {
+        kind,
+        version: agent.resolvedVersion || agent.version,
+        inputTypes: [...skillInputTypes],
+        capabilities: agent.capabilities,
+        permissionMode: allowWrite ? 'workspace-write' : 'read-only',
+        credentialIds: [],
+      })
+    }
     const state = this.state()
     const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
+    if (!isolated) {
+      const requiredContext = this.packedPromptContext(
+        group.id, '', threadRootId, context.contextOptions || {},
+      )
+      assertRequiredContextFits(requiredContext)
+    }
+    const requestedOperationId = String(context.operationId || '')
+    const operationId = OPERATION_ID.test(requestedOperationId)
+      ? requestedOperationId
+      : `agent-operation-${createHash('sha256').update(JSON.stringify({
+          runId: activeRun?.runId || taskId,
+          kind,
+          mode,
+          round,
+        })).digest('hex')}`
+    const idempotencyMode = agent.idempotencyMode === 'durable' ? 'durable' : 'none'
     const resolvedSession = reviewOnly || isolated
       ? {
           key: this.sessionKey(group.id, kind, group.conversationType === 'direct' ? '' : taskId),
@@ -255,7 +387,12 @@ class LocalWorkspaceAgentInvocation {
     let sessionMeta = normalizeSessionMeta(resolvedSession.sessionMeta)
     let sessionProvenance = resolvedSession.provenance
     let sessionRotated = resolvedSession.sessionReset === true
+    const resumedConnectorGate = ['input', 'permission'].includes(context.resumedGate?.type)
+      && context.resumedGate?.request?.source === 'connector'
+      ? context.resumedGate
+      : null
     const resumedPermission = context.resumedGate?.type === 'permission'
+      && !resumedConnectorGate
       ? context.resumedGate
       : null
     const sessionNeedsRotation = sessionRef && shouldRotateSession(sessionMeta)
@@ -332,8 +469,15 @@ class LocalWorkspaceAgentInvocation {
       : this.packedPromptContext(
           group.id, transcriptAfterKind, threadRootId, context.contextOptions || {},
         )
+    if (!isolated) {
+      packedContext = withCollaborationPackage(
+        packedContext, context.collaborationPackage,
+      )
+    }
+    if (!isolated) assertRequiredContextFits(packedContext)
+    let deliveredContext = deliveredPackedContext(packedContext, promptMode)
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
-    const harnessRun = harness?.beginAgent(kind, round, packedContext.sourceMessageIds)
+    const harnessRun = harness?.beginAgent(kind, round, deliveredContext.sourceMessageIds)
     let deliveryContext = {
       contextPackId: isolated?.contextPackId || activeRun?.contextPackId || '',
       deliveryRecordIds: [],
@@ -343,7 +487,7 @@ class LocalWorkspaceAgentInvocation {
       const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
       if (liveHarnessRun) {
         liveHarnessRun.context = {
-          ...packedContext.context,
+          ...deliveredContext.context,
           contextMode: promptMode,
           sessionRotated,
           ...deliveryContext,
@@ -368,6 +512,9 @@ class LocalWorkspaceAgentInvocation {
     let agentCallbacksClosed = false
     let watchdogTimer = null
     let watchdogPromise = null
+    let watchdogReject = null
+    let watchdogRemainingMs = this.runAgentTimeoutMs
+    let watchdogStartedAt = 0
     let parentAbortHandler = null
     let parentAbortPromise = null
     let capturePromise = null
@@ -392,16 +539,38 @@ class LocalWorkspaceAgentInvocation {
       if (signal.aborted) parentAbortHandler()
       else signal.addEventListener('abort', parentAbortHandler, { once: true })
     }
-    watchdogPromise = new Promise((_, reject) => {
+    const armWatchdog = () => {
+      if (watchdogTimer || agentController.signal.aborted || watchdogRemainingMs <= 0) return
+      watchdogStartedAt = Date.now()
       watchdogTimer = setTimeout(() => {
         if (parentAbortObserved || signal?.aborted) return
         watchdogTimedOut = true
         watchdogError = new Error('LOCAL_AGENT_TIMEOUT')
         agentController.abort()
-        reject(watchdogError)
-      }, this.runAgentTimeoutMs)
+        watchdogReject(watchdogError)
+      }, watchdogRemainingMs)
+    }
+    const pauseWatchdog = () => {
+      if (!watchdogTimer) return
+      clearTimeout(watchdogTimer)
+      watchdogTimer = null
+      watchdogRemainingMs = Math.max(0, watchdogRemainingMs - (Date.now() - watchdogStartedAt))
+    }
+    watchdogPromise = new Promise((_, reject) => {
+      watchdogReject = reject
     })
     watchdogPromise.catch(() => {})
+    armWatchdog()
+    const waitForHumanGate = async (operation) => {
+      pauseWatchdog()
+      try {
+        return invocation.lease?.suspend
+          ? await invocation.lease.suspend(operation)
+          : await operation()
+      } finally {
+        if (!agentController.signal.aborted) armWatchdog()
+      }
+    }
     const onProgress = (step) => {
       if (agentCallbacksClosed || agentController.signal.aborted
           || !activeRun || this.activeRuns.get(group.id) !== activeRun) return
@@ -473,21 +642,56 @@ class LocalWorkspaceAgentInvocation {
     let artifactOutputBaseline = null
     let stagedInputs = null
     let generatedMedia = null
+    let nativeMediaFallback = false
     let result
+    let operationStarted = false
+    let sideEffectsStarted = false
+    let terminalFailureKnown = false
     let harnessFinished = false
     let connectorContext = {}
+    let connectorResume = null
+    if (resumedConnectorGate) {
+      const request = resumedConnectorGate.request
+      const binding = connectorSessionBinding(sessionRef, sessionProvenance)
+      const requestHash = sha256(canonicalJson(request))
+      if (!agent.connectorInstanceId
+          || request.connectorInstanceId !== agent.connectorInstanceId
+          || request.connectorId !== agent.connectorId
+          || request.connectorVersion !== agent.connectorVersion
+          || request.runId !== activeRun?.runId
+          || request.agentRunId !== resumedConnectorGate.agentRunId
+          || request.operationId !== operationId
+          || request.requestId !== resumedConnectorGate.request?.requestId
+          || requestHash !== resumedConnectorGate.requestHash
+          || binding.sessionRefHash !== request.sessionRefHash
+          || binding.sessionProvenanceHash !== request.sessionProvenanceHash) {
+        throw new Error('LOCAL_RUN_CONNECTOR_REQUEST_MISMATCH')
+      }
+      connectorResume = {
+        type: resumedConnectorGate.type,
+        requestId: request.requestId,
+        requestHash,
+        ...binding,
+        ...(resumedConnectorGate.type === 'input'
+          ? { response: resumedConnectorGate.response }
+          : {
+              status: resumedConnectorGate.status,
+              optionId: resumedConnectorGate.optionId,
+            }),
+      }
+    }
     const finishHarness = (status, finalText = '', runtimeContext = {}) => {
       if (!harness || !harnessRun || harnessFinished) return null
       flushRuntimeEvent()
       agentCallbacksClosed = true
       this.clearAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       const finished = harness.finishAgent(kind, round, status, finalText, {
-        ...packedContext.context,
+        ...deliveredContext.context,
         contextMode: promptMode,
         sessionRotated,
+        ...runtimeContext,
         ...deliveryContext,
         ...connectorContext,
-        ...runtimeContext,
       }, harnessRun.agentRunId)
       harnessFinished = true
       this.emitRunEvent(finished.event)
@@ -527,13 +731,19 @@ class LocalWorkspaceAgentInvocation {
         }
       }
       if (allowWrite && context.mediaRequest && this.generateMedia) {
-        generatedMedia = await abortableOperation(() => this.generateMedia({
-          kind,
-          request: context.mediaRequest,
-          workdir: group.workdir,
-          signal: agentController.signal,
-          onEvent: emitRuntimeEvent,
-        }), agentController.signal)
+        sideEffectsStarted = true
+        try {
+          generatedMedia = await abortableOperation(() => this.generateMedia({
+            kind,
+            request: context.mediaRequest,
+            workdir: group.workdir,
+            signal: agentController.signal,
+            onEvent: emitRuntimeEvent,
+          }), agentController.signal)
+        } catch (error) {
+          if (agentController.signal.aborted || !canUseNativeMediaFallback(error)) throw error
+          nativeMediaFallback = true
+        }
       }
       const nativeImageLimit = Math.max(
         0,
@@ -557,12 +767,20 @@ class LocalWorkspaceAgentInvocation {
         ? isolated.promptOverride
         : [
             this.promptFor(
-              group, kind, mode, threadRootId, context.skillHints || [],
+              group, kind, context.completionPolicy === 'typed' ? 'manual' : mode,
+              threadRootId, context.skillHints || [],
               context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
             ),
             stagedAgentInputPrompt(stagedInputs),
             generatedMedia
               ? `Meldwork generated and will attach ${generatedMedia.filename}. Confirm the delivered media briefly; do not claim a different file was created.`
+              : '',
+            nativeMediaFallback
+              ? [
+                  'Meldwork shared media generator was unavailable. Use your native media-generation tools or installed local skills to fulfill the current request.',
+                  'Write or copy every real generated media file into .meldwork-output/ so Meldwork can validate and attach it to the reply.',
+                  'Do not return only a prompt and do not claim success unless a real media file was created. If no native media tool is available, explain that accurately.',
+                ].join('\n')
               : '',
             runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
             regenerationInstruction
@@ -574,10 +792,14 @@ class LocalWorkspaceAgentInvocation {
       const recordOutboundPayload = (outbound = {}) => {
         if (activeRun?.budget) {
           const bytes = outboundWirePayloadBytes(outbound)
-          activeRun.budget.addUsage('outboundBytes', bytes.length, { source: 'reported' })
-          activeRun.budget.addUsage('inputTokens', Math.ceil(bytes.length / 4), {
-            source: 'estimated',
-          })
+          activeRun.budget.addUsageBatch([
+            { dimension: 'outboundBytes', amount: bytes.length, source: 'reported' },
+            {
+              dimension: 'inputTokens',
+              amount: Math.ceil(bytes.length / 4),
+              source: 'estimated',
+            },
+          ])
         }
         const baseContextPackId = isolated?.contextPackId || activeRun?.contextPackId || ''
         if (!baseContextPackId || !harness || !harnessRun) return
@@ -588,7 +810,7 @@ class LocalWorkspaceAgentInvocation {
           taskId,
           mode: group.conversationType === 'direct' ? 'direct' : mode,
           kind,
-          packedContext,
+          packedContext: deliveredContext,
           attachments: isolated ? [] : (context.attachmentSnapshots || []),
           skillHints: isolated ? [] : (context.skillHints || []),
           knowledgeBaseHints: isolated ? [] : (context.knowledgeBaseHints || []),
@@ -617,11 +839,17 @@ class LocalWorkspaceAgentInvocation {
             delivery.deliveryRecordId,
           ].slice(-8),
           sessionProvenance,
+          ...contextSourceProof(attempt.record),
+          promptChars: deliveredPrompt.length,
+          promptBytes: Buffer.byteLength(deliveredPrompt),
+          promptHash: sha256(deliveredPrompt),
+          wirePayloadBytes: delivery.wirePayloadBytes,
+          wirePayloadHash: delivery.wirePayloadHash,
         }
         const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
         if (liveHarnessRun) {
           liveHarnessRun.context = {
-            ...packedContext.context,
+            ...deliveredContext.context,
             contextMode: promptMode,
             sessionRotated,
             ...deliveryContext,
@@ -658,13 +886,18 @@ class LocalWorkspaceAgentInvocation {
         packedContext = this.packedPromptContext(
           group.id, '', threadRootId, context.contextOptions || {},
         )
+        packedContext = withCollaborationPackage(
+          packedContext, context.collaborationPackage,
+        )
+        assertRequiredContextFits(packedContext)
+        deliveredContext = deliveredPackedContext(packedContext, promptMode)
         const liveHarnessRun = harness?.current(
           kind, round, harnessRun?.agentRunId || '',
         )
         if (liveHarnessRun) {
-          liveHarnessRun.sourceMessageIds = [...packedContext.sourceMessageIds]
+          liveHarnessRun.sourceMessageIds = [...deliveredContext.sourceMessageIds]
           liveHarnessRun.context = {
-            ...packedContext.context,
+            ...deliveredContext.context,
             contextMode: promptMode,
             sessionRotated,
             ...deliveryContext,
@@ -697,6 +930,7 @@ class LocalWorkspaceAgentInvocation {
         },
         signal: agentController.signal,
         sandbox: allowWrite ? 'workspace-write' : 'read-only',
+        operationId,
         onProgress,
         onEvent: emitRuntimeEvent,
         onOutboundPayload: recordOutboundPayload,
@@ -712,7 +946,7 @@ class LocalWorkspaceAgentInvocation {
               optionId: resumedPermission.optionId,
             }
           }
-          const decision = await this.requestHumanGate({
+          const decision = await waitForHumanGate(() => this.requestHumanGate({
             type: 'permission',
             runId: activeRun.runId,
             agentRunId: harnessRun.agentRunId,
@@ -729,7 +963,7 @@ class LocalWorkspaceAgentInvocation {
               agentKind: kind,
               round,
             },
-          })
+          }))
           if (decision.gateId) resolvedGateIds.push(decision.gateId)
           return { status: decision.status, optionId: decision.optionId }
         },
@@ -761,7 +995,7 @@ class LocalWorkspaceAgentInvocation {
             const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
             if (liveHarnessRun) {
               liveHarnessRun.context = {
-                ...packedContext.context,
+                ...deliveredContext.context,
                 contextMode: promptMode,
                 sessionRotated,
                 ...deliveryContext,
@@ -771,6 +1005,7 @@ class LocalWorkspaceAgentInvocation {
             this.checkpointRun(group.id, activeRun)
             this.emitChanged()
           },
+          connectorResume,
         })
       }
       const costDecision = activeRun?.budget?.check('costMicros')
@@ -778,7 +1013,7 @@ class LocalWorkspaceAgentInvocation {
         const resumed = context.resumedGate
         const decision = resumed?.type === 'budget'
           ? resumed
-          : await this.requestHumanGate({
+          : await waitForHumanGate(() => this.requestHumanGate({
           type: 'budget',
           runId: activeRun.runId,
           agentRunId: harnessRun.agentRunId,
@@ -798,29 +1033,118 @@ class LocalWorkspaceAgentInvocation {
               agentKind: kind,
               round,
             },
-          })
+          }))
         if (decision.gateId && resumed?.type !== 'budget') resolvedGateIds.push(decision.gateId)
         if (decision.status !== 'approved') throw new Error('LOCAL_BUDGET_REJECTED')
         activeRun.budget.approveUnobservable('costMicros')
         this.checkpointRun(group.id, activeRun)
       }
       if (agentController.signal.aborted) throw agentStoppedError()
-      runPromise = Promise.resolve().then(async () => {
+      const executeCurrentSession = async () => {
         const reusedSessionRef = sessionRef
         try {
+          operationStarted = true
+          if (allowWrite) sideEffectsStarted = true
           return await runCurrentSession()
         } catch (error) {
           if (agentController.signal.aborted || !reusedSessionRef
-              || resumedPermission
+              || resumedPermission || resumedConnectorGate
               || error?.message !== 'LOCAL_AGENT_SESSION_INVALID') throw error
           rebuildFreshSession()
+          operationStarted = true
+          if (allowWrite) sideEffectsStarted = true
           return await runCurrentSession()
         }
-      })
-      runPromise.catch(() => {})
-      const pending = [runPromise, watchdogPromise]
-      if (parentAbortPromise) pending.push(parentAbortPromise)
-      result = await Promise.race(pending)
+      }
+      const raceCurrentSession = async () => {
+        runPromise = Promise.resolve().then(executeCurrentSession)
+        runPromise.catch(() => {})
+        const pending = [runPromise, watchdogPromise]
+        if (parentAbortPromise) pending.push(parentAbortPromise)
+        return Promise.race(pending)
+      }
+      result = await raceCurrentSession()
+      if (['waiting_input', 'waiting_permission'].includes(result?.outcome)) {
+        if (!agent.connectorInstanceId || resumedConnectorGate) {
+          throw new Error('LOCAL_RUN_CONNECTOR_WAITING_INVALID')
+        }
+        const waiting = result.waitingRequest
+        const waitingSessionRef = String(result.sessionRef || '')
+        if (waitingSessionRef && waitingSessionRef !== sessionRef) {
+          runOptions.onSessionRef(waitingSessionRef)
+          sessionRef = waitingSessionRef
+        }
+        const binding = connectorSessionBinding(sessionRef, sessionProvenance)
+        const request = {
+          version: 1,
+          source: 'connector',
+          outcome: result.outcome,
+          requestId: waiting?.requestId,
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          ...(result.outcome === 'waiting_input'
+            ? { prompt: waiting?.prompt }
+            : {
+                permission: waiting?.permission,
+                ...(waiting?.summary ? { summary: waiting.summary } : {}),
+              }),
+          connectorInstanceId: agent.connectorInstanceId,
+          connectorId: result.connector?.connectorId,
+          connectorVersion: result.connector?.connectorVersion,
+          operationId,
+          cursor: waiting?.cursor,
+          ...binding,
+        }
+        const requestHash = sha256(canonicalJson(request))
+        const gateType = result.outcome === 'waiting_input' ? 'input' : 'permission'
+        const decision = await waitForHumanGate(() => this.requestHumanGate({
+          type: gateType,
+          runId: activeRun.runId,
+          agentRunId: harnessRun.agentRunId,
+          agentKind: kind,
+          summary: gateType === 'input'
+            ? String(waiting?.prompt || '').trim().replace(/\s+/g, ' ').slice(0, 500)
+            : String(waiting?.summary || 'Connector requests permission to continue.').slice(0, 500),
+          options: gateType === 'input'
+            ? [
+                { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+                { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+              ]
+            : [
+                { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+                { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+              ],
+          request,
+        }, {
+          signal: agentController.signal,
+          preserveOnAbort: () => activeRun.stopReason === 'shutdown',
+          continuation: {
+            resumeKind: 'agent_slot',
+            agentRunId: harnessRun.agentRunId,
+            agentKind: kind,
+            round,
+            requestId: request.requestId,
+            requestHash,
+            ...binding,
+          },
+        }))
+        if (decision.gateId) resolvedGateIds.push(decision.gateId)
+        if (decision.status !== 'approved') throw new Error(
+          gateType === 'input' ? 'LOCAL_INPUT_REJECTED' : 'LOCAL_PERMISSION_REJECTED',
+        )
+        connectorResume = {
+          type: gateType,
+          requestId: request.requestId,
+          requestHash,
+          ...binding,
+          ...(gateType === 'input'
+            ? { response: decision.response }
+            : { status: decision.status, optionId: decision.optionId }),
+        }
+        result = await raceCurrentSession()
+      }
+      terminalFailureKnown = ['failed', 'cancelled']
+        .includes(String(result?.outcome || ''))
       if (agentController.signal.aborted) throw agentStoppedError()
       if (resumedPermissionError) throw resumedPermissionError
       if (resumedPermission && !resumedPermissionUsed) {
@@ -829,10 +1153,22 @@ class LocalWorkspaceAgentInvocation {
       result = requireTerminalAgentResult(result)
       this.markRuntimeCredential(kind, 'ready')
 
-      const reply = mode === 'auto'
+      const reply = mode === 'auto' && context.completionPolicy !== 'typed'
         ? parseAutoReply(result.text)
         : { text: result.text, consensus: false }
       if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')
+      if (allowWrite && context.mediaRequest && this.generateMedia && nativeMediaFallback
+          && !generatedMedia && agentReturnedMediaProviderFailure(reply.text)) {
+        sideEffectsStarted = true
+        generatedMedia = await abortableOperation(() => this.generateMedia({
+          kind,
+          request: context.mediaRequest,
+          workdir: group.workdir,
+          signal: agentController.signal,
+          onEvent: emitRuntimeEvent,
+        }), agentController.signal)
+        reply.text = `Meldwork generated and attached ${generatedMedia.filename}.`
+      }
       const progress = attemptProgress.length ? attemptProgress : result.progress
       const toolCalls = cleanProgressSteps(progress).map(step => ({
         ...step,
@@ -843,17 +1179,25 @@ class LocalWorkspaceAgentInvocation {
         const reportedOutputTokens = Number(result.usage?.outputTokens)
         const hasReportedOutputTokens = Number.isSafeInteger(reportedOutputTokens)
           && reportedOutputTokens >= 0
-        activeRun.budget.addUsage(
-          'outputTokens',
-          hasReportedOutputTokens ? reportedOutputTokens : Math.ceil(reply.text.length / 4),
-          { source: hasReportedOutputTokens ? 'reported' : 'estimated' },
-        )
-        activeRun.budget.addUsage('toolCalls', toolCalls.length, { source: 'estimated' })
         const reportedCostMicros = Number(result.usage?.costMicros)
-        if (Number.isSafeInteger(reportedCostMicros) && reportedCostMicros >= 0) {
-          activeRun.budget.addUsage('costMicros', reportedCostMicros, { source: 'reported' })
-        }
-        activeRun.budget.updateElapsed()
+        activeRun.budget.addUsageBatch([
+          {
+            dimension: 'outputTokens',
+            amount: hasReportedOutputTokens
+              ? reportedOutputTokens
+              : Math.ceil(reply.text.length / 4),
+            source: hasReportedOutputTokens ? 'reported' : 'estimated',
+          },
+          { dimension: 'toolCalls', amount: toolCalls.length, source: 'estimated' },
+          ...(Number.isSafeInteger(reportedCostMicros) && reportedCostMicros >= 0
+            ? [{ dimension: 'costMicros', amount: reportedCostMicros, source: 'reported' }]
+            : []),
+          {
+            dimension: 'elapsedMs',
+            value: activeRun.budget.elapsedValue(),
+            source: 'reported',
+          },
+        ])
         this.checkpointRun(group.id, activeRun)
       }
       let attachments = []
@@ -1027,7 +1371,14 @@ class LocalWorkspaceAgentInvocation {
           configurable: true,
         })
       }
-      throw error
+      throw attachInvocationFailure(error, {
+        outcomeCertainty: terminalFailureKnown
+          ? 'known_failed'
+          : (operationStarted || sideEffectsStarted ? 'unknown_outcome' : 'not_started'),
+        sideEffectsPossible: allowWrite && sideEffectsStarted,
+        operationId,
+        idempotencyMode,
+      })
     } finally {
       agentCallbacksClosed = true
       clearTimeout(watchdogTimer)

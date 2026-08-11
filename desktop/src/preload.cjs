@@ -135,13 +135,28 @@ if (isLocalDocument) Object.assign(desktopApi, {
       return () => ipcRenderer.removeListener('local-agent-installer:changed', listener)
     },
   }),
+  localSkillTrust: Object.freeze({
+    list: () => ipcRenderer.invoke('local-skill-trust:list'),
+    revoke: bindingId => ipcRenderer.invoke('local-skill-trust:revoke', bindingId),
+  }),
   customAgent: Object.freeze({
     create: input => ipcRenderer.invoke('local-custom-agent:create', input),
     delete: kind => ipcRenderer.invoke('local-custom-agent:delete', kind),
   }),
   localAgentConnector: Object.freeze({
     list: () => ipcRenderer.invoke('local-agent-connector:list'),
+    packages: () => ipcRenderer.invoke('local-agent-connector:packages'),
+    import: () => ipcRenderer.invoke('local-agent-connector:import'),
+    inspect: packageId => ipcRenderer.invoke('local-agent-connector:inspect', packageId),
+    audit: packageId => ipcRenderer.invoke('local-agent-connector:audit', packageId),
+    approve: packageId => ipcRenderer.invoke('local-agent-connector:approve', packageId),
+    install: packageId => ipcRenderer.invoke('local-agent-connector:install', packageId),
     configure: input => ipcRenderer.invoke('local-agent-connector:configure', input),
+    test: instanceId => ipcRenderer.invoke('local-agent-connector:test', instanceId),
+    disable: packageId => ipcRenderer.invoke('local-agent-connector:disable', packageId),
+    revoke: packageId => ipcRenderer.invoke('local-agent-connector:revoke', packageId),
+    upgrade: packageId => ipcRenderer.invoke('local-agent-connector:upgrade', packageId),
+    remove: packageId => ipcRenderer.invoke('local-agent-connector:remove', packageId),
     delete: instanceId => ipcRenderer.invoke('local-agent-connector:delete', instanceId),
   }),
   localAttachments: Object.freeze({

@@ -20,7 +20,12 @@ const BUDGET_DIMENSIONS = [
   'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
 ]
 const BUDGET_DIMENSION_FIELDS = new Set(BUDGET_DIMENSIONS)
-const BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const REQUIRED_BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const BUDGET_FIELDS = new Set([...REQUIRED_BUDGET_FIELDS, 'exhaustion'])
+const BUDGET_EXHAUSTION_FIELDS = new Set([
+  'dimension', 'limit', 'priorUsed', 'attemptedUsage', 'used',
+  'source', 'enforcement', 'reason',
+])
 const BUDGET_SOURCES = new Set(['reported', 'estimated', 'unknown'])
 const BUDGET_ENFORCEMENTS = new Set(['hard', 'soft'])
 
@@ -50,7 +55,11 @@ function exactRecord(value, fields) {
 }
 
 function normalizeBudget(value) {
-  const input = exactRecord(value, BUDGET_FIELDS)
+  const input = record(value)
+  if (!input) return null
+  const keys = Reflect.ownKeys(input)
+  if (keys.some(key => typeof key !== 'string' || !BUDGET_FIELDS.has(key))
+      || [...REQUIRED_BUDGET_FIELDS].some(field => !Object.hasOwn(input, field))) return null
   if (!input || !Number.isSafeInteger(input.startedAt) || input.startedAt < 0) return null
   const limits = exactRecord(input.limits, BUDGET_DIMENSION_FIELDS)
   const used = exactRecord(input.used, BUDGET_DIMENSION_FIELDS)
@@ -71,6 +80,24 @@ function normalizeBudget(value) {
     output.used[dimension] = usedValue
     output.source[dimension] = sourceValue
     output.enforcement[dimension] = enforcementValue
+  }
+  if (Object.hasOwn(input, 'exhaustion')) {
+    if (input.exhaustion === null) output.exhaustion = null
+    else {
+      const exhaustion = exactRecord(input.exhaustion, BUDGET_EXHAUSTION_FIELDS)
+      if (!exhaustion
+          || !BUDGET_DIMENSION_FIELDS.has(exhaustion.dimension)
+          || !Number.isSafeInteger(exhaustion.limit) || exhaustion.limit < 0
+          || !Number.isSafeInteger(exhaustion.priorUsed) || exhaustion.priorUsed < 0
+          || !Number.isSafeInteger(exhaustion.attemptedUsage) || exhaustion.attemptedUsage < 0
+          || !Number.isSafeInteger(exhaustion.used) || exhaustion.used < 0
+          || exhaustion.used !== exhaustion.priorUsed + exhaustion.attemptedUsage
+          || exhaustion.used <= exhaustion.limit
+          || !BUDGET_SOURCES.has(exhaustion.source)
+          || exhaustion.enforcement !== 'hard'
+          || exhaustion.reason !== 'BUDGET_LIMIT_EXCEEDED') return null
+      output.exhaustion = { ...exhaustion }
+    }
   }
   return output
 }
@@ -94,7 +121,7 @@ function normalizeHumanGate(value) {
   if (!HUMAN_GATE_ID.test(gateId) || !runId || !agentRunId || !kind || !summary
       || runId !== input?.runId || agentRunId !== input?.agentRunId || kind !== input?.agentKind
       || !HUMAN_GATE_OPTION_ID.test(runId) || !HUMAN_GATE_OPTION_ID.test(agentRunId)
-      || !['permission', 'budget', 'decision'].includes(type)
+      || !['permission', 'budget', 'decision', 'retry', 'input'].includes(type)
       || status !== 'pending'
       || summary !== input?.summary
       || /[\u0000-\u001f\u007f]/u.test(summary)

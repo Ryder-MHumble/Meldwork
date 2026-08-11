@@ -30,6 +30,7 @@ const ATTEMPT_POLICY_ACTIONS = Object.freeze([
   'verify',
   'remove_agent',
   'replace_agent',
+  'human_gate',
   'fail',
   'cancel',
 ])
@@ -43,8 +44,17 @@ const ATTEMPT_FINAL_OUTCOMES = Object.freeze([
 const ATTEMPT_PHASE_SET = new Set(ATTEMPT_PHASES)
 const ATTEMPT_POLICY_ACTION_SET = new Set(ATTEMPT_POLICY_ACTIONS)
 const ATTEMPT_FINAL_OUTCOME_SET = new Set(ATTEMPT_FINAL_OUTCOMES)
+const FAILURE_OUTCOME_CERTAINTIES = Object.freeze([
+  'not_started',
+  'known_failed',
+  'unknown_outcome',
+])
+const FAILURE_OUTCOME_CERTAINTY_SET = new Set(FAILURE_OUTCOME_CERTAINTIES)
+const IDEMPOTENCY_MODES = Object.freeze(['none', 'durable'])
+const IDEMPOTENCY_MODE_SET = new Set(IDEMPOTENCY_MODES)
 const ATTEMPT_PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const MAX_ATTEMPT_HISTORY = 256
+const MAX_RUN_AGENT_ATTEMPTS = 128
 const NETWORK_CODES = new Set([
   'ECONNABORTED', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETDOWN',
   'ENETUNREACH', 'ENOTFOUND', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN',
@@ -168,6 +178,31 @@ function normalizeFailure(error, options = {}) {
   return Object.freeze(normalized)
 }
 
+function normalizeFailureOutcome(error, options = {}) {
+  const explicit = error?.invocationFailure && typeof error.invocationFailure === 'object'
+    ? error.invocationFailure
+    : (error?.failure && typeof error.failure === 'object' ? error.failure : {})
+  const category = options.category || normalizeFailure(error, options).category
+  const requestedCertainty = String(
+    explicit.outcomeCertainty || options.outcomeCertainty || '',
+  )
+  const outcomeCertainty = FAILURE_OUTCOME_CERTAINTY_SET.has(requestedCertainty)
+    ? requestedCertainty
+    : (['rate_limit', 'network', 'provider', 'timeout'].includes(category)
+        ? 'unknown_outcome'
+        : 'known_failed')
+  const operationId = String(explicit.operationId || options.operationId || '')
+  const requestedMode = String(explicit.idempotencyMode || options.idempotencyMode || '')
+  return Object.freeze({
+    outcomeCertainty,
+    sideEffectsPossible: outcomeCertainty === 'not_started'
+      ? false
+      : (explicit.sideEffectsPossible === true || options.sideEffectsPossible === true),
+    operationId: ATTEMPT_PUBLIC_ID.test(operationId) ? operationId : '',
+    idempotencyMode: IDEMPOTENCY_MODE_SET.has(requestedMode) ? requestedMode : 'none',
+  })
+}
+
 function boundedBackoffDelay(failedAttempt, options = {}) {
   const attempt = Math.max(1, boundedInteger(failedAttempt, 1, 1000))
   const baseDelayMs = Math.max(1, boundedInteger(options.baseDelayMs, 250, 60 * 60 * 1000))
@@ -205,6 +240,10 @@ function retryDecision(input, options = {}) {
   if (failure.retryability === 'refresh_session') {
     return Object.freeze({ ...base, action: 'refresh_session', exhausted: false })
   }
+  const safety = options.safety
+  if (safety?.sideEffectsPossible === true && safety.idempotencyMode !== 'durable') {
+    return Object.freeze({ ...base, action: 'human_gate', exhausted: false })
+  }
   const maxDelayMs = Math.max(1, boundedInteger(
     options.maxDelayMs, 10 * 1000, 24 * 60 * 60 * 1000,
   ))
@@ -234,13 +273,24 @@ function normalizeAttemptHistoryEntry(input) {
   const recoveryAgentKind = String(input.recoveryAgentKind || '')
   const finalOutcome = String(input.finalOutcome || '')
   const timestamp = boundedInteger(input.timestamp, 0)
+  const hasOutcomeCertainty = Object.hasOwn(input, 'outcomeCertainty')
+  const outcomeCertainty = hasOutcomeCertainty ? String(input.outcomeCertainty || '') : ''
+  const hasSideEffectsPossible = Object.hasOwn(input, 'sideEffectsPossible')
+  const hasOperationId = Object.hasOwn(input, 'operationId')
+  const operationId = hasOperationId ? String(input.operationId || '') : ''
+  const hasIdempotencyMode = Object.hasOwn(input, 'idempotencyMode')
+  const idempotencyMode = hasIdempotencyMode ? String(input.idempotencyMode || '') : ''
   if (!sequence || !ATTEMPT_PUBLIC_ID.test(agentKind)
       || !ATTEMPT_PHASE_SET.has(phase) || !attempt
       || (failureCategory !== null && !FAILURE_CATEGORY_SET.has(failureCategory))
       || !ATTEMPT_POLICY_ACTION_SET.has(policyAction)
       || (recoveryAgentKind && !ATTEMPT_PUBLIC_ID.test(recoveryAgentKind))
-      || !ATTEMPT_FINAL_OUTCOME_SET.has(finalOutcome)) return null
-  return Object.freeze({
+      || !ATTEMPT_FINAL_OUTCOME_SET.has(finalOutcome)
+      || (hasOutcomeCertainty && !FAILURE_OUTCOME_CERTAINTY_SET.has(outcomeCertainty))
+      || (hasSideEffectsPossible && typeof input.sideEffectsPossible !== 'boolean')
+      || (hasOperationId && !ATTEMPT_PUBLIC_ID.test(operationId))
+      || (hasIdempotencyMode && !IDEMPOTENCY_MODE_SET.has(idempotencyMode))) return null
+  const normalized = {
     sequence,
     agentKind,
     phase,
@@ -251,7 +301,12 @@ function normalizeAttemptHistoryEntry(input) {
     recoveryAgentKind,
     finalOutcome,
     timestamp,
-  })
+  }
+  if (hasOutcomeCertainty) normalized.outcomeCertainty = outcomeCertainty
+  if (hasSideEffectsPossible) normalized.sideEffectsPossible = input.sideEffectsPossible
+  if (hasOperationId) normalized.operationId = operationId
+  if (hasIdempotencyMode) normalized.idempotencyMode = idempotencyMode
+  return Object.freeze(normalized)
 }
 
 function normalizeAttemptHistory(value) {
@@ -270,9 +325,13 @@ module.exports = {
   ATTEMPT_PHASES,
   ATTEMPT_POLICY_ACTIONS,
   FAILURE_CATEGORIES,
+  FAILURE_OUTCOME_CERTAINTIES,
+  IDEMPOTENCY_MODES,
   MAX_ATTEMPT_HISTORY,
+  MAX_RUN_AGENT_ATTEMPTS,
   boundedBackoffDelay,
   normalizeFailure,
+  normalizeFailureOutcome,
   normalizeAttemptHistory,
   normalizeAttemptHistoryEntry,
   parseRetryAfter,

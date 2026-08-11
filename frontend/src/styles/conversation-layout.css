@@ -391,7 +391,9 @@
 }
 
 .turn-rail button[data-status="failed"] > span:first-child,
-.turn-rail button[data-status="timeout"] > span:first-child {
+.turn-rail button[data-status="timeout"] > span:first-child,
+.turn-rail button[data-status="budget-exhausted"] > span:first-child,
+.turn-rail button[data-status="circuit-breaker"] > span:first-child {
   background: var(--danger);
   box-shadow: 0 3px 8px color-mix(in srgb, var(--danger) 28%, transparent);
 }

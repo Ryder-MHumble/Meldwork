@@ -125,6 +125,7 @@ const connectorRunSnapshotSchema = z.strictObject({
     eventTypes: uniqueList(z.enum(RUN_EVENT_TYPES), RUN_EVENT_TYPES.length),
     usage: usageSchema,
     outboundDestinations: uniqueList(outboundDestinationSchema, 16),
+    idempotencyMode: z.enum(['none', 'durable']).optional(),
   }),
 })
 
@@ -334,6 +335,7 @@ class AgentConnectorRegistry {
         eventTypes: manifest.eventTypes,
         usage: manifest.usage,
         outboundDestinations: manifest.outboundDestinations,
+        idempotencyMode: manifest.invocation.idempotencyMode || 'none',
       },
     })
   }
@@ -345,6 +347,17 @@ class AgentConnectorRegistry {
       transport: deepClone(manifest.transport),
       credentialRef: instance.credentialRef,
       provenance: this.runProvenance(instanceId),
+      runtimeProvenance: {
+        connectorId: manifest.connectorId,
+        connectorVersion: manifest.connectorVersion,
+        manifestId: manifest.manifestId,
+        manifestSchemaVersion: manifest.schemaVersion,
+        instanceId: instance.instanceId,
+        recipeId: manifest.invocation.recipeId,
+        upstreamId: manifest.upstream.id,
+        upstreamVersion: instance.upstreamVersion,
+        credentialRefId: instance.credentialRef,
+      },
     })
   }
 }

@@ -19,11 +19,14 @@ const {
   BUDGET_DIMENSIONS,
   BUDGET_ENFORCEMENTS,
   BUDGET_SOURCES,
+  normalizeBudgetExhaustion,
 } = require('./run-budget.cjs')
 const {
   MAX_ATTEMPT_HISTORY,
   normalizeAttemptHistory,
 } = require('./failure-policy.cjs')
+const { parseCollaborationState } = require('./collaboration-records.cjs')
+const { parseTaskGraphCursor } = require('./task-graph-records.cjs')
 
 const DEFAULT_MAX_DURABLE_AGENT_RUNS = 256
 const MAX_TARGET_KINDS = 32
@@ -37,28 +40,39 @@ const REMOTE_JOB_FIELDS = new Set([
 const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
   'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
-  'sessionProvenance', 'outcomeRefs',
+  'sessionProvenance', 'outcomeRefs', 'sourceCount', 'sourceHash', 'promptBytes',
+  'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
   'connector', 'connectorEventState',
 ])
 const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
-const BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const REQUIRED_BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
+const BUDGET_FIELDS = new Set([...REQUIRED_BUDGET_FIELDS, 'exhaustion'])
 const BUDGET_DIMENSION_SET = new Set(BUDGET_DIMENSIONS)
 const BUDGET_SOURCE_SET = new Set(BUDGET_SOURCES)
 const BUDGET_ENFORCEMENT_SET = new Set(BUDGET_ENFORCEMENTS)
 const HUMAN_GATE_ID = /^human-gate-[a-f0-9]{64}$/
+const SHA256 = /^[a-f0-9]{64}$/
 const CONTINUATION_FIELDS = new Set([
   'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
-  'round', 'createdAt', 'updatedAt',
+  'round', 'createdAt', 'updatedAt', 'requestId', 'requestHash',
+  'sessionRefHash', 'sessionProvenanceHash',
 ])
-const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision'])
+const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry', 'input'])
 const CONTINUATION_RESUME_KINDS = new Set(['agent_slot', 'role_review_decision'])
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
 ])
+const ORCHESTRATION_FIELDS = new Set([
+  'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
+  'successfulKinds', 'agreementKinds', 'attachmentRecipients',
+  'totalSuccesses', 'terminalFailureOccurred', 'collaboration', 'template', 'taskGraph',
+])
+const ORCHESTRATION_WORKFLOWS = new Set(['manual', 'auto'])
 
 const RUN_STATUSES = new Set([
   'preparing', 'queued', 'running', 'waiting', 'reconciling',
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const AGENT_STATUSES = new Set([
   'queued', 'running', 'waiting',
@@ -70,6 +84,7 @@ const EVENT_STATUSES = new Set([
 ])
 const TERMINAL_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
 ])
 const MODES = new Set(['manual', 'auto'])
 const PERMISSION_MODES = new Set(['read-only', 'workspace-write'])
@@ -210,16 +225,17 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
   const hasContext = isRecord(input.context) && [
     'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
     'contextMode', 'promptChars', 'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
+    'sourceCount', 'sourceHash', 'promptBytes', 'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
     'connector', 'connectorEventState',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
-  const eventCursor = boundedNumber(
-    input.eventCursor,
-    rawEvents.reduce((highest, event) => Math.max(highest, boundedNumber(
-      event?.seq, 0, 1000000000,
-    )), 0),
-    1000000000,
+  const eventCursor = Math.max(
+    boundedNumber(input.eventCursor, 0, 1000000000),
+    ...rawEvents.map(event => boundedNumber(event?.seq, 0, 1000000000)),
+    ...(Array.isArray(input.seenSeqs)
+      ? input.seenSeqs.map(seq => boundedNumber(seq, 0, 1000000000))
+      : []),
   )
   const outputChars = boundedNumber(input.outputChars, outputSource.length, 1000000)
   const agentRun = {
@@ -284,15 +300,15 @@ function hasExactBudgetDimensions(value) {
 
 function hasValidStoredBudgetSnapshot(input) {
   if (!isRecord(input)
-      || Object.keys(input).length !== BUDGET_FIELDS.size
       || Object.keys(input).some(field => !BUDGET_FIELDS.has(field))
+      || [...REQUIRED_BUDGET_FIELDS].some(field => !hasOwn(input, field))
       || !Number.isSafeInteger(input.startedAt)
       || input.startedAt < 0
       || !hasExactBudgetDimensions(input.limits)
       || !hasExactBudgetDimensions(input.used)
       || !hasExactBudgetDimensions(input.source)
       || !hasExactBudgetDimensions(input.enforcement)) return false
-  return BUDGET_DIMENSIONS.every(dimension => (
+  const dimensionsValid = BUDGET_DIMENSIONS.every(dimension => (
     (input.limits[dimension] === null
       || (Number.isSafeInteger(input.limits[dimension]) && input.limits[dimension] >= 0))
     && Number.isSafeInteger(input.used[dimension])
@@ -300,6 +316,13 @@ function hasValidStoredBudgetSnapshot(input) {
     && BUDGET_SOURCE_SET.has(input.source[dimension])
     && BUDGET_ENFORCEMENT_SET.has(input.enforcement[dimension])
   ))
+  if (!dimensionsValid || !hasOwn(input, 'exhaustion')) return dimensionsValid
+  try {
+    const exhaustion = normalizeBudgetExhaustion(input.exhaustion)
+    return canonicalJson(exhaustion) === canonicalJson(input.exhaustion)
+  } catch {
+    return false
+  }
 }
 
 function hasValidStoredAttemptHistory(input) {
@@ -310,7 +333,7 @@ function hasValidStoredAttemptHistory(input) {
 
 function normalizeBudgetSnapshot(input) {
   if (!hasValidStoredBudgetSnapshot(input)) return null
-  return {
+  const budget = {
     limits: Object.fromEntries(BUDGET_DIMENSIONS.map(dimension => [
       dimension, input.limits[dimension],
     ])),
@@ -325,6 +348,10 @@ function normalizeBudgetSnapshot(input) {
     ])),
     startedAt: input.startedAt,
   }
+  if (hasOwn(input, 'exhaustion')) {
+    budget.exhaustion = input.exhaustion ? { ...input.exhaustion } : null
+  }
+  return budget
 }
 
 function normalizeContinuation(input) {
@@ -341,13 +368,78 @@ function normalizeContinuation(input) {
   const round = boundedNumber(input.round, 0, 100000)
   const createdAt = safeTimestamp(input.createdAt, 0)
   const updatedAt = safeTimestamp(input.updatedAt, createdAt)
+  const requestId = cleanId(input.requestId)
+  const requestHash = String(input.requestHash || '')
+  const sessionRefHash = String(input.sessionRefHash || '')
+  const sessionProvenanceHash = String(input.sessionProvenanceHash || '')
+  const hasRequestBinding = requestId && SHA256.test(requestHash)
+    && SHA256.test(sessionRefHash) && SHA256.test(sessionProvenanceHash)
   if (!HUMAN_GATE_ID.test(gateId) || !CONTINUATION_GATE_TYPES.has(gateType)
       || !CONTINUATION_RESUME_KINDS.has(resumeKind)
       || !CONTINUATION_STATES.has(state) || !agentRunId || !agentKind
-      || (resumeKind === 'role_review_decision' && gateType !== 'decision')) return undefined
+      || (resumeKind === 'role_review_decision' && gateType !== 'decision')
+      || (gateType === 'input' && !hasRequestBinding)
+      || (!hasRequestBinding && [requestId, requestHash, sessionRefHash, sessionProvenanceHash]
+        .some(Boolean))) return undefined
   return {
     gateId, gateType, resumeKind, state, agentRunId, agentKind,
     round, createdAt, updatedAt,
+    ...(hasRequestBinding ? {
+      requestId, requestHash, sessionRefHash, sessionProvenanceHash,
+    } : {}),
+  }
+}
+
+function normalizeOrchestration(input) {
+  if (input == null) return null
+  if (!isRecord(input) || Object.keys(input).some(field => !ORCHESTRATION_FIELDS.has(field))) {
+    return undefined
+  }
+  const version = boundedNumber(input.version, 0, 100)
+  const workflow = String(input.workflow || '')
+  const currentKind = cleanId(input.currentKind)
+  const pendingKinds = normalizeKinds(input.pendingKinds)
+  const activeKinds = normalizeKinds(input.activeKinds)
+  const successfulKinds = normalizeKinds(input.successfulKinds)
+  const agreementKinds = normalizeKinds(input.agreementKinds)
+  const attachmentRecipients = normalizeKinds(input.attachmentRecipients)
+  const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
+  if (![1, 2, 3].includes(version) || !ORCHESTRATION_WORKFLOWS.has(workflow)
+      || (version === 1 && hasOwn(input, 'collaboration'))
+      || (version === 2 && workflow !== 'auto')
+      || (version < 3 && (hasOwn(input, 'template') || hasOwn(input, 'taskGraph')))
+      || (version === 3 && (workflow !== 'auto' || input.template !== 'task-graph'))) {
+    return undefined
+  }
+  let collaboration
+  if (version >= 2) {
+    try {
+      collaboration = parseCollaborationState(input.collaboration)
+    } catch {
+      return undefined
+    }
+  }
+  let taskGraph
+  if (version === 3) {
+    try {
+      taskGraph = parseTaskGraphCursor(input.taskGraph)
+    } catch {
+      return undefined
+    }
+  }
+  return {
+    version,
+    workflow,
+    currentKind,
+    pendingKinds,
+    activeKinds,
+    successfulKinds,
+    agreementKinds,
+    attachmentRecipients,
+    totalSuccesses,
+    terminalFailureOccurred: input.terminalFailureOccurred === true,
+    ...(version >= 2 ? { collaboration } : {}),
+    ...(version === 3 ? { template: 'task-graph', taskGraph } : {}),
   }
 }
 
@@ -377,6 +469,11 @@ function hasValidStoredRecordShape(input) {
     const continuation = normalizeContinuation(input.continuation)
     if (continuation === undefined
         || canonicalJson(continuation) !== canonicalJson(input.continuation)) return false
+  }
+  if (hasOwn(input, 'orchestration')) {
+    const orchestration = normalizeOrchestration(input.orchestration)
+    if (orchestration === undefined
+        || canonicalJson(orchestration) !== canonicalJson(input.orchestration)) return false
   }
   if (hasOwn(input, 'remoteJob')) {
     if (!isRecord(input.remoteJob)
@@ -414,6 +511,16 @@ function hasValidStoredRecordShape(input) {
   if (!Array.isArray(input.agentRuns)) return false
 
   const targetKinds = normalizeKinds(input.targetKinds)
+  const orchestration = normalizeOrchestration(input.orchestration)
+  if (orchestration && [
+    orchestration.currentKind,
+    ...orchestration.pendingKinds,
+    ...orchestration.activeKinds,
+    ...orchestration.successfulKinds,
+    ...orchestration.agreementKinds,
+    ...orchestration.attachmentRecipients,
+    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
+  ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return false
   const parent = {
     runId: cleanId(input.runId),
     groupId: cleanGroupId(input.groupId),
@@ -446,6 +553,15 @@ function hasValidStoredRecordShape(input) {
       if (hasOwn(agentRun.context, 'promptChars')
           && !hasStoredBoundedInteger(agentRun.context, 'promptChars', 0, 10000000)) {
         return false
+      }
+      for (const field of ['sourceCount', 'promptBytes', 'wirePayloadBytes']) {
+        if (hasOwn(agentRun.context, field)
+            && !hasStoredBoundedInteger(agentRun.context, field, 0, 10000000)) return false
+      }
+      for (const field of ['sourceHash', 'promptHash', 'wirePayloadHash']) {
+        if (hasOwn(agentRun.context, field)
+            && (typeof agentRun.context[field] !== 'string'
+              || !SHA256.test(agentRun.context[field]))) return false
       }
       if (hasOwn(agentRun.context, 'contextPackId')
           && normalizeContextPackId(agentRun.context.contextPackId)
@@ -640,6 +756,19 @@ function normalizeRecord(input, options = {}) {
   const rawContinuation = selectedValue(input, existing, 'continuation')
   const continuation = normalizeContinuation(rawContinuation)
   if (continuation === undefined) return null
+  const rawOrchestration = selectedValue(input, existing, 'orchestration')
+  const orchestration = normalizeOrchestration(rawOrchestration)
+  if (orchestration === undefined) return null
+  if (orchestration && orchestration.workflow !== mode) return null
+  if (orchestration && [
+    orchestration.currentKind,
+    ...orchestration.pendingKinds,
+    ...orchestration.activeKinds,
+    ...orchestration.successfulKinds,
+    ...orchestration.agreementKinds,
+    ...orchestration.attachmentRecipients,
+    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
+  ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return null
 
   const record = {
     runId,
@@ -664,6 +793,7 @@ function normalizeRecord(input, options = {}) {
   }
   if (budget) record.budget = budget
   if (continuation) record.continuation = continuation
+  if (orchestration) record.orchestration = orchestration
   if (remoteJob) record.remoteJob = remoteJob
   if (TERMINAL_STATUSES.has(status)) {
     record.finishedAt = safeTimestamp(
@@ -684,22 +814,19 @@ function oldestTimestamp(record) {
 
 function pruneRecords(value, maxRuns) {
   const records = [...value]
-  while (records.length > maxRuns) {
-    let removable = -1
-    for (let index = 0; index < records.length; index += 1) {
-      if (!TERMINAL_STATUSES.has(records[index].status)) continue
-      if (removable < 0 || oldestTimestamp(records[index]) < oldestTimestamp(records[removable])) {
-        removable = index
-      }
-    }
-    if (removable < 0) {
-      removable = records.reduce((oldest, record, index) => (
-        oldestTimestamp(record) < oldestTimestamp(records[oldest]) ? index : oldest
-      ), 0)
-    }
-    records.splice(removable, 1)
-  }
-  return records
+  const removeCount = records.length - maxRuns
+  if (removeCount <= 0) return records
+  const terminalIndexes = records
+    .map((record, index) => ({ index, timestamp: oldestTimestamp(record) }))
+    .filter(({ index }) => TERMINAL_STATUSES.has(records[index].status))
+    .sort((left, right) => left.timestamp - right.timestamp || left.index - right.index)
+  const nonterminalCount = records.length - terminalIndexes.length
+  const terminalFloor = nonterminalCount >= maxRuns && terminalIndexes.length ? 1 : 0
+  const terminalRemoveCount = Math.min(removeCount, terminalIndexes.length - terminalFloor)
+  terminalIndexes.splice(terminalRemoveCount)
+  if (!terminalIndexes.length) return records
+  const removed = new Set(terminalIndexes.map(item => item.index))
+  return records.filter((_record, index) => !removed.has(index))
 }
 
 function clone(value) {

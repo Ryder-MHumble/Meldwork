@@ -6,6 +6,7 @@ const {
   assessAgentVersion,
   capabilityProbes,
   extractAgentVersion,
+  identifyAgentVersion,
 } = require('../src/agent-compatibility.cjs')
 
 test('extracts connector versions from decorated CLI output', () => {
@@ -15,6 +16,50 @@ test('extracts connector versions from decorated CLI output', () => {
   assert.equal(extractAgentVersion('OpenClaw 2026.7.1-2 (0790d9f)'), '2026.7.1-2')
   assert.equal(extractAgentVersion('open-code-review v1.8.6 darwin/arm64'), '1.8.6')
   assert.equal(extractAgentVersion('Please log in'), '')
+})
+
+test('identifies product versions without selecting unrelated warnings', () => {
+  assert.deepEqual(identifyAgentVersion('kimi', [
+    '\u001b[33mWarning: Node.js 22.5.1 is experimental\u001b[0m',
+    '\u001b[32mKimi Code 0.19.2\u001b[0m',
+  ], { executable: '/tmp/kimi' }), {
+    line: 'Kimi Code 0.19.2',
+    resolvedVersion: '0.19.2',
+  })
+  assert.deepEqual(identifyAgentVersion('kimi', [
+    'Warning: Node.js 22.5.1 is experimental',
+    '0.19.2',
+  ], { executable: '/tmp/kimi' }), {
+    line: '0.19.2',
+    resolvedVersion: '0.19.2',
+  })
+  assert.equal(identifyAgentVersion('kimi', [
+    'Kimi Code 0.19.2',
+    'Kimi Code 0.20.0',
+  ], { executable: '/tmp/kimi' }), null)
+  assert.equal(identifyAgentVersion('kimi', 'Node.js 22.5.1', {
+    executable: '/tmp/kimi',
+  }), null)
+  assert.deepEqual(identifyAgentVersion(
+    'kimi',
+    'Warning: Node.js 22.5.1 could not initialize Kimi Code 0.19.2',
+    { executable: '/tmp/kimi' },
+  ), {
+    line: 'Warning: Node.js 22.5.1 could not initialize Kimi Code 0.19.2',
+    resolvedVersion: '0.19.2',
+  })
+  assert.equal(identifyAgentVersion('kimi', '0.19.2', {
+    executable: '/tmp/not-kimi',
+  }), null)
+})
+
+test('keeps unidentified versions distinct from verified incompatibility', () => {
+  assert.deepEqual(assessAgentVersion('kimi', ''), {
+    resolvedVersion: '',
+    supportedVersionRange: '0.19.2..0.32.0',
+    compatibilityState: 'unknown',
+    incompatibilityReason: '',
+  })
 })
 
 test('accepts inclusive release ranges and rejects unvalidated versions', () => {

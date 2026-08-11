@@ -34,10 +34,16 @@ function fixture(overrides = {}) {
     }),
     hasRunLedger: () => overrides.hasRunLedger === true,
     validateContextPack: overrides.validateContextPack || (() => true),
-    finishRunCheckpoint: (...args) => calls.push(['ledger-finish', ...args]),
+    finishRunCheckpoint: overrides.finishRunCheckpoint || ((...args) => {
+      calls.push(['ledger-finish', ...args])
+      return true
+    }),
     scheduleRunCheckpoint: (...args) => calls.push(['schedule', ...args]),
     emitChanged: overrides.emitChanged || (() => calls.push(['changed'])),
     emit: (...args) => calls.push(['emit', ...args]),
+    retryBaseDelayMs: 1,
+    retryMaxDelayMs: 4,
+    terminalRetrySleep: overrides.terminalRetrySleep || (() => Promise.resolve()),
   })
   return {
     activeRuns,
@@ -71,6 +77,33 @@ test('LocalWorkspace collaborators share the original run Map identities', (t) =
   assert.equal(workspace.runMessages.activeRuns, workspace.activeRuns)
   assert.equal(workspace.agentInvocation.activeRuns, workspace.activeRuns)
   assert.equal(workspace.runLedgerCoordinator.timers, workspace.runCheckpointTimers)
+})
+
+test('workspace snapshots surface only the typed terminal persistence state', (t) => {
+  const { directory, options } = workspaceFixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const controller = workspace.createRunController('manual', ['codex'], 'task-1')
+  controller.groupId = 'group-1'
+  controller.taskBound = true
+  controller.contextPackId = CONTEXT_PACK_ID
+  controller.terminalPersistence = {
+    state: 'failed',
+    status: 'completed',
+    attempts: 3,
+    nextRetryAt: 0,
+    code: 'LOCAL_RUN_PERSIST_FAILED',
+    privateDiagnostic: '/private/run-ledger.json',
+  }
+  workspace.activeRuns.set('group-1', controller)
+
+  assert.deepEqual(workspace.snapshot().runs[0].terminalPersistence, {
+    state: 'failed',
+    status: 'completed',
+    attempts: 3,
+    nextRetryAt: 0,
+    code: 'LOCAL_RUN_PERSIST_FAILED',
+  })
 })
 
 test('controller construction copies targets and keeps its completion state idempotent', async () => {
@@ -127,7 +160,7 @@ test('reservation migrates the same controller into active state and preserves l
   assert.equal(calls[0][3], 'running')
 
   calls.length = 0
-  coordinator.finish('group-1', reservation, 'completed')
+  await coordinator.finish('group-1', reservation, 'completed')
   await reservation.done
   assert.equal(activeRuns.has('group-1'), false)
   assert.deepEqual(calls.map(call => call[0]), ['ledger-finish', 'changed', 'emit'])
@@ -177,7 +210,7 @@ test('resume restores the latest durable completion and failure state per Agent'
   assert.deepEqual(controller.failedKinds, ['hermes'])
 
   calls.length = 0
-  coordinator.finish('group-1', controller, 'completed')
+  await coordinator.finish('group-1', controller, 'completed')
   await controller.done
   const event = calls.find(call => call[0] === 'emit' && call[1] === 'run-finished')[2]
   assert.deepEqual(event.completedKinds, ['codex', 'hermes', 'workbuddy'])
@@ -311,12 +344,103 @@ test('stale finish keeps a newer active controller while still publishing comple
   const current = coordinator.createController('manual', ['hermes'], 'root-2')
   activeRuns.set('group-1', current)
 
-  coordinator.finish('group-1', stale, 'completed')
+  await coordinator.finish('group-1', stale, 'completed')
   await stale.done
 
   assert.equal(activeRuns.get('group-1'), current)
   assert.deepEqual(calls.map(call => call[0]), ['ledger-finish', 'emit'])
   assert.equal(calls[1][2].runId, stale.runId)
+})
+
+test('terminal persistence retries automatically before completion is acknowledged', async () => {
+  let attempts = 0
+  const delays = []
+  const { activeRuns, calls, coordinator } = fixture({
+    hasRunLedger: true,
+    finishRunCheckpoint: (...args) => {
+      calls.push(['ledger-finish', ...args])
+      attempts += 1
+      return attempts > 1
+    },
+    terminalRetrySleep: async delayMs => { delays.push(delayMs) },
+  })
+  const controller = coordinator.createController('manual', ['codex'], 'task-1')
+  controller.groupId = 'group-1'
+  controller.taskBound = true
+  controller.contextPackId = CONTEXT_PACK_ID
+  activeRuns.set('group-1', controller)
+
+  await coordinator.finish('group-1', controller, 'completed')
+
+  assert.equal(attempts, 2)
+  assert.deepEqual(delays, [1])
+  assert.equal(activeRuns.has('group-1'), false)
+  assert.equal(controller.terminalPersistence.state, 'committed')
+  assert.equal(calls.filter(call => call[0] === 'emit' && call[1] === 'run-finished').length, 1)
+  await controller.done
+})
+
+test('permanent terminal persistence failure retains the controller and typed outbox state', async () => {
+  const { activeRuns, calls, coordinator } = fixture({
+    hasRunLedger: true,
+    finishRunCheckpoint: (...args) => {
+      calls.push(['ledger-finish', ...args])
+      return false
+    },
+  })
+  const controller = coordinator.createController('manual', ['codex'], 'task-1')
+  controller.groupId = 'group-1'
+  controller.taskBound = true
+  controller.contextPackId = CONTEXT_PACK_ID
+  activeRuns.set('group-1', controller)
+
+  await assert.rejects(
+    coordinator.finish('group-1', controller, 'completed'),
+    error => error?.code === 'LOCAL_RUN_TERMINAL_PERSIST_FAILED'
+      && error.persistence?.state === 'failed',
+  )
+
+  assert.equal(activeRuns.get('group-1'), controller)
+  assert.equal(controller.finished, false)
+  assert.deepEqual(controller.terminalOutbox.status, 'completed')
+  assert.deepEqual(controller.terminalPersistence, {
+    state: 'failed',
+    status: 'completed',
+    attempts: 3,
+    nextRetryAt: 0,
+    code: 'LOCAL_RUN_PERSIST_FAILED',
+  })
+  assert.equal(calls.filter(call => call[0] === 'ledger-finish').length, 3)
+  assert.equal(calls.some(call => call[0] === 'emit' && call[1] === 'run-finished'), false)
+  assert.equal(controller.finishingPromise, null)
+})
+
+test('a retained terminal outbox can be retried without downgrading its original status', async () => {
+  let writable = false
+  const { activeRuns, calls, coordinator } = fixture({
+    hasRunLedger: true,
+    finishRunCheckpoint: (...args) => {
+      calls.push(['ledger-finish', ...args])
+      return writable
+    },
+  })
+  const controller = coordinator.createController('manual', ['codex'], 'task-1')
+  controller.groupId = 'group-1'
+  controller.taskBound = true
+  controller.contextPackId = CONTEXT_PACK_ID
+  activeRuns.set('group-1', controller)
+
+  await assert.rejects(
+    coordinator.finish('group-1', controller, 'completed'),
+    { message: 'LOCAL_RUN_TERMINAL_PERSIST_FAILED' },
+  )
+  writable = true
+  await coordinator.finish('group-1', controller, 'failed')
+
+  const event = calls.find(call => call[0] === 'emit' && call[1] === 'run-finished')[2]
+  assert.equal(event.status, 'completed')
+  assert.equal(controller.terminalPersistence.state, 'committed')
+  assert.equal(activeRuns.has('group-1'), false)
 })
 
 test('RunHarness and silence warnings remain lazy, dynamic, and checkpointed in order', () => {

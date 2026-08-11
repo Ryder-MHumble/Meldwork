@@ -21,6 +21,8 @@ describe('conversation timeline labels', () => {
 
     expect(labels.runStatusLabel('in_progress')).toBe('run.status.running:{}')
     expect(labels.runStatusLabel('round-limit')).toBe('run.status.roundLimit:{}')
+    expect(labels.runStatusLabel('budget-exhausted')).toBe('run.status.budgetExhausted:{}')
+    expect(labels.runStatusLabel('circuit-breaker')).toBe('run.status.circuitBreaker:{}')
     expect(labels.runStatusLabel('unexpected')).toBe('run.status.unknown:{}')
     expect(labels.traceEventTypeLabel('tool_start')).toBe('trace.eventToolStart:{}')
     expect(labels.traceEventTitle({ title: 'connector_fallback' })).toBe('trace.eventConnectorFallback:{}')

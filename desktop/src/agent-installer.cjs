@@ -37,15 +37,17 @@ function publicCompatibility(agent) {
   if (!agent) {
     return {
       resolvedVersion: '',
+      versionIdentified: false,
+      compatible: false,
       supportedVersionRange: '',
       compatibilityState: 'unknown',
       incompatibilityReason: '',
       incompatibilityProbe: '',
     }
   }
-  const compatibilityState = agent.compatibilityState === 'compatible'
-    ? 'compatible'
-    : 'incompatible'
+  const compatibilityState = ['compatible', 'incompatible'].includes(agent.compatibilityState)
+    ? agent.compatibilityState
+    : 'unknown'
   const resolvedVersion = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
     .test(String(agent.resolvedVersion || ''))
     ? agent.resolvedVersion
@@ -54,6 +56,10 @@ function publicCompatibility(agent) {
     .test(String(agent.supportedVersionRange || ''))
     ? agent.supportedVersionRange
     : ''
+  const versionIdentified = typeof agent.versionIdentified === 'boolean'
+    ? agent.versionIdentified
+    : Boolean(resolvedVersion)
+  const compatible = compatibilityState === 'compatible'
   const incompatibilityReason = compatibilityState === 'incompatible'
     ? (COMPATIBILITY_REASONS.has(agent.incompatibilityReason)
         ? agent.incompatibilityReason
@@ -65,6 +71,8 @@ function publicCompatibility(agent) {
     : ''
   return {
     resolvedVersion,
+    versionIdentified,
+    compatible,
     supportedVersionRange,
     compatibilityState,
     incompatibilityReason,

@@ -192,7 +192,7 @@ describe('RoundRelay workbench', () => {
         budget: {
           limits: {
             inputTokens: 4000, outputTokens: null, costMicros: null,
-            toolCalls: 20, outboundBytes: null, elapsedMs: null,
+            toolCalls: 2, outboundBytes: null, elapsedMs: null,
           },
           used: {
             inputTokens: 750, outputTokens: 120, costMicros: 0,
@@ -207,6 +207,10 @@ describe('RoundRelay workbench', () => {
             toolCalls: 'hard', outboundBytes: 'soft', elapsedMs: 'soft',
           },
           startedAt: 1000,
+          exhaustion: {
+            dimension: 'toolCalls', limit: 2, priorUsed: 2, attemptedUsage: 1, used: 3,
+            source: 'estimated', enforcement: 'hard', reason: 'BUDGET_LIMIT_EXCEEDED',
+          },
         },
         agentRuns: [{
           agentRunId: 'agent-runtime-codex',
@@ -245,6 +249,8 @@ describe('RoundRelay workbench', () => {
       .toContain('This run requires your decision')
     expect(wrapper.get('.trace-budget-section').text()).toContain('Input tokens')
     expect(wrapper.get('.trace-budget-section').text()).toContain('750 / 4,000')
+    expect(wrapper.get('.trace-budget-section').text()).toContain('Hard budget stop')
+    expect(wrapper.get('.trace-budget-section').text()).toContain('Prior 2; attempted +1')
     expect(wrapper.get('.trace-agent-control-section').text()).toContain('Agent controls')
 
     await wrapper.findAll('.trace-agent-control-actions button')
@@ -496,6 +502,14 @@ describe('RoundRelay workbench', () => {
               includedCount: 3,
               omittedCount: 2,
               charCount: 480,
+              contextMode: 'continuation',
+              promptChars: 720,
+              promptBytes: 760,
+              promptHash: 'd'.repeat(64),
+              sourceCount: 4,
+              sourceHash: 'e'.repeat(64),
+              wirePayloadBytes: 900,
+              wirePayloadHash: 'f'.repeat(64),
               sessionRotated: true,
               contextPackId,
               deliveryRecordIds,
@@ -527,11 +541,18 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages injected for this attempt')
     expect(wrapper.get('.trace-context-stats').text()).toContain('2 messages compacted')
     expect(wrapper.get('.trace-context-stats').text()).toContain('480 context characters')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('Continuation payload')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('720 prompt characters')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('760 prompt bytes')
     expect(wrapper.get('.trace-context-stats').text()).toContain('Session context rotated')
     expect(wrapper.get('[data-context-section="attempt"]').text()).toContain(contextPackId)
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('Actual outbound')
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain(deliveryRecordIds[0])
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain(deliveryRecordIds[1])
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('Sources (4)')
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('d'.repeat(64))
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('e'.repeat(64))
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('f'.repeat(64))
     expect(wrapper.get('[data-context-section="session"]').attributes('data-session-reuse')).toBe('reused')
     expect(wrapper.get('[data-context-section="session"]').text())
       .toContain('Earlier native Session context may exist')
@@ -540,7 +561,9 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(wrapper.get('.trace-event-section .trace-empty-state').text()).toBe('没有保留详细过程事件。')
     expect(wrapper.get('.trace-context-stats').text()).toContain('本次尝试注入 3 条消息')
+    expect(wrapper.get('.trace-context-stats').text()).toContain('续跑外发')
     expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('实际外发')
+    expect(wrapper.get('[data-context-section="outbound"]').text()).toContain('来源（4 项）')
     expect(wrapper.get('[data-context-section="session"]').text()).toContain('Session 中可能还存在更早的上下文')
     wrapper.unmount()
   })

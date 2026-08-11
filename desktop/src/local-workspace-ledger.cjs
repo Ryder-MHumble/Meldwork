@@ -6,6 +6,7 @@ const {
   MAX_SYSTEM_PARAM_TEXT_CHARS,
   RECOVERABLE_AGENT_STATUSES,
   RUN_LEDGER_CHECKPOINT_DELAY_MS,
+  budgetTerminalPrefix,
   cleanText,
   isSupportedAgentKind,
   normalizeLoadedMessage,
@@ -13,6 +14,7 @@ const {
   terminalStatusPrefix,
   terminalStatusPrefixFromMessage,
 } = require('./local-workspace-inputs.cjs')
+const { MAX_RUN_AGENT_ATTEMPTS } = require('./failure-policy.cjs')
 
 class LocalWorkspaceRunLedger {
   constructor(options) {
@@ -72,11 +74,16 @@ class LocalWorkspaceRunLedger {
         const stopped = status === 'stopped'
         const reason = cleanText(agentRun.reason, MAX_SYSTEM_PARAM_TEXT_CHARS)
           || (status === 'timeout' ? 'LOCAL_AGENT_TIMEOUT' : 'LOCAL_AGENT_UNKNOWN_FAILURE')
-        const fallbackContent = terminalStatusPrefix(label, status, reason)
+        const budgetExhausted = reason === 'LOCAL_BUDGET_EXHAUSTED'
+          && Boolean(record.budget?.exhaustion)
+        const fallbackContent = budgetExhausted
+          ? budgetTerminalPrefix(label)
+          : terminalStatusPrefix(label, status, reason)
         const existingMessage = state.messages.find(message => (
           message.trace?.agentRunId === trace.agentRunId
         ))
         if (existingMessage) {
+          if (['completed', 'partial'].includes(existingMessage.trace?.status) && !completed) continue
           if (!completed && output) {
             const prefix = terminalStatusPrefixFromMessage(
               existingMessage, label, status, reason,
@@ -94,7 +101,9 @@ class LocalWorkspaceRunLedger {
             message.groupId === group.id
               && message.role === 'system'
               && message.agentKind === agentRun.kind
-              && message.system?.key === 'system.agentCallFailed'
+              && message.system?.key === (budgetExhausted
+                ? 'system.agentBudgetExhausted'
+                : 'system.agentCallFailed')
               && cleanText(message.system?.params?.reason, MAX_SYSTEM_PARAM_TEXT_CHARS) === reason
               && message.trace?.runId === trace.runId
               && message.trace?.status === status
@@ -102,13 +111,26 @@ class LocalWorkspaceRunLedger {
               && (!output || message.content === terminalMessageContent(fallbackContent, output))
           ))
         if (duplicateStableFailure) continue
+        const exhaustion = record.budget?.exhaustion
         const system = completed
           ? null
           : interrupted
             ? { key: 'system.agentInterrupted', params: { agent: label } }
             : stopped
               ? { key: 'system.agentStopped', params: { agent: label } }
-              : { key: 'system.agentCallFailed', params: { agent: label, reason } }
+              : budgetExhausted
+                ? {
+                    key: 'system.agentBudgetExhausted',
+                    params: {
+                      agent: label,
+                      dimension: exhaustion.dimension,
+                      limit: exhaustion.limit,
+                      priorUsed: exhaustion.priorUsed,
+                      attemptedUsage: exhaustion.attemptedUsage,
+                      used: exhaustion.used,
+                    },
+                  }
+                : { key: 'system.agentCallFailed', params: { agent: label, reason } }
         const message = normalizeLoadedMessage({
           id: this.createId(),
           groupId: group.id,
@@ -126,6 +148,29 @@ class LocalWorkspaceRunLedger {
         state.messages.push(message)
         group.updatedAt = message.createdAt
         changed = true
+      }
+      if (record.status === 'circuit-breaker' && !state.messages.some(message => (
+        message.groupId === group.id
+          && message.threadRootId === record.threadRootId
+          && message.system?.key === 'system.runCircuitBreaker'
+      ))) {
+        const message = normalizeLoadedMessage({
+          id: this.createId(),
+          groupId: group.id,
+          role: 'system',
+          content: `Run stopped after ${MAX_RUN_AGENT_ATTEMPTS} Agent attempts.`,
+          createdAt: this.now(),
+          threadRootId: record.threadRootId,
+          system: {
+            key: 'system.runCircuitBreaker',
+            params: { maxAttempts: MAX_RUN_AGENT_ATTEMPTS },
+          },
+        })
+        if (message) {
+          state.messages.push(message)
+          group.updatedAt = message.createdAt
+          changed = true
+        }
       }
     }
     if (changed) this.save()
@@ -157,6 +202,7 @@ class LocalWorkspaceRunLedger {
       budget: controller.budget?.snapshot?.(),
       attemptHistory: controller.attemptHistory,
       continuation: controller.continuation,
+      orchestration: controller.orchestration,
       agentRuns,
     }
   }
@@ -185,14 +231,17 @@ class LocalWorkspaceRunLedger {
   }
 
   finish(groupId, controller, status) {
-    if (!this.runLedger || !controller?.runId) return
+    if (!this.runLedger || !controller?.runId) return false
     const timer = this.timers.get(controller.runId)
     if (timer) clearTimeout(timer)
     this.timers.delete(controller.runId)
-    if (!this.checkpoint(groupId, controller, status)) return
+    if (!this.checkpoint(groupId, controller, status)) return false
     try {
       this.runLedger.finish?.(controller.runId, status, controller.stopReason || '')
-    } catch { /* the conversation result remains authoritative */ }
+      return true
+    } catch {
+      return false
+    }
   }
 }
 

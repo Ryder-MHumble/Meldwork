@@ -6,7 +6,7 @@ const { promisify } = require('node:util')
 const {
   assessAgentVersion,
   capabilityProbes,
-  extractAgentVersion,
+  identifyAgentVersion,
 } = require('./agent-compatibility.cjs')
 
 const execFileAsync = promisify(execFile)
@@ -395,22 +395,20 @@ async function inspectAgentCandidate(kind, executable, options, childEnv) {
         windowsHide: true,
         env: childEnv,
       })
-      const lines = [result.stdout, result.stderr]
-        .flatMap(output => String(output || '').split(/\r?\n/))
-        .map(line => line.trim())
-        .filter(Boolean)
+      const identified = identifyAgentVersion(kind, [result.stdout, result.stderr], { executable })
       return {
         succeeded: true,
-        version: lines.find(line => extractAgentVersion(line)) || '',
+        version: identified?.line || '',
+        versionIdentified: Boolean(identified),
       }
     } catch { /* a broken shim is not a usable CLI */ }
-    return { succeeded: false, version: '' }
+    return { succeeded: false, version: '', versionIdentified: false }
   })()
 
-  const { succeeded: versionCommandSucceeded, version } = await versionTask
+  const { succeeded: versionCommandSucceeded, version, versionIdentified } = await versionTask
   if (!versionCommandSucceeded) return null
   const versionCompatibility = assessAgentVersion(kind, version)
-  if (versionCompatibility.compatibilityState !== 'compatible') {
+  if (versionIdentified && versionCompatibility.compatibilityState === 'incompatible') {
     return {
       kind,
       name: `${AGENT_PROFILES[kind].label} CLI`,
@@ -445,13 +443,15 @@ async function inspectAgentCandidate(kind, executable, options, childEnv) {
       })()
     : Promise.resolve(undefined)
   const [capabilityCompatibility, acpAvailable] = await Promise.all([capabilityTask, acpTask])
+  const compatibility = capabilityCompatibility.compatibilityState === 'incompatible'
+    ? { ...versionCompatibility, ...capabilityCompatibility }
+    : { ...versionCompatibility, incompatibilityProbe: '' }
   return {
     kind,
     name: `${AGENT_PROFILES[kind].label} CLI`,
     executable,
     version,
-    ...versionCompatibility,
-    ...capabilityCompatibility,
+    ...compatibility,
     ...(kind === 'hermes' ? { acpAvailable } : {}),
   }
 }

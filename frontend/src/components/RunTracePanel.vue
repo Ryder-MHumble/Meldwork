@@ -165,6 +165,15 @@
               <span>{{ t('trace.contextIncluded', { count: selectedItem.context.includedCount }) }}</span>
               <span>{{ t('trace.contextOmitted', { count: selectedItem.context.omittedCount }) }}</span>
               <span>{{ t('trace.contextChars', { count: selectedItem.context.charCount }) }}</span>
+              <span v-if="selectedItem.context.contextMode">
+                {{ t(`trace.contextMode.${selectedItem.context.contextMode}`) }}
+              </span>
+              <span v-if="Number.isInteger(selectedItem.context.promptChars)">
+                {{ t('trace.promptChars', { count: selectedItem.context.promptChars }) }}
+              </span>
+              <span v-if="Number.isInteger(selectedItem.context.promptBytes)">
+                {{ t('trace.promptBytes', { count: selectedItem.context.promptBytes }) }}
+              </span>
               <span v-if="selectedItem.context.sessionRotated">{{ t('trace.contextRotated') }}</span>
               <span v-if="selectedItem.context.contextPackId" class="trace-context-record">
                 {{ t('trace.contextPackId') }}
@@ -189,6 +198,21 @@
                 <br v-if="index === 0" />
                 <span v-else>, </span>
                 <code>{{ id }}</code>
+              </template>
+              <template v-if="selectedItem.context.sourceHash">
+                <br />
+                <span>{{ t('trace.sourceFingerprint', { count: selectedItem.context.sourceCount }) }} </span>
+                <code>{{ selectedItem.context.sourceHash }}</code>
+              </template>
+              <template v-if="selectedItem.context.promptHash">
+                <br />
+                <span>{{ t('trace.promptFingerprint') }} </span>
+                <code>{{ selectedItem.context.promptHash }}</code>
+              </template>
+              <template v-if="selectedItem.context.wirePayloadHash">
+                <br />
+                <span>{{ t('trace.wireFingerprint', { count: selectedItem.context.wirePayloadBytes }) }} </span>
+                <code>{{ selectedItem.context.wirePayloadHash }}</code>
               </template>
             </p>
             <p
@@ -243,7 +267,40 @@
               <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
             </header>
             <p>{{ humanGateSummary(gate) }}</p>
-            <div class="trace-human-gate-options">
+            <form
+              v-if="gate.type === 'input'"
+              class="trace-human-gate-input"
+              @submit.prevent="submitHumanGateInput(gate)"
+            >
+              <input
+                v-model="humanGateResponses[gate.gateId]"
+                type="text"
+                maxlength="32768"
+                :placeholder="t('humanGate.inputPlaceholder')"
+                :aria-label="t('humanGate.inputLabel')"
+                :disabled="humanGateDecisionPending(gate.gateId)"
+              />
+              <div class="trace-human-gate-options">
+                <button
+                  class="compact primary-button"
+                  type="submit"
+                  :disabled="humanGateDecisionPending(gate.gateId) || !humanGateResponse(gate.gateId)"
+                >
+                  <CheckmarkCircleOutline />
+                  {{ t('humanGate.option.submitInput') }}
+                </button>
+                <button
+                  class="compact secondary-button"
+                  type="button"
+                  :disabled="humanGateDecisionPending(gate.gateId)"
+                  @click="cancelHumanGateInput(gate)"
+                >
+                  <CloseCircleOutline />
+                  {{ t('humanGate.option.cancelInput') }}
+                </button>
+              </div>
+            </form>
+            <div v-else class="trace-human-gate-options">
               <button
                 v-for="option in gate.options"
                 :key="option.optionId"
@@ -383,7 +440,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   CheckmarkCircleOutline,
   ChevronDownOutline,
@@ -420,6 +477,7 @@ const roundSelector = ref(null)
 const roundSelectTrigger = ref(null)
 const openSelector = ref('')
 const replacementKind = ref('')
+const humanGateResponses = reactive({})
 const BUDGET_DIMENSIONS = [
   'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
 ]
@@ -593,7 +651,23 @@ function emitAgentControl(action, nextReplacementKind = '') {
 }
 
 function optionApprovesHumanGate(option) {
-  return ['allow_once', 'allow_always', 'accept'].includes(option?.kind)
+  return ['allow_once', 'allow_always', 'accept', 'respond'].includes(option?.kind)
+}
+
+function humanGateResponse(gateId) {
+  return String(humanGateResponses[gateId] || '').trim()
+}
+
+function submitHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'respond')
+  const response = humanGateResponse(gate?.gateId)
+  if (!option || !response) return
+  emit('decide-human-gate', { gateId: gate.gateId, optionId: option.optionId, response })
+}
+
+function cancelHumanGateInput(gate) {
+  const option = gate?.options?.find(item => item.kind === 'reject')
+  if (option) emit('decide-human-gate', { gateId: gate.gateId, optionId: option.optionId })
 }
 
 function humanGateDecisionPending(gateId) {
@@ -605,11 +679,17 @@ function humanGateSummary(gate) {
     'Agent requests permission to continue a tool action.': 'humanGate.summary.permission',
     'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
     'This run requires a human decision.': 'humanGate.summary.decision',
+    'The previous write-capable Agent attempt may already have changed the workspace.': 'humanGate.summary.retry',
   }[gate?.summary]
   return key ? t(key) : gate?.summary || ''
 }
 
 function humanGateOptionLabel(option) {
+  const optionIdKey = {
+    'retry-once': 'humanGate.option.retryOnce',
+    'cancel-retry': 'humanGate.option.cancelRetry',
+  }[option?.optionId]
+  if (optionIdKey) return t(optionIdKey)
   const key = {
     allow_once: 'humanGate.option.allowOnce',
     allow_always: 'humanGate.option.allowAlways',
@@ -624,7 +704,7 @@ function humanGateOptionLabel(option) {
 
 function normalizedBudgetRows(budget) {
   if (!budget) return []
-  return BUDGET_DIMENSIONS.map((dimension) => {
+  const rows = BUDGET_DIMENSIONS.map((dimension) => {
     const used = budget.used[dimension]
     const limit = budget.limits[dimension]
     return {
@@ -639,6 +719,22 @@ function normalizedBudgetRows(budget) {
         || budget.enforcement[dimension] === 'hard',
     }
   }).filter(row => row.meaningful)
+  const exhaustion = budget.exhaustion
+  if (exhaustion) {
+    rows.unshift({
+      dimension: `exhaustion:${exhaustion.dimension}`,
+      label: `${t(`trace.budgetDimension.${exhaustion.dimension}`)} · ${t('trace.budgetExhaustion')}`,
+      usage: t('trace.budgetUsage', {
+        used: formatBudgetNumber(exhaustion.used),
+        limit: formatBudgetNumber(exhaustion.limit),
+      }),
+      meta: t('trace.budgetAttempt', {
+        prior: formatBudgetNumber(exhaustion.priorUsed),
+        attempted: formatBudgetNumber(exhaustion.attemptedUsage),
+      }),
+    })
+  }
+  return rows
 }
 
 function formatBudgetNumber(value) {
@@ -715,7 +811,7 @@ function eventTitle(event) {
 function statusTone(status) {
   const value = String(status || '').toLowerCase()
   if (['completed', 'succeeded'].includes(value)) return 'completed'
-  if (['failed', 'timeout'].includes(value)) return 'failed'
+  if (['failed', 'timeout', 'budget-exhausted', 'circuit-breaker'].includes(value)) return 'failed'
   if (['partial', 'cancelled', 'stopped', 'interrupted'].includes(value)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(value)) return 'running'
   return 'queued'
@@ -737,6 +833,8 @@ function statusLabel(status) {
     stopped: 'stopped',
     timeout: 'timeout',
     interrupted: 'interrupted',
+    'budget-exhausted': 'budgetExhausted',
+    'circuit-breaker': 'circuitBreaker',
   }[String(status || '').toLowerCase()] || 'unknown'
   return t(`run.status.${key}`)
 }
@@ -753,6 +851,11 @@ function hasTraceContext(context) {
   return Number(context?.includedCount) > 0
     || Number(context?.omittedCount) > 0
     || Number(context?.charCount) > 0
+    || Number.isInteger(context?.promptChars)
+    || Number.isInteger(context?.promptBytes)
+    || Boolean(context?.sourceHash)
+    || Boolean(context?.promptHash)
+    || Boolean(context?.wirePayloadHash)
     || context?.sessionRotated === true
     || Boolean(context?.contextPackId)
     || context?.contextPackState === 'legacy-unavailable'
@@ -879,6 +982,16 @@ defineExpose({ focus })
 .trace-agent-control-actions {
   flex-wrap: wrap;
   gap: 6px;
+}
+
+.trace-human-gate-input {
+  display: grid;
+  gap: 10px;
+}
+
+.trace-human-gate-input input {
+  width: 100%;
+  min-width: 0;
 }
 
 .trace-human-gate-options button svg,

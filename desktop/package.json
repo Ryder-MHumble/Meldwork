@@ -4,11 +4,14 @@
   "private": true,
   "description": "A local-first desktop workspace for multi-Agent collaboration",
   "author": "Ryder-MHumble",
-  "license": "AGPL-3.0-only",
+  "license": "SEE LICENSE IN LICENSE",
   "main": "src/main.cjs",
   "scripts": {
     "build:frontend": "npm --prefix ../frontend run build:desktop",
     "dev": "npm run build:frontend && electron .",
+    "connector:conformance": "node --test test/agent-connector-manifest.test.cjs test/agent-connector-registry.test.cjs test/agent-connector-runtime.test.cjs test/agent-connector-instance-store.test.cjs test/agent-connector-package-store.test.cjs test/agent-connector-sdk.test.cjs",
+    "eval:deterministic": "node scripts/run-evals.cjs --suite deterministic",
+    "eval:provider": "node scripts/run-evals.cjs --suite provider",
     "test": "node --test test/*.test.cjs",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "npm run build:frontend && electron-builder --mac dmg zip",
@@ -30,6 +33,7 @@
     "afterPack": "scripts/after-pack.cjs",
     "files": [
       "src/**/*",
+      "samples/**/*",
       "package.json",
       {
         "from": "../frontend/dist",

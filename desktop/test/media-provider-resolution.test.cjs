@@ -59,3 +59,30 @@ test('excludes a configured Provider after its media model is unavailable', () =
   assert.equal(provider.sourceKind, 'opencodereview')
   assert.equal(provider.apiKey, 'opencodereview-key')
 })
+
+test('uses a secure global ZGCI media fallback without requiring per-Agent provider binding', () => {
+  const provider = resolveMediaProvider({
+    requestedKind: 'codex',
+    type: 'video',
+    kinds: ['codex', 'hermes'],
+    statusFor: () => ({ configured: false }),
+    credentialsFor: () => ({}),
+    fallbackProviders: [{
+      kind: 'zgci-media',
+      status: {
+        configured: true,
+        provider: 'ZGCI Media',
+        baseUrl: 'https://hub.zgci.org/v1',
+        model: 'glm',
+      },
+      credentials: { OPENAI_API_KEY: 'zgci-key' },
+    }],
+  })
+
+  assert.deepEqual(provider, {
+    apiKey: 'zgci-key',
+    baseUrl: 'https://hub.zgci.org/v1',
+    model: 'glm',
+    sourceKind: 'zgci-media',
+  })
+})

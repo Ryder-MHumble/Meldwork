@@ -37,6 +37,8 @@ describe('conversation timeline helpers', () => {
   it('maps terminal and live statuses to stable presentation tones', () => {
     expect(runStatusTone('succeeded')).toBe('completed')
     expect(runStatusTone('timeout')).toBe('failed')
+    expect(runStatusTone('budget-exhausted')).toBe('failed')
+    expect(runStatusTone('circuit-breaker')).toBe('failed')
     expect(runStatusTone('interrupted')).toBe('partial')
     expect(runStatusTone('in_progress')).toBe('running')
     expect(runStatusTone('pending')).toBe('queued')

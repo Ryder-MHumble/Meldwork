@@ -85,25 +85,34 @@
               v-for="group in visibleDirectGroupsFor(agent.kind)"
               :key="group.id"
               class="direct-session-row"
-              :class="{ active: activeView === 'conversation' && selectedGroupId === group.id }"
+              :class="{ active: isSelectedConversation(group) }"
             >
               <button
                 class="direct-session-open"
                 type="button"
                 :title="t('nav.openDirect', { name: groupName(group) })"
-                :aria-current="activeView === 'conversation' && selectedGroupId === group.id ? 'page' : undefined"
+                :aria-current="isSelectedConversation(group) ? 'page' : undefined"
                 @click="selectGroup(group.id)"
               >
                 <span>{{ groupName(group) }}</span>
               </button>
-              <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+              <span
+                v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
+                class="run-mark"
+                :title="t('conversation.runningGeneric')"
+              >
                 <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
               </span>
-              <span v-else-if="hasFinishedDirectRun(group.id)" class="run-finished-mark" :title="t('nav.runFinished')">
+              <span
+                v-else-if="hasFinishedDirectRun(group.id) && !isSelectedConversation(group)"
+                class="run-finished-mark"
+                :title="t('nav.runFinished')"
+              >
                 <CheckmarkCircleOutline />
               </span>
               <span v-else class="direct-session-spacer" />
               <button
+                v-if="!isGroupRunning(group.id) || isSelectedConversation(group)"
                 class="direct-session-action"
                 type="button"
                 :title="t('nav.renameDirect', { name: groupName(group) })"
@@ -113,7 +122,7 @@
               >
                 <PencilOutline />
               </button>
-              <span class="sidebar-delete-control">
+              <span v-if="!isGroupRunning(group.id) || isSelectedConversation(group)" class="sidebar-delete-control">
                 <button
                   class="direct-session-action danger"
                   type="button"
@@ -157,22 +166,26 @@
             v-for="group in visibleGroupGroups"
             :key="group.id"
             class="group-conversation-row"
-            :class="{ active: activeView === 'conversation' && selectedGroupId === group.id }"
+            :class="{ active: isSelectedConversation(group) }"
           >
             <button
               class="conversation-link"
               type="button"
               :title="t('nav.openGroup', { name: groupName(group) })"
-              :aria-current="activeView === 'conversation' && selectedGroupId === group.id ? 'page' : undefined"
+              :aria-current="isSelectedConversation(group) ? 'page' : undefined"
               @click="selectGroup(group.id)"
             >
               <span class="group-avatar"><ChatbubblesOutline /></span>
               <span>{{ groupName(group) }}</span>
-              <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+              <span
+                v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
+                class="run-mark"
+                :title="t('conversation.runningGeneric')"
+              >
                 <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
               </span>
             </button>
-            <span class="group-conversation-actions">
+            <span v-if="!isGroupRunning(group.id) || isSelectedConversation(group)" class="group-conversation-actions">
               <button
                 class="direct-session-action"
                 type="button"
@@ -319,13 +332,14 @@
             <small>{{ groupAgentSummary(group) }}</small>
           </span>
           <span class="collapsed-group-option-state">
-            <span v-if="isGroupRunning(group.id)" class="run-mark" :title="t('conversation.runningGeneric')">
+            <span
+              v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
+              class="run-mark"
+              :title="t('conversation.runningGeneric')"
+            >
               <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
             </span>
-            <CheckmarkCircleOutline
-              v-else-if="activeView === 'conversation' && selectedGroupId === group.id"
-              aria-hidden="true"
-            />
+            <CheckmarkCircleOutline v-else-if="isSelectedConversation(group)" aria-hidden="true" />
             <time v-else>{{ formatNavTime(group.updatedAt || group.createdAt) }}</time>
           </span>
         </button>
@@ -358,6 +372,7 @@
 </template>
 
 <script setup>
+import { unref } from 'vue'
 import {
   AddOutline,
   ChatbubblesOutline,
@@ -427,4 +442,8 @@ const {
   visibleDirectGroupsFor,
   visibleGroupGroups,
 } = props.controller
+
+function isSelectedConversation(group) {
+  return unref(activeView) === 'conversation' && unref(selectedGroupId) === group.id
+}
 </script>

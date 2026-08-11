@@ -912,7 +912,7 @@ describe('RoundRelay workbench', () => {
         budget: {
           limits: {
             inputTokens: 4000, outputTokens: null, costMicros: null,
-            toolCalls: 20, outboundBytes: null, elapsedMs: null,
+            toolCalls: 2, outboundBytes: null, elapsedMs: null,
           },
           used: {
             inputTokens: 750, outputTokens: 120, costMicros: 0,
@@ -927,6 +927,10 @@ describe('RoundRelay workbench', () => {
             toolCalls: 'hard', outboundBytes: 'soft', elapsedMs: 'soft',
           },
           startedAt: 1000,
+          exhaustion: {
+            dimension: 'toolCalls', limit: 2, priorUsed: 2, attemptedUsage: 1, used: 3,
+            source: 'estimated', enforcement: 'hard', reason: 'BUDGET_LIMIT_EXCEEDED',
+          },
         },
         agentRuns: [{
           agentRunId: 'agent-direct-gated',
@@ -949,6 +953,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.direct-human-gate-list').text()).toContain('cannot report cost usage')
     expect(wrapper.get('.direct-budget-details').text()).toContain('Input tokens')
     expect(wrapper.get('.direct-budget-details').text()).toContain('750 / 4,000')
+    expect(wrapper.get('.direct-budget-details').text()).toContain('Hard budget stop')
 
     const gateCards = wrapper.findAll('.direct-human-gate-list .human-gate-card')
     await gateCards[0].findAll('button').find(button => button.text() === 'Allow once').trigger('click')
@@ -964,6 +969,49 @@ describe('RoundRelay workbench', () => {
       2,
       rejectGateId,
       { optionId: 'reject-once' },
+    )
+    wrapper.unmount()
+  })
+
+  it('submits direct Connector input through the narrow Human Gate decision', async () => {
+    const gateId = `human-gate-${'d'.repeat(64)}`
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'direct-input', conversationType: 'direct', directAgentKind: 'codex',
+        name: 'Connector input', topic: '', agentKinds: ['codex'],
+        workdir: '/tmp/roundrelay-workspace', allowWrite: false,
+        createdAt: '2026-08-04T08:00:00.000Z', updatedAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.messages.push({
+        id: 'direct-input-root', groupId: 'direct-input', role: 'user',
+        content: 'Prepare release', createdAt: '2026-08-04T08:00:00.000Z',
+      })
+      state.runningGroupIds = ['direct-input']
+      state.runs = [{
+        runId: 'run-direct-input', groupId: 'direct-input', threadRootId: 'direct-input-root',
+        targetKinds: ['codex'], currentKind: 'codex', waitingGateIds: [gateId],
+        agentRuns: [{ agentRunId: 'agent-direct-input', kind: 'codex', status: 'waiting' }],
+      }]
+      state.humanGates = [{
+        gateId, type: 'input', runId: 'run-direct-input',
+        agentRunId: 'agent-direct-input', agentKind: 'codex',
+        summary: 'Choose release channel',
+        options: [
+          { optionId: 'submit-input', name: 'Submit', kind: 'respond' },
+          { optionId: 'cancel-input', name: 'Cancel', kind: 'reject' },
+        ],
+        status: 'pending', createdAt: '2026-08-04T08:00:00.000Z',
+      }]
+    })
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await wrapper.get('.human-gate-input input').setValue('stable')
+    await wrapper.get('.human-gate-input').trigger('submit')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.decideHumanGate).toHaveBeenCalledWith(
+      gateId,
+      { optionId: 'submit-input', response: 'stable' },
     )
     wrapper.unmount()
   })

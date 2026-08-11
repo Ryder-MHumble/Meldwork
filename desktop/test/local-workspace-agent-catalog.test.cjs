@@ -71,6 +71,7 @@ test('refresh starts credential checks concurrently and reads current runtime st
   const snapshot = await refresh
   assert.deepEqual(agents().map(agent => agent.kind), ['codex', 'hermes'])
   assert.deepEqual(snapshot.agents.map(agent => agent.credentialState), ['missing', 'ready'])
+  assert.deepEqual(snapshot.agents.map(agent => agent.invocable), [false, true])
   assert.equal(snapshot.agents[0].availabilitySource, 'runtime-auth-failure')
   assert.deepEqual(events, ['emit', 'snapshot'])
 })
@@ -81,6 +82,7 @@ test('incompatible Agents remain installed but unavailable with ready credential
       kind: 'codex',
       executable: '/tmp/codex',
       compatibilityState: 'incompatible',
+      resolvedVersion: '0.147.0',
       incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
     }],
     credentialState: async () => ({ state: 'ready', source: 'native-auth-status' }),
@@ -90,6 +92,11 @@ test('incompatible Agents remain installed but unavailable with ready credential
   await catalog.refresh()
 
   assert.equal(agents()[0].installed, true)
+  assert.equal(agents()[0].versionIdentified, true)
+  assert.equal(agents()[0].compatible, false)
+  assert.equal(agents()[0].configured, true)
+  assert.equal(agents()[0].authenticated, true)
+  assert.equal(agents()[0].invocable, false)
   assert.equal(agents()[0].credentialState, 'ready')
   assert.equal(agents()[0].available, false)
   assert.equal(agents()[0].showInSidebar, false)
@@ -138,7 +145,63 @@ test('shared Provider readiness skips slow native credential probes', async () =
   assert.equal(nativeProbeCalls, 0)
   assert.equal(agents()[0].credentialState, 'ready')
   assert.equal(agents()[0].availabilitySource, 'shared-provider')
+  assert.equal(agents()[0].configured, true)
+  assert.equal(agents()[0].authenticated, true)
+  assert.equal(agents()[0].invocable, true)
+  assert.equal(agents()[0].recentlyVerified, false)
   assert.equal(agents()[0].available, true)
+})
+
+test('configured credentials do not make an Agent invocable when runtime prerequisites fail', async () => {
+  const { agents, catalog } = fixture({
+    detectAgents: async () => [{
+      kind: 'openclaw',
+      executable: '/tmp/openclaw',
+      resolvedVersion: '2026.7.1-2',
+      compatibilityState: 'compatible',
+    }],
+    credentialState: async () => ({
+      state: 'unknown', source: 'native-runtime-unavailable',
+    }),
+  })
+
+  await catalog.refresh()
+
+  assert.deepEqual(Object.fromEntries([
+    'installed', 'versionIdentified', 'compatible', 'configured', 'authenticated',
+    'invocable', 'recentlyVerified', 'available',
+  ].map(key => [key, agents()[0][key]])), {
+    installed: true,
+    versionIdentified: true,
+    compatible: true,
+    configured: true,
+    authenticated: false,
+    invocable: false,
+    recentlyVerified: false,
+    available: false,
+  })
+})
+
+test('unidentified product versions remain unavailable after credential validation', async () => {
+  const { agents, catalog } = fixture({
+    detectAgents: async () => [{
+      kind: 'kimi',
+      executable: '/tmp/kimi',
+      resolvedVersion: '',
+      compatibilityState: 'unknown',
+    }],
+    credentialState: async () => ({ state: 'ready', source: 'native-auth-status' }),
+  })
+
+  await catalog.refresh()
+
+  assert.equal(agents()[0].versionIdentified, false)
+  assert.equal(agents()[0].compatible, false)
+  assert.equal(agents()[0].configured, true)
+  assert.equal(agents()[0].authenticated, true)
+  assert.equal(agents()[0].invocable, false)
+  assert.equal(agents()[0].recentlyVerified, true)
+  assert.equal(agents()[0].available, false)
 })
 
 test('authoritative native validation persists recovery from a runtime auth failure', async () => {
@@ -156,6 +219,8 @@ test('authoritative native validation persists recovery from a runtime auth fail
     credentialState: 'ready', checkedAt: '2026-08-03T00:00:00.000Z',
   })
   assert.equal(agents()[0].credentialState, 'ready')
+  assert.equal(agents()[0].recentlyVerified, true)
+  assert.equal(agents()[0].invocable, true)
   assert.equal(agents()[0].available, true)
   assert.equal(agents()[0].availabilitySource, 'native-auth-status')
   assert.deepEqual(events, ['save', 'emit', 'snapshot'])

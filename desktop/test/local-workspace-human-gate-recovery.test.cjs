@@ -36,6 +36,17 @@ async function waitForRunStatus(ledger, runId, status, timeoutMs = 5000) {
   throw new Error(`TEST_RUN_STATUS_TIMEOUT:${runId}:${status}`)
 }
 
+async function waitForTerminalRun(ledger, runId, timeoutMs = 5000) {
+  const terminal = new Set(['completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit'])
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const record = ledger.get(runId)
+    if (terminal.has(record?.status)) return record
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`TEST_RUN_TERMINAL_TIMEOUT:${runId}`)
+}
+
 async function stoppedBudgetGate(options, directory, text) {
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
@@ -75,6 +86,293 @@ function removeContextPack(workspace, contextPackId) {
     hash.slice(0, 2),
     `${contextPackId}.json`,
   ))
+}
+
+function decisionTaskGraph() {
+  return {
+    template: 'task-graph',
+    nodes: [{
+      nodeId: 'primary-codex', role: 'primary', agentKind: 'codex',
+      dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce a durable recommendation.',
+      acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+      terminal: false, parallel: false, decisionOptions: [],
+    }, {
+      nodeId: 'human-decision', role: 'human', agentKind: null,
+      dependsOn: ['primary-codex'], inputNodeIds: ['primary-codex'],
+      expectedOutput: 'Approve or reject the recommendation.',
+      acceptance: { requireConclusion: false, minArtifactRefs: 0, minEvidenceRefs: 0 },
+      terminal: true, parallel: false,
+      decisionOptions: [
+        { optionId: 'approve-graph', name: 'Approve recommendation', kind: 'allow_once' },
+        { optionId: 'reject-graph', name: 'Reject recommendation', kind: 'reject_once' },
+      ],
+    }],
+  }
+}
+
+test('task-graph Human decisions resume from the durable v3 cursor after restart', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart task graph', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Prepare a durable recommendation for approval.',
+    mode: 'auto', maxRounds: 4, targetKinds: ['codex', 'hermes'],
+    workflow: decisionTaskGraph(),
+  })
+  const pending = await pendingGate(workspace)
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.equal(waiting.status, 'waiting')
+  assert.equal(waiting.orchestration.version, 3)
+  assert.deepEqual(waiting.orchestration.taskGraph.nodeStates.map(state => state.status), [
+    'accepted', 'waiting',
+  ])
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'approve-graph', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.continuation.state, 'completed')
+  assert.equal(terminal.orchestration.taskGraph.terminalState, 'accepted')
+  assert.equal(
+    terminal.orchestration.taskGraph.nodeStates[1].decisionOptionId,
+    'approve-graph',
+  )
+  assert.equal(calls.length, 1)
+
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls.length, 1)
+})
+
+test('task-graph Agent slots resume into typed acceptance after a permission Gate restart', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  let appliedDecisions = 0
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    calls.push({ agent, runOptions })
+    await runOptions.onSessionRef('kimi-task-graph-session', { transport: 'acp' })
+    const decision = await runOptions.onPermissionRequest({
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ],
+      operation: { kind: 'write', path: 'typed-result.txt' },
+    }, { signal: runOptions.signal })
+    appliedDecisions += 1
+    return {
+      text: `Typed result after ${decision.optionId}`,
+      sessionRef: 'kimi-task-graph-session',
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart task graph Agent',
+    agentKinds: ['kimi', 'codex'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Produce the typed result after permission.',
+    mode: 'auto', maxRounds: 2, targetKinds: ['kimi', 'codex'],
+    workflow: {
+      template: 'task-graph',
+      nodes: [{
+        nodeId: 'primary-kimi', role: 'primary', agentKind: 'kimi',
+        dependsOn: [], inputNodeIds: [], expectedOutput: 'Produce a durable typed result.',
+        acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
+        terminal: true, parallel: false, decisionOptions: [],
+      }],
+    },
+  })
+  const pending = await pendingGate(workspace)
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.deepEqual(waiting.orchestration.taskGraph.currentNodeIds, ['primary-kimi'])
+  assert.equal(waiting.orchestration.taskGraph.nodeStates[0].status, 'running')
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.orchestration.taskGraph.nodeStates[0].status, 'accepted')
+  assert.equal(terminal.orchestration.taskGraph.nodeStates[0].artifactIds.length, 1)
+  assert.equal(terminal.orchestration.taskGraph.nodeStates[0].evidenceIds.length, 1)
+  assert.equal(calls.length, 2)
+  assert.equal(appliedDecisions, 1)
+})
+
+async function verifyAutomaticGateRecovery(t, gateIndex) {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const targetOrders = [
+    ['kimi', 'codex', 'workbuddy'],
+    ['codex', 'kimi', 'workbuddy'],
+    ['codex', 'workbuddy', 'kimi'],
+  ]
+  const targetKinds = targetOrders[gateIndex]
+  const maxRounds = gateIndex === 1 ? 2 : 1
+  const invokedKinds = []
+  const completedTurns = new Map()
+  let appliedDecisions = 0
+  options.runLedger = ledger
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    invokedKinds.push(agent.kind)
+    if (agent.kind !== 'kimi') {
+      const completed = (completedTurns.get(agent.kind) || 0) + 1
+      completedTurns.set(agent.kind, completed)
+      const consensus = maxRounds > 1 && completed === maxRounds
+        ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+        : ''
+      return {
+        text: `${agent.kind} completed its automatic slot${consensus}`,
+        sessionRef: `${agent.kind}-auto`,
+      }
+    }
+    if (appliedDecisions > 0) {
+      const completed = (completedTurns.get(agent.kind) || 0) + 1
+      completedTurns.set(agent.kind, completed)
+      const consensus = maxRounds > 1 && completed === maxRounds
+        ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+        : ''
+      return {
+        text: `Kimi completed its later automatic slot${consensus}`,
+        sessionRef: 'kimi-auto-gate-session',
+      }
+    }
+    await runOptions.onSessionRef('kimi-auto-gate-session', { transport: 'acp' })
+    const decision = await runOptions.onPermissionRequest({
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ],
+      operation: { kind: 'write', path: `auto-slot-${gateIndex}.txt` },
+    }, { signal: runOptions.signal })
+    appliedDecisions += 1
+    const completed = (completedTurns.get(agent.kind) || 0) + 1
+    completedTurns.set(agent.kind, completed)
+    const consensus = maxRounds > 1 && completed === maxRounds
+      ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+      : ''
+    return {
+      text: `Kimi resumed:${decision.optionId}${consensus}`,
+      sessionRef: 'kimi-auto-gate-session',
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: `Automatic Gate recovery ${gateIndex}`,
+    agentKinds: targetKinds,
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: `Resume automatic slot ${gateIndex} after restart`,
+    mode: 'auto',
+    maxRounds,
+    targetKinds,
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.equal(waiting.currentRound, 1)
+  const { collaboration, ...waitingCursor } = waiting.orchestration
+  assert.deepEqual(waitingCursor, {
+    version: 2,
+    workflow: 'auto',
+    currentKind: 'kimi',
+    pendingKinds: targetKinds.slice(gateIndex + 1),
+    activeKinds: targetKinds,
+    successfulKinds: targetKinds.slice(0, gateIndex),
+    agreementKinds: [],
+    attachmentRecipients: [],
+    totalSuccesses: 0,
+    terminalFailureOccurred: false,
+  })
+  assert.equal(collaboration.version, 1)
+  assert.deepEqual(
+    collaboration.handoffs.map(handoff => handoff.destination.agentKind),
+    targetKinds.slice(0, gateIndex + 1),
+  )
+  assert.equal(collaboration.entries.every(entry => (
+    targetKinds.slice(0, gateIndex).includes(entry.owner.agentKind)
+      || entry.owner.type === 'harness'
+  )), true)
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.deepEqual(
+    { status: terminal.status, reason: terminal.reason },
+    { status: maxRounds > 1 ? 'completed' : 'round-limit', reason: '' },
+  )
+  assert.deepEqual(invokedKinds, [
+    ...targetKinds.slice(0, gateIndex + 1),
+    'kimi',
+    ...targetKinds.slice(gateIndex + 1),
+    ...(maxRounds > 1 ? targetKinds : []),
+  ])
+  assert.equal(appliedDecisions, 1)
+  assert.equal(terminal.continuation.state, 'completed')
+  assert.deepEqual(terminal.orchestration.pendingKinds, [])
+  assert.deepEqual(terminal.orchestration.successfulKinds.sort(), [...targetKinds].sort())
+  assert.equal(terminal.orchestration.totalSuccesses, targetKinds.length * maxRounds)
+  for (const kind of targetKinds.slice(0, gateIndex)) {
+    assert.equal(restarted.snapshot().messages.filter(message => (
+      message.role === 'agent' && message.agentKind === kind
+    )).length, maxRounds)
+  }
+  const sequences = terminal.agentRuns.flatMap(run => run.events.map(event => event.seq))
+  assert.deepEqual(sequences, [...sequences].sort((left, right) => left - right))
+  assert.equal(new Set(sequences).size, sequences.length)
+
+  const invocationCount = invokedKinds.length
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(invokedKinds.length, invocationCount)
 }
 
 test('legacy Role Review continuations fail closed without reading workflow data', async (t) => {
@@ -123,6 +421,57 @@ test('legacy Role Review continuations fail closed without reading workflow data
   assert.equal(calls.length, 0)
 })
 
+test('retry approval survives restart and reuses the durable operation ID once', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const operationIds = []
+  let invocations = 0
+  options.runLedger = ledger
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    invocations += 1
+    operationIds.push(runOptions.operationId)
+    if (invocations === 1) {
+      throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+    }
+    return { text: 'approved retry completed', sessionRef: 'retry-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Durable retry approval',
+    agentKinds: ['codex'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace)
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Do not replay this uncertain write without approval',
+    targetKinds: ['codex'],
+  })
+  const gate = await gatePromise
+
+  await workspace.stopAll()
+  await send
+  assert.equal(invocations, 1)
+  assert.equal(ledger.get(gate.runId).status, 'waiting')
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(invocations, 1)
+
+  restarted.decideHumanGate(gate.gateId, { optionId: 'retry-once' })
+  const terminal = await waitForRunStatus(restartedLedger, gate.runId, 'completed')
+
+  assert.equal(invocations, 2)
+  assert.equal(operationIds[0], operationIds[1])
+  assert.equal(terminal.continuation.state, 'completed')
+})
+
 test('restart resumes a durable Gate decision whose continuation checkpoint stayed pending once', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -160,8 +509,12 @@ test('restart resumes a durable Gate decision whose continuation checkpoint stay
   const restartedLedger = new RunLedger({ storagePath: ledgerPath })
   const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
   await restarted.refreshAgents()
-  const completed = await waitForRunStatus(restartedLedger, pending.runId, 'completed')
+  const completed = await waitForTerminalRun(restartedLedger, pending.runId)
 
+  assert.deepEqual(
+    { status: completed.status, reason: completed.reason },
+    { status: 'completed', reason: '' },
+  )
   assert.equal(invocations, 1)
   assert.equal(completed.continuation.state, 'completed')
   assert.equal(restarted.snapshot().messages.some(message => (
@@ -179,7 +532,7 @@ test('restart resumes a durable Gate decision whose continuation checkpoint stay
   assert.equal(invocations, 1)
 })
 
-test('restart fails a non-final Agent Gate closed instead of completing the remaining slots', async (t) => {
+test('restart resumes a first-slot Agent Gate and completes the remaining manual slots', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledgerPath = path.join(directory, 'run-ledger.json')
@@ -188,6 +541,9 @@ test('restart fails a non-final Agent Gate closed instead of completing the rema
   options.runLedger = ledger
   options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
     invokedKinds.push(agent.kind)
+    if (agent.kind === 'hermes') {
+      return { text: 'Hermes completed the remaining slot', sessionRef: 'hermes-resumed-session' }
+    }
     assert.equal(agent.kind, 'codex')
     await runOptions.onSessionRef('codex-non-final-session', { transport: 'acp' })
     const decision = await runOptions.onPermissionRequest({
@@ -220,17 +576,114 @@ test('restart fails a non-final Agent Gate closed instead of completing the rema
   const restartedLedger = new RunLedger({ storagePath: ledgerPath })
   const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
   await restarted.refreshAgents()
+  assert.deepEqual(restartedLedger.get(pending.runId).orchestration, {
+    version: 1,
+    workflow: 'manual',
+    currentKind: 'codex',
+    pendingKinds: ['hermes'],
+    activeKinds: ['codex', 'hermes'],
+    successfulKinds: [],
+    agreementKinds: [],
+    attachmentRecipients: [],
+    totalSuccesses: 0,
+    terminalFailureOccurred: false,
+  })
   restarted.decideHumanGate(pending.gateId, {
     status: 'approved', optionId: 'allow-once', actorId: 'local-user',
   })
-  const failed = await waitForRunStatus(restartedLedger, pending.runId, 'failed')
+  const completed = await waitForTerminalRun(restartedLedger, pending.runId)
 
-  assert.deepEqual(invokedKinds, ['codex'])
-  assert.equal(failed.reason, 'LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
-  assert.equal(failed.continuation.state, 'failed')
+  assert.deepEqual(
+    { status: completed.status, reason: completed.reason },
+    { status: 'completed', reason: '' },
+  )
+  assert.deepEqual(invokedKinds, ['codex', 'codex', 'hermes'])
+  assert.equal(completed.continuation.state, 'completed')
+  assert.deepEqual(completed.orchestration.pendingKinds, [])
+  assert.deepEqual(completed.orchestration.successfulKinds.sort(), ['codex', 'hermes'])
   assert.equal(restarted.snapshot().messages.some(message => (
-    message.role === 'agent' && message.agentKind === 'hermes'
-  )), false)
+    message.role === 'agent'
+      && message.agentKind === 'hermes'
+      && message.content === 'Hermes completed the remaining slot'
+  )), true)
+  const sequences = completed.agentRuns.flatMap(run => run.events.map(event => event.seq))
+  assert.deepEqual(sequences, [...sequences].sort((left, right) => left - right))
+  assert.equal(new Set(sequences).size, sequences.length)
+})
+
+test('restart resumes a middle Agent Gate without rerunning completed manual slots', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const invokedKinds = []
+  options.runLedger = ledger
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    invokedKinds.push(agent.kind)
+    if (agent.kind === 'codex') {
+      return { text: 'Codex completed before the Gate', sessionRef: 'codex-first-session' }
+    }
+    if (agent.kind === 'workbuddy') {
+      return { text: 'WorkBuddy completed after the Gate', sessionRef: 'workbuddy-last-session' }
+    }
+    await runOptions.onSessionRef('kimi-middle-session', { transport: 'acp' })
+    const decision = await runOptions.onPermissionRequest({
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ],
+      operation: { kind: 'write', path: 'middle-slot.txt' },
+    }, { signal: runOptions.signal })
+    return { text: `Kimi resumed:${decision.optionId}`, sessionRef: 'kimi-middle-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Middle Gate recovery',
+    agentKinds: ['codex', 'kimi', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace)
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Resume only the middle and remaining slots',
+    targetKinds: ['codex', 'kimi', 'workbuddy'],
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+  await send
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  assert.deepEqual(restartedLedger.get(pending.runId).orchestration.successfulKinds, ['codex'])
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.deepEqual(
+    { status: terminal.status, reason: terminal.reason },
+    { status: 'completed', reason: '' },
+  )
+  assert.deepEqual(invokedKinds, ['codex', 'kimi', 'kimi', 'workbuddy'])
+  assert.deepEqual(terminal.orchestration.successfulKinds.sort(), ['codex', 'kimi', 'workbuddy'])
+  assert.equal(restarted.snapshot().messages.filter(message => (
+    message.role === 'agent' && message.agentKind === 'codex'
+  )).length, 1)
+})
+
+test('restart resumes the first automatic Agent slot and completes the round', async (t) => {
+  await verifyAutomaticGateRecovery(t, 0)
+})
+
+test('restart resumes the middle automatic Agent slot without rerunning earlier Agents', async (t) => {
+  await verifyAutomaticGateRecovery(t, 1)
+})
+
+test('restart resumes the final automatic Agent slot exactly once', async (t) => {
+  await verifyAutomaticGateRecovery(t, 2)
 })
 
 test('a failed Gate resume checkpoint restores live continuation state for retry', async (t) => {

@@ -1,10 +1,14 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 
 const { LocalWorkspace } = require('../src/local-workspace.cjs')
 const { LocalKnowledgeConnectors } = require('../src/local-knowledge-connectors.cjs')
+const {
+  canonicalJson,
+} = require('../src/context-pack-records.cjs')
 const {
   createAcpOutboundPayload,
   createLegacyOutboundPayload,
@@ -406,7 +410,7 @@ test('ACP Delivery comparison preserves exact JSON-RPC bytes and remains safe af
   )
 })
 
-test('long user requests verify the budgeted prompt that is actually delivered', async (t) => {
+test('long in-budget requests verify the exact prompt that is actually delivered', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (_agent, prompt, _workdir, runOptions) => {
@@ -420,7 +424,7 @@ test('long user requests verify the budgeted prompt that is actually delivered',
     name: 'Long Codex request', agentKinds: ['codex'], workdir: directory,
     conversationType: 'direct', directAgentKind: 'codex',
   })
-  const request = `Generate this image exactly: ${'dense visual direction '.repeat(500)}`
+  const request = `Generate this image exactly: ${'dense visual direction '.repeat(180)}`.trim()
 
   await workspace.sendMessage({ groupId: group.id, text: request })
 
@@ -430,9 +434,29 @@ test('long user requests verify the budgeted prompt that is actually delivered',
   const delivery = deliveryForMessage(workspace, reply)
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].prompt.length < request.length, true)
+  assert.equal(calls[0].prompt.includes(request), true)
   assert.equal(approvedPreview.text, calls[0].prompt)
   assert.equal(workspace.contextPacks.compareDelivery(delivery.deliveryRecordId).status, 'match')
+})
+
+test('required current-task overflow fails closed before Agent execution', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Required context overflow', agentKinds: ['codex'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'codex',
+  })
+  const request = `Generate this image exactly: ${'dense visual direction '.repeat(500)}`
+
+  await workspace.sendMessage({ groupId: group.id, text: request })
+
+  assert.equal(calls.length, 0)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.agentCallFailed'
+      && message.system.params.reason === 'LOCAL_RUN_REQUIRED_CONTEXT_OVERFLOW'
+  )), true)
 })
 
 test('Codex-shaped stdin delivery verifies the exact budgeted prompt', async (t) => {
@@ -449,7 +473,7 @@ test('Codex-shaped stdin delivery verifies the exact budgeted prompt', async (t)
     name: 'Codex stdin request', agentKinds: ['codex'], workdir: directory,
     conversationType: 'direct', directAgentKind: 'codex',
   })
-  const request = `Generate this image exactly: ${'pixel and lighting direction '.repeat(500)}`
+  const request = `Generate this image exactly: ${'pixel and lighting direction '.repeat(180)}`
 
   await workspace.sendMessage({ groupId: group.id, text: request })
 
@@ -562,6 +586,80 @@ test('group Tasks reuse native Sessions only within the same automatic Task', as
     workspace.sessionKey(group.id, 'codex', codexResults[0].threadRootId),
     workspace.sessionKey(group.id, 'codex', codexResults[2].threadRootId),
   )
+})
+
+test('continuation traces describe only the exact outbound context and fingerprints', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let id = 0
+  let workspace
+  let expectedPacked
+  options.createId = () => `context-id-${++id}`
+  options.runAgent = async (_agent, prompt, _workdir, runOptions) => {
+    calls.push({ prompt })
+    expectedPacked = workspace.packedPromptContext(
+      runOptions.groupId || workspace.snapshot().groups[0].id,
+      'codex',
+      'context-id-18',
+    )
+    await runOptions.onOutboundPayload(outboundPayload(prompt))
+    return { text: 'Continuation result', sessionRef: runOptions.sessionRef, outcome: 'completed' }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Exact continuation context', agentKinds: ['codex'], workdir: directory,
+  })
+  for (let index = 0; index < 8; index += 1) {
+    const user = workspace.addMessage(group.id, 'user', `Constraint ${index}`)
+    workspace.addMessage(group.id, 'agent', `Conclusion ${index}`, 'hermes', user.id)
+  }
+  const taskId = 'context-id-18'
+  const key = workspace.sessionKey(group.id, 'codex', taskId)
+  workspace.state.sessions[key] = 'codex-existing-task-session'
+  workspace.state.sessionMeta[key] = {
+    turns: 1,
+    estimatedChars: 800,
+    transport: 'legacy',
+    sessionScope: 'task',
+    originTaskId: taskId,
+    inheritedTaskIds: [],
+    provenanceCompleteness: 'complete',
+  }
+  workspace.save()
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue with exact provenance',
+    targetKinds: ['codex'],
+  })
+
+  const reply = workspace.snapshot().messages.find(message => (
+    message.role === 'agent' && message.content === 'Continuation result'
+  ))
+  const context = reply.trace.context
+  const attemptPack = workspace.contextPackStore.get(context.contextPackId)
+  const sources = attemptPack.sources.map(source => ({
+    type: source.type,
+    sourceId: source.sourceId,
+    contentHash: source.contentHash,
+    targetKinds: source.targetKinds,
+    captureMode: source.captureMode,
+  }))
+  const delivery = deliveryForMessage(workspace, reply)
+
+  assert.equal(context.contextMode, 'continuation')
+  assert.deepEqual(reply.trace.sourceMessageIds, expectedPacked.continuationSourceMessageIds)
+  assert.notDeepEqual(reply.trace.sourceMessageIds, expectedPacked.sourceMessageIds)
+  assert.equal(context.includedCount, reply.trace.sourceMessageIds.length)
+  assert.equal(context.sourceCount, attemptPack.sources.length)
+  assert.equal(context.sourceHash, createHash('sha256').update(canonicalJson(sources)).digest('hex'))
+  assert.equal(context.promptChars, calls[0].prompt.length)
+  assert.equal(context.promptBytes, Buffer.byteLength(calls[0].prompt))
+  assert.equal(context.promptHash, createHash('sha256').update(calls[0].prompt).digest('hex'))
+  assert.equal(context.wirePayloadBytes, delivery.wirePayloadBytes)
+  assert.equal(context.wirePayloadHash, delivery.wirePayloadHash)
+  assert.equal(context.sessionProvenance.reuse, true)
 })
 
 test('direct Session deliveries expose bounded Task ancestry across messages', async (t) => {
