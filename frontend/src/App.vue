@@ -252,7 +252,7 @@ const systemSettingsSection = ref('agents')
 const sidebarCollapsed = ref(false)
 const refreshing = ref(false)
 const agentDiscoveryPending = ref(false)
-const sendingGroupIds = ref([])
+const sendingGroupIds = ref(new Set())
 const saving = ref(false)
 const agentControlPendingAgentRunId = ref('')
 const humanGateDecisionPendingIds = ref([])
@@ -379,10 +379,9 @@ const {
   selectGroup,
   selectedGroupId,
 } = workspaceNavigationState
-const sending = computed(() => {
-  const groupId = String(activeGroup.value?.id || '')
-  return Boolean(groupId && sendingGroupIds.value.includes(groupId))
-})
+const sending = computed(() => (
+  Boolean(selectedGroupId.value && sendingGroupIds.value.has(selectedGroupId.value))
+))
 const sidebarDeleteGroup = computed(() => snapshot.value.groups.find(group => group.id === sidebarDeleteGroupId.value) || null)
 const sidebarDeletePopoverStyle = computed(() => ({
   left: `${sidebarDeletePopoverPoint.value.left}px`,

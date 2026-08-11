@@ -38,6 +38,7 @@ const {
   nativeCredentialEnvironment,
   resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
+  resolveNativeShellEnvironment,
 } = require('./agents/local-agent-readiness.cjs')
 const { LocalWorkspace } = require('./workspace/local-workspace.cjs')
 const { MediaGenerationRuntime } = require('./media/media-generation-runtime.cjs')
@@ -229,6 +230,21 @@ function providerOptions(kind, context = {}) {
   )
 }
 
+async function nativeShellEnvironment() {
+  const home = app.getPath('home')
+  const resolved = await resolveNativeShellEnvironment({ home })
+  return {
+    ...resolved,
+    env: { ...process.env, ...resolved.env },
+    home,
+  }
+}
+
+async function detectLocalAgents() {
+  const shellEnvironment = await nativeShellEnvironment()
+  return detectAgents({ env: shellEnvironment.env, home: shellEnvironment.home })
+}
+
 function mediaFallbackProviders(env = process.env) {
   const apiKey = String(
     env.ZGCI_MEDIA_API_KEY
@@ -350,9 +366,14 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
   const runOptions = { ...options }
   delete runOptions.connectorCredentialIsolation
   const status = providerStore.status(agent.kind)
+  const shellEnvironment = connectorCredentialIsolation ? null : await nativeShellEnvironment()
   const nativeRuntime = !connectorCredentialIsolation
     && agent.kind === 'openclaw' && !status.configured
-    ? await resolveNativeOpenClawRuntime({ executable: agent.executable })
+    ? await resolveNativeOpenClawRuntime({
+        executable: agent.executable,
+        env: shellEnvironment.env,
+        home: shellEnvironment.home,
+      })
     : null
   const injected = connectorCredentialIsolation
     ? {}
@@ -364,7 +385,10 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
       })
   const nativeEnv = connectorCredentialIsolation || agent.kind === 'openclaw'
     ? {}
-    : nativeCredentialEnvironment(agent.kind)
+    : {
+        ...nativeCredentialEnvironment(agent.kind, shellEnvironment.env),
+        ...(shellEnvironment.env.PATH ? { PATH: shellEnvironment.env.PATH } : {}),
+      }
   const callerEnv = connectorCredentialIsolation || agent.kind !== 'openclaw'
     ? runOptions.env
     : {}
@@ -540,10 +564,16 @@ function createWorkspace() {
     validateKnowledgeBaseSelections,
     imageAttachmentLimit,
     attachmentSupport: localAttachmentSupport,
-    credentialState: (kind, agent) => {
+    credentialState: async (kind, agent) => {
       if (customAgentStore.has(kind)) return { state: 'ready', source: 'custom-agent' }
       if (agentConnectors.has(kind)) return { state: 'ready', source: 'agent-connector' }
-      return resolveNativeCredentialState(kind, { executable: agent?.executable })
+      const shellEnvironment = await nativeShellEnvironment()
+      return resolveNativeCredentialState(kind, {
+        executable: agent?.executable,
+        env: shellEnvironment.env,
+        home: shellEnvironment.home,
+        credentialSource: shellEnvironment.source,
+      })
     },
     agentLabel: kind => customAgentStore.label(kind) || agentConnectors.label(kind),
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
@@ -768,7 +798,7 @@ if (!hasSingleInstanceLock) {
     attachments.registerProtocol(protocol)
     skillCatalog = new LocalSkillCatalog({ home: app.getPath('home') })
     installer = new AgentInstaller({
-      detectAgents,
+      detectAgents: detectLocalAgents,
       listSkills: kind => skillCatalog.list(kind),
     })
     installer.on('changed', state => {

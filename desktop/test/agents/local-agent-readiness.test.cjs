@@ -9,6 +9,7 @@ const {
   nativeCredentialState,
   resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
+  resolveNativeShellEnvironment,
 } = require('../../src/agents/local-agent-readiness.cjs')
 
 function openClawModelsCatalog(apiKey, baseUrl = 'https://provider.example/v1') {
@@ -37,6 +38,112 @@ test('Hermes readiness detects a native credential without returning its value',
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('custom Provider config is recognized while unresolved Env references remain unverified', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-custom-provider-readiness-'))
+  const config = path.join(home, '.hermes', 'config.yaml')
+  fs.mkdirSync(path.dirname(config), { recursive: true })
+  try {
+    fs.writeFileSync(config, [
+      'provider: custom',
+      'base_url: https://gateway.example/v1',
+      'model: local-model',
+      'api_key: sk-custom-provider',
+    ].join('\n'))
+    assert.deepEqual(nativeCredentialState('hermes', { home, env: {} }), {
+      state: 'ready', source: 'native-credential',
+    })
+
+    fs.writeFileSync(config, 'api_key: ${OPENROUTER_API_KEY}\n')
+    assert.deepEqual(nativeCredentialState('hermes', { home, env: {} }), {
+      state: 'unknown', source: 'unverified',
+    })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('login shell discovery returns only allowlisted Agent Provider values', async () => {
+  const calls = []
+  const result = await resolveNativeShellEnvironment({
+    cache: false,
+    platform: 'darwin',
+    home: '/Users/Ryder',
+    shell: '/bin/zsh',
+    env: {
+      PATH: '/usr/bin',
+      GITHUB_TOKEN: 'ambient-secret',
+      ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+    },
+    execFileFn: async (command, args, options) => {
+      calls.push({ command, args, options })
+      return {
+        stdout: [
+          'shell startup banner\n__ROUNDRELAY_NATIVE_ENV_V1__',
+          'PATH=/opt/custom/bin:/usr/bin',
+          'OPENROUTER_API_KEY=openrouter-secret',
+          'OPENAI_BASE_URL=https://openrouter.ai/api/v1',
+          'OPENAI_MODEL=openrouter/model',
+          'GITHUB_TOKEN=must-not-be-read',
+          '',
+        ].join('\u0000'),
+      }
+    },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].command, '/bin/zsh')
+  assert.equal(calls[0].args[0], '-lic')
+  assert.equal(calls[0].options.env.GITHUB_TOKEN, undefined)
+  assert.equal(calls[0].options.env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+  assert.equal(calls[0].args[1].includes('ambient-secret'), false)
+  assert.deepEqual(result, {
+    source: 'native-shell',
+    env: {
+      PATH: '/opt/custom/bin:/usr/bin',
+      OPENROUTER_API_KEY: 'openrouter-secret',
+      OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+      OPENAI_MODEL: 'openrouter/model',
+    },
+  })
+})
+
+test('shell discovery failure falls back to allowlisted process Provider values', async () => {
+  const result = await resolveNativeShellEnvironment({
+    cache: false,
+    platform: 'darwin',
+    shell: '/bin/zsh',
+    env: {
+      PATH: '/usr/bin',
+      OPENAI_API_KEY: 'process-provider-key',
+      OPENAI_BASE_URL: 'https://gateway.example/v1',
+      ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+    },
+    execFileFn: async () => { throw new Error('shell unavailable') },
+  })
+
+  assert.deepEqual(result, {
+    source: 'process',
+    env: {
+      PATH: '/usr/bin',
+      OPENAI_API_KEY: 'process-provider-key',
+      OPENAI_BASE_URL: 'https://gateway.example/v1',
+    },
+  })
+})
+
+test('OpenRouter credentials loaded from the native shell mark Hermes ready', async () => {
+  const result = await resolveNativeCredentialState('hermes', {
+    env: {
+      OPENROUTER_API_KEY: 'openrouter-key',
+      OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+      OPENAI_MODEL: 'openrouter/model',
+    },
+    credentialSource: 'native-shell',
+  })
+
+  assert.deepEqual(result, { state: 'ready', source: 'native-shell' })
 })
 
 test('WorkBuddy readiness checks configured model keys without exposing them', () => {
@@ -219,6 +326,29 @@ test('OpenClaw native runtime extracts only the current validated Provider', asy
   assert.equal(Object.hasOwn(runtime, 'agentDir'), false)
   assert.equal(Object.hasOwn(runtime.provider, 'headers'), false)
   assert.equal(Object.hasOwn(runtime.provider.model, 'params'), false)
+})
+
+test('OpenClaw native runtime resolves allowlisted Env SecretRefs from the shell environment', async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-env-runtime-'))
+  const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
+  fs.mkdirSync(agentDir, { recursive: true })
+  fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog({
+    source: 'env', provider: 'default', id: 'OPENROUTER_API_KEY',
+  }, 'https://openrouter.ai/api/v1'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+
+  const runtime = await resolveNativeOpenClawRuntime({
+    home,
+    env: { OPENROUTER_API_KEY: 'openrouter-native-key' },
+    executable: '/tmp/openclaw',
+    execFileFn: async () => ({ stdout: JSON.stringify({
+      resolvedDefault: 'provider/model', agentDir,
+      auth: { missingProvidersInUse: [] },
+    }) }),
+  })
+
+  assert.equal(runtime.provider.apiKey, 'openrouter-native-key')
+  assert.equal(JSON.stringify(runtime).includes('OPENROUTER_API_KEY'), false)
 })
 
 test('OpenClaw native runtime rejects Env SecretRefs without reading unrelated process secrets', async (t) => {
@@ -612,5 +742,16 @@ test('native environment forwarding includes only the current Agent credential k
     ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
   }), {
     ANTHROPIC_API_KEY: 'claude-key',
+  })
+
+  assert.deepEqual(nativeCredentialEnvironment('hermes', {
+    OPENROUTER_API_KEY: 'openrouter-key',
+    OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+    OPENAI_MODEL: 'openrouter/model',
+    GITHUB_TOKEN: 'unrelated-secret',
+  }), {
+    OPENROUTER_API_KEY: 'openrouter-key',
+    OPENAI_BASE_URL: 'https://openrouter.ai/api/v1',
+    OPENAI_MODEL: 'openrouter/model',
   })
 })

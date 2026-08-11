@@ -746,8 +746,8 @@ test('run completion uses sanitized renderer events and a localized background n
   }])
   assert.equal(harness.notificationInstances.length, 1)
   const notification = harness.notificationInstances[0]
-  assert.equal(notification.input.title, 'Meldwork')
-  assert.equal(notification.input.body, '会话运行已结束')
+  assert.equal(notification.input.title, 'Meldwork · 部分完成')
+  assert.equal(notification.input.body, '1 个 Agent 完成，1 个未完成')
   assert.equal(notification.input.icon?.isEmpty?.(), false)
   assert.equal(notification.showCount, 1)
   assert.doesNotMatch(
@@ -841,8 +841,8 @@ test('a completion notification restores a closed window and opens its local gro
   })
 
   assert.equal(harness.notificationInstances.length, 1)
-  assert.equal(harness.notificationInstances[0].input.title, 'Meldwork')
-  assert.equal(harness.notificationInstances[0].input.body, 'Conversation run finished')
+  assert.equal(harness.notificationInstances[0].input.title, 'Meldwork · Run completed')
+  assert.equal(harness.notificationInstances[0].input.body, '1 Agent completed the reply')
   assert.equal(harness.notificationInstances[0].input.icon?.isEmpty?.(), false)
   assert.equal(originalWindow.webContents.sent.length, 0)
 
@@ -1871,6 +1871,10 @@ test('configured Provider is injected only through local Agent execution options
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     providerConfigured: true,
+    nativeShellEnvironment: () => ({
+      env: { PATH: '/opt/native-agent/bin:/usr/bin' },
+      source: 'native-shell',
+    }),
     nativeEnvironment: kind => kind === 'hermes'
       ? { ANTHROPIC_API_KEY: 'native-hermes-key' }
       : {},
@@ -1891,6 +1895,7 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.HERMES_INFERENCE_MODEL, PROVIDER_METADATA.model)
   assert.equal(options.env.ANTHROPIC_API_KEY, 'native-hermes-key')
   assert.equal(options.env.CURRENT_RUN, '1')
+  assert.equal(options.env.PATH, '/opt/native-agent/bin:/usr/bin')
 })
 
 test('OpenClaw native auth is routed through the app-owned isolated runtime', async (t) => {
@@ -1917,6 +1922,10 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
             model: { id: 'model', name: 'Native Model', input: ['text'] },
           },
         }),
+        resolveNativeShellEnvironment: async () => ({
+          env: { PATH: '/opt/native-agent/bin:/usr/bin' },
+          source: 'native-shell',
+        }),
         resolveNativeCredentialState: async (kind, input) => {
           credentialChecks.push({ kind, input })
           return { state: 'ready', source: 'native-credential' }
@@ -1931,10 +1940,11 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
     executable: '/tmp/openclaw',
   })
   assert.deepEqual(readiness, { state: 'ready', source: 'native-credential' })
-  assert.deepEqual(credentialChecks, [{
-    kind: 'openclaw',
-    input: { executable: '/tmp/openclaw' },
-  }])
+  assert.equal(credentialChecks.length, 1)
+  assert.equal(credentialChecks[0].kind, 'openclaw')
+  assert.equal(credentialChecks[0].input.executable, '/tmp/openclaw')
+  assert.equal(credentialChecks[0].input.env.PATH, '/opt/native-agent/bin:/usr/bin')
+  assert.equal(credentialChecks[0].input.credentialSource, 'native-shell')
 
   await workspace.input.runAgent(
     { kind: 'openclaw', executable: '/tmp/openclaw' },

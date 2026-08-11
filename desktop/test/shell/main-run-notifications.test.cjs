@@ -124,8 +124,8 @@ test('run completion sends only normalized fields and opens its group from the n
   }]])
   assert.equal(notifications.length, 1)
   assert.deepEqual(notifications[0].input, {
-    title: 'Meldwork',
-    body: '会话运行已结束',
+    title: 'Meldwork · 部分完成',
+    body: '1 个 Agent 完成，1 个未完成',
     icon: { image: true },
   })
   assert.equal(notifications[0].showCount, 1)
@@ -137,6 +137,40 @@ test('run completion sends only normalized fields and opens its group from the n
   assert.deepEqual(window.webContents.sent.at(-1), [
     'local-workspace:open-group', { groupId: '历史群聊 1' },
   ])
+})
+
+test('notifications describe each terminal outcome in Chinese and English', () => {
+  const cases = [
+    ['completed', 'Meldwork · Run completed', '1 Agent completed the reply'],
+    ['partial', 'Meldwork · Partially completed', '1 Agent completed, 1 Agent did not'],
+    ['failed', 'Meldwork · Run failed', '1 Agent failed. Open the conversation for details'],
+    ['stopped', 'Meldwork · Run stopped', 'The conversation was stopped as requested'],
+    ['timeout', 'Meldwork · Run timed out', 'The conversation exceeded its time limit and stopped'],
+    ['round-limit', 'Meldwork · Round limit reached', 'The automatic discussion reached its configured round limit'],
+    ['interrupted', 'Meldwork · Run interrupted', 'The unfinished conversation run was interrupted'],
+    ['budget-exhausted', 'Meldwork · Budget exhausted', 'This run reached its configured budget limit'],
+    ['circuit-breaker', 'Meldwork · Run paused', 'Repeated failures triggered protection. Open the conversation for details'],
+  ]
+
+  for (const [status, title, body] of cases) {
+    const { coordinator, notifications } = createHarness()
+    coordinator.notifyRunFinished({
+      groupId: `group-${status}`,
+      status,
+      targetKinds: ['codex', 'hermes'],
+      completedKinds: ['codex'],
+      failedKinds: ['hermes'],
+    })
+    assert.deepEqual(notifications[0].input, { title, body, icon: { image: true } })
+  }
+
+  const chinese = createHarness({ locale: 'zh-CN' })
+  chinese.coordinator.notifyRunFinished({ groupId: 'group-timeout', status: 'timeout' })
+  assert.deepEqual(chinese.notifications[0].input, {
+    title: 'Meldwork · 运行超时',
+    body: '会话超过时间限制，已停止运行',
+    icon: { image: true },
+  })
 })
 
 test('run events require a trusted window and shutdown blocks notifications and navigation', () => {

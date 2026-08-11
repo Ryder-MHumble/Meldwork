@@ -79,3 +79,21 @@ test('every OpenClaw child requires an app-owned runtime guard', () => {
     process.platform,
   ), { message: 'OPENCLAW_RUNTIME_GUARD_REQUIRED' })
 })
+
+test('native Agent children preserve the discovered shell PATH without ambient secrets', () => {
+  const env = childEnvironment(
+    { kind: 'codex' },
+    '/tmp/workspace',
+    {
+      env: {
+        PATH: '/opt/custom-agent/bin:/usr/bin',
+        OPENAI_API_KEY: 'selected-provider-key',
+      },
+    },
+    'darwin',
+  )
+
+  assert.match(env.PATH, /(?:^|:)\/opt\/custom-agent\/bin(?::|$)/)
+  assert.equal(env.OPENAI_API_KEY, 'selected-provider-key')
+  assert.equal(Object.hasOwn(env, 'GITHUB_TOKEN'), false)
+})

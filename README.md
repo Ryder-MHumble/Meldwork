@@ -26,8 +26,8 @@ The current desktop build is for Apple silicon Macs.
 
 1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Release-V1.0.0).
 2. Download `Meldwork-0.1.0-arm64.dmg`.
-3. Drag Meldwork into Applications and open it.
-4. If macOS blocks the unsigned preview, open **System Settings → Privacy & Security**, find the Meldwork warning, choose **Open Anyway**, then confirm the launch.
+3. Drag Meldwork into Applications, then try to open it once.
+4. If macOS blocks the current preview because it is not yet Apple-notarized, open **System Settings → Privacy & Security**, scroll to **Security**, click **Open Anyway** beside Meldwork, then confirm **Open**. The button appears only after the first blocked launch attempt. Use only a DMG downloaded from the official Release above.
 5. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
 
 If the latest Release includes a DMG, it can be downloaded and installed locally. Developers can also run Meldwork from source with the commands below.

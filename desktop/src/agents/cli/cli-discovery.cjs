@@ -405,20 +405,9 @@ async function inspectAgentCandidate(kind, executable, options, childEnv) {
     return { succeeded: false, version: '', versionIdentified: false }
   })()
 
-  const { succeeded: versionCommandSucceeded, version, versionIdentified } = await versionTask
+  const { succeeded: versionCommandSucceeded, version } = await versionTask
   if (!versionCommandSucceeded) return null
   const versionCompatibility = assessAgentVersion(kind, version)
-  if (versionIdentified && versionCompatibility.compatibilityState === 'incompatible') {
-    return {
-      kind,
-      name: `${AGENT_PROFILES[kind].label} CLI`,
-      executable,
-      version,
-      ...versionCompatibility,
-      incompatibilityProbe: '',
-      ...(kind === 'hermes' ? { acpAvailable: false } : {}),
-    }
-  }
   const capabilityTask = Promise.resolve().then(async () => {
     const result = await (options.probeAgentCapabilitiesFn || probeAgentCapabilities)(
       kind,
@@ -445,7 +434,12 @@ async function inspectAgentCandidate(kind, executable, options, childEnv) {
   const [capabilityCompatibility, acpAvailable] = await Promise.all([capabilityTask, acpTask])
   const compatibility = capabilityCompatibility.compatibilityState === 'incompatible'
     ? { ...versionCompatibility, ...capabilityCompatibility }
-    : { ...versionCompatibility, incompatibilityProbe: '' }
+    : {
+        ...versionCompatibility,
+        compatibilityState: 'compatible',
+        incompatibilityReason: '',
+        incompatibilityProbe: '',
+      }
   return {
     kind,
     name: `${AGENT_PROFILES[kind].label} CLI`,

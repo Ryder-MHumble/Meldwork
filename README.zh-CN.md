@@ -26,8 +26,8 @@
 
 1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Release-V1.0.0)。
 2. 下载 `Meldwork-0.1.0-arm64.dmg`。
-3. 将 Meldwork 拖入“应用程序”并打开。
-4. 如果 macOS 因未签名预览版拦截启动，请打开“系统设置 → 隐私与安全性”，找到 Meldwork 的拦截提示，点击“仍要打开 / Open Anyway”，再确认启动。
+3. 将 Meldwork 拖入“应用程序”，然后先尝试打开一次。
+4. 当前预览版尚未经过 Apple 公证。如果 macOS 阻止启动，请打开“系统设置 → 隐私与安全性”，向下滚动到“安全性”，在 Meldwork 提示旁点击“仍要打开”，再确认“打开”。“仍要打开”只会在首次启动被拦截后出现。请只使用从上方官方 Release 下载的 DMG。
 5. 连接电脑上已经安装的 Agent CLI，或为某个 Agent 单独配置 Provider。
 
 如果最新 Release 中包含 DMG 文件，就可以直接下载到本地安装。开发者也可以使用下方命令从源码运行。

@@ -44,6 +44,78 @@ afterEach(() => {
 })
 
 describe('RoundRelay workbench', () => {
+  it('keeps send state isolated while direct and group conversations run concurrently', async () => {
+    const directSend = deferred()
+    const groupSend = deferred()
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.groups.push(
+        {
+          id: 'direct-concurrent',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Codex direct',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'group-concurrent',
+          conversationType: 'group',
+          name: 'Concurrent review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T09:00:00Z',
+          updatedAt: '2026-07-29T09:00:00Z',
+        },
+      )
+      desktopBridge.localWorkspace.send
+        .mockImplementationOnce(() => directSend.promise)
+        .mockImplementationOnce(() => groupSend.promise)
+    })
+
+    wrapper.vm.selectGroup('direct-concurrent')
+    await flushPromises()
+    await wrapper.get('.composer-box textarea').setValue('Continue the direct task')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.composer-box textarea').attributes()).toHaveProperty('disabled')
+
+    wrapper.vm.selectGroup('group-concurrent')
+    await flushPromises()
+    expect(wrapper.get('.composer-box textarea').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('.composer-box textarea').setValue('Start the group review')
+    expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledTimes(2)
+    expect(bridge.localWorkspace.send.mock.calls.map(([input]) => input.groupId))
+      .toEqual(['direct-concurrent', 'group-concurrent'])
+    expect(wrapper.get('.composer-box textarea').attributes()).toHaveProperty('disabled')
+
+    wrapper.vm.selectGroup('direct-concurrent')
+    await flushPromises()
+    expect(wrapper.get('.composer-box textarea').attributes()).toHaveProperty('disabled')
+    directSend.resolve()
+    await flushPromises()
+    expect(wrapper.get('.composer-box textarea').attributes()).not.toHaveProperty('disabled')
+
+    wrapper.vm.selectGroup('group-concurrent')
+    await flushPromises()
+    expect(wrapper.get('.composer-box textarea').attributes()).toHaveProperty('disabled')
+    groupSend.resolve()
+    await flushPromises()
+    expect(wrapper.get('.composer-box textarea').attributes()).not.toHaveProperty('disabled')
+    wrapper.unmount()
+  })
+
   it('sends one mentioned Agent as a manual reply while the group defaults to automatic mode', async () => {
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({

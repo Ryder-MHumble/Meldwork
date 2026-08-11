@@ -9,7 +9,7 @@ import { inferProviderPreset } from './providerProfiles.js'
 
 const EXTERNAL_PROVIDER_KINDS = new Set(AGENTS.map(agent => agent.kind))
 const NATIVE_PROVIDER_READY_SOURCES = new Set([
-  'native-credential', 'native-auth-status', 'native-cli', 'verified-run',
+  'native-credential', 'native-auth-status', 'native-cli', 'native-shell', 'verified-run',
 ])
 
 export const EMPTY_PROVIDER_STATUS = Object.freeze({

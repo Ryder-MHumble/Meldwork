@@ -41,18 +41,16 @@ export function useConversationExecution({
   ))
 
   function isGroupSending(groupId) {
-    return Array.isArray(sendingGroupIds.value) && sendingGroupIds.value.includes(groupId)
+    const current = sendingGroupIds.value
+    if (current instanceof Set) return current.has(groupId)
+    return Array.isArray(current) && current.includes(groupId)
   }
 
   function setGroupSending(groupId, value) {
-    const current = Array.isArray(sendingGroupIds.value) ? sendingGroupIds.value : []
-    if (value) {
-      if (!current.includes(groupId)) sendingGroupIds.value = [...current, groupId]
-      return
-    }
-    if (current.includes(groupId)) {
-      sendingGroupIds.value = current.filter(id => id !== groupId)
-    }
+    const next = new Set(sendingGroupIds.value instanceof Set ? sendingGroupIds.value : [])
+    if (value) next.add(groupId)
+    else next.delete(groupId)
+    sendingGroupIds.value = next
   }
 
   async function sendMessage() {
