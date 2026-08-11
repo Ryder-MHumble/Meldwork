@@ -79,7 +79,7 @@ test('accepts non-Codex Agents and resolves media independently from the chat ru
   assert.deepEqual(providerRequests, [['hermes', 'image']])
 })
 
-test('maps ZGCI image requests to the deployed Qwen Image model', async (t) => {
+test('maps ZGCI image requests to the advertised qwen-image model', async (t) => {
   const calls = []
   const { workdir, runtime } = fixture(t, async (url, init = {}) => {
     calls.push([String(url), init])
@@ -94,7 +94,7 @@ test('maps ZGCI image requests to the deployed Qwen Image model', async (t) => {
 
   assert.equal(result.filename, 'generated-image-media-id.png')
   assert.equal(calls[0][0], 'https://hub.zgci.org/v1/images/generations')
-  assert.equal(JSON.parse(calls[0][1].body).model, 'Qwen-Image-2512')
+  assert.equal(JSON.parse(calls[0][1].body).model, 'qwen-image')
 })
 
 test('writes binary audio output and uses the audio endpoint', async (t) => {
@@ -171,22 +171,19 @@ test('uses the legacy H3 submit, status, and content endpoints with secure provi
   }
 })
 
-test('uses the current ZGCI H3 videos workflow and model mapping', async (t) => {
+test('uses the ZGCI OpenAI-compatible H3 workflow and advertised model', async (t) => {
   const calls = []
   const { workdir, runtime } = fixture(t, async (url, init = {}) => {
     calls.push([String(url), init])
-    if (String(url).endsWith('/query/video_generation')) {
+    if (String(url).endsWith('/video/generations')) {
+      return response(JSON.stringify({ id: 'zgci-task', status: 'queued' }))
+    }
+    if (String(url).endsWith('/videos/zgci-task')) {
       return response(JSON.stringify({
-        task_id: 'zgci-task', status: 'completed', file_id: 'zgci-file',
+        id: 'zgci-task', status: 'completed',
       }))
     }
-    if (String(url).endsWith('/video_generation')) {
-      return response(JSON.stringify({ task_id: 'zgci-task', status: 'queued' }))
-    }
-    if (String(url).endsWith('/files/retrieve')) {
-      return response(MP4, { headers: { 'content-type': 'video/mp4' } })
-    }
-    throw new Error(`Unexpected request: ${url}`)
+    return response(MP4, { headers: { 'content-type': 'video/mp4' } })
   }, {
     apiKey: 'stored-zgci-credential',
     baseUrl: 'https://hub.zgci.org/v1',
@@ -199,16 +196,14 @@ test('uses the current ZGCI H3 videos workflow and model mapping', async (t) => 
 
   assert.equal(result.filename, 'generated-video-media-id.mp4')
   assert.deepEqual(calls.map(([url]) => url), [
-    'https://hub.zgci.org/v1/video_generation',
-    'https://hub.zgci.org/v1/query/video_generation',
-    'https://hub.zgci.org/v1/files/retrieve',
+    'https://hub.zgci.org/v1/video/generations',
+    'https://hub.zgci.org/v1/videos/zgci-task',
+    'https://hub.zgci.org/v1/videos/zgci-task/content',
   ])
   assert.deepEqual(JSON.parse(calls[0][1].body), {
-    model: 'H3', prompt: 'a calm city sunrise', duration_seconds: 8,
-    size: '1280x720', fps: 24,
+    model: 'minimax-h3', prompt: 'a calm city sunrise', seconds: '4', size: '1280x720',
   })
-  assert.deepEqual(JSON.parse(calls[1][1].body), { task_id: 'zgci-task' })
-  assert.deepEqual(JSON.parse(calls[2][1].body), { file_id: 'zgci-file' })
+  assert.equal(calls[2][1].headers.Authorization, 'Bearer stored-zgci-credential')
 })
 
 test('maps ZGCI audio requests to CosyVoice', async (t) => {
@@ -229,7 +224,7 @@ test('maps ZGCI audio requests to CosyVoice', async (t) => {
   assert.equal(result.filename, 'generated-audio-media-id.wav')
   assert.equal(calls[0][0], 'https://hub.zgci.org/v1/audio/speech')
   assert.deepEqual(JSON.parse(calls[0][1].body), {
-    model: 'CosyVoice3-0.5B',
+    model: 'cosy-voice',
     input: '欢迎使用 Meldwork',
     voice: 'mm_Southern_Young_Man',
     response_format: 'wav',

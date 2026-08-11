@@ -121,9 +121,9 @@ function officialModel(type, provider) {
   }
   if (host === 'hub.zgci.org') {
     return {
-      image: 'Qwen-Image-2512',
-      audio: 'CosyVoice3-0.5B',
-      video: 'H3',
+      image: 'qwen-image',
+      audio: 'cosy-voice',
+      video: 'minimax-h3',
     }[type]
   }
   return provider.model
@@ -447,7 +447,7 @@ class MediaGenerationRuntime {
         try {
           if (type === 'video') {
             output = zgciProvider(provider)
-              ? await this.zgciH3VideoResponse(provider, prompt, signal, onEvent, id)
+              ? await this.videoResponse(provider, body, signal, '/video/generations')
               : h3Provider(provider)
                 ? await this.h3VideoResponse(provider, { prompt, seconds: 4, steps: 20, size: '1280x720' }, signal, onEvent, id)
                 : await this.videoResponse(provider, body, signal)

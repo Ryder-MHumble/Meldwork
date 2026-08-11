@@ -42,6 +42,14 @@ function canUseNativeMediaFallback(error) {
   const code = String(error?.code || error?.message || '')
   return /^(?:MEDIA_GENERATION_(?:PROVIDER_UNAVAILABLE|MODEL_UNAVAILABLE|NETWORK_FAILED|INVALID_RESPONSE|FAILED|DOWNLOAD_FAILED)|MEDIA_GENERATION_(?:HTTP|DOWNLOAD_HTTP)_\d+)$/.test(code)
 }
+
+function agentReturnedMediaProviderFailure(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
+  if (!normalized) return false
+  return /configured providers do not offer the required media model/i.test(normalized)
+    || /use a provider credential with access to (?:that|the) image, audio, or video model/i.test(normalized)
+    || /provider.+(?:does not|do not).+(?:offer|support).+(?:media|image|audio|video).+model/i.test(normalized)
+}
 const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
 
 function attachInvocationFailure(error, input) {
@@ -1149,6 +1157,18 @@ class LocalWorkspaceAgentInvocation {
         ? parseAutoReply(result.text)
         : { text: result.text, consensus: false }
       if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')
+      if (allowWrite && context.mediaRequest && this.generateMedia && nativeMediaFallback
+          && !generatedMedia && agentReturnedMediaProviderFailure(reply.text)) {
+        sideEffectsStarted = true
+        generatedMedia = await abortableOperation(() => this.generateMedia({
+          kind,
+          request: context.mediaRequest,
+          workdir: group.workdir,
+          signal: agentController.signal,
+          onEvent: emitRuntimeEvent,
+        }), agentController.signal)
+        reply.text = `Meldwork generated and attached ${generatedMedia.filename}.`
+      }
       const progress = attemptProgress.length ? attemptProgress : result.progress
       const toolCalls = cleanProgressSteps(progress).map(step => ({
         ...step,

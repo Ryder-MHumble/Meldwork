@@ -225,7 +225,7 @@ test('Custom Agent kinds keep their dynamic label across execution and reload', 
   await workspace.sendMessage({ groupId: group.id, text: 'Review this change', targetKinds: [kind] })
 
   assert.match(calls[0].prompt, /as Repository Reviewer\./)
-  assert.equal(calls[0].runOptions.sandbox, 'read-only')
+  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
   const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
   assert.equal(reply.agentKind, kind)
   assert.equal(reply.senderName, 'Repository Reviewer')
@@ -1611,6 +1611,114 @@ test('group media requests fall back to the target Agent when the shared Provide
   )), false)
 })
 
+test('group media requests recover when native Agent media fallback reports provider model failure', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = {
+    id: 'recovered-group-video', name: 'recovered-group-video.mp4', mimeType: 'video/mp4', size: 128,
+  }
+  let generationCount = 0
+  options.generateMedia = async (input) => {
+    generationCount += 1
+    if (generationCount === 1) {
+      const error = new Error('MEDIA_GENERATION_MODEL_UNAVAILABLE')
+      error.code = 'MEDIA_GENERATION_MODEL_UNAVAILABLE'
+      throw error
+    }
+    input.onEvent({
+      id: 'media-recovered',
+      type: 'tool_result_summary',
+      status: 'completed',
+      title: 'video_generation',
+    })
+    return { type: 'video', filename: generated.name }
+  }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: 'Codex failed: The configured Providers do not offer the required media model. Use a Provider credential with access to that image, audio, or video model.',
+      sessionRef: runOptions.sessionRef || 'codex-session',
+      outcome: 'completed',
+    }
+  }
+  options.captureAgentOutputs = async () => ({ marker: 'before-recovery' })
+  options.importAgentOutputs = async () => (generationCount >= 2 ? [generated] : [])
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Recovered group media', workdir: directory, allowWrite: true,
+    conversationType: 'group', agentKinds: ['codex', 'hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Generate a short product demo video',
+    targetKinds: ['codex'],
+    mode: 'manual',
+  })
+
+  assert.equal(generationCount, 2)
+  assert.equal(calls.length, 1)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.equal(reply.content, `Meldwork generated and attached ${generated.name}.`)
+  assert.deepEqual(reply.attachments, [generated])
+})
+
+test('direct media requests fall back to the chat Agent when the shared Provider lacks a media model', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const generated = {
+    id: 'native-direct-image', name: 'native-direct-image.png', mimeType: 'image/png', size: 128,
+  }
+  const error = new Error('MEDIA_GENERATION_MODEL_UNAVAILABLE')
+  error.code = 'MEDIA_GENERATION_MODEL_UNAVAILABLE'
+  options.generateMedia = async () => { throw error }
+  options.captureAgentOutputs = async () => ({ marker: 'before-native-media' })
+  options.importAgentOutputs = async () => [generated]
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const direct = workspace.createGroup({
+    name: 'Native direct media fallback', workdir: directory, allowWrite: true,
+    conversationType: 'direct', directAgentKind: 'hermes', agentKinds: ['hermes'],
+  })
+
+  await workspace.sendMessage({
+    groupId: direct.id, text: '请生成一张赛博朋克城市图片',
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.kind, 'hermes')
+  assert.match(calls[0].prompt, /shared media generator was unavailable/i)
+  assert.match(calls[0].prompt, /native media-generation tools or installed local skills/i)
+  assert.match(calls[0].prompt, /\.meldwork-output\//)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.deepEqual(reply.attachments, [generated])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'system' && /MEDIA_GENERATION_MODEL_UNAVAILABLE/.test(message.content)
+  )), false)
+})
+
+test('new direct and group conversations default to workspace-write permission', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+
+  const group = workspace.createGroup({
+    name: 'Default writable group', agentKinds: ['codex'], workdir: directory,
+  })
+  const direct = workspace.createGroup({
+    conversationType: 'direct', directAgentKind: 'hermes', agentKinds: ['hermes'], workdir: directory,
+  })
+  const readOnly = workspace.createGroup({
+    name: 'Explicit read only', agentKinds: ['codex'], workdir: directory, allowWrite: false,
+  })
+
+  assert.equal(group.allowWrite, true)
+  assert.equal(direct.allowWrite, true)
+  assert.equal(readOnly.allowWrite, false)
+})
+
 test('read-only conversations forbid false media claims and do not scan for generated files', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -2101,7 +2209,7 @@ test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
   assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
 })
 
-test('group write authorization defaults off and is passed to local CLIs only after opt-in', async (t) => {
+test('group write authorization defaults on and can still be explicitly disabled', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -2110,19 +2218,19 @@ test('group write authorization defaults off and is passed to local CLIs only af
     name: '写入授权', agentKinds: ['codex', 'kimi'], workdir: directory,
   })
 
-  await workspace.sendMessage({ groupId: group.id, text: '默认只读', targetKinds: ['codex'] })
-  assert.equal(calls[0].runOptions.sandbox, 'read-only')
-  assert.match(calls[0].prompt, /read-only/i)
-  workspace.updateGroup(group.id, { allowWrite: true })
-  await workspace.sendMessage({ groupId: group.id, text: '显式授权', targetKinds: ['kimi'] })
+  await workspace.sendMessage({ groupId: group.id, text: '默认授权', targetKinds: ['codex'] })
+  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
+  assert.match(calls[0].prompt, /execute the work instead of returning only a plan/i)
+  workspace.updateGroup(group.id, { allowWrite: false })
+  await workspace.sendMessage({ groupId: group.id, text: '显式只读', targetKinds: ['kimi'] })
 
-  assert.equal(calls[1].runOptions.sandbox, 'workspace-write')
-  assert.match(calls[1].prompt, /execute the work instead of returning only a plan/i)
+  assert.equal(calls[1].runOptions.sandbox, 'read-only')
+  assert.match(calls[1].prompt, /read-only/i)
   const restored = new LocalWorkspace(options)
-  assert.equal(restored.snapshot().groups[0].allowWrite, true)
+  assert.equal(restored.snapshot().groups[0].allowWrite, false)
 })
 
-test('direct conversations also default to read-only', async (t) => {
+test('direct conversations also default to workspace-write', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -2137,8 +2245,8 @@ test('direct conversations also default to read-only', async (t) => {
 
   await workspace.sendMessage({ groupId: direct.id, text: '只读私聊' })
 
-  assert.equal(direct.allowWrite, false)
-  assert.equal(calls[0].runOptions.sandbox, 'read-only')
+  assert.equal(direct.allowWrite, true)
+  assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
 })
 
 test('group settings cannot change execution context during an active run', async (t) => {

@@ -91,7 +91,7 @@ class LocalWorkspaceConversations {
       topic: cleanText(input.topic, 200),
       agentKinds,
       workdir,
-      allowWrite: input.allowWrite === true,
+      allowWrite: input.allowWrite !== false,
       createdAt: timestamp,
       updatedAt: timestamp,
     }
