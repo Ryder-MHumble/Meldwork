@@ -528,14 +528,15 @@
 
 .message-attachment-grid {
   display: flex;
-  flex-wrap: wrap;
-  justify-content: end;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: flex-start;
   gap: 7px;
   margin-top: 9px;
 }
 
 .message-row.agent .message-attachment-grid {
-  justify-content: flex-start;
+  align-items: flex-start;
 }
 
 .message-attachment-grid figure {

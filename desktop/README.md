@@ -28,6 +28,10 @@ Agent 管理面板提供经过白名单约束的安装入口。安装命令和�
 
 ## 首次启动与本地 Agent 检测
 
+当前预览版未使用 Apple Developer ID 签名和公证。如果 macOS 首次启动时拦截应用，请打开
+“系统设置 → 隐私与安全性”，找到 Meldwork 的拦截提示，点击“仍要打开 / Open Anyway”，
+再确认启动。
+
 首次启动会显示三页引导轮播，依次介绍本地 Agent 检测、多 Agent 协作、Skill 与文件上下文。
 客户端在引导打开时执行唯一一次启动刷新；检测任务真正结束前“开始使用”按钮保持禁用，不会
 用固定计时器伪装完成。检测成功或失败后才释放按钮。完成或关闭引导后会在渲染层本地记录状态，
@@ -91,6 +95,18 @@ WindowsApps、Node.js、WorkBuddy、Chocolatey 和 Scoop 目录，并按 `PATHEX
 Hermes 和 Kimi 的安装脚本来自固定 HTTPS 白名单地址；客户端不内置脚本副本，因此离线环境
 不能使用这两个一键安装入口。当前自动安装面向 macOS 和 Windows，Windows 安装流程仍需在
 真实 Windows 设备上做发布前验证。
+
+## 目录结构
+
+- `src/agents/`：Agent 兼容层、路由、运行时、CLI、安装器、连接器
+- `src/attachments/`：附件、内容存储、图片尺寸校验
+- `src/collaboration/`：对话、上下文包、产物、任务图
+- `src/workspace/`：本地工作区与自动调度
+- `src/runs/`：运行、预算、事件、调度、日志
+- `src/knowledge/`：知识库与知识连接器
+- `src/skills/`：Skill 目录、快照、信任
+- `src/security/`：私有文件与敏感信息脱敏
+- `test/`：按同名领域镜像组织测试，`support/` 放测试辅助代码
 
 ## 本地开发
 

@@ -252,7 +252,7 @@ const systemSettingsSection = ref('agents')
 const sidebarCollapsed = ref(false)
 const refreshing = ref(false)
 const agentDiscoveryPending = ref(false)
-const sending = ref(false)
+const sendingGroupIds = ref([])
 const saving = ref(false)
 const agentControlPendingAgentRunId = ref('')
 const humanGateDecisionPendingIds = ref([])
@@ -379,6 +379,10 @@ const {
   selectGroup,
   selectedGroupId,
 } = workspaceNavigationState
+const sending = computed(() => {
+  const groupId = String(activeGroup.value?.id || '')
+  return Boolean(groupId && sendingGroupIds.value.includes(groupId))
+})
 const sidebarDeleteGroup = computed(() => snapshot.value.groups.find(group => group.id === sidebarDeleteGroupId.value) || null)
 const sidebarDeletePopoverStyle = computed(() => ({
   left: `${sidebarDeletePopoverPoint.value.left}px`,
@@ -582,7 +586,6 @@ const {
 } = useRunFinishedNotifications({
   hasFinishedDirectRun,
   rememberRunFinishedTurnStatus,
-  selectedGroupId,
   setFinishedDirectRun,
   snapshot,
 })
@@ -700,6 +703,7 @@ const conversationExecution = useConversationExecution({
   roundSettingsOpen,
   safeAttachmentPayload,
   sending,
+  sendingGroupIds,
   serializeComposerContext,
   showError,
   snapshot,

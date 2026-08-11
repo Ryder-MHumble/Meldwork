@@ -458,6 +458,7 @@
 }
 
 .direct-session-open {
+  grid-column: 1;
   min-width: 0;
   height: 30px;
   display: flex;
@@ -480,6 +481,8 @@
 }
 
 .direct-session-action {
+  grid-column: 2;
+  grid-row: 1;
   width: 24px;
   height: 24px;
   opacity: 0;
@@ -514,6 +517,8 @@
 }
 
 .sidebar-delete-control {
+  grid-column: 3;
+  grid-row: 1;
   position: relative;
   width: 24px;
   height: 24px;
@@ -523,10 +528,15 @@
 }
 
 .direct-session-spacer {
+  grid-column: 4;
+  grid-row: 1;
   width: 0;
 }
 
-.direct-session-row > .run-mark {
+.direct-session-row > .run-mark,
+.direct-session-row > .run-finished-mark {
+  grid-column: 4;
+  grid-row: 1;
   width: 18px;
   justify-self: end;
 }
