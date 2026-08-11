@@ -585,7 +585,6 @@ const {
 } = useRunFinishedNotifications({
   hasFinishedDirectRun,
   rememberRunFinishedTurnStatus,
-  selectedGroupId,
   setFinishedDirectRun,
   snapshot,
 })

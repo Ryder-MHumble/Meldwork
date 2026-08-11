@@ -682,10 +682,10 @@
   min-height: 48px;
   position: relative;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr);
+  grid-template-columns: 32px minmax(0, 1fr) auto;
   grid-template-areas:
-    "avatar name"
-    "avatar state";
+    "avatar name state"
+    "avatar name state";
   align-items: center;
   column-gap: 8px;
   row-gap: 0;
@@ -737,7 +737,7 @@
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: flex-end;
   gap: 5px;
 }
 

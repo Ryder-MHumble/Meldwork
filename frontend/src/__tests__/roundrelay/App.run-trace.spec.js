@@ -1287,6 +1287,125 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('clears only the finished conversation run so the composer unlocks without refresh', async () => {
+    const { wrapper, emitRunFinished } = await mountApp(({ state }) => {
+      state.groups.push(
+        {
+          id: 'direct-codex',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Codex review',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'group-review',
+          conversationType: 'group',
+          name: 'Group review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:03:00Z',
+        },
+      )
+      state.messages.push(
+        {
+          id: 'direct-root',
+          groupId: 'direct-codex',
+          role: 'user',
+          content: 'Review this directly',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'group-root',
+          groupId: 'group-review',
+          role: 'user',
+          content: 'Review this as a group',
+          targetKinds: ['codex', 'hermes'],
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+      )
+      state.runningGroupIds = ['direct-codex', 'group-review']
+      state.runs = [
+        {
+          runId: 'run-direct',
+          groupId: 'direct-codex',
+          mode: 'manual',
+          phase: 'running',
+          targetKinds: ['codex'],
+          completedKinds: [],
+          failedKinds: [],
+          currentKind: 'codex',
+          currentRound: 1,
+          progress: [],
+          agentRuns: [{
+            agentRunId: 'agent-run-direct',
+            kind: 'codex',
+            round: 1,
+            status: 'running',
+            output: 'working',
+            events: [],
+          }],
+        },
+        {
+          runId: 'run-group',
+          groupId: 'group-review',
+          mode: 'manual',
+          phase: 'running',
+          threadRootId: 'group-root',
+          targetKinds: ['codex', 'hermes'],
+          completedKinds: [],
+          failedKinds: [],
+          currentKind: 'codex',
+          currentRound: 1,
+          progress: [],
+          agentRuns: [{
+            agentRunId: 'agent-run-group',
+            kind: 'codex',
+            round: 1,
+            status: 'running',
+            output: 'working',
+            events: [],
+          }],
+        },
+      ]
+    })
+
+    await wrapper.findAll('.direct-session-open')
+      .find(button => button.text().includes('Codex review'))
+      .trigger('click')
+    expect(wrapper.find('.stop-button').exists()).toBe(true)
+
+    emitRunFinished({
+      groupId: 'direct-codex',
+      status: 'completed',
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.stop-button').exists()).toBe(false)
+    expect(wrapper.find('.send-button').exists()).toBe(true)
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.find('.stop-button').exists()).toBe(true)
+
+    emitRunFinished({
+      groupId: 'group-review',
+      threadRootId: 'group-root',
+      status: 'completed',
+    })
+    await flushPromises()
+
+    expect(wrapper.find('.stop-button').exists()).toBe(false)
+    expect(wrapper.find('.send-button').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('opens a notification target that arrives before the initial workspace snapshot', async () => {
     const initialSnapshot = deferred()
     const { wrapper, state, emitOpenGroup } = await mountApp(({ bridge }) => {

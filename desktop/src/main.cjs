@@ -1,75 +1,75 @@
 const electron = require('electron')
 const { app, BrowserWindow, dialog, ipcMain, Menu, Notification, protocol, shell } = electron
 const path = require('node:path')
-const { AttachmentStore } = require('./attachment-store.cjs')
-const { ContentBlobStore } = require('./content-blob-store.cjs')
-const { ContextPackStore } = require('./context-pack-store.cjs')
-const { OutcomeStore } = require('./outcome-store.cjs')
-const FROZEN_AGENT_FIT_MATRIX = require('./eval-data/agent-fit-matrix.v1.json')
+const { AttachmentStore } = require('./attachments/attachment-store.cjs')
+const { ContentBlobStore } = require('./attachments/content-blob-store.cjs')
+const { ContextPackStore } = require('./collaboration/context-pack-store.cjs')
+const { OutcomeStore } = require('./collaboration/outcome-store.cjs')
+const FROZEN_AGENT_FIT_MATRIX = require('./evaluations/data/agent-fit-matrix.v1.json')
 const {
   MEDIA_SCHEME,
   attachmentIdsFromSnapshot,
   createAttachmentService,
   persistedAttachmentReferences,
-} = require('./attachment-service.cjs')
+} = require('./attachments/attachment-service.cjs')
 const {
   captureAgentOutputState,
   captureAgentOutcomeDescriptors,
   captureArtifactOutputState,
   importAgentOutputs,
-} = require('./agent-output-importer.cjs')
-const { detectAgents, imageAttachmentLimit, runAgent } = require('./cli-adapters.cjs')
-const { AgentInstaller } = require('./agent-installer.cjs')
-const { AgentConnectorInstanceStore } = require('./agent-connector-instance-store.cjs')
-const { LocalAgentConnectors } = require('./agent-connector-local.cjs')
-const { AgentConnectorPackageStore } = require('./agent-connector-package-store.cjs')
-const { CloudAgentOperationStore } = require('./cloud-agent-operation-store.cjs')
+} = require('./agents/agent-output-importer.cjs')
+const { detectAgents, imageAttachmentLimit, runAgent } = require('./agents/cli/cli-adapters.cjs')
+const { AgentInstaller } = require('./agents/installer/agent-installer.cjs')
+const { AgentConnectorInstanceStore } = require('./agents/connectors/agent-connector-instance-store.cjs')
+const { LocalAgentConnectors } = require('./agents/connectors/agent-connector-local.cjs')
+const { AgentConnectorPackageStore } = require('./agents/connectors/agent-connector-package-store.cjs')
+const { CloudAgentOperationStore } = require('./agents/cloud/cloud-agent-operation-store.cjs')
 const {
   CloudAgentRuntime,
   createCloudAgentStartRetry = ({ runtime }) => Object.freeze({
     start: () => Promise.resolve().then(() => runtime.start()).then(() => true, () => false),
     cancel() {},
   }),
-} = require('./cloud-agent-runtime.cjs')
-const { ChannelInboxStore } = require('./channel-inbox-store.cjs')
-const { ChannelIngressRuntime } = require('./channel-ingress-runtime.cjs')
-const { CustomAgentStore } = require('./custom-agent-store.cjs')
+} = require('./agents/cloud/cloud-agent-runtime.cjs')
+const { ChannelInboxStore } = require('./channels/channel-inbox-store.cjs')
+const { ChannelIngressRuntime } = require('./channels/channel-ingress-runtime.cjs')
+const { CustomAgentStore } = require('./agents/custom-agent-store.cjs')
 const {
   nativeCredentialEnvironment,
   resolveNativeOpenClawRuntime,
   resolveNativeCredentialState,
   resolveNativeShellEnvironment,
-} = require('./local-agent-readiness.cjs')
-const { LocalWorkspace } = require('./local-workspace.cjs')
-const { MediaGenerationRuntime } = require('./media-generation-runtime.cjs')
-const { resolveMediaProvider } = require('./media-provider-resolution.cjs')
-const { registerDesktopIpc } = require('./main-ipc.cjs')
+} = require('./agents/local-agent-readiness.cjs')
+const { LocalWorkspace } = require('./workspace/local-workspace.cjs')
+const { MediaGenerationRuntime } = require('./media/media-generation-runtime.cjs')
+const { resolveMediaProvider } = require('./media/media-provider-resolution.cjs')
+const { registerDesktopIpc } = require('./shell/main-ipc.cjs')
 const {
   isAllowedExternalUrl,
   isAllowedLocalNavigation: isAllowedLocalNavigationForPaths,
   isTrustedLocalRenderer,
   isTrustedLocalWebContents: isTrustedLocalWebContentsForPath,
-} = require('./main-renderer-security.cjs')
-const { createRunNotificationCoordinator } = require('./main-run-notifications.cjs')
-const { normalizeRunEvent } = require('./run-harness.cjs')
-const { RunLedger } = require('./run-ledger.cjs')
-const { LocalSkillCatalog } = require('./local-skill-catalog.cjs')
-const { LocalSkillSnapshotSelections } = require('./local-skill-snapshot-selections.cjs')
-const { LocalSkillSnapshotStore } = require('./local-skill-snapshot.cjs')
-const { LocalSkillTrustStore } = require('./local-skill-trust-store.cjs')
-const { KnowledgeBaseStore } = require('./knowledge-base-store.cjs')
+} = require('./shell/main-renderer-security.cjs')
+const { createRunNotificationCoordinator } = require('./shell/main-run-notifications.cjs')
+const { normalizeRunEvent } = require('./runs/run-harness.cjs')
+const { RunLedger } = require('./runs/run-ledger.cjs')
+const { LocalSkillCatalog } = require('./skills/local-skill-catalog.cjs')
+const { LocalSkillSnapshotSelections } = require('./skills/local-skill-snapshot-selections.cjs')
+const { LocalSkillSnapshotStore } = require('./skills/local-skill-snapshot.cjs')
+const { LocalSkillTrustStore } = require('./skills/local-skill-trust-store.cjs')
+const { KnowledgeBaseStore } = require('./knowledge/knowledge-base-store.cjs')
 const {
   knowledgeBaseSelectionHint,
   knowledgeBaseGuideUrl,
   resolveKnowledgeBaseSources,
-} = require('./local-knowledge-base.cjs')
-const { LocalKnowledgeConnectors } = require('./local-knowledge-connectors.cjs')
-const { ProviderStore } = require('./provider-store.cjs')
+} = require('./knowledge/local-knowledge-base.cjs')
+const { LocalKnowledgeConnectors } = require('./knowledge/local-knowledge-connectors.cjs')
+const { ProviderStore } = require('./providers/provider-store.cjs')
 const {
   EXTERNAL_PROVIDER_KINDS,
   providerAgentKind,
   providerOptionsFor,
-} = require('./provider-options.cjs')
+} = require('./providers/provider-options.cjs')
 const LOCAL_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   'opencodereview',

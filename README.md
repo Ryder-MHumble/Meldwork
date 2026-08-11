@@ -15,7 +15,7 @@ Most Agent tools are already good at completing one step. The fragile part start
 Meldwork is not about opening more AI windows. It is about letting complex work move between Agents without losing the thread: one Agent's conclusions and evidence can support the next step, every answer returns to the same task context, and you decide which results are worth accepting.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/v0.1.0-private-preview.5/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Release-V1.0.0/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
   · <a href="LICENSE">Non-commercial source license</a>
   · <a href="COMMERCIAL_USE.md">Commercial permission</a>
 </p>
@@ -24,7 +24,7 @@ Meldwork is not about opening more AI windows. It is about letting complex work 
 
 The current desktop build is for Apple silicon Macs.
 
-1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/v0.1.0-private-preview.5).
+1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Release-V1.0.0).
 2. Download `Meldwork-0.1.0-arm64.dmg`.
 3. Drag Meldwork into Applications, then try to open it once.
 4. If macOS blocks the current preview because it is not yet Apple-notarized, open **System Settings → Privacy & Security**, scroll to **Security**, click **Open Anyway** beside Meldwork, then confirm **Open**. The button appears only after the first blocked launch attempt. Use only a DMG downloaded from the official Release above.

@@ -9,10 +9,10 @@
   "scripts": {
     "build:frontend": "npm --prefix ../frontend run build:desktop",
     "dev": "npm run build:frontend && electron .",
-    "connector:conformance": "node --test test/agent-connector-manifest.test.cjs test/agent-connector-registry.test.cjs test/agent-connector-runtime.test.cjs test/agent-connector-instance-store.test.cjs test/agent-connector-package-store.test.cjs test/agent-connector-sdk.test.cjs",
+    "connector:conformance": "node --test test/agents/connectors/agent-connector-manifest.test.cjs test/agents/connectors/agent-connector-registry.test.cjs test/agents/connectors/agent-connector-runtime.test.cjs test/agents/connectors/agent-connector-instance-store.test.cjs test/agents/connectors/agent-connector-package-store.test.cjs test/agents/connectors/agent-connector-sdk.test.cjs",
     "eval:deterministic": "node scripts/run-evals.cjs --suite deterministic",
     "eval:provider": "node scripts/run-evals.cjs --suite provider",
-    "test": "node --test test/*.test.cjs",
+    "test": "node --test \"test/**/*.test.cjs\"",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "npm run build:frontend && electron-builder --mac dmg zip",
     "dist:public": "node scripts/public-release-preflight.cjs && npm run build:frontend && electron-builder --config electron-builder.public.cjs --mac dmg zip"

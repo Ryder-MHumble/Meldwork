@@ -22,7 +22,6 @@ export function useConversationExecution({
   restoreComposerContext,
   roundSettingsOpen,
   safeAttachmentPayload,
-  sending,
   sendingGroupIds,
   serializeComposerContext,
   showError,
@@ -33,13 +32,6 @@ export function useConversationExecution({
   captureComposerContext,
   clearComposerContext,
 }) {
-  function setGroupSending(groupId, value) {
-    const next = new Set(sendingGroupIds.value)
-    if (value) next.add(groupId)
-    else next.delete(groupId)
-    sendingGroupIds.value = next
-  }
-
   const canSendMessage = computed(() => (
     composerTargetsReady.value
     && (composerMode.value !== 'auto' || composerTargetKinds.value.length >= 2)
@@ -48,9 +40,24 @@ export function useConversationExecution({
     && Boolean(draft.value.trim() || composerAttachments.value.length)
   ))
 
+  function isGroupSending(groupId) {
+    const current = sendingGroupIds.value
+    if (current instanceof Set) return current.has(groupId)
+    return Array.isArray(current) && current.includes(groupId)
+  }
+
+  function setGroupSending(groupId, value) {
+    const next = new Set(sendingGroupIds.value instanceof Set ? sendingGroupIds.value : [])
+    if (value) next.add(groupId)
+    else next.delete(groupId)
+    sendingGroupIds.value = next
+  }
+
   async function sendMessage() {
-    if (!activeGroup.value || sending.value || activeRun.value || importingAttachment.value) return
-    const groupId = activeGroup.value.id
+    const group = activeGroup.value
+    if (!group) return
+    const groupId = group.id
+    if (isGroupSending(groupId) || activeRun.value || importingAttachment.value) return
     const contextVersion = composerContextVersion.value
     const text = draft.value.trim()
     const attachments = composerAttachments.value.map(safeAttachmentPayload)

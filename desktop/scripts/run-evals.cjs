@@ -3,10 +3,10 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { EvalHarness, buildFitMatrix } = require('../src/eval-harness.cjs')
-const { createEvalCase } = require('../src/eval-records.cjs')
-const { EvalStore } = require('../src/eval-store.cjs')
-const { canonicalJson } = require('../src/outcome-records.cjs')
+const { EvalHarness, buildFitMatrix } = require('../src/evaluations/eval-harness.cjs')
+const { createEvalCase } = require('../src/evaluations/eval-records.cjs')
+const { EvalStore } = require('../src/evaluations/eval-store.cjs')
+const { canonicalJson } = require('../src/collaboration/outcome-records.cjs')
 
 function argumentValue(name) {
   const index = process.argv.indexOf(name)

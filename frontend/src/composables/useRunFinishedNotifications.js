@@ -6,7 +6,6 @@ const RUN_FINISHED_STATUSES = new Set([
 export function useRunFinishedNotifications({
   hasFinishedDirectRun,
   rememberRunFinishedTurnStatus,
-  selectedGroupId,
   setFinishedDirectRun,
   snapshot,
 }) {
@@ -38,6 +37,37 @@ export function useRunFinishedNotifications({
     return `${groupId}\u0000${turnId}`
   }
 
+  function clearFinishedRun(event) {
+    const groupId = String(event?.groupId || '')
+    const runId = String(event?.runId || '')
+    if (!groupId) return
+    const runs = Array.isArray(snapshot.value.runs) ? snapshot.value.runs : []
+    const groupRuns = runs.filter(run => run?.groupId === groupId)
+    if (!runId && groupRuns.length > 1) return
+    let removed = false
+    const nextRuns = runs.filter((run) => {
+      const matches = run?.groupId === groupId
+        && (runId ? run?.runId === runId : groupRuns.length === 1)
+      if (matches) removed = true
+      return !matches
+    })
+    const clearStaleRunningOnly = !removed && groupRuns.length === 0
+    if (!removed && !clearStaleRunningOnly) return
+    const hasRemainingGroupRun = nextRuns.some(run => run?.groupId === groupId)
+    const runningGroupIds = Array.isArray(snapshot.value.runningGroupIds)
+      ? snapshot.value.runningGroupIds
+      : []
+    const nextRunningGroupIds = hasRemainingGroupRun
+      ? runningGroupIds
+      : runningGroupIds.filter(id => id !== groupId)
+    if (!removed && nextRunningGroupIds.length === runningGroupIds.length) return
+    snapshot.value = {
+      ...snapshot.value,
+      runs: nextRuns,
+      runningGroupIds: nextRunningGroupIds,
+    }
+  }
+
   function handleRunFinished(event) {
     const groupId = String(event?.groupId || '')
     if (!groupId) return
@@ -55,7 +85,8 @@ export function useRunFinishedNotifications({
     } else {
       pendingEvents.delete(key)
     }
-    if (group.conversationType !== 'direct' || selectedGroupId.value === groupId) return
+    clearFinishedRun(normalizedEvent)
+    if (group.conversationType !== 'direct') return
     if (normalizedEvent.status !== 'completed') {
       if (hasFinishedDirectRun(groupId)) setFinishedDirectRun(groupId, false)
       return

@@ -761,8 +761,15 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.skill-menu\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.skill-option\.agent-mention-option \.skill-option-copy small,[^{]+\.skill-option\.knowledge-base-mention-option \.skill-option-copy small\s*\{[^}]*-webkit-line-clamp:\s*2;/s)
     expect(source).toMatch(/\.modal-pop-enter-active,[^{]+\.modal-pop-leave-active\s*\{[^}]*transform 0\.18s cubic-bezier\(0\.16, 1, 0\.3, 1\);/s)
+    expect(source).toMatch(/\.message-attachment-grid\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*flex-end;[^}]*justify-content:\s*flex-start;/s)
+    expect(source).toMatch(/\.message-row\.agent \.message-attachment-grid\s*\{[^}]*align-items:\s*flex-start;/s)
+    expect(source).not.toMatch(/\.message-attachment-grid\s*\{[^}]*flex-wrap:\s*wrap;/s)
+    expect(source).toMatch(/\.direct-session-open\s*\{[^}]*grid-column:\s*1;/s)
     expect(source).toMatch(/\.direct-session-action\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row:hover \.direct-session-action,[^{]+\.direct-session-row:focus-within \.direct-session-action\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*auto;/s)
+    expect(source).toMatch(/\.direct-session-row > \.run-mark,[^{]+\.direct-session-row > \.run-finished-mark\s*\{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*justify-self:\s*end;/s)
+    expect(source).toMatch(/\.run-agent-row\s*\{[^}]*grid-template-columns:\s*32px minmax\(0, 1fr\) auto;[^}]*"avatar name state"/s)
+    expect(source).toMatch(/\.run-agent-state\s*\{[^}]*justify-content:\s*flex-end;/s)
   })
 
   it('uses a distinct Meldwork palette and separates composer controls', () => {
@@ -1412,6 +1419,67 @@ describe('RoundRelay workbench', () => {
     expect(smartTeam.get('.smart-team-status').text()).toBe('关闭')
     await wrapper.get('.smart-team-control').trigger('mouseenter')
     expect(wrapper.get('.smart-team-tooltip').text()).toContain('关闭时使用当前群聊或手动选择的 Agent')
+    wrapper.unmount()
+  })
+
+  it('keeps a pending send isolated to its conversation while another conversation sends', async () => {
+    const pendingGroupSend = deferred()
+    const { wrapper, bridge, state } = await mountApp(({ state, bridge: desktopBridge }) => {
+      desktopBridge.localWorkspace.send.mockReturnValueOnce(pendingGroupSend.promise)
+      state.groups.push(
+        {
+          id: 'group-1',
+          conversationType: 'group',
+          name: 'Review',
+          topic: '',
+          agentKinds: ['codex', 'hermes'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:00:00Z',
+          updatedAt: '2026-07-29T08:00:00Z',
+        },
+        {
+          id: 'direct-codex',
+          conversationType: 'direct',
+          directAgentKind: 'codex',
+          name: 'Codex direct',
+          topic: '',
+          agentKinds: ['codex'],
+          workdir: '/tmp/roundrelay-workspace',
+          allowWrite: false,
+          createdAt: '2026-07-29T08:01:00Z',
+          updatedAt: '2026-07-29T08:01:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
+    await wrapper.get('.composer-box textarea').setValue('Group task')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+    expect(bridge.localWorkspace.send).toHaveBeenCalledTimes(1)
+    expect(wrapper.get('.composer-box textarea').attributes()).toHaveProperty('disabled')
+
+    await wrapper.get('.direct-session-open').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.conversation-header h1').text()).toBe('Codex direct')
+    expect(wrapper.get('.composer-box textarea').attributes()).not.toHaveProperty('disabled')
+
+    await wrapper.get('.composer-box textarea').setValue('Direct task')
+    expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledTimes(2)
+    expect(bridge.localWorkspace.send.mock.calls[1][0]).toMatchObject({
+      groupId: 'direct-codex',
+      text: 'Direct task',
+      targetKinds: ['codex'],
+    })
+
+    pendingGroupSend.resolve(structuredClone(state))
+    await flushPromises()
     wrapper.unmount()
   })
 
