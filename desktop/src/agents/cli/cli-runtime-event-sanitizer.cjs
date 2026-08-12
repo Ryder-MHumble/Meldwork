@@ -65,6 +65,7 @@ function sanitizeRuntimeEventText(value, childEnv, limit, singleLine = false, tr
 
 function createRuntimeEventEmitter(options, childEnv) {
   const callback = typeof options.onEvent === 'function' ? options.onEvent : null
+  const activity = typeof options.onActivity === 'function' ? options.onActivity : null
   let emittedAnswerDelta = false
   const deliver = (event) => {
     if (!callback) return
@@ -74,6 +75,7 @@ function createRuntimeEventEmitter(options, childEnv) {
     } catch { /* runtime events are best-effort */ }
   }
   const emit = (input) => {
+    try { activity?.() } catch { /* activity is best-effort */ }
     if (!callback || !input || !RUNTIME_EVENT_TYPES.has(input.type)) return
     const base = { type: input.type }
     const rawId = sanitizeRuntimeEventText(input.id, childEnv, RUNTIME_EVENT_LIMITS.id, true)

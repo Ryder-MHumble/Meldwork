@@ -584,6 +584,7 @@ function createWorkspace() {
         return customAgentStore.run(agent.kind, prompt, workdir, {
           sandbox: options.sandbox,
           signal: options.signal,
+          onActivity: options.onActivity,
           onProgress: options.onProgress,
           onEvent: options.onEvent,
           onOutboundPayload: options.onOutboundPayload,

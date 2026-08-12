@@ -513,8 +513,8 @@ class LocalWorkspaceAgentInvocation {
     let watchdogTimer = null
     let watchdogPromise = null
     let watchdogReject = null
-    let watchdogRemainingMs = this.runAgentTimeoutMs
-    let watchdogStartedAt = 0
+    let watchdogLastProgressAt = Date.now()
+    let watchdogPaused = false
     let parentAbortHandler = null
     let parentAbortPromise = null
     let capturePromise = null
@@ -540,21 +540,40 @@ class LocalWorkspaceAgentInvocation {
       else signal.addEventListener('abort', parentAbortHandler, { once: true })
     }
     const armWatchdog = () => {
-      if (watchdogTimer || agentController.signal.aborted || watchdogRemainingMs <= 0) return
-      watchdogStartedAt = Date.now()
+      if (watchdogTimer || watchdogPaused || agentController.signal.aborted
+          || !Number.isFinite(this.runAgentTimeoutMs) || this.runAgentTimeoutMs <= 0) return
+      const elapsedSinceProgress = Date.now() - watchdogLastProgressAt
+      const remainingMs = Math.max(0, this.runAgentTimeoutMs - elapsedSinceProgress)
       watchdogTimer = setTimeout(() => {
-        if (parentAbortObserved || signal?.aborted) return
+        watchdogTimer = null
+        if (parentAbortObserved || signal?.aborted || watchdogPaused
+            || agentController.signal.aborted) return
+        // This is an inactivity/stall timeout. Any progress signal refreshes the
+        // window, so a slow tool or streamed response can run indefinitely.
         watchdogTimedOut = true
         watchdogError = new Error('LOCAL_AGENT_TIMEOUT')
         agentController.abort()
         watchdogReject(watchdogError)
-      }, watchdogRemainingMs)
+      }, remainingMs)
     }
     const pauseWatchdog = () => {
-      if (!watchdogTimer) return
+      watchdogPaused = true
       clearTimeout(watchdogTimer)
       watchdogTimer = null
-      watchdogRemainingMs = Math.max(0, watchdogRemainingMs - (Date.now() - watchdogStartedAt))
+    }
+    const noteWatchdogProgress = () => {
+      if (agentCallbacksClosed || agentController.signal.aborted) return
+      watchdogLastProgressAt = Date.now()
+      if (!watchdogPaused) {
+        clearTimeout(watchdogTimer)
+        watchdogTimer = null
+        armWatchdog()
+      }
+    }
+    const resumeWatchdog = () => {
+      watchdogPaused = false
+      watchdogLastProgressAt = Date.now()
+      armWatchdog()
     }
     watchdogPromise = new Promise((_, reject) => {
       watchdogReject = reject
@@ -568,12 +587,13 @@ class LocalWorkspaceAgentInvocation {
           ? await invocation.lease.suspend(operation)
           : await operation()
       } finally {
-        if (!agentController.signal.aborted) armWatchdog()
+        if (!agentController.signal.aborted) resumeWatchdog()
       }
     }
     const onProgress = (step) => {
       if (agentCallbacksClosed || agentController.signal.aborted
           || !activeRun || this.activeRuns.get(group.id) !== activeRun) return
+      noteWatchdogProgress()
       const next = [...attemptProgress]
       const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
         ? step.id
@@ -607,6 +627,7 @@ class LocalWorkspaceAgentInvocation {
     }
     const emitRuntimeEvent = (rawEvent) => {
       if (agentCallbacksClosed || agentController.signal.aborted) return
+      noteWatchdogProgress()
       if (!rawEvent || rawEvent.type !== 'answer_delta') {
         emitHarnessEvent(rawEvent)
         return
@@ -791,6 +812,7 @@ class LocalWorkspaceAgentInvocation {
           ].filter(Boolean).join('\n')
       let prompt = buildPrompt(transcriptAfterKind, packedContext)
       const recordOutboundPayload = (outbound = {}) => {
+        noteWatchdogProgress()
         if (activeRun?.budget) {
           const bytes = outboundWirePayloadBytes(outbound)
           activeRun.budget.addUsageBatch([
@@ -914,6 +936,7 @@ class LocalWorkspaceAgentInvocation {
         sessionRef,
         onSessionRef: (nextSessionRef, metadata = {}) => {
           if (agentCallbacksClosed || agentController.signal.aborted) return
+          noteWatchdogProgress()
           if (reviewOnly || isolated) return
           const transport = ['legacy', 'acp'].includes(metadata?.transport)
             ? metadata.transport
@@ -932,6 +955,7 @@ class LocalWorkspaceAgentInvocation {
         signal: agentController.signal,
         sandbox: allowWrite ? 'workspace-write' : 'read-only',
         operationId,
+        onActivity: noteWatchdogProgress,
         onProgress,
         onEvent: emitRuntimeEvent,
         onOutboundPayload: recordOutboundPayload,
@@ -991,7 +1015,9 @@ class LocalWorkspaceAgentInvocation {
           ...currentRunOptions,
           runId: activeRun.runId,
           agentRunId: harnessRun.agentRunId,
+          onActivity: noteWatchdogProgress,
           onConnectorState: (nextContext) => {
+            noteWatchdogProgress()
             connectorContext = nextContext
             const liveHarnessRun = harness.current(kind, round, harnessRun.agentRunId)
             if (liveHarnessRun) {

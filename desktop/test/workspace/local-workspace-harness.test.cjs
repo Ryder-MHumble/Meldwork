@@ -1292,6 +1292,31 @@ test('manual Agent watchdog finishes the run as timeout and removes the parent a
   assert.equal(failure.trace.status, 'timeout')
 })
 
+test('a slow Agent that keeps reporting progress is not timed out by elapsed wall time', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 12
+  options.runSilenceWarningMs = 1000
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    for (let tick = 0; tick < 8; tick += 1) {
+      await new Promise(resolve => setTimeout(resolve, 6))
+      runOptions.onActivity()
+    }
+    return { text: 'Slow but active reply', sessionRef: 'codex-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Slow active Agent', agentKinds: ['codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Keep working', targetKinds: ['codex'] })
+
+  const reply = workspace.snapshot().messages.find(message => message.agentKind === 'codex')
+  assert.equal(reply.content, 'Slow but active reply')
+  assert.equal(reply.trace.status, 'completed')
+})
+
 test('terminal Agent states persist conclusion text already streamed through answer deltas', async (t) => {
   const scenarios = [
     {

@@ -412,6 +412,7 @@ class AgentConnectorRuntime {
       sessionRef,
       attachments,
       signal: connector.capabilities.session.cancel ? options.signal : undefined,
+      onActivity: options.onActivity,
       emit,
       onProgress: options.onProgress,
       onRuntimeEvent: options.onEvent,

@@ -235,6 +235,9 @@ class CustomAgentStore {
       const emitEvent = (event) => {
         try { options.onEvent?.(event) } catch { /* Runtime events are best effort. */ }
       }
+      const noteActivity = () => {
+        try { options.onActivity?.() } catch { /* activity is best-effort */ }
+      }
       const emitProgress = status => {
         try { options.onProgress?.({ id: 'custom-cli', title: 'process', status }) } catch { /* Best effort. */ }
       }
@@ -282,6 +285,7 @@ class CustomAgentStore {
       else options.signal?.addEventListener('abort', abort, { once: true })
 
       child.stdout.on('data', (chunk) => {
+        noteActivity()
         stdoutBytes += chunk.length
         if (stdoutBytes > MAX_STDOUT_BYTES) {
           stop('CUSTOM_AGENT_OUTPUT_LIMIT')
@@ -290,6 +294,7 @@ class CustomAgentStore {
         stdout.push(chunk)
       })
       child.stderr.on('data', (chunk) => {
+        noteActivity()
         stderrBytes += chunk.length
         if (stderrBytes > MAX_STDERR_BYTES) {
           stop('CUSTOM_AGENT_OUTPUT_LIMIT')

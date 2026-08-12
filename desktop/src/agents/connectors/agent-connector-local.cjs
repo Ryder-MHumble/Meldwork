@@ -631,6 +631,7 @@ class LocalAgentConnectors {
         sessionRef: input.sessionRef,
         sandbox: input.permissionMode,
         attachments: input.attachments,
+        onActivity: input.onActivity,
         onProgress: input.onProgress,
         onEvent: input.onRuntimeEvent,
         onOutboundPayload: input.onOutboundPayload,

@@ -185,6 +185,9 @@ function normalizeOutput(kind, stdout, sessionRef = '') {
 
 async function runAgent(agent, prompt, workdir, options = {}) {
   if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  const noteActivity = () => {
+    try { options.onActivity?.() } catch { /* activity is best-effort */ }
+  }
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
   let sessionRef = String(options.sessionRef || '')
@@ -250,7 +253,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     }))
   }
   const childEnv = childEnvironment(agent, workdir, options, platform)
-  const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
+  const runtimeEvents = createRuntimeEventEmitter({ ...options, onActivity: noteActivity }, childEnv)
   if (['hermes', 'openclaw', 'workbuddy', 'opencodereview'].includes(agent.kind)) {
     runtimeEvents.emit({
       id: `${agent.kind}-connector`,
@@ -406,12 +409,14 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     else options.signal?.addEventListener('abort', abort, { once: true })
     child.stdout.on('data', (chunk) => {
       stdout.push(chunk)
+      noteActivity()
       if (structuredOutput?.format === 'document') structuredOutput.write(chunk)
       runtimeStreamParser?.write(chunk)
       emitHermesProgress('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
       stderr.push(chunk)
+      noteActivity()
       emitHermesProgress('stderr', chunk)
     })
     child.on('error', error => finish(() => reject(

@@ -104,7 +104,7 @@ function validateAcpInboundMessage(message, validators, replyState, protocolLabe
 
 function boundedAcpStream(
   output, input, validators, replyState = { bytes: 0, collecting: true },
-  protocolLabel = 'ACP Agent', beforeWrite = null,
+  protocolLabel = 'ACP Agent', beforeWrite = null, onActivity = null,
 ) {
   const textEncoder = new TextEncoder()
   const readable = new ReadableStream({
@@ -135,6 +135,7 @@ function boundedAcpStream(
           const { value, done } = await reader.read()
           if (done) break
           if (!value?.byteLength) continue
+          try { onActivity?.() } catch { /* activity is best-effort */ }
           const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
           inputBytes += chunk.length
           if (inputBytes > ACP_MAX_INPUT_BYTES) {
@@ -397,9 +398,12 @@ function allowAcpSetupFallback(error) {
 async function runAcpAgent(agent, prompt, workdir, options, spec) {
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
+  const noteActivity = () => {
+    try { options.onActivity?.() } catch { /* activity is best-effort */ }
+  }
   const prepared = prepareCommand(spec.command, spec.args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
-  const runtimeEvents = createRuntimeEventEmitter(options, childEnv)
+  const runtimeEvents = createRuntimeEventEmitter({ ...options, onActivity: noteActivity }, childEnv)
   const protocolLabel = `${agent.name || AGENT_PROFILES[agent.kind]?.label || 'Agent'} ACP`
   let sdk
   try {
@@ -479,6 +483,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
     })
   })
   child.stderr.on('data', (chunk) => {
+    noteActivity()
     stderrBytes += chunk.length
     if (stderrBytes <= 1024 * 1024) stderr.push(chunk)
   })
@@ -491,6 +496,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
       return permissionOutcome(params, options, childEnv)
     },
     async sessionUpdate(params) {
+      noteActivity()
       if (!replyState.collecting) return
       const update = params.update
       if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
@@ -507,6 +513,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
       replyState,
       protocolLabel,
       async (message, wireBytes) => {
+        noteActivity()
         if (message?.method !== 'session/prompt'
             || typeof options.onOutboundPayload !== 'function') return
         try {
@@ -516,6 +523,7 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
           throw error
         }
       },
+      noteActivity,
     )
     connection = new ClientSideConnection(() => client, stream)
     await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
