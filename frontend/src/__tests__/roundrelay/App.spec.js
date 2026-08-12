@@ -778,6 +778,14 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.run-agent-state\s*\{[^}]*justify-content:\s*flex-end;/s)
   })
 
+  it('hides all visible scrollbars while preserving scroll behavior', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+
+    expect(source).toMatch(/html,\s*body,\s*#app\s*\{[^}]*scrollbar-width:\s*none;[^}]*-ms-overflow-style:\s*none;/s)
+    expect(source).toMatch(/html::-webkit-scrollbar,[^}]+body::-webkit-scrollbar,[^}]+#app::-webkit-scrollbar,[^}]+\*::\-webkit-scrollbar\s*\{[^}]*width:\s*0;[^}]*height:\s*0;/s)
+    expect(source).not.toMatch(/scrollbar-width:\s*thin;/)
+  })
+
   it('uses a distinct Meldwork palette and separates composer controls', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     const appSource = readFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')

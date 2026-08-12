@@ -619,7 +619,6 @@
   gap: 6px;
   overflow-x: auto;
   overscroll-behavior-inline: contain;
-  scrollbar-width: thin;
 }
 
 .message-row.agent .message-document-list {

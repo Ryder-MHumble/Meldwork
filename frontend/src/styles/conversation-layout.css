@@ -154,12 +154,7 @@
 .conversation-capabilities {
   max-width: min(62vw, 760px);
   overflow-x: auto;
-  scrollbar-width: none;
   white-space: nowrap;
-}
-
-.conversation-capabilities::-webkit-scrollbar {
-  display: none;
 }
 
 .meta-separator {

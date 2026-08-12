@@ -80,6 +80,17 @@ body,
   min-width: 0;
   height: 100%;
   margin: 0;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+  -ms-overflow-style: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+#app::-webkit-scrollbar,
+*::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 body {
@@ -123,6 +134,11 @@ textarea:disabled,
 select:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+* {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 button svg {
