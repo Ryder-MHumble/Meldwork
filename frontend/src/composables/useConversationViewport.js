@@ -1,6 +1,6 @@
 import { nextTick, ref, watch } from 'vue'
 
-export function useConversationViewport({ activeMessages, liveOutputSignature }) {
+export function useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId }) {
   const messageNearBottom = ref(true)
   const messageScroller = ref(null)
 
@@ -26,6 +26,7 @@ export function useConversationViewport({ activeMessages, liveOutputSignature })
 
   watch(() => activeMessages.value.length, () => { void scrollToLatest() })
   watch(liveOutputSignature, () => { void scrollToLatest() })
+  watch(selectedGroupId, () => { resetMessageViewport() }, { flush: 'post' })
 
   return {
     handleMessageScroll,

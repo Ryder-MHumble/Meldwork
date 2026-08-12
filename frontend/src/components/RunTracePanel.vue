@@ -154,11 +154,6 @@
               </span>
             </span>
           </div>
-          <p v-if="selectedItem.summary" class="trace-summary-copy">{{ selectedItem.summary }}</p>
-          <div v-if="selectedItem.output" class="trace-conclusion">
-            <span>{{ t('trace.conclusion') }}</span>
-            <MarkdownMessage :content="selectedItem.output" />
-          </div>
           <div v-if="selectedItem.context && hasTraceContext(selectedItem.context)" class="trace-context-disclosure">
             <div class="trace-context-stats" data-context-section="attempt">
               <span>{{ t('trace.attemptInjection') }}</span>
@@ -318,67 +313,6 @@
           </article>
         </section>
 
-        <section v-if="agentControlsVisible" class="trace-agent-control-section">
-          <header class="trace-section-heading">
-            <strong>{{ t('trace.agentControls') }}</strong>
-            <small>{{ agentLabel(selectedItem.agentKind) }}</small>
-          </header>
-          <div class="trace-agent-control-actions">
-            <button
-              class="secondary-button compact"
-              type="button"
-              :disabled="agentControlPending"
-              @click="emitAgentControl('retry')"
-            >
-              <RefreshOutline />
-              {{ t('trace.retryAgent') }}
-            </button>
-            <button
-              class="secondary-button compact"
-              type="button"
-              :disabled="agentControlPending"
-              @click="emitAgentControl('cancel')"
-            >
-              <CloseCircleOutline />
-              {{ t('trace.cancelAgent') }}
-            </button>
-          </div>
-          <div v-if="replacementAgentKinds.length" class="trace-agent-replace-control">
-            <label>
-              <span>{{ t('trace.replacementAgent') }}</span>
-              <select v-model="replacementKind" :disabled="agentControlPending">
-                <option value="" disabled>{{ t('trace.selectReplacementAgent') }}</option>
-                <option v-for="kind in replacementAgentKinds" :key="kind" :value="kind">
-                  {{ agentLabel(kind) }}
-                </option>
-              </select>
-            </label>
-            <button
-              class="secondary-button compact"
-              type="button"
-              :disabled="agentControlPending || !replacementKind"
-              @click="emitAgentControl('replace', replacementKind)"
-            >
-              <SwapHorizontalOutline />
-              {{ t('trace.replaceAgent') }}
-            </button>
-          </div>
-        </section>
-
-        <section v-if="budgetRows.length" class="trace-budget-section">
-          <header class="trace-section-heading">
-            <strong>{{ t('trace.budgetTitle') }}</strong>
-            <small>{{ budgetRows.length }}</small>
-          </header>
-          <dl>
-            <div v-for="row in budgetRows" :key="row.dimension">
-              <dt>{{ row.label }}</dt>
-              <dd>{{ row.usage }}</dd>
-              <small>{{ row.meta }}</small>
-            </div>
-          </dl>
-        </section>
-
         <section class="trace-event-section" :aria-label="t('trace.events')">
           <header class="trace-section-heading">
             <strong>{{ t('trace.events') }}</strong>
@@ -447,40 +381,29 @@ import {
   ChevronForwardOutline,
   CloseCircleOutline,
   CloseOutline,
-  RefreshOutline,
-  SwapHorizontalOutline,
 } from '@vicons/ionicons5'
-import MarkdownMessage from './MarkdownMessage.vue'
 import { agentLabel, agentLogo } from '../catalog.js'
 import { locale, t } from '../i18n.js'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
   drawer: { type: Boolean, default: false },
-  agentControlPendingAgentRunId: { type: String, default: '' },
-  budget: { type: Object, default: null },
-  controllableAgentRunId: { type: String, default: '' },
   humanGateDecisionPendingIds: { type: Array, default: () => [] },
   humanGates: { type: Array, default: () => [] },
   items: { type: Array, default: () => [] },
-  replacementAgentKinds: { type: Array, default: () => [] },
   selectedAgentRunId: { type: String, default: '' },
   theme: { type: String, default: 'light' },
   waiting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['close', 'control-agent', 'decide-human-gate', 'select', 'jump-source'])
+const emit = defineEmits(['close', 'decide-human-gate', 'select', 'jump-source'])
 const panelElement = ref(null)
 const agentSelector = ref(null)
 const agentSelectTrigger = ref(null)
 const roundSelector = ref(null)
 const roundSelectTrigger = ref(null)
 const openSelector = ref('')
-const replacementKind = ref('')
 const humanGateResponses = reactive({})
-const BUDGET_DIMENSIONS = [
-  'inputTokens', 'outputTokens', 'costMicros', 'toolCalls', 'outboundBytes', 'elapsedMs',
-]
 const selectedItem = computed(() => props.items.find(item => item.agentRunId === props.selectedAgentRunId) || props.items.at(-1) || null)
 const agentGroups = computed(() => {
   const groups = new Map()
@@ -500,14 +423,6 @@ const orderedHumanGates = computed(() => [...props.humanGates].sort((left, right
   Number(right.agentRunId === selectedItem.value?.agentRunId)
   - Number(left.agentRunId === selectedItem.value?.agentRunId)
 )))
-const agentControlsVisible = computed(() => (
-  Boolean(selectedItem.value?.agentRunId)
-  && selectedItem.value.agentRunId === props.controllableAgentRunId
-))
-const agentControlPending = computed(() => (
-  props.agentControlPendingAgentRunId === selectedItem.value?.agentRunId
-))
-const budgetRows = computed(() => normalizedBudgetRows(props.budget))
 const selectedSources = computed(() => {
   const item = selectedItem.value
   const sources = Array.isArray(item?.sources) ? item.sources : []
@@ -536,12 +451,6 @@ const eventLiveStatus = computed(() => {
   ].filter(Boolean))].join(' / ')
 })
 
-watch(
-  [() => selectedItem.value?.agentRunId, () => props.replacementAgentKinds.join('\u0000')],
-  () => {
-    if (!props.replacementAgentKinds.includes(replacementKind.value)) replacementKind.value = ''
-  },
-)
 watch(() => props.open, (value) => {
   if (!value) openSelector.value = ''
 })
@@ -640,16 +549,6 @@ function handleDocumentPointerDown(event) {
 onMounted(() => document.addEventListener('pointerdown', handleDocumentPointerDown))
 onBeforeUnmount(() => document.removeEventListener('pointerdown', handleDocumentPointerDown))
 
-function emitAgentControl(action, nextReplacementKind = '') {
-  if (!agentControlsVisible.value || agentControlPending.value) return
-  emit('control-agent', {
-    agentRunId: selectedItem.value.agentRunId,
-    kind: selectedItem.value.agentKind,
-    action,
-    replacementKind: action === 'replace' ? nextReplacementKind : '',
-  })
-}
-
 function optionApprovesHumanGate(option) {
   return ['allow_once', 'allow_always', 'accept', 'respond'].includes(option?.kind)
 }
@@ -702,45 +601,6 @@ function humanGateOptionLabel(option) {
   return key ? t(key) : option?.name || ''
 }
 
-function normalizedBudgetRows(budget) {
-  if (!budget) return []
-  const rows = BUDGET_DIMENSIONS.map((dimension) => {
-    const used = budget.used[dimension]
-    const limit = budget.limits[dimension]
-    return {
-      dimension,
-      label: t(`trace.budgetDimension.${dimension}`),
-      usage: t('trace.budgetUsage', {
-        used: formatBudgetNumber(used),
-        limit: limit === null ? t('trace.budgetUnlimited') : formatBudgetNumber(limit),
-      }),
-      meta: `${t(`trace.budgetSource.${budget.source[dimension]}`)} / ${t(`trace.budgetEnforcement.${budget.enforcement[dimension]}`)}`,
-      meaningful: used > 0 || limit !== null || budget.source[dimension] !== 'unknown'
-        || budget.enforcement[dimension] === 'hard',
-    }
-  }).filter(row => row.meaningful)
-  const exhaustion = budget.exhaustion
-  if (exhaustion) {
-    rows.unshift({
-      dimension: `exhaustion:${exhaustion.dimension}`,
-      label: `${t(`trace.budgetDimension.${exhaustion.dimension}`)} · ${t('trace.budgetExhaustion')}`,
-      usage: t('trace.budgetUsage', {
-        used: formatBudgetNumber(exhaustion.used),
-        limit: formatBudgetNumber(exhaustion.limit),
-      }),
-      meta: t('trace.budgetAttempt', {
-        prior: formatBudgetNumber(exhaustion.priorUsed),
-        attempted: formatBudgetNumber(exhaustion.attemptedUsage),
-      }),
-    })
-  }
-  return rows
-}
-
-function formatBudgetNumber(value) {
-  return new Intl.NumberFormat(locale.value === 'zh' ? 'zh-CN' : 'en-US').format(value)
-}
-
 function trapFocus(event) {
   if (!props.drawer || !panelElement.value) return
   const focusable = [...panelElement.value.querySelectorAll(
@@ -764,11 +624,9 @@ function trapFocus(event) {
 }
 
 function filteredEvents(item) {
-  return (Array.isArray(item?.events) ? item.events : []).filter((event) => {
-    const type = String(event?.type || '').toLowerCase()
-    const title = String(event?.title || '').trim().toLowerCase()
-    return type !== 'answer_delta' && !(type === 'status' && ['agent', 'process'].includes(title))
-  })
+  const toolEventTypes = new Set(['tool_start', 'tool_update', 'tool_result_summary'])
+  return (Array.isArray(item?.events) ? item.events : [])
+    .filter(event => toolEventTypes.has(String(event?.type || '').toLowerCase()))
 }
 
 function eventHasDetails(event) {
@@ -907,9 +765,7 @@ defineExpose({ focus })
 .trace-summary-statuses,
 .trace-human-gate-card header,
 .trace-human-gate-card header span,
-.trace-human-gate-options,
-.trace-agent-control-actions,
-.trace-agent-replace-control {
+.trace-human-gate-options {
   display: flex;
   align-items: center;
 }
@@ -925,9 +781,7 @@ defineExpose({ focus })
   white-space: nowrap;
 }
 
-.trace-human-gate-section,
-.trace-agent-control-section,
-.trace-budget-section {
+.trace-human-gate-section {
   display: grid;
   gap: 8px;
   padding-top: 18px;
@@ -978,8 +832,7 @@ defineExpose({ focus })
   line-height: 1.5;
 }
 
-.trace-human-gate-options,
-.trace-agent-control-actions {
+.trace-human-gate-options {
   flex-wrap: wrap;
   gap: 6px;
 }
@@ -994,63 +847,8 @@ defineExpose({ focus })
   min-width: 0;
 }
 
-.trace-human-gate-options button svg,
-.trace-agent-control-actions button svg,
-.trace-agent-replace-control button svg {
+.trace-human-gate-options button svg {
   width: 14px;
   height: 14px;
-}
-
-.trace-agent-replace-control {
-  align-items: end;
-  gap: 6px;
-}
-
-.trace-agent-replace-control label {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-  flex: 1;
-  color: var(--muted);
-  font-size: 9px;
-}
-
-.trace-agent-replace-control select {
-  width: 100%;
-  min-height: 32px;
-  padding: 0 8px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-  color: var(--text-soft);
-  font: inherit;
-  font-size: 11px;
-}
-
-.trace-budget-section dl {
-  display: grid;
-  gap: 4px;
-  margin: 0;
-}
-
-.trace-budget-section dl div {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 2px 8px;
-  padding: 7px 8px;
-  border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-  color: var(--text-soft);
-  font-size: 10px;
-}
-
-.trace-budget-section dd {
-  margin: 0;
-}
-
-.trace-budget-section dl small {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 9px;
 }
 </style>

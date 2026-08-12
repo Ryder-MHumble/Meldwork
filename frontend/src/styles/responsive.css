@@ -97,7 +97,8 @@
     position: absolute;
     top: 0;
     right: 0;
-    width: min(420px, calc(100vw - 24px));
+    width: clamp(340px, 46vw, 560px);
+    max-width: calc(100vw - 24px);
     height: 100dvh;
     border-left: 1px solid var(--border);
     box-shadow: var(--shadow);

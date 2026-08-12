@@ -1,7 +1,11 @@
 import { mount } from '@vue/test-utils'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import MarkdownMessage from '../../components/MarkdownMessage.vue'
 import { renderMarkdown } from '../../markdown.js'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('Markdown messages', () => {
   it('renders ordinary GitHub-flavored Markdown through the message component', () => {
@@ -34,5 +38,23 @@ describe('Markdown messages', () => {
     expect(wrapper.find('script').exists()).toBe(false)
     expect(wrapper.get('img').attributes('onerror')).toBeUndefined()
     expect(wrapper.get('a').attributes('href')).toBeUndefined()
+  })
+
+  it('adds a copy action to fenced code blocks', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    const wrapper = mount(MarkdownMessage, {
+      props: { content: '```js\nconst answer = 42\n```' },
+    })
+    await wrapper.vm.$nextTick()
+
+    const button = wrapper.get('.code-copy-button')
+    expect(button.attributes('aria-label')).toBeTruthy()
+    await button.trigger('click')
+    expect(writeText).toHaveBeenCalledWith('const answer = 42\n')
+    expect(button.find('svg').exists()).toBe(true)
   })
 })

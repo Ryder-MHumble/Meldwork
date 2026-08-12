@@ -863,6 +863,9 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.findAll('[data-document-icon]').map(item => item.attributes('data-document-icon')))
       .toEqual(['code', 'spreadsheet', 'presentation', 'archive'])
+    expect(wrapper.findAll('.message-document-list')).toHaveLength(1)
+    expect(wrapper.get('.message-document-list').findAll('.message-document-attachment')).toHaveLength(4)
+    expect(wrapper.get('.message-document-list').findAll('figure')).toHaveLength(0)
     wrapper.unmount()
   })
 

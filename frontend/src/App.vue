@@ -97,18 +97,13 @@
         ref="tracePanel"
         :open="tracePanelOpen"
         :drawer="tracePanelDrawer"
-        :agent-control-pending-agent-run-id="agentControlPendingAgentRunId"
-        :budget="tracePanelBudget"
-        :controllable-agent-run-id="traceControllableAgentRunId"
         :human-gate-decision-pending-ids="humanGateDecisionPendingIds"
         :human-gates="tracePanelHumanGates"
         :items="tracePanelItems"
-        :replacement-agent-kinds="traceReplacementAgentKinds"
         :selected-agent-run-id="selectedTraceAgentRunId"
         :theme="theme"
         :waiting="tracePanelWaiting"
         @close="closeTracePanel"
-        @control-agent="controlGroupAgent"
         @decide-human-gate="decideHumanGate"
         @select="selectTraceAgentRun"
         @jump-source="jumpToTraceSource"
@@ -236,11 +231,11 @@ import { createWorkspaceControllers } from './workspaceControllers.js'
 
 const snapshot = ref(emptySnapshot())
 const shortcutDefinitions = Object.freeze([
-  { labelKey: 'shortcut.toggleSidebar', keys: 'Cmd/Ctrl + B' },
-  { labelKey: 'shortcut.newGroup', keys: 'Cmd/Ctrl + G' },
-  { labelKey: 'shortcut.previousConversation', keys: 'Cmd/Ctrl + [' },
-  { labelKey: 'shortcut.nextConversation', keys: 'Cmd/Ctrl + ]' },
-  { labelKey: 'shortcut.openAgents', keys: 'Cmd/Ctrl + ,' },
+  { labelKey: 'shortcut.toggleSidebar', keys: '⌘ B' },
+  { labelKey: 'shortcut.newGroup', keys: '⌘ G' },
+  { labelKey: 'shortcut.previousConversation', keys: '⌘ [' },
+  { labelKey: 'shortcut.nextConversation', keys: '⌘ ]' },
+  { labelKey: 'shortcut.openAgents', keys: '⌘ ,' },
 ])
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
   'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini',
@@ -254,7 +249,6 @@ const refreshing = ref(false)
 const agentDiscoveryPending = ref(false)
 const sendingGroupIds = ref(new Set())
 const saving = ref(false)
-const agentControlPendingAgentRunId = ref('')
 const humanGateDecisionPendingIds = ref([])
 const modal = ref('')
 const composerContextVersion = ref(0)
@@ -518,36 +512,14 @@ const tracePanelHumanGates = computed(() => (
     ? pendingHumanGates.value.filter(gate => gate.runId === tracePanelRun.value.runId)
     : []
 ))
-const tracePanelBudget = computed(() => tracePanelRun.value?.budget || null)
 const tracePanelWaiting = computed(() => (
   tracePanelHumanGates.value.length > 0
   && tracePanelHumanGates.value.every(gate => tracePanelRun.value?.waitingGateIds.includes(gate.gateId))
 ))
-const traceControllableAgent = computed(() => {
-  const run = tracePanelRun.value
-  if (!run || run.runId !== activeRun.value?.runId || !run.currentKind) return null
-  const candidate = run.agentRuns.filter(agent => agent.kind === run.currentKind).at(-1) || null
-  return ['in_progress', 'running', 'streaming', 'waiting'].includes(candidate?.status)
-    ? candidate
-    : null
-})
-const traceControllableAgentRunId = computed(() => traceControllableAgent.value?.agentRunId || '')
-const traceReplacementAgentKinds = computed(() => {
-  const run = tracePanelRun.value
-  const group = activeGroup.value
-  if (!run || run.runId !== activeRun.value?.runId || group?.conversationType === 'direct') return []
-  const groupKinds = new Set(group.agentKinds || [])
-  return (run.targetKinds || []).filter(kind => (
-    kind !== traceControllableAgent.value?.kind
-    && groupKinds.has(kind)
-    && readyAgentKinds.value.has(kind)
-  ))
-})
 const {
   handleMessageScroll,
   messageScroller,
-  resetMessageViewport,
-} = useConversationViewport({ activeMessages, liveOutputSignature })
+} = useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId })
 const { index: emptyShowcaseIndex } = useEmptyShowcasePlayback({
   visible: conversationEmptyVisible,
 })
@@ -749,40 +721,6 @@ async function decideHumanGate(payload = {}) {
   }
 }
 
-async function controlGroupAgent(payload = {}) {
-  const group = activeGroup.value
-  const run = activeRun.value
-  const candidate = traceControllableAgent.value
-  const action = String(payload.action || '')
-  const replacementKind = String(payload.replacementKind || '')
-  if (group?.conversationType === 'direct'
-      || !run
-      || candidate?.agentRunId !== payload.agentRunId
-      || candidate?.kind !== payload.kind
-      || !['cancel', 'retry', 'replace'].includes(action)
-      || (action === 'replace' && !traceReplacementAgentKinds.value.includes(replacementKind))
-      || (action !== 'replace' && replacementKind)
-      || agentControlPendingAgentRunId.value) return false
-  const bridge = workspace.value
-  if (!bridge?.controlAgent) return false
-  agentControlPendingAgentRunId.value = candidate.agentRunId
-  try {
-    const controlled = await bridge.controlAgent(
-      group.id,
-      run.runId,
-      candidate.kind,
-      action,
-      replacementKind,
-    )
-    if (controlled !== true) notify(t('trace.agentControlUnavailable'))
-    return controlled === true
-  } catch (error) {
-    showError(error)
-    return false
-  } finally {
-    agentControlPendingAgentRunId.value = ''
-  }
-}
 const roundProgressPercent = computed(() => {
   const bounded = Math.max(1, Math.min(10, Number(maxRounds.value) || 1))
   return `${((bounded - 1) / 9) * 100}%`
@@ -1072,7 +1010,6 @@ watch(activeGroupMemberSignature, () => {
   resetComposerContext(group)
   composerAttachments.value = []
   void discardAttachments(abandonedAttachments)
-  resetMessageViewport()
 })
 watch(activeRun, (value) => {
   if (!value) return

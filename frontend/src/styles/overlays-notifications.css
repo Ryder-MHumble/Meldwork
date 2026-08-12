@@ -84,6 +84,44 @@
   position: relative;
 }
 
+.keyboard-shortcut-icon {
+  width: 18px;
+  height: 13px;
+  position: relative;
+  display: block;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+}
+
+.keyboard-shortcut-icon::before,
+.keyboard-shortcut-icon::after,
+.keyboard-shortcut-icon > span {
+  content: "";
+  height: 2px;
+  position: absolute;
+  left: 3px;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+.keyboard-shortcut-icon::before {
+  width: 2px;
+  top: 3px;
+  box-shadow: 4px 0 currentColor, 8px 0 currentColor;
+}
+
+.keyboard-shortcut-icon::after {
+  width: 2px;
+  top: 7px;
+  box-shadow: 4px 0 currentColor, 8px 0 currentColor;
+}
+
+.keyboard-shortcut-icon > span {
+  width: 6px;
+  bottom: 1px;
+  left: 5px;
+}
+
 .shortcut-menu {
   width: 250px;
   position: absolute;
@@ -94,6 +132,12 @@
   border-radius: var(--radius);
   background: var(--surface-raised);
   box-shadow: var(--shadow);
+  animation: shortcut-menu-in 0.12s ease-out;
+}
+
+@keyframes shortcut-menu-in {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .shortcut-menu header {

@@ -180,6 +180,7 @@ export default {
     'conversation.timeUnknown': '时间未知',
     'conversation.attachmentTurn': '附件消息',
     'conversation.copyMessage': '复制消息',
+    'conversation.copyCode': '复制代码',
     'conversation.copied': '已复制',
     'conversation.copySuccess': '已复制到剪贴板',
     'conversation.copyFailed': '无法复制该消息。',

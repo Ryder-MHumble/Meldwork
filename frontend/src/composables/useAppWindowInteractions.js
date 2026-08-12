@@ -87,7 +87,7 @@ export function useAppWindowInteractions({
       }
       return
     }
-    if (event.isComposing || event.altKey || (!event.metaKey && !event.ctrlKey)) return
+    if (event.isComposing || event.altKey || event.ctrlKey || !event.metaKey) return
     const key = String(event.key || '').toLowerCase()
     if (key === 'b') {
       event.preventDefault()

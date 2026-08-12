@@ -109,7 +109,8 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
     expect(wrapper.get('.trace-panel-header strong').text()).toBe('Hermes')
     expect(wrapper.get('.trace-agent-selector .trace-select-trigger strong').text()).toBe('Hermes')
-    expect(wrapper.get('.trace-conclusion').text()).toContain('Hermes conclusion')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Hermes conclusion')
+    expect(wrapper.find('.trace-conclusion').exists()).toBe(false)
     expect(wrapper.get('.trace-event-list').text()).toContain('Tool result')
     expect(document.body.classList.contains('trace-drawer-open')).toBe(true)
     expect(addMediaListener).toHaveBeenCalledTimes(1)
@@ -153,13 +154,13 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.message-row.agent .message-trace-surface').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.run-trace-panel').text()).toContain('Hermes generated the preview.')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Hermes generated the preview.')
     expect(wrapper.get('.trace-event-list').text()).toContain('video_generation')
     expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
-  it('renders group Gates, budget state, and per-Agent runtime controls in the trace panel', async () => {
+  it('keeps pending group Gates available without unrelated runtime controls', async () => {
     const gateId = `human-gate-${'d'.repeat(64)}`
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
@@ -247,20 +248,8 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.trace-waiting-state').text()).toBe('Waiting for your decision')
     expect(wrapper.get('.trace-human-gate-section').text())
       .toContain('This run requires your decision')
-    expect(wrapper.get('.trace-budget-section').text()).toContain('Input tokens')
-    expect(wrapper.get('.trace-budget-section').text()).toContain('750 / 4,000')
-    expect(wrapper.get('.trace-budget-section').text()).toContain('Hard budget stop')
-    expect(wrapper.get('.trace-budget-section').text()).toContain('Prior 2; attempted +1')
-    expect(wrapper.get('.trace-agent-control-section').text()).toContain('Agent controls')
-
-    await wrapper.findAll('.trace-agent-control-actions button')
-      .find(button => button.text() === 'Retry Agent')
-      .trigger('click')
-    await wrapper.findAll('.trace-agent-control-actions button')
-      .find(button => button.text() === 'Cancel Agent')
-      .trigger('click')
-    await wrapper.get('.trace-agent-replace-control select').setValue('hermes')
-    await wrapper.get('.trace-agent-replace-control button').trigger('click')
+    expect(wrapper.find('.trace-budget-section').exists()).toBe(false)
+    expect(wrapper.find('.trace-agent-control-section').exists()).toBe(false)
     const gateButtons = wrapper.findAll('.trace-human-gate-options button')
     expect(gateButtons.find(button => button.text() === 'Accept Artifact').classes())
       .toContain('primary-button')
@@ -269,15 +258,7 @@ describe('RoundRelay workbench', () => {
     await gateButtons.find(button => button.text() === 'Reopen Task').trigger('click')
     await flushPromises()
 
-    expect(bridge.localWorkspace.controlAgent).toHaveBeenNthCalledWith(
-      1, 'group-runtime-controls', 'run-runtime-controls', 'codex', 'retry', '',
-    )
-    expect(bridge.localWorkspace.controlAgent).toHaveBeenNthCalledWith(
-      2, 'group-runtime-controls', 'run-runtime-controls', 'codex', 'cancel', '',
-    )
-    expect(bridge.localWorkspace.controlAgent).toHaveBeenNthCalledWith(
-      3, 'group-runtime-controls', 'run-runtime-controls', 'codex', 'replace', 'hermes',
-    )
+    expect(bridge.localWorkspace.controlAgent).not.toHaveBeenCalled()
     expect(bridge.localWorkspace.decideHumanGate).toHaveBeenCalledWith(
       gateId,
       { optionId: 'reopen-task' },
@@ -419,7 +400,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
     expect(wrapper.findAll('.trace-agent-selector .trace-select-option strong').map(item => item.text()))
       .toEqual(['Claude Code', 'Hermes'])
-    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude evidence')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Active Claude work')
 
@@ -430,7 +411,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
-    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude evidence')
     expect(historyBack).not.toHaveBeenCalled()
 
     await wrapper.get('.run-trace-panel .icon-button').trigger('click')
@@ -451,7 +432,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
     expect(wrapper.findAll('.trace-agent-selector .trace-select-option strong').map(item => item.text()))
       .toEqual(['OpenClaw', 'Claude Code'])
-    expect(wrapper.get('.trace-conclusion').text()).toContain('Active Claude work')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Active Claude work')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude answer')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
     wrapper.unmount()
@@ -919,9 +900,9 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('durable output')
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).not.toContain('live output')
     expect(provisionalTraceButton.element.isConnected).toBe(false)
-    expect(wrapper.get('.trace-summary-copy').text()).toContain('durable summary')
-    expect(wrapper.get('.trace-conclusion').text()).toContain('durable output')
-    expect(wrapper.get('.trace-event-list').text()).toContain('live reasoning')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('durable summary')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('durable output')
+    expect(wrapper.get('.trace-event-list').text()).not.toContain('live reasoning')
     expect(wrapper.get('.trace-event-list').text()).toContain('Bash')
     expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
       .toBe('Round 1 / Completed')
@@ -1032,7 +1013,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
     await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface').trigger('click')
     await flushPromises()
-    expect(wrapper.get('.run-trace-panel').text()).toContain('Codex retained conclusion')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Codex retained conclusion')
     expect(wrapper.get('.trace-event-list').text()).toContain('Read 12 files')
     wrapper.unmount()
   })

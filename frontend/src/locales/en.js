@@ -180,6 +180,7 @@ export default {
     'conversation.timeUnknown': 'Time unavailable',
     'conversation.attachmentTurn': 'Attachment message',
     'conversation.copyMessage': 'Copy message',
+    'conversation.copyCode': 'Copy code',
     'conversation.copied': 'Copied',
     'conversation.copySuccess': 'Copied to clipboard',
     'conversation.copyFailed': 'The message could not be copied.',

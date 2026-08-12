@@ -36,6 +36,7 @@
   --desktop-titlebar-height: 0px;
   --sidebar-width: 276px;
   --sidebar-collapsed-width: 68px;
+  --trace-panel-width: clamp(340px, 28vw, 520px);
 }
 
 :root[data-theme="dark"] {
@@ -163,11 +164,11 @@ button svg {
 }
 
 .app-shell.trace-panel-open {
-  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--trace-panel-width);
 }
 
 .app-shell.sidebar-collapsed.trace-panel-open {
-  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr) minmax(320px, 380px);
+  grid-template-columns: var(--sidebar-collapsed-width) minmax(0, 1fr) var(--trace-panel-width);
 }
 
 .trace-panel-layer {

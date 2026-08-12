@@ -162,17 +162,41 @@
                     class="message-trace-button"
                     type="button"
                     :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
-                    :title="t('trace.viewProcess')"
+                    :data-tooltip="t('trace.viewProcess')"
                     :aria-label="t('trace.viewProcess')"
                     @click.stop="openTraceForMessage(message, $event.currentTarget)"
                   >
                     <TerminalOutline />
                   </button>
                   <button
+                    v-if="message.content"
+                    class="message-copy-button"
+                    type="button"
+                    :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    @click.stop="copyMessageContent(message, $event, true)"
+                    @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                    @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                  >
+                    <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                    <CopyOutline v-else />
+                  </button>
+                  <button
+                    v-if="message.role === 'agent' && !message.provisional"
+                    class="message-regenerate-button"
+                    type="button"
+                    :disabled="messageRegenerateDisabled(message)"
+                    :data-tooltip="messageRegenerateTitle(message)"
+                    :aria-label="messageRegenerateTitle(message)"
+                    @click.stop="regenerateMessage(message)"
+                  >
+                    <RefreshOutline :class="{ spinning: isMessageRegenerating(message) }" />
+                  </button>
+                  <button
                     v-if="message.role === 'agent' && activeGroup.conversationType !== 'direct'"
                     class="message-reply-toggle"
                     type="button"
-                    :title="t(isAgentReplyExpanded(message)
+                    :data-tooltip="t(isAgentReplyExpanded(message)
                       ? 'conversation.collapseAgentResponse'
                       : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
                     :aria-label="t(isAgentReplyExpanded(message)
@@ -184,30 +208,6 @@
                     <ChevronDownOutline :class="{ expanded: isAgentReplyExpanded(message) }" />
                   </button>
                   <button
-                    v-if="message.role === 'agent' && !message.provisional"
-                    class="message-regenerate-button"
-                    type="button"
-                    :disabled="messageRegenerateDisabled(message)"
-                    :title="messageRegenerateTitle(message)"
-                    :aria-label="messageRegenerateTitle(message)"
-                    @click.stop="regenerateMessage(message)"
-                  >
-                    <RefreshOutline :class="{ spinning: isMessageRegenerating(message) }" />
-                  </button>
-                  <button
-                    v-if="message.content"
-                    class="message-copy-button"
-                    type="button"
-                    :title="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                    :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                    @click.stop="copyMessageContent(message, $event, true)"
-                    @keydown.enter.prevent="copyMessageContent(message, $event, true)"
-                    @keydown.space.prevent="copyMessageContent(message, $event, true)"
-                  >
-                    <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
-                    <CopyOutline v-else />
-                  </button>
-                  <button
                     v-if="!message.provisional"
                     class="message-delete-button"
                     :class="{
@@ -216,7 +216,7 @@
                     }"
                     type="button"
                     :disabled="messageDeleteDisabled(message)"
-                    :title="messageDeleteTitle(message)"
+                    :data-tooltip="messageDeleteTitle(message)"
                     :aria-label="messageDeleteTitle(message)"
                     :aria-pressed="messageDeleteArmedId === message.id ? 'true' : 'false'"
                     @click.stop="requestMessageDelete(message)"
@@ -375,7 +375,7 @@
                 class="message-attachment-grid"
               >
                 <figure
-                  v-for="attachment in messageAttachments(message)"
+                  v-for="attachment in mediaMessageAttachments(message)"
                   :key="attachment.id"
                   v-attachment-preview="isImageAttachment(attachment) ? attachment : null"
                   :class="`media-${attachmentKind(attachment)}`"
@@ -418,8 +418,20 @@
                       playsinline
                     />
                   </button>
+                  <figcaption
+                    v-if="attachmentKind(attachment) !== 'file' && message.role !== 'agent'"
+                    :title="attachment.name"
+                  >
+                    {{ attachment.name }}
+                  </figcaption>
+                </figure>
+                <div
+                  v-if="documentMessageAttachments(message).length"
+                  class="message-document-list"
+                >
                   <button
-                    v-else
+                    v-for="attachment in documentMessageAttachments(message)"
+                    :key="attachment.id"
                     class="message-document-attachment"
                     type="button"
                     :title="t('attachment.open', { name: attachment.name })"
@@ -438,13 +450,7 @@
                     </span>
                     <OpenOutline aria-hidden="true" />
                   </button>
-                  <figcaption
-                    v-if="attachmentKind(attachment) !== 'file' && message.role !== 'agent'"
-                    :title="attachment.name"
-                  >
-                    {{ attachment.name }}
-                  </figcaption>
-                </figure>
+                </div>
               </div>
               <div
                 v-if="message.role === 'agent' && responseVersionInfo(message).total > 1"
@@ -945,6 +951,14 @@ function attachmentDocumentIconName(attachment) {
 
 function attachmentDocumentIcon(attachment) {
   return DOCUMENT_ICON_COMPONENTS[attachmentDocumentIconName(attachment)] || DocumentOutline
+}
+
+function mediaMessageAttachments(message) {
+  return messageAttachments(message).filter(attachment => attachmentKind(attachment) !== 'file')
+}
+
+function documentMessageAttachments(message) {
+  return messageAttachments(message).filter(attachment => attachmentKind(attachment) === 'file')
 }
 
 function decideHumanGate(payload) {

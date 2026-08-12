@@ -127,8 +127,12 @@ describe('App window interactions', () => {
     expect(deps.shortcutMenuOpen.value).toBe(false)
 
     window.dispatchEvent(keyboardEvent('g', { ctrlKey: true }))
-    expect(deps.openNewGroup).toHaveBeenCalledOnce()
     window.dispatchEvent(keyboardEvent(']', { ctrlKey: true }))
+    expect(deps.openNewGroup).not.toHaveBeenCalled()
+    expect(deps.selectGroup).not.toHaveBeenCalled()
+    window.dispatchEvent(keyboardEvent('g', { metaKey: true }))
+    expect(deps.openNewGroup).toHaveBeenCalledOnce()
+    window.dispatchEvent(keyboardEvent(']', { metaKey: true }))
     expect(deps.selectGroup).toHaveBeenLastCalledWith('older')
     window.dispatchEvent(keyboardEvent('[', { metaKey: true }))
     expect(deps.selectGroup).toHaveBeenLastCalledWith('newer')

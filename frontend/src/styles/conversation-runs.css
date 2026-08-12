@@ -458,34 +458,6 @@
 :root[data-theme="dark"] .trace-status[data-status="completed"],
 :root[data-theme="dark"] .trace-event-status[data-status="completed"] { color: #79c9af; }
 
-.trace-summary-copy {
-  margin: 0;
-  color: var(--text-soft);
-  font-size: 12px;
-  line-height: 1.55;
-}
-
-.trace-conclusion {
-  display: grid;
-  gap: 7px;
-  padding: 11px 12px;
-  border-left: 0;
-  border-radius: var(--radius-sm);
-  background: var(--surface-raised);
-}
-
-.trace-conclusion > span {
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.trace-conclusion .markdown-body {
-  color: var(--text-soft);
-  font-size: 12px;
-  line-height: 1.58;
-}
-
 .trace-context-stats {
   display: flex;
   flex-wrap: wrap;
@@ -915,6 +887,8 @@
   .message-attachment-grid audio {
     min-width: 0;
   }
+
+  .message-document-attachment { min-width: 140px; }
 }
 
 .composer-zone {

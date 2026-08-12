@@ -83,7 +83,14 @@
         <FolderOpenOutline />
         <span>{{ compactPath(activeGroup.workdir) }}</span>
       </button>
-      <div ref="shortcutMenu" class="shortcut-menu-anchor">
+      <div
+        ref="shortcutMenu"
+        class="shortcut-menu-anchor"
+        @mouseenter="openShortcutMenu"
+        @mouseleave="scheduleShortcutMenuClose"
+        @focusin="openShortcutMenu"
+        @focusout="closeShortcutMenuAfterFocus"
+      >
         <button
           class="icon-button"
           type="button"
@@ -91,15 +98,14 @@
           :aria-label="t('shortcut.title')"
           :aria-expanded="String(shortcutMenuOpen)"
           aria-controls="keyboard-shortcut-menu"
-          @click="shortcutMenuOpen = !shortcutMenuOpen"
         >
-          <KeyOutline />
+          <span class="keyboard-shortcut-icon" aria-hidden="true"><span /></span>
         </button>
         <section
           v-if="shortcutMenuOpen"
           id="keyboard-shortcut-menu"
           class="shortcut-menu"
-          role="dialog"
+          role="tooltip"
           :aria-label="t('shortcut.title')"
         >
           <header>{{ t('shortcut.title') }}</header>
@@ -126,12 +132,11 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { onBeforeUnmount, ref } from 'vue'
 import {
   CheckmarkCircleOutline,
   CloseOutline,
   FolderOpenOutline,
-  KeyOutline,
   PencilOutline,
   SettingsOutline,
 } from '@vicons/ionicons5'
@@ -169,6 +174,21 @@ const titleBlock = ref(null)
 const titleInput = ref(null)
 const titleButton = ref(null)
 const shortcutMenu = ref(null)
+let shortcutMenuCloseTimer = null
+
+function openShortcutMenu() {
+  clearTimeout(shortcutMenuCloseTimer)
+  shortcutMenuCloseTimer = null
+  shortcutMenuOpen.value = true
+}
+
+function scheduleShortcutMenuClose() {
+  clearTimeout(shortcutMenuCloseTimer)
+  shortcutMenuCloseTimer = setTimeout(() => {
+    shortcutMenuOpen.value = false
+    shortcutMenuCloseTimer = null
+  }, 90)
+}
 
 function focusTitleBlock() {
   titleBlock.value?.focus?.()
@@ -186,6 +206,13 @@ function focusTitleButton() {
 function containsShortcutTarget(target) {
   return shortcutMenu.value?.contains(target) === true
 }
+
+function closeShortcutMenuAfterFocus(event) {
+  if (shortcutMenu.value?.contains(event.relatedTarget)) return
+  scheduleShortcutMenuClose()
+}
+
+onBeforeUnmount(() => clearTimeout(shortcutMenuCloseTimer))
 
 defineExpose({
   containsShortcutTarget,

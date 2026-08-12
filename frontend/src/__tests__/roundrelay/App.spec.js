@@ -660,9 +660,13 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    await wrapper.get('[aria-label="Keyboard shortcuts"]').trigger('click')
-    expect(wrapper.get('#keyboard-shortcut-menu').attributes('role')).toBe('dialog')
+    const shortcutButton = wrapper.get('[aria-label="Keyboard shortcuts"]')
+    expect(shortcutButton.find('.keyboard-shortcut-icon').exists()).toBe(true)
+    await wrapper.get('.shortcut-menu-anchor').trigger('mouseenter')
+    expect(wrapper.get('#keyboard-shortcut-menu').attributes('role')).toBe('tooltip')
     expect(wrapper.findAll('#keyboard-shortcut-menu li')).toHaveLength(5)
+    expect(wrapper.findAll('#keyboard-shortcut-menu kbd').map(item => item.text()))
+      .toEqual(['⌘ B', '⌘ G', '⌘ [', '⌘ ]', '⌘ ,'])
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'b', metaKey: true }))
     await flushPromises()
@@ -764,6 +768,8 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.message-attachment-grid\s*\{[^}]*flex-direction:\s*column;[^}]*align-items:\s*flex-end;[^}]*justify-content:\s*flex-start;/s)
     expect(source).toMatch(/\.message-row\.agent \.message-attachment-grid\s*\{[^}]*align-items:\s*flex-start;/s)
     expect(source).not.toMatch(/\.message-attachment-grid\s*\{[^}]*flex-wrap:\s*wrap;/s)
+    expect(source).toMatch(/\.message-document-list\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*nowrap;[^}]*gap:\s*6px;[^}]*overflow-x:\s*auto;/s)
+    expect(source).toMatch(/\.message-document-attachment\s*\{[^}]*width:\s*168px;[^}]*min-width:\s*148px;[^}]*min-height:\s*44px;[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.direct-session-open\s*\{[^}]*grid-column:\s*1;/s)
     expect(source).toMatch(/\.direct-session-action\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row:hover \.direct-session-action,[^{]+\.direct-session-row:focus-within \.direct-session-action\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*auto;/s)
@@ -843,7 +849,9 @@ describe('RoundRelay workbench', () => {
     expect(source).not.toContain('@keyframes run-agent-halo')
     expect(source).toMatch(/\.run-agent-logo\[data-status="queued"\] img,[^{]+\.run-agent-logo\[data-status="not-started"\] img\s*\{[^}]*opacity:\s*0\.38;/s)
     expect(source).toMatch(/\.run-trace-panel\s*\{[^}]*border-left:\s*0;/s)
-    expect(source).toMatch(/\.trace-conclusion\s*\{[^}]*border-left:\s*0;/s)
+    expect(source).not.toContain('.trace-conclusion')
+    expect(source).toMatch(/--trace-panel-width:\s*clamp\(340px, 28vw, 520px\);/s)
+    expect(source).toMatch(/\.app-shell\.trace-panel-open\s*\{[^}]*var\(--trace-panel-width\);/s)
     expect(source).toMatch(/\.trace-event-list details\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.trace-source-list button\s*\{[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.composer-box\s*\{[^}]*border:\s*0;/s)
@@ -934,7 +942,7 @@ describe('RoundRelay workbench', () => {
       agentKind: 'codex',
       round: 1,
       seq: 1,
-      type: 'reasoning_summary',
+      type: 'tool_start',
       status: 'running',
       title: 'Reviewing files',
       summary: 'Checking the sidebar implementation.',
@@ -957,7 +965,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('/Users/private/secret.txt')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('PRIVATE_TOKEN_VALUE')
     expect(wrapper.get('.trace-event-time').text()).not.toBe('2026-07-29T08:02:00Z')
-    expect(wrapper.get('.trace-event-live-status').text()).toBe('Codex / Reasoning summary / Reviewing files / Running')
+    expect(wrapper.get('.trace-event-live-status').text()).toBe('Codex / Tool call / Reviewing files / Running')
     expect(wrapper.get('.trace-panel-summary').attributes('aria-live')).toBeUndefined()
     expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('Messages injected for this attempt')
     const sourceButtons = wrapper.findAll('.trace-source-list button')
@@ -1030,7 +1038,7 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
     expect(wrapper.findAll('.trace-event-title').at(-1).text())
-      .toBe('Connector provided only the final answer; structured tool activity was unavailable.')
+      .toBe('Read source')
 
     emitRunEvent({
       runId: 'run-1',
@@ -1047,18 +1055,19 @@ describe('RoundRelay workbench', () => {
     })
     await flushPromises()
     expect(wrapper.findAll('.trace-event-title').at(-1).text())
-      .toBe('Structured connector failed before execution; switched to compatibility mode.')
+      .toBe('Read source')
     expect(wrapper.findAll('.trace-event-type').map(item => item.text()))
-      .toEqual(['Reasoning summary', 'Tool call', 'Warning', 'Warning'])
+      .toEqual(['Tool call', 'Tool call'])
     const visibleEventTitles = wrapper.findAll('.trace-event-title').map(item => item.text())
     expect(visibleEventTitles).not.toContain('Agent')
     expect(visibleEventTitles).not.toContain('Process')
+    expect(visibleEventTitles).not.toContain('Connector provided only the final answer; structured tool activity was unavailable.')
+    expect(visibleEventTitles).not.toContain('Structured connector failed before execution; switched to compatibility mode.')
 
     setLocale('zh')
     await flushPromises()
     const localizedEventTitles = wrapper.findAll('.trace-event-title').map(item => item.text())
-    expect(localizedEventTitles).toContain('连接器只提供最终答案，未暴露结构化工具过程。')
-    expect(localizedEventTitles).toContain('结构化连接失败，已在提交任务前切换兼容模式。')
+    expect(localizedEventTitles).toEqual(['Reviewing files', 'Read source'])
     expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('本次尝试注入的消息')
     expect(wrapper.findAll('.trace-source-list button')[1].text()).toContain('来源不可用')
 
@@ -1123,8 +1132,8 @@ describe('RoundRelay workbench', () => {
           output: '',
           summary: '',
           events: [
-            { type: 'warning', status: 'interrupted' },
-            { type: 'warning', status: 'cancelled' },
+            { type: 'tool_update', status: 'interrupted' },
+            { type: 'tool_result_summary', status: 'cancelled' },
           ],
           sourceMessageIds: [],
           context: {},

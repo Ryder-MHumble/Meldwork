@@ -1253,7 +1253,7 @@ describe('RoundRelay workbench', () => {
     const traceButton = wrapper.get('.message-trace-button')
     await traceButton.trigger('click')
     await flushPromises()
-    expect(wrapper.get('.run-trace-panel').text()).toContain('The application restarted before completion.')
+    expect(wrapper.get('.run-trace-panel').text()).not.toContain('The application restarted before completion.')
     expect(wrapper.get('.trace-status').text()).toBe('Interrupted')
 
     setLocale('zh')
