@@ -24,6 +24,7 @@ const {
   roleForIndex,
   visibleBlackboardEntries,
 } = require('../collaboration/collaboration-records.cjs')
+const { unlimitedReviewContract } = require('./local-workspace-context.cjs')
 const {
   createTaskGraphCursor,
   parseTaskGraphCursor,
@@ -769,7 +770,7 @@ class LocalWorkspaceAutoRunner {
     return [...new Set(selected)]
   }
 
-  taskGraphPrompt(node, objective, collaborationPackage) {
+  taskGraphPrompt(node, objective, collaborationPackage, unlimitedRounds = false) {
     return [
       'ROUNDRELAY_TASK_GRAPH_V1',
       `Node: ${node.nodeId}`,
@@ -777,6 +778,7 @@ class LocalWorkspaceAutoRunner {
       `Objective: ${objective}`,
       `Expected output: ${node.expectedOutput}`,
       `Acceptance criteria: ${this.taskGraphAcceptanceCriteria(node).join(' | ')}`,
+      unlimitedReviewContract(unlimitedRounds),
       collaborationPackage.text,
       'Return the requested result directly. Completion is evaluated from durable typed records; do not emit a consensus marker.',
     ].join('\n')
@@ -966,7 +968,9 @@ class LocalWorkspaceAutoRunner {
         ].join('\n'),
         ...(isolated ? {
           sessionPolicy: 'isolated',
-          promptOverride: this.taskGraphPrompt(node, objective, collaborationPackage),
+          promptOverride: this.taskGraphPrompt(
+            node, objective, collaborationPackage, controller.unlimitedRounds === true,
+          ),
           contextPackId: controller.contextPackId,
         } : {}),
         contextOptions: {
@@ -1433,7 +1437,10 @@ class LocalWorkspaceAutoRunner {
         terminalFailureOccurred,
       })
       if (activeKinds.length < 2) break
-      if (successes === activeKinds.length && agreements === activeKinds.length) {
+      const crossReviewComplete = !controller.unlimitedRounds || controller.currentRound >= 2
+      if (crossReviewComplete
+          && successes === activeKinds.length
+          && agreements === activeKinds.length) {
         consensusReached = true
         break
       }

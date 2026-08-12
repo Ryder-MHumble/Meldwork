@@ -282,7 +282,11 @@
             rows="1"
             :placeholder="automaticTeamFormation
               ? t('composer.smartTeamPlaceholder')
-              : t('composer.placeholder', { name: groupName(activeGroup) })"
+              : t(discussionMode === 'auto' && unlimitedRounds
+                ? 'composer.unlimitedPlaceholder'
+                : 'composer.placeholder', {
+                  name: groupName(activeGroup),
+                })"
             :disabled="Boolean(activeRun) || sending"
             role="combobox"
             aria-autocomplete="list"

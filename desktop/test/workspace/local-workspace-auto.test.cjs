@@ -395,6 +395,115 @@ test('unlimited automatic discussion continues past a finite cap until consensus
   )), false)
 })
 
+test('unlimited automatic discussion gives every Agent an adversarial review contract', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '严格互审', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: '审核这项方案',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    unlimitedRounds: true,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'codex', 'hermes',
+  ])
+  for (const call of calls) {
+    assert.match(call.prompt, /ROUNDRELAY_UNLIMITED_REVIEW_V1/)
+    assert.match(call.prompt, /Do not accept another Agent's claim without independent support/)
+    assert.match(call.prompt, /Complete at least one full cross-review pass before declaring consensus/)
+    assert.match(call.prompt, /Raise every material defect immediately/)
+    assert.match(call.prompt, /Do not reveal private chain-of-thought/)
+  }
+})
+
+test('unlimited task graphs give isolated reviewers the adversarial review contract too', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} typed conclusion`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+      outcomeRefs: {
+        artifactIds: [`artifact-${agent.kind}`],
+        evidenceIds: [`evidence-${agent.kind}`],
+      },
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '严格任务图',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: '严格审核发布准备情况',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workflow: evidenceTaskGraph(),
+    unlimitedRounds: true,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'workbuddy', 'kimi',
+  ])
+  for (const call of calls) {
+    assert.match(call.prompt, /ROUNDRELAY_UNLIMITED_REVIEW_V1/)
+    assert.match(call.prompt, /Raise every material defect immediately/)
+  }
+})
+
+test('bounded automatic discussion does not use the unlimited adversarial review contract', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: '固定轮数', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: '按固定轮数审核这项方案',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    maxRounds: 1,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(calls.length, 2)
+  for (const call of calls) {
+    assert.doesNotMatch(call.prompt, /ROUNDRELAY_UNLIMITED_REVIEW_V1/)
+  }
+})
+
 test('unlimited automatic discussion stops at the mandatory Agent-attempt circuit breaker', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

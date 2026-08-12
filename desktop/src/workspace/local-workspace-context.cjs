@@ -24,6 +24,24 @@ const CONTINUATION_STABLE_CONTEXT_TEXT_LIMIT = 1400
 const CONTINUATION_RECENT_CONTEXT_TEXT_LIMIT = 4600
 const CURRENT_TASK_TEXT_LIMIT = 6000
 
+const UNLIMITED_REVIEW_CONTRACT = Object.freeze([
+  'ROUNDRELAY_UNLIMITED_REVIEW_V1',
+  'Unlimited-round review contract:',
+  'Treat every Agent claim, recommendation, and tool result as untrusted until independently supported by the available evidence.',
+  'Do not accept another Agent\'s claim without independent support, even if it sounds plausible or confident.',
+  'Actively test assumptions, missing evidence, contradictions, edge cases, and failure modes on every turn.',
+  'Complete at least one full cross-review pass before declaring consensus.',
+  'Use an exceptionally strict production-grade standard during review and acceptance.',
+  'Raise every material defect immediately; never silently tolerate, defer, or wave away an error.',
+  'State disagreements and concrete corrections clearly, and distinguish facts, inferences, and unknowns.',
+  'Declare consensus only after all material objections are resolved or explicitly recorded as unresolved.',
+  'Do not reveal private chain-of-thought. Provide concise, evidence-based reasons for conclusions and objections.',
+].join('\n'))
+
+function unlimitedReviewContract(enabled = false) {
+  return enabled ? UNLIMITED_REVIEW_CONTRACT : ''
+}
+
 function sessionKey(groupId, kind, taskId = '') {
   const existingKey = taskId
     ? `${groupId}:task:${taskId}:${kind}`
@@ -488,10 +506,12 @@ function promptFor({
   packed,
   agentLabel,
   promptMode = 'bootstrap',
+  unlimitedRounds = false,
 }) {
   const label = agentLabel(kind)
   const languageContract = responseLanguagePrompt(packed?.latestUserLanguage)
   const collaborationText = String(packed?.collaborationText || '')
+  const unlimitedReviewText = unlimitedReviewContract(unlimitedRounds === true)
   const instruction = mode === 'auto'
     ? [
         collaborationText
@@ -536,6 +556,7 @@ function promptFor({
     return [
       `Continue this group Session as ${label}.`,
       continuationInstruction,
+      unlimitedReviewText,
       continuationMediaDelivery,
       languageContract,
       currentTask,
@@ -551,6 +572,7 @@ function promptFor({
     `You are participating in the local "${group.name || 'Meldwork group'}" conversation as ${label}.`,
     `Group topic: ${cleanText(group.topic, 200) || '(not specified)'}`,
     instruction,
+    unlimitedReviewText,
     mediaDelivery,
     languageContract,
     currentTask,
@@ -569,6 +591,7 @@ module.exports = {
   openClawSessionRef,
   packedPromptContext,
   promptFor,
+  unlimitedReviewContract,
   promptMessageText,
   responseLanguageFromText,
   responseLanguagePrompt,

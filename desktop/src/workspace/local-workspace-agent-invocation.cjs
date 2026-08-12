@@ -770,6 +770,7 @@ class LocalWorkspaceAgentInvocation {
               group, kind, context.completionPolicy === 'typed' ? 'manual' : mode,
               threadRootId, context.skillHints || [],
               context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
+              activeRun?.unlimitedRounds === true,
             ),
             stagedAgentInputPrompt(stagedInputs),
             generatedMedia
