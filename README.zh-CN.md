@@ -15,7 +15,7 @@
 它解决的不是“同时打开更多 AI”，而是让一项复杂工作能够在不同 Agent 之间真正接力：前一个 Agent 留下的结论和证据，后一个可以继续使用；所有人的回答仍然回到同一条任务脉络里，由你决定哪些结果值得接受。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Release-V1.0.0/Meldwork-0.1.0-arm64.dmg"><strong>下载 macOS DMG 安装包</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.1/Meldwork-0.1.1-arm64.dmg"><strong>下载 macOS DMG 安装包</strong></a>
   · <a href="LICENSE">非商用源码许可</a>
   · <a href="COMMERCIAL_USE.md">商业授权说明</a>
 </p>
@@ -24,13 +24,20 @@
 
 当前桌面客户端面向 Apple 芯片 Mac：
 
-1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Release-V1.0.0)。
-2. 下载 `Meldwork-0.1.0-arm64.dmg`。
+1. 打开 [最新 GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.1)。
+2. 下载 `Meldwork-0.1.1-arm64.dmg`。
 3. 将 Meldwork 拖入“应用程序”，然后先尝试打开一次。
 4. 当前预览版尚未经过 Apple 公证。如果 macOS 阻止启动，请打开“系统设置 → 隐私与安全性”，向下滚动到“安全性”，在 Meldwork 提示旁点击“仍要打开”，再确认“打开”。“仍要打开”只会在首次启动被拦截后出现。请只使用从上方官方 Release 下载的 DMG。
 5. 连接电脑上已经安装的 Agent CLI，或为某个 Agent 单独配置 Provider。
 
 如果最新 Release 中包含 DMG 文件，就可以直接下载到本地安装。开发者也可以使用下方命令从源码运行。
+
+## V1.0.1 这次改进了什么
+
+- **长时间任务更可靠：** Agent 只要还在持续产生有效进展，就不会因为任务耗时较长而被误判为失败。
+- **无限轮次更严格：** 选择 unlimited 模式后，Agent 会更认真地质疑缺少依据的结论，并在验收前严格复核自己和其他 Agent 的工作。
+- **会话控制更清晰：** 加载状态、侧边栏操作和执行详情更容易扫描，你可以快速判断当前正在运行什么、下一步需要处理什么。
+- **中断后更容易恢复：** 被打断或暂时停滞的任务会保留已有进展，并提供更明确的恢复路径，避免会话停在不确定状态。
 
 ## 三个核心工作现场
 

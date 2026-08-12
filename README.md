@@ -15,7 +15,7 @@ Most Agent tools are already good at completing one step. The fragile part start
 Meldwork is not about opening more AI windows. It is about letting complex work move between Agents without losing the thread: one Agent's conclusions and evidence can support the next step, every answer returns to the same task context, and you decide which results are worth accepting.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Release-V1.0.0/Meldwork-0.1.0-arm64.dmg"><strong>Download the macOS DMG</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.1/Meldwork-0.1.1-arm64.dmg"><strong>Download the macOS DMG</strong></a>
   · <a href="LICENSE">Non-commercial source license</a>
   · <a href="COMMERCIAL_USE.md">Commercial permission</a>
 </p>
@@ -24,13 +24,20 @@ Meldwork is not about opening more AI windows. It is about letting complex work 
 
 The current desktop build is for Apple silicon Macs.
 
-1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Release-V1.0.0).
-2. Download `Meldwork-0.1.0-arm64.dmg`.
+1. Open the [latest GitHub Release](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.1).
+2. Download `Meldwork-0.1.1-arm64.dmg`.
 3. Drag Meldwork into Applications, then try to open it once.
 4. If macOS blocks the current preview because it is not yet Apple-notarized, open **System Settings → Privacy & Security**, scroll to **Security**, click **Open Anyway** beside Meldwork, then confirm **Open**. The button appears only after the first blocked launch attempt. Use only a DMG downloaded from the official Release above.
 5. Connect the supported Agent CLIs already installed on your computer, or configure an independent Provider profile for an Agent.
 
 If the latest Release includes a DMG, it can be downloaded and installed locally. Developers can also run Meldwork from source with the commands below.
+
+## What is improved in V1.0.1
+
+- **Long-running work is more reliable:** an Agent is no longer treated as failed just because a task takes time. As long as it is still producing useful progress, the conversation can continue.
+- **Unlimited discussions are more rigorous:** when you choose unlimited rounds, Agents are asked to challenge unsupported claims and review each other's work carefully before accepting a conclusion.
+- **Cleaner conversation controls:** loading states, sidebar actions, and execution details are easier to scan, so you can tell what is active and what needs your attention.
+- **More dependable recovery:** interrupted or stalled work keeps its useful progress and exposes a clearer recovery path instead of leaving the conversation in an ambiguous state.
 
 ## See the core workflow
 
