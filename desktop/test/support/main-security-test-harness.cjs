@@ -3,6 +3,7 @@ const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const Module = require('node:module')
 const { EventEmitter } = require('node:events')
+const { Readable } = require('node:stream')
 
 const PROVIDER_METADATA = Object.freeze({
   provider: 'OpenAI Compatible',
@@ -425,6 +426,7 @@ function loadMain(userData, options = {}) {
       this.discarded = []
       this.resolved = []
       this.readWithMetadataCalls = []
+      this.openMediaCalls = []
       this.metadataById = new Map()
       this.nextId = 0
       attachmentInstances.push(this)
@@ -466,6 +468,22 @@ function loadMain(userData, options = {}) {
         metadata: options.mediaMetadata || this.metadataById.get(id)
           || { id, name: 'diagram.png', mimeType: 'image/png', size: 3 },
         bytes: options.mediaBytes || options.attachmentBytes || pngHeader(),
+      }
+    }
+    openMedia(id) {
+      this.openMediaCalls.push(id)
+      const bytes = options.mediaBytes || options.attachmentBytes || pngHeader()
+      const metadata = options.mediaMetadata || this.metadataById.get(id)
+        || { id, name: 'diagram.png', mimeType: 'image/png', size: bytes.length }
+      let streamCreated = false
+      return {
+        metadata,
+        stream: ({ start, end }) => {
+          if (streamCreated) throw new Error('LOCAL_ATTACHMENT_RANGE_INVALID')
+          streamCreated = true
+          return Readable.from(bytes.subarray(start, end + 1))
+        },
+        close: () => {},
       }
     }
     discard(refs) {

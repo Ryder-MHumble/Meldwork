@@ -1657,6 +1657,7 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
   const first = path.join(directory, 'diagram.png')
   const second = path.join(directory, 'flow.png')
   const third = path.join(directory, 'overflow.png')
+  const importedBytes = pngHeader()
   const { harness } = loadMain(directory, {
     dialogResult: { canceled: false, filePaths: [first, second, third] },
   })
@@ -1685,12 +1686,12 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
 
   const imported = await harness.ipcHandlers.get('local-attachments:import')(
     harness.event(),
-    { name: 'paste.png', mimeType: 'image/png', bytes: [1, 2, 3] },
+    { name: 'paste.png', mimeType: 'image/png', bytes: importedBytes },
   )
   assert.equal(imported.name, 'paste.png')
   assert.equal(imported.previewDataUrl, 'data:image/png;base64,AQID')
   assert.deepEqual(harness.attachmentInstances[0].importedBuffers, [
-    { name: 'paste.png', mimeType: 'image/png', bytes: [1, 2, 3] },
+    { name: 'paste.png', mimeType: 'image/png', bytes: importedBytes },
   ])
 
   const previewed = await harness.ipcHandlers.get('local-attachments:preview')(
@@ -1700,7 +1701,6 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
   assert.deepEqual(harness.attachmentInstances[0].readWithMetadataCalls, [
     picked.attachments[0].id,
     picked.attachments[1].id,
-    imported.id,
     picked.attachments[0].id,
   ])
   assert.deepEqual(harness.attachmentInstances[0].resolved, [])
@@ -1747,7 +1747,7 @@ test('image dimensions are bounded before nativeImage decoding and checked again
   await assert.rejects(
     async () => oversizedBeforeDecode.harness.ipcHandlers.get('local-attachments:import')(
       oversizedBeforeDecode.harness.event(),
-      { name: 'large.png', mimeType: 'image/png', bytes: [1, 2, 3] },
+      { name: 'large.png', mimeType: 'image/png', bytes: pngHeader(8193, 4096) },
     ),
     { message: 'LOCAL_ATTACHMENT_TOO_LARGE' },
   )
@@ -1762,7 +1762,7 @@ test('image dimensions are bounded before nativeImage decoding and checked again
   await assert.rejects(
     async () => oversizedAfterDecode.harness.ipcHandlers.get('local-attachments:import')(
       oversizedAfterDecode.harness.event(),
-      { name: 'decoded-large.png', mimeType: 'image/png', bytes: [1, 2, 3] },
+      { name: 'decoded-large.png', mimeType: 'image/png', bytes: pngHeader(1, 1) },
     ),
     { message: 'LOCAL_ATTACHMENT_TOO_LARGE' },
   )

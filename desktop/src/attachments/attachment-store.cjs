@@ -135,6 +135,60 @@ class AttachmentStore {
     }
   }
 
+  openMedia(id) {
+    const entry = this.loadEntryMetadata(normalizeId(id))
+    const noFollow = process.platform === 'win32' ? 0 : (fs.constants.O_NOFOLLOW || 0)
+    let descriptor
+    try {
+      const fileStat = fs.lstatSync(entry.path)
+      if (fileStat.isSymbolicLink() || !fileStat.isFile()
+          || fileStat.size !== entry.metadata.size
+          || (process.platform !== 'win32' && (fileStat.mode & 0o777) !== FILE_MODE)) {
+        fail('LOCAL_ATTACHMENT_TAMPERED')
+      }
+      const realPath = fs.realpathSync(entry.path)
+      if (!isInside(this.rootRealPath, realPath)) fail('LOCAL_ATTACHMENT_TAMPERED')
+      descriptor = fs.openSync(entry.path, fs.constants.O_RDONLY | noFollow)
+      const openedStat = fs.fstatSync(descriptor)
+      if (!openedStat.isFile() || openedStat.size !== fileStat.size
+          || openedStat.dev !== fileStat.dev || openedStat.ino !== fileStat.ino
+          || (process.platform !== 'win32' && (openedStat.mode & 0o777) !== FILE_MODE)) {
+        fail('LOCAL_ATTACHMENT_TAMPERED')
+      }
+      let streamCreated = false
+      return {
+        metadata: { ...entry.metadata },
+        stream: ({ start, end }) => {
+          if (streamCreated || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)
+              || start < 0 || end < start || end >= openedStat.size) {
+            fail('LOCAL_ATTACHMENT_RANGE_INVALID')
+          }
+          streamCreated = true
+          const stream = fs.createReadStream(entry.path, {
+            fd: descriptor,
+            autoClose: true,
+            start,
+            end,
+          })
+          descriptor = undefined
+          return stream
+        },
+        close: () => {
+          if (descriptor === undefined) return
+          try { fs.closeSync(descriptor) } catch { /* already closed */ }
+          descriptor = undefined
+        },
+      }
+    } catch (error) {
+      if (descriptor !== undefined) {
+        try { fs.closeSync(descriptor) } catch { /* already closed */ }
+      }
+      if (isAttachmentError(error)) throw error
+      if (error.code === 'ENOENT') throw attachmentError('LOCAL_ATTACHMENT_FILE_MISSING')
+      throw attachmentError('LOCAL_ATTACHMENT_TAMPERED')
+    }
+  }
+
   discard(refs) {
     this.assertRoot()
     const discardedIds = []
@@ -282,6 +336,17 @@ class AttachmentStore {
   }
 
   loadEntry(id) {
+    const entry = this.loadEntryMetadata(id)
+    const bytes = this.readStoredFile(
+      entry.path,
+      'LOCAL_ATTACHMENT_FILE_MISSING',
+      MAX_ATTACHMENT_BYTES,
+    )
+    validateStoredAttachment(bytes, entry.document)
+    return { ...entry, bytes }
+  }
+
+  loadEntryMetadata(id) {
     this.assertRoot()
     const directory = path.join(this.rootPath, id)
     let directoryStat
@@ -305,17 +370,10 @@ class AttachmentStore {
       MAX_METADATA_BYTES,
     )
     const { document, type, metadata } = parseAttachmentRecord(metadataBytes, id)
-    const contentPath = path.join(directory, `${type.storageBase}.${type.extension}`)
-    const bytes = this.readStoredFile(
-      contentPath,
-      'LOCAL_ATTACHMENT_FILE_MISSING',
-      MAX_ATTACHMENT_BYTES,
-    )
-    validateStoredAttachment(bytes, document)
     return {
       directory,
-      path: contentPath,
-      bytes,
+      path: path.join(directory, `${type.storageBase}.${type.extension}`),
+      document,
       metadata,
     }
   }

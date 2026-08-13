@@ -5,6 +5,7 @@ const path = require('node:path')
 const { agentRuntimeError } = require('../../src/agents/agent-runtime-contract.cjs')
 const { MAX_RUN_AGENT_ATTEMPTS } = require('../../src/runs/failure-policy.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
+const { LocalWorkspaceAutoRunner } = require('../../src/workspace/local-workspace-auto-runner.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const { deferred, fixture } = require('../support/local-workspace-test-helpers.cjs')
 
@@ -58,6 +59,145 @@ function evidenceTaskGraph() {
     ],
   }
 }
+
+test('automatic resume normalizes a missing round cursor before continuing the pending round', async () => {
+  const invoked = []
+  const controllerAbort = new AbortController()
+  const runner = new LocalWorkspaceAutoRunner({
+    state: () => ({ messages: [{
+      id: 'root-1', groupId: 'group-1', role: 'user', content: 'Resume safely',
+    }] }),
+    beginRun: () => {},
+    resolveAttachments: async () => [],
+    validateSkillSelections: async () => [],
+    validateKnowledgeBaseSelections: async () => [],
+    invokeAgent: async () => { throw new Error('unexpected direct invocation') },
+    resetAgentSession: () => {},
+    refreshAgents: async () => {},
+    consumeAgentControl: () => null,
+    markRuntimeCredential: () => {},
+    agentLabel: kind => kind,
+    recordAgentFailure: () => {},
+    recordAgentInterruption: () => {},
+    addMessage: () => {},
+    emitChanged: () => {},
+    finishRun: async () => {},
+    checkpointRun: () => true,
+  })
+  const controller = {
+    runId: 'run-1',
+    taskId: 'task-1',
+    targetKinds: ['codex', 'hermes'],
+    currentRound: undefined,
+    currentKind: '',
+    progress: [],
+    completedKinds: [],
+    failedKinds: [],
+    attemptHistory: [],
+    manualRetryCounts: new Map(),
+    agentSlotKinds: new Set(),
+    maxRounds: 1,
+    unlimitedRounds: false,
+    signal: controllerAbort.signal,
+    abort: () => controllerAbort.abort(),
+    orchestration: {
+      version: 2,
+      workflow: 'auto',
+      currentKind: '',
+      pendingKinds: ['codex', 'hermes'],
+      activeKinds: ['codex', 'hermes'],
+      successfulKinds: [],
+      agreementKinds: [],
+      attachmentRecipients: [],
+      totalSuccesses: 0,
+      terminalFailureOccurred: false,
+      collaboration: { version: 1, handoffs: [], entries: [] },
+    },
+  }
+  runner.prepareCollaborationPackage = () => ({ text: '' })
+  runner.recordCollaborationResult = () => []
+  runner.checkpointOrchestration = (_group, current, updates = {}) => {
+    current.orchestration = { ...current.orchestration, ...updates }
+  }
+  runner.invokeWithUnauthorizedRecovery = async ({ kind }) => {
+    invoked.push({ kind, round: controller.currentRound })
+    return {
+      removed: false,
+      result: {
+        consensus: true,
+        message: { content: `${kind} resumed` },
+        outcomeRefs: { artifactIds: [], evidenceIds: [] },
+      },
+    }
+  }
+
+  const status = await runner.runRounds(
+    { id: 'group-1', allowWrite: false },
+    controller,
+    'root-1',
+    1,
+    {
+      rootAttachments: [],
+      rootSkillsByKind: new Map([['codex', []], ['hermes', []]]),
+      rootKnowledgeBasesByKind: new Map([['codex', []], ['hermes', []]]),
+      rootMediaRequest: null,
+    },
+    true,
+  )
+
+  assert.deepEqual(invoked, [
+    { kind: 'codex', round: 1 },
+    { kind: 'hermes', round: 1 },
+  ])
+  assert.equal(status, 'completed')
+})
+
+test('task graph stops applying settled batch results after a hard-budget abort', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    if (agent.kind === 'codex') {
+      throw Object.assign(new Error('LOCAL_BUDGET_EXHAUSTED'), {
+        code: 'LOCAL_BUDGET_EXHAUSTED',
+      })
+    }
+    return {
+      text: 'Hermes completed after the budget abort',
+      sessionRef: runOptions.sessionRef || 'hermes-session',
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Stop task graph batch',
+    agentKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workdir: directory,
+    allowWrite: false,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Stop immediately when the hard budget is exhausted.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy', 'kimi'],
+    workflow: evidenceTaskGraph(),
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  const terminal = ledger.list(group.id)[0]
+  const states = Object.fromEntries(terminal.orchestration.taskGraph.nodeStates.map(state => (
+    [state.nodeId, state.status]
+  )))
+  assert.equal(terminal.status, 'budget-exhausted')
+  assert.equal(states['primary-codex'], 'failed')
+  assert.notEqual(states['primary-hermes'], 'accepted')
+  assert.equal(terminal.orchestration.collaboration.entries.some(entry => (
+    entry.owner.agentKind === 'hermes'
+  )), false)
+})
 
 test('task graph runs independent branches in parallel and completes from typed Evidence', async (t) => {
   const { directory, calls, options } = fixture()

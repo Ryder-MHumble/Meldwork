@@ -198,6 +198,16 @@ function detectedOoxmlType(bytes) {
   return null
 }
 
+function hasMpegFrameHeader(bytes) {
+  if (bytes.length < 4 || bytes[0] !== 0xff || (bytes[1] & 0xe0) !== 0xe0) return false
+  const version = (bytes[1] >> 3) & 0x03
+  const layer = (bytes[1] >> 1) & 0x03
+  const bitrate = (bytes[2] >> 4) & 0x0f
+  const sampleRate = (bytes[2] >> 2) & 0x03
+  return version !== 0x01 && layer !== 0x00
+    && bitrate !== 0x00 && bitrate !== 0x0f && sampleRate !== 0x03
+}
+
 function detectAttachmentType(bytes, nameType = null, declaredMime = '') {
   if (bytes.length >= 8
       && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
@@ -213,8 +223,8 @@ function detectAttachmentType(bytes, nameType = null, declaredMime = '') {
       && bytes.subarray(8, 12).toString('ascii') === 'WEBP') {
     return TYPE_BY_MIME.get('image/webp')
   }
-  if (bytes.length >= 3 && (bytes.subarray(0, 3).toString('ascii') === 'ID3'
-      || (bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0))) {
+  if ((bytes.length >= 10 && bytes.subarray(0, 3).toString('ascii') === 'ID3')
+      || hasMpegFrameHeader(bytes)) {
     return TYPE_BY_MIME.get('audio/mpeg')
   }
   if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF'

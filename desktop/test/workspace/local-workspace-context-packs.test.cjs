@@ -12,6 +12,7 @@ const {
 const {
   createAcpOutboundPayload,
   createLegacyOutboundPayload,
+  outboundWirePayloadBytes,
 } = require('../../src/collaboration/outbound-payload.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const { fixture } = require('../support/local-workspace-test-helpers.cjs')
@@ -63,6 +64,31 @@ function outboundPayload(prompt, transport = 'legacy') {
     promptMode: 'stdin',
   })
 }
+
+test('legacy wire payload omits undefined optional fields and hashes valid canonical JSON', () => {
+  const first = createLegacyOutboundPayload({
+    prompt: 'Review this change',
+    command: '/private/bin/codex',
+    args: ['exec'],
+    cwd: undefined,
+    stdin: undefined,
+    promptMode: 'argument',
+  })
+  const second = createLegacyOutboundPayload({
+    prompt: 'Review this change',
+    command: '/private/bin/codex',
+    args: ['exec'],
+    promptMode: 'argument',
+  })
+  const bytes = outboundWirePayloadBytes(first)
+
+  assert.deepEqual(JSON.parse(bytes.toString('utf8')), {
+    args: ['exec'],
+    command: '/private/bin/codex',
+  })
+  assert.equal(first.wirePayloadHash, second.wirePayloadHash)
+  assert.equal(first.wirePayloadBytes, bytes.length)
+})
 
 test('explicit Connector selections persist immutable knowledge and citation sources without Vault paths', async (t) => {
   const { directory, options } = fixture()

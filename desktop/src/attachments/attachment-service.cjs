@@ -1,4 +1,5 @@
 const fs = require('node:fs')
+const { Readable } = require('node:stream')
 
 const {
   assertImagePixelLimit,
@@ -107,8 +108,7 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
     return { discardedIds, retainedIds }
   }
 
-  function preview(id) {
-    const { metadata, bytes } = availableStore().readWithMetadata(id)
+  function previewEntry(metadata, bytes) {
     const attachment = {
       id: metadata.id,
       name: metadata.name,
@@ -138,31 +138,47 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
     return { ...attachment, previewDataUrl }
   }
 
+  function preview(id) {
+    const { metadata, bytes } = availableStore().readWithMetadata(id)
+    return previewEntry(metadata, bytes)
+  }
+
   function mediaResponse(request) {
     const id = mediaRequestId(request?.url)
     if (!id) return new Response(null, { status: 404 })
     let entry
-    try { entry = availableStore().readWithMetadata(id) } catch { return new Response(null, { status: 404 }) }
-    const { metadata, bytes } = entry
-    if (!/^(?:image|audio|video)\//.test(metadata.mimeType) || bytes.length !== metadata.size) {
+    try { entry = availableStore().openMedia(id) } catch { return new Response(null, { status: 404 }) }
+    const { metadata } = entry
+    if (!/^(?:image|audio|video)\//.test(metadata.mimeType)) {
+      entry.close()
       return new Response(null, { status: 415 })
     }
-    const range = mediaByteRange(request?.headers?.get?.('range'), bytes.length)
+    const range = mediaByteRange(request?.headers?.get?.('range'), metadata.size)
     if (range === false) {
+      entry.close()
       return new Response(null, {
         status: 416,
-        headers: { 'Content-Range': `bytes */${bytes.length}` },
+        headers: { 'Content-Range': `bytes */${metadata.size}` },
       })
     }
-    const body = range ? bytes.subarray(range.start, range.end + 1) : bytes
+    const selectedRange = range || { start: 0, end: metadata.size - 1 }
+    let body
+    try {
+      body = Readable.toWeb(entry.stream(selectedRange))
+    } catch {
+      entry.close()
+      return new Response(null, { status: 404 })
+    }
     const headers = {
       'Accept-Ranges': 'bytes',
       'Cache-Control': 'private, max-age=31536000, immutable',
-      'Content-Length': String(body.length),
+      'Content-Length': String(selectedRange.end - selectedRange.start + 1),
       'Content-Type': metadata.mimeType,
       'X-Content-Type-Options': 'nosniff',
     }
-    if (range) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${bytes.length}`
+    if (range) {
+      headers['Content-Range'] = `bytes ${range.start}-${range.end}/${metadata.size}`
+    }
     return new Response(body, { status: range ? 206 : 200, headers })
   }
 
@@ -170,7 +186,11 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
     const store = availableStore()
     const metadata = store.importBuffer(input)
     try {
-      return preview(metadata.id)
+      if (!metadata.mimeType.startsWith('image/')) return { ...metadata }
+      const bytes = input.bytes instanceof ArrayBuffer
+        ? Buffer.from(new Uint8Array(input.bytes))
+        : Buffer.from(input.bytes)
+      return previewEntry(metadata, bytes)
     } catch (error) {
       try { store.discard([metadata]) } catch { /* best effort */ }
       throw error
@@ -178,6 +198,7 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
   }
 
   function importFiles(filenames) {
+    if (!Array.isArray(filenames)) throw new Error('LOCAL_ATTACHMENT_INPUT_INVALID')
     if (filenames.length > MAX_ATTACHMENT_PICK_REQUEST) {
       throw new Error('LOCAL_ATTACHMENT_COUNT_LIMIT')
     }

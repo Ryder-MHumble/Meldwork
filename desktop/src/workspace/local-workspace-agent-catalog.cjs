@@ -28,6 +28,37 @@ function recentlyVerified(runtime, now) {
     && current >= checkedAt && current - checkedAt <= RECENT_VERIFICATION_MS
 }
 
+function applyAvailability(agent, options) {
+  const versionIdentified = agentVersionIdentified(agent)
+  const compatible = agentCompatible(agent)
+  const invocable = versionIdentified && compatible
+    && options.configured && options.authenticated && options.runtimePrerequisitesReady
+  const capabilities = agentRuntimeCapabilities(agent.kind, {
+    agent,
+    attachmentSupport: options.attachmentSupport,
+  })
+  return {
+    ...agent,
+    installed: true,
+    versionIdentified,
+    compatible,
+    configured: options.configured,
+    authenticated: options.authenticated,
+    runtimePrerequisitesReady: options.runtimePrerequisitesReady,
+    invocable,
+    recentlyVerified: options.recentlyVerified,
+    credentialState: options.credentialState,
+    availabilitySource: options.availabilitySource,
+    available: invocable,
+    task: capabilities.task,
+    resumable: capabilities.resumable,
+    capabilities,
+    showInSidebar: capabilities.task === 'general'
+      && invocable
+      && (typeof options.preferred === 'boolean' ? options.preferred : true),
+  }
+}
+
 class LocalWorkspaceAgentCatalog {
   constructor(options) {
     this.state = options.state
@@ -92,9 +123,6 @@ class LocalWorkspaceAgentCatalog {
       if (!runtimeMissing && sharedProviderReady) credentialState = 'ready'
       else if (!runtimeMissing && nativeState === 'ready') credentialState = 'ready'
       else if (!runtimeMissing && verifiedReady && nativeState !== 'missing') credentialState = 'ready'
-      const installed = true
-      const versionIdentified = agentVersionIdentified(agent)
-      const compatible = agentCompatible(agent)
       const configured = sharedProviderReady
         || nativeState === 'ready'
         || native?.source === 'native-auth-status'
@@ -105,42 +133,26 @@ class LocalWorkspaceAgentCatalog {
         sharedProviderReady || nativeState === 'ready' || verifiedReady
       )
       const runtimePrerequisitesReady = native?.source !== 'native-runtime-unavailable'
-      const invocable = installed && versionIdentified && compatible && configured
-        && authenticated && runtimePrerequisitesReady
       const verifiedRecently = (authoritativeNativeState && nativeState === 'ready')
         || recentlyVerified(runtime, this.now())
-      const available = invocable
       const preferred = state.agentPreferences[agent.kind]?.showInSidebar
-      const capabilities = agentRuntimeCapabilities(agent.kind, {
-        agent,
-        attachmentSupport: this.attachmentSupport(agent.kind),
-      })
       let availabilitySource = 'unverified'
-      if (!compatible) availabilitySource = 'incompatible'
+      if (!agentCompatible(agent)) availabilitySource = 'incompatible'
       else if (runtimeMissing) availabilitySource = 'runtime-auth-failure'
       else if (sharedProviderReady) availabilitySource = nativeReadySource || 'shared-provider'
       else if (nativeState === 'missing') availabilitySource = native.source || 'none'
       else if (nativeReadySource) availabilitySource = nativeReadySource
       else if (verifiedReady) availabilitySource = 'verified-run'
-      return {
-        ...agent,
-        installed,
-        versionIdentified,
-        compatible,
+      return applyAvailability(agent, {
         configured,
         authenticated,
-        invocable,
+        runtimePrerequisitesReady,
         recentlyVerified: verifiedRecently,
         credentialState,
         availabilitySource,
-        available,
-        task: capabilities.task,
-        resumable: capabilities.resumable,
-        capabilities,
-        showInSidebar: capabilities.task === 'general'
-          && available
-          && (typeof preferred === 'boolean' ? preferred : true),
-      }
+        preferred,
+        attachmentSupport: this.attachmentSupport(agent.kind),
+      })
     })
     this.setDetectedAgents(agents)
     if (recoveredRuntimeCredential) this.save()
@@ -169,16 +181,9 @@ class LocalWorkspaceAgentCatalog {
     }
     const agent = this.detectedAgents().find(item => item.kind === kind)
     if (agent) {
-      agent.credentialState = credentialState
-      agent.versionIdentified = agentVersionIdentified(agent)
-      agent.compatible = agentCompatible(agent)
-      agent.configured = credentialState !== 'unknown'
-      agent.authenticated = credentialState === 'ready'
-      agent.invocable = agent.versionIdentified && agent.compatible
-        && agent.configured && agent.authenticated
-      agent.recentlyVerified = credentialState === 'ready'
-      agent.available = agent.invocable
-      agent.availabilitySource = !agent.compatible
+      const sharedProviderReady = Boolean(this.sharedProviderReady(kind))
+      const runtimePrerequisitesReady = agent.runtimePrerequisitesReady !== false
+      const availabilitySource = !agentCompatible(agent)
         ? 'incompatible'
         : credentialState === 'ready'
           ? 'verified-run'
@@ -186,9 +191,17 @@ class LocalWorkspaceAgentCatalog {
             ? 'runtime-auth-failure'
             : 'unverified'
       const preferred = state.agentPreferences[kind]?.showInSidebar
-      agent.showInSidebar = !isReviewOnlyAgentKind(agent.kind)
-        && agent.available
-        && (typeof preferred === 'boolean' ? preferred : true)
+      Object.assign(agent, applyAvailability(agent, {
+        configured: sharedProviderReady || credentialState !== 'unknown',
+        authenticated: credentialState !== 'missing'
+          && (sharedProviderReady || credentialState === 'ready'),
+        runtimePrerequisitesReady,
+        recentlyVerified: credentialState === 'ready',
+        credentialState,
+        availabilitySource,
+        preferred,
+        attachmentSupport: this.attachmentSupport(kind),
+      }))
     }
     this.save()
     this.emitChanged()
