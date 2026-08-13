@@ -1,6 +1,6 @@
 const { createHash, randomUUID } = require('node:crypto')
 const {
-  isReviewOnlyAgentKind,
+  isCodeReviewAgentKind,
   requireTerminalAgentResult,
 } = require('../agents/agent-runtime-contract.cjs')
 const {
@@ -273,9 +273,6 @@ class LocalWorkspaceAgentInvocation {
   }
 
   async invoke(group, kind, mode, signal, threadRootId = '', context = {}) {
-    if (isReviewOnlyAgentKind(kind) && context.taskType !== 'code_review') {
-      throw new Error('LOCAL_AGENT_REVIEW_ONLY')
-    }
     const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     if (!taskId) throw new Error('LOCAL_RUN_TASK_INVALID')
@@ -326,10 +323,7 @@ class LocalWorkspaceAgentInvocation {
   ) {
     const agent = this.detectedAgents().find(item => item.kind === kind && item.available)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
-    const reviewOnly = isReviewOnlyAgentKind(kind)
-    if (reviewOnly && context.taskType !== 'code_review') {
-      throw new Error('LOCAL_AGENT_REVIEW_ONLY')
-    }
+    const reviewOnly = isCodeReviewAgentKind(kind)
     const isolated = isolatedInvocationContext(context)
     const internal = context.internal === true
     if (internal && !isolated) throw new Error('LOCAL_RUN_INTERNAL_CONTEXT_INVALID')

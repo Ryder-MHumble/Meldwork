@@ -103,27 +103,46 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('keeps review-only Agents in Settings but out of ordinary conversations', async () => {
-    const { wrapper } = await mountApp(({ state }) => {
+  it('keeps OpenCodeReview visible for ordinary conversations and direct instructions', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.agents.push({
         kind: 'opencodereview',
         installed: true,
         available: true,
         credentialState: 'ready',
-        showInSidebar: false,
+        showInSidebar: true,
         task: 'code_review',
         resumable: false,
         version: '1.8.6',
       })
+      desktopBridge.localWorkspace.createGroup.mockImplementation(async input => ({
+        id: 'direct-opencodereview',
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+        ...structuredClone(input),
+      }))
     })
 
-    expect(wrapper.findAll('.home-agent-item').map(item => item.text())).not.toContain('OpenCodeReview')
+    expect(wrapper.findAll('.home-agent-item').some(item => item.text().includes('OpenCodeReview'))).toBe(true)
     await wrapper.get('.new-group-button').trigger('click')
-    expect(wrapper.findAll('.agent-choice').map(choice => choice.text())).not.toContain('OpenCodeReview')
+    expect(wrapper.findAll('.agent-choice').some(choice => choice.text().includes('OpenCodeReview'))).toBe(true)
     await wrapper.get('.modal-header .icon-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.findAll('.sidebar-agent').some(agent => agent.text().includes('OpenCodeReview'))).toBe(true)
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.get('.agent-manager').text()).toContain('OpenCodeReview')
+    const card = wrapper.findAll('.settings-agent-card')
+      .find(node => node.text().includes('OpenCodeReview'))
+    await card.findAll('button').find(button => button.text().includes('Open chat')).trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.createGroup).toHaveBeenCalledWith(expect.objectContaining({
+      conversationType: 'direct',
+      directAgentKind: 'opencodereview',
+      name: 'OpenCodeReview',
+      allowWrite: true,
+    }))
     wrapper.unmount()
   })
 
@@ -806,6 +825,12 @@ describe('RoundRelay workbench', () => {
     expect(source).toMatch(/\.agent-card-meta-row\s*\{[^}]*display:\s*flex;[^}]*padding:\s*0 16px 14px 77px;/s)
     expect(source).toMatch(/\.settings-agent-actions\s*\{[^}]*flex-wrap:\s*nowrap;[^}]*padding:\s*0;/s)
     expect(source).toMatch(/\.settings-agent-card\.focused\s*\{[^}]*box-shadow:\s*none;/s)
+    expect(source).toMatch(/\.message-row\.agent \.message-body:hover \.message-meta-actions > button,[^{]+\.message-row\.agent \.message-body:hover \.message-footer-actions > button/s)
+    expect(source).toMatch(/\.message-meta-actions > button::after,[^{]+\.message-footer-actions > button::after,[^{]+\.code-copy-button::after\s*\{[^}]*bottom:\s*calc\(100% \+ 6px\);[^}]*background:\s*var\(--surface-raised\);/s)
+    expect(source).toMatch(/\.message-footer-actions > button::after\s*\{[^}]*top:\s*calc\(100% \+ 6px\);[^}]*bottom:\s*auto;/s)
+    expect(source).toMatch(/\.conversation-link\s*\{[^}]*grid-template-columns:\s*26px minmax\(0, 1fr\) 58px;/s)
+    expect(source).toMatch(/\.conversation-empty-wordmark\s*\{[^}]*width:\s*min\(276px, 60vw\);/s)
+    expect(source).toMatch(/\.conversation-empty-copy\s*\{[^}]*width:\s*min\(920px, 100%\);[^}]*min-height:\s*60px;/s)
     expect(source).not.toContain('img[src$="/hermes.svg"],\n:root[data-theme="dark"] img[src$="/opencode.svg"]')
     expect(composerSource).toContain('composer-attachment-button')
     expect(composerSource).toContain('composer-skill-button')

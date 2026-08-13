@@ -1,6 +1,5 @@
 const {
   agentRuntimeCapabilities,
-  isReviewOnlyAgentKind,
 } = require('../agents/agent-runtime-contract.cjs')
 
 const RECENT_VERIFICATION_MS = 24 * 60 * 60 * 1000
@@ -137,8 +136,7 @@ class LocalWorkspaceAgentCatalog {
         task: capabilities.task,
         resumable: capabilities.resumable,
         capabilities,
-        showInSidebar: capabilities.task === 'general'
-          && available
+        showInSidebar: available
           && (typeof preferred === 'boolean' ? preferred : true),
       }
     })
@@ -151,7 +149,6 @@ class LocalWorkspaceAgentCatalog {
   setSidebarVisibility(kind, visible) {
     const agent = this.detectedAgents().find(item => item.kind === kind)
     if (!agent) throw new Error('LOCAL_AGENT_NOT_INSTALLED')
-    if (isReviewOnlyAgentKind(agent.kind)) throw new Error('LOCAL_AGENT_REVIEW_ONLY')
     if (visible && !agent.available) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const state = this.state()
     state.agentPreferences[kind] = { showInSidebar: Boolean(visible) }
@@ -186,8 +183,7 @@ class LocalWorkspaceAgentCatalog {
             ? 'runtime-auth-failure'
             : 'unverified'
       const preferred = state.agentPreferences[kind]?.showInSidebar
-      agent.showInSidebar = !isReviewOnlyAgentKind(agent.kind)
-        && agent.available
+      agent.showInSidebar = agent.available
         && (typeof preferred === 'boolean' ? preferred : true)
     }
     this.save()

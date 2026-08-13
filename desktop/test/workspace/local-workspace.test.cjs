@@ -96,8 +96,8 @@ test('workspace startup rejects orphaned Human Gates after restoring interrupted
   })
 })
 
-test('review-only Agents cannot join ordinary direct or group conversations', async (t) => {
-  const { directory, options } = fixture()
+test('OpenCodeReview can be shown in the sidebar and receive direct instructions', async (t) => {
+  const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [
     { kind: 'codex', name: 'Codex', executable: '/tmp/codex', version: '1.0.0' },
@@ -105,35 +105,46 @@ test('review-only Agents cannot join ordinary direct or group conversations', as
       kind: 'opencodereview', name: 'OpenCodeReview', executable: '/tmp/ocr', version: '1.8.6',
     },
   ]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    return {
+      text: 'Review completed.', sessionRef: 'ignored-review-session', outcome: 'completed',
+      externalRunRef: 'ocr-review-123',
+    }
+  }
   const workspace = new LocalWorkspace(options)
   const snapshot = await workspace.refreshAgents()
   const reviewAgent = snapshot.agents.find(agent => agent.kind === 'opencodereview')
   assert.equal(reviewAgent.available, true)
   assert.equal(reviewAgent.task, 'code_review')
-  assert.equal(reviewAgent.showInSidebar, false)
+  assert.equal(reviewAgent.showInSidebar, true)
 
-  assert.throws(() => workspace.createGroup({
+  workspace.setSidebarVisibility('opencodereview', false)
+  assert.equal(workspace.snapshot().agents.find(agent => agent.kind === 'opencodereview').showInSidebar, false)
+  workspace.setSidebarVisibility('opencodereview', true)
+  assert.equal(workspace.snapshot().agents.find(agent => agent.kind === 'opencodereview').showInSidebar, true)
+
+  const directGroup = workspace.createGroup({
     conversationType: 'direct', directAgentKind: 'opencodereview', workdir: directory,
-  }), { message: 'LOCAL_GROUP_AGENT_REQUIRED' })
-  assert.throws(() => workspace.createGroup({
-    name: 'General discussion', agentKinds: ['opencodereview'], workdir: directory,
-  }), { message: 'LOCAL_GROUP_AGENT_REQUIRED' })
-  const generalGroup = workspace.createGroup({
-    name: 'General discussion', agentKinds: ['codex'], workdir: directory,
   })
-  assert.throws(
-    () => workspace.updateGroup(generalGroup.id, { agentKinds: ['opencodereview'] }),
-    { message: 'LOCAL_GROUP_AGENT_REQUIRED' },
-  )
-  await assert.rejects(
-    workspace.invokeAgent(
-      { id: 'forged-group', workdir: directory, allowWrite: false },
-      'opencodereview',
-      'manual',
-      new AbortController().signal,
-    ),
-    { message: 'LOCAL_AGENT_REVIEW_ONLY' },
-  )
+  assert.deepEqual(directGroup.agentKinds, ['opencodereview'])
+
+  await workspace.sendMessage({
+    groupId: directGroup.id,
+    text: 'Review the current diff and focus on regressions.',
+    targetKinds: ['opencodereview'],
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].agent.kind, 'opencodereview')
+  assert.match(calls[0].prompt, /Review the current diff and focus on regressions\./)
+  assert.equal(calls[0].runOptions.sandbox, 'read-only')
+  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(Object.keys(workspace.state.sessions).length, 0)
+  assert.equal(Object.keys(workspace.state.sessionMeta).length, 0)
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.equal(reply.agentKind, 'opencodereview')
+  assert.equal(reply.trace.context.externalRunRef, 'ocr-review-123')
 })
 
 test('an explicit internal code-review task runs once and remains read-only', async (t) => {

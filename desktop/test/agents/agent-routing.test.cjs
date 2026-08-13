@@ -107,6 +107,25 @@ test('explicit specialized Agents are not assigned an invented general-domain re
   )
 })
 
+test('explicit OpenCodeReview targets keep writable direct conversations routable as read-only review work', () => {
+  const decision = new AgentRouter().route(request({
+    agents: [agent('opencodereview')],
+    group: {
+      id: 'group-routing',
+      agentKinds: ['opencodereview'],
+      allowWrite: true,
+    },
+    input: { targetKinds: ['opencodereview'] },
+  }))
+
+  assert.deepEqual(decision.selectedKinds, ['opencodereview'])
+  assert.equal(decision.requirements.permissionMode, 'read-only')
+  assert.deepEqual(
+    decision.candidates.find(candidate => candidate.kind === 'opencodereview').exclusions,
+    [],
+  )
+})
+
 test('explicit Connector Agents use their declared runtime capabilities', () => {
   const connector = agent('custom-bbbbbbbbbbbbbbbb', {
     capabilities: {

@@ -92,7 +92,7 @@ Meldwork 当前已支持：
 专项审查：
 **OpenCodeReview**
 
-能否实际使用取决于本机安装情况、受支持版本、认证状态和 Agent 声明的能力。OpenCodeReview 是专项审查目标，不作为通用对话 Agent 使用。
+能否实际使用取决于本机安装情况、受支持版本、认证状态和 Agent 声明的能力。OpenCodeReview 可以显示在左侧导航栏，也可以作为单聊接收审查指令；运行时仍限定为只读的 Git diff 代码审查。
 
 每个 Agent 保留自己的能力、Provider、权限模型和 Session 行为。能否使用取决于本机是否安装、版本是否兼容，以及对应认证是否就绪。
 

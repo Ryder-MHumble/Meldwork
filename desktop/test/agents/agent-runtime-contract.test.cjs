@@ -5,6 +5,7 @@ const {
   AGENT_RUNTIME_CAPABILITIES,
   agentRuntimeError,
   agentRuntimeFailure,
+  isCodeReviewAgentKind,
   isReviewOnlyAgentKind,
   normalizeExternalRunRef,
   outcomeForAcpStopReason,
@@ -27,7 +28,8 @@ test('runtime capabilities cover every supported built-in Agent', () => {
     assert.ok(Number.isSafeInteger(capabilities.contextLimitChars), kind)
     assert.equal(typeof capabilities.resumable, 'boolean', kind)
   }
-  assert.equal(isReviewOnlyAgentKind('opencodereview'), true)
+  assert.equal(isCodeReviewAgentKind('opencodereview'), true)
+  assert.equal(isReviewOnlyAgentKind('opencodereview'), false)
   assert.equal(AGENT_RUNTIME_CAPABILITIES.opencodereview.resumable, false)
 })
 

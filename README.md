@@ -93,7 +93,7 @@ Specialized review:
 
 **OpenCodeReview**
 
-Availability depends on the installed Agent, supported version, authentication state, and declared capabilities. OpenCodeReview is a specialized review target rather than a general conversation Agent.
+Availability depends on the installed Agent, supported version, authentication state, and declared capabilities. OpenCodeReview can be shown in the left navigation and opened as a direct chat for review instructions, while its runtime stays scoped to read-only diff-focused code review.
 
 Each Agent keeps its own capabilities, provider configuration, permission model, and session behavior. Availability depends on the installed Agent, its version, and its authentication state.
 
