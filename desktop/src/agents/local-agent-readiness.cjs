@@ -351,6 +351,62 @@ function mimoAuthState(output) {
     : null
 }
 
+function codexAuthState(output) {
+  const value = String(output || '').replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '').trim()
+  if (/\bnot logged in\b|\blogin required\b/i.test(value)) {
+    return { state: 'missing', source: 'native-auth-status' }
+  }
+  if (/\blogged in\b/i.test(value)) {
+    return { state: 'ready', source: 'native-auth-status' }
+  }
+  return null
+}
+
+function openCodeAuthState(output) {
+  const value = String(output || '').replace(/\x1b\[[0-?]*[ -\/]*[@-~]/g, '')
+  const count = value.match(/\b(\d+)\s+credentials?\b/i)
+  if (count) {
+    return {
+      state: Number(count[1]) > 0 ? 'ready' : 'missing',
+      source: 'native-auth-status',
+    }
+  }
+  return null
+}
+
+function geminiKeychainEntry(home) {
+  try {
+    const settings = JSON.parse(readCredentialFile(path.join(home, '.gemini', 'settings.json')))
+    const selectedType = settings?.security?.auth?.selectedType
+    if (selectedType === 'oauth-personal') {
+      return { service: 'gemini-cli-oauth', account: 'main-account' }
+    }
+    if (selectedType === 'gemini-api-key') {
+      return { service: 'gemini-cli-api-key', account: 'default-api-key' }
+    }
+  } catch { /* keep readiness unverified */ }
+  return null
+}
+
+async function queryGeminiKeychainState(options = {}) {
+  if ((options.platform || process.platform) !== 'darwin') return null
+  const entry = geminiKeychainEntry(options.home || os.homedir())
+  if (!entry) return null
+  const execFileFn = options.execFileFn || execFileAsync
+  try {
+    await execFileFn('/usr/bin/security', [
+      'find-generic-password', '-s', entry.service, '-a', entry.account,
+    ], {
+      timeout: 3000,
+      windowsHide: true,
+      env: probeEnvironment('gemini', options),
+    })
+    return { state: 'ready', source: 'native-credential' }
+  } catch {
+    return null
+  }
+}
+
 function pathInside(parent, child) {
   const relative = path.relative(parent, child)
   return Boolean(relative) && relative !== '..'
@@ -634,6 +690,9 @@ async function queryMimoAuthState(options = {}) {
 
 async function resolveNativeCredentialState(kind, options = {}) {
   const current = nativeCredentialState(kind, options)
+  if (kind === 'gemini' && current.state !== 'ready') {
+    return await queryGeminiKeychainState(options) || current
+  }
   if (kind === 'mimo') {
     return await queryMimoAuthState(options) || current
   }
@@ -648,6 +707,24 @@ async function resolveNativeCredentialState(kind, options = {}) {
     return status?.credentialState?.source === 'native-runtime-unavailable'
       ? status.credentialState
       : { state: 'unknown', source: 'native-runtime-unavailable' }
+  }
+  if (['codex', 'opencode'].includes(kind) && options.executable) {
+    const platform = options.platform || process.platform
+    const prepareCommandFn = options.prepareCommandFn || prepareCommand
+    const execFileFn = options.execFileFn || execFileAsync
+    const args = kind === 'codex' ? ['login', 'status'] : ['auth', 'list']
+    const prepared = prepareCommandFn(options.executable, args, { platform })
+    const parse = kind === 'codex' ? codexAuthState : openCodeAuthState
+    try {
+      const result = await execFileFn(prepared.command, prepared.args, {
+        timeout: 5000,
+        windowsHide: true,
+        env: probeEnvironment(kind, options),
+      })
+      return parse(`${result.stdout || ''}\n${result.stderr || ''}`) || current
+    } catch (error) {
+      return parse(`${error?.stdout || ''}\n${error?.stderr || ''}`) || current
+    }
   }
   if (kind !== 'claude' || !options.executable
       || Object.keys(nativeCredentialKeyEnvironment(kind, options.env)).length) return current

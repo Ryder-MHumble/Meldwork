@@ -165,6 +165,9 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   )
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installSupported, true)
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installErrorCode, '')
+  assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installAction, 'install')
+  assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').installAction, 'update')
+  assert.equal(result.agents.find(agent => agent.kind === 'gemini').installAction, 'repair')
   assert.equal(result.agents.find(agent => agent.kind === 'gemini').providerSupport, 'native-config')
   assert.equal(result.agents.find(agent => agent.kind === 'opencode').providerCompatible, false)
   assert.equal(result.agents.find(agent => agent.kind === 'opencodereview').providerCompatible, true)
@@ -704,19 +707,20 @@ test('npm lookup remains visibly cancellable before the installer process launch
   await new Promise(resolve => setImmediate(resolve))
 })
 
-test('installation refuses to overwrite an incompatible Agent that appeared after a cached read', async () => {
+test('installation repairs an incompatible Agent that appeared after a cached read', async () => {
   let installed = false
   let detectCount = 0
   let runCount = 0
   const service = installer({
     detectAgents: async () => {
       detectCount += 1
-      return installed
-        ? [{
+      if (!installed) return []
+      return runCount
+        ? [detectedRelease('workbuddy', 'darwin', '/tmp/codebuddy')]
+        : [{
             kind: 'workbuddy', version: '', executable: '/tmp/codebuddy',
             compatibilityState: 'incompatible',
           }]
-        : []
     },
     runProcess: async () => { runCount += 1 },
   })
@@ -725,11 +729,49 @@ test('installation refuses to overwrite an incompatible Agent that appeared afte
   assert.equal(before.agents.find(agent => agent.kind === 'workbuddy').installed, false)
   installed = true
 
-  await assert.rejects(service.start('workbuddy'), {
-    message: 'INSTALL_AGENT_ALREADY_INSTALLED',
+  await service.start('workbuddy')
+  await service.waitForIdle()
+  assert.equal(detectCount, 3)
+  assert.equal(runCount, 1)
+  assert.equal(service.state().phase, 'completed')
+})
+
+test('installation updates an older detected release and verifies the pinned compatible version', async () => {
+  const recipe = installRecipe('qwen', 'darwin')
+  let updated = false
+  let runCount = 0
+  const service = installer({
+    detectAgents: async () => [updated
+      ? detectedRelease('qwen')
+      : {
+          kind: 'qwen', executable: '/tmp/qwen', version: '0.10.0',
+          compatibilityState: 'compatible', resolvedVersion: '0.10.0',
+        }],
+    runProcess: async () => { runCount += 1; updated = true },
   })
-  assert.equal(detectCount, 2)
-  assert.equal(runCount, 0)
+
+  const before = await service.catalog()
+  assert.equal(before.agents.find(agent => agent.kind === 'qwen').installAction, 'update')
+  await service.start('qwen')
+  await service.waitForIdle()
+
+  assert.equal(runCount, 1)
+  assert.equal(service.state().phase, 'completed')
+  assert.equal((await service.catalog()).agents.find(agent => agent.kind === 'qwen').version,
+    recipe.detectedVersion || recipe.version)
+})
+
+test('catalog never offers to downgrade a newer compatible CLI', async () => {
+  const service = installer({
+    detectAgents: async () => [{
+      kind: 'codex', executable: '/tmp/codex', version: '999.0.0',
+      resolvedVersion: '999.0.0', compatibilityState: 'compatible',
+    }],
+  })
+
+  const codex = (await service.catalog()).agents.find(agent => agent.kind === 'codex')
+  assert.equal(codex.installAction, '')
+  await assert.rejects(service.start('codex'), { message: 'INSTALL_AGENT_ALREADY_INSTALLED' })
 })
 
 test('Windows npm installation launches node.exe and npm-cli.js without a shell', async () => {
@@ -860,7 +902,7 @@ test('rejects unknown, verified installed, unsupported and missing-prerequisite 
   await assert.rejects(service.start('anything'), /INSTALL_AGENT_UNSUPPORTED/)
 
   const installed = installer({
-    detectAgents: async () => [{ kind: 'kimi', executable: '/tmp/kimi', version: '0.19.2' }],
+    detectAgents: async () => [detectedRelease('kimi')],
   })
   await assert.rejects(installed.start('kimi'), /INSTALL_AGENT_ALREADY_INSTALLED/)
 

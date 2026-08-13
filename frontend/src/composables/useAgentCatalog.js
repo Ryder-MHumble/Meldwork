@@ -82,6 +82,9 @@ export function useAgentCatalog({
     if (agent.ready) return { label: t('agent.ready'), tone: 'ready', icon: CheckmarkCircleOutline }
     if (agent.custom) return { label: t('customAgent.executableUnavailable'), tone: 'warning', icon: WarningOutline }
     if (!agent.installed) return { label: t('agent.notInstalled'), tone: 'off', icon: DownloadOutline }
+    if (agent.versionIdentified === false) {
+      return { label: t('agent.versionUnknown'), tone: 'warning', icon: WarningOutline }
+    }
     if (agent.compatibilityState === 'incompatible') {
       const reasonKey = ({
         LOCAL_AGENT_VERSION_UNSUPPORTED: 'agent.incompatibleVersion',
@@ -89,6 +92,9 @@ export function useAgentCatalog({
         LOCAL_AGENT_PROTOCOL_UNAVAILABLE: 'agent.incompatibleProtocol',
       })[agent.incompatibilityReason] || 'agent.incompatible'
       return { label: t(reasonKey), tone: 'warning', icon: WarningOutline }
+    }
+    if (agent.runtimePrerequisitesReady === false) {
+      return { label: t('agent.runtimeUnavailable'), tone: 'warning', icon: WarningOutline }
     }
     if (agent.credentialState === 'missing') return { label: t('agent.needsLogin'), tone: 'warning', icon: WarningOutline }
     return { label: t('agent.unverified'), tone: 'neutral', icon: WarningOutline }

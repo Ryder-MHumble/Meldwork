@@ -215,6 +215,124 @@ test('Claude readiness uses the official auth status without exposing OAuth data
   }
 })
 
+test('Codex readiness uses the official login status when credentials are CLI-managed', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-codex-readiness-'))
+  const calls = []
+  try {
+    fs.mkdirSync(path.join(home, '.codex'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.codex', 'config.toml'), [
+      'model_provider = "custom"',
+      '[model_providers.custom]',
+      'base_url = "https://gateway.example/v1"',
+    ].join('\n'))
+    const result = await resolveNativeCredentialState('codex', {
+      home,
+      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      executable: '/tmp/codex',
+      execFileFn: async (command, args, options) => {
+        calls.push({ command, args, env: options.env })
+        return { stdout: 'Logged in using an API key\n' }
+      },
+    })
+
+    assert.deepEqual(result, { state: 'ready', source: 'native-auth-status' })
+    assert.deepEqual(calls[0].args, ['login', 'status'])
+    assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('OpenCode readiness distinguishes an empty native credential store', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-opencode-readiness-'))
+  try {
+    const result = await resolveNativeCredentialState('opencode', {
+      home,
+      env: { PATH: '/usr/bin' },
+      executable: '/tmp/opencode',
+      execFileFn: async () => ({ stdout: 'Credentials ~/.local/share/opencode/auth.json\n0 credentials\n' }),
+    })
+
+    assert.deepEqual(result, { state: 'missing', source: 'native-auth-status' })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Gemini readiness checks the selected OAuth account in the macOS keychain', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-gemini-keychain-'))
+  const calls = []
+  try {
+    fs.mkdirSync(path.join(home, '.gemini'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), JSON.stringify({
+      security: { auth: { selectedType: 'oauth-personal' } },
+    }))
+
+    const result = await resolveNativeCredentialState('gemini', {
+      home,
+      platform: 'darwin',
+      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      execFileFn: async (command, args, options) => {
+        calls.push({ command, args, env: options.env })
+        return { stdout: 'keychain item metadata only' }
+      },
+    })
+
+    assert.deepEqual(result, { state: 'ready', source: 'native-credential' })
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].command, '/usr/bin/security')
+    assert.deepEqual(calls[0].args, [
+      'find-generic-password', '-s', 'gemini-cli-oauth', '-a', 'main-account',
+    ])
+    assert.equal(calls[0].args.includes('-w'), false)
+    assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Gemini readiness does not treat a selected auth type as credential evidence', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-gemini-selection-'))
+  try {
+    fs.mkdirSync(path.join(home, '.gemini'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.gemini', 'settings.json'), JSON.stringify({
+      security: { auth: { selectedType: 'gemini-api-key' } },
+    }))
+
+    const result = await resolveNativeCredentialState('gemini', {
+      home,
+      platform: 'darwin',
+      env: {},
+      execFileFn: async () => {
+        const error = new Error('item not found')
+        error.code = 44
+        throw error
+      },
+    })
+
+    assert.deepEqual(result, { state: 'unknown', source: 'unverified' })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Qwen readiness recognizes its official settings API key path', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-qwen-settings-'))
+  const secret = 'qwen-settings-secret'
+  try {
+    fs.mkdirSync(path.join(home, '.qwen'), { recursive: true })
+    fs.writeFileSync(path.join(home, '.qwen', 'settings.json'), JSON.stringify({
+      security: { auth: { selectedType: 'openai', apiKey: secret } },
+    }))
+
+    const result = nativeCredentialState('qwen', { home, env: {} })
+    assert.deepEqual(result, { state: 'ready', source: 'native-credential' })
+    assert.equal(JSON.stringify(result).includes(secret), false)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('OpenClaw readiness uses the official model status when auth is stored outside its config', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-readiness-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')

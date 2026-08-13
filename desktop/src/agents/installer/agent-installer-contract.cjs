@@ -365,6 +365,31 @@ function verifiedRecipeAgent(agent, recipe) {
   return match?.[1] === (recipe.detectedVersion || recipe.version)
 }
 
+function releaseVersionParts(value) {
+  const match = String(value || '').match(/^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/)
+  return match ? match.slice(1).map(Number) : null
+}
+
+function compareReleaseVersions(left, right) {
+  const a = releaseVersionParts(left)
+  const b = releaseVersionParts(right)
+  if (!a || !b) return null
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1
+  }
+  return 0
+}
+
+function installAction(agent, recipe) {
+  if (!agent) return 'install'
+  if (agent.compatibilityState === 'incompatible' || !verifiedAgent(agent)) return 'repair'
+  const detected = String(agent.resolvedVersion || agent.version || '').match(VERSION_LINE)?.[1] || ''
+  const target = recipe.detectedVersion || recipe.version
+  const comparison = compareReleaseVersions(detected, target)
+  if (comparison !== null && comparison >= 0) return ''
+  return verifiedRecipeAgent(agent, recipe) ? '' : 'update'
+}
+
 module.exports = {
   AGENT_CATALOG,
   DETECTION_CACHE_TTL_MS,
@@ -374,6 +399,7 @@ module.exports = {
   defaultVerifyScriptIntegrity,
   defaultFindCommand,
   installEnvironment,
+  installAction,
   installRecipe,
   installerError,
   npmPackageSpec,

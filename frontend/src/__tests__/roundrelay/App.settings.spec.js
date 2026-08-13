@@ -362,6 +362,50 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('offers update and repair actions for detected CLIs, including ready older versions', async () => {
+    const { wrapper, bridge } = await mountApp(({ state, bridge }) => {
+      state.agents = [
+        {
+          kind: 'hermes', installed: true, available: true, credentialState: 'ready',
+          versionIdentified: true, compatibilityState: 'compatible', version: '0.18.0',
+          runtimePrerequisitesReady: true,
+        },
+        {
+          kind: 'openclaw', installed: true, available: false, credentialState: 'ready',
+          versionIdentified: true, compatibilityState: 'incompatible', version: '2026.6.0',
+          incompatibilityReason: 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING',
+          runtimePrerequisitesReady: false,
+        },
+      ]
+      bridge.agentInstaller.catalog.mockResolvedValue({
+        platform: 'darwin',
+        agents: AGENTS.map(agent => ({
+          kind: agent.kind,
+          installed: ['hermes', 'openclaw'].includes(agent.kind),
+          installSupported: true,
+          installAction: agent.kind === 'hermes'
+            ? 'update'
+            : (agent.kind === 'openclaw' ? 'repair' : 'install'),
+        })),
+      })
+    })
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    await wrapper.findAll('.settings-tabs button')[0].trigger('click')
+    await flushPromises()
+    const card = label => wrapper.findAll('.settings-agent-card')
+      .find(item => item.text().includes(label))
+
+    expect(card('Hermes').text()).toContain('Update')
+    expect(card('Hermes').text()).toContain('Open chat')
+    expect(card('OpenClaw').text()).toContain('Repair')
+    await card('OpenClaw').find('.settings-agent-actions button').trigger('click')
+    await card('OpenClaw').find('.settings-agent-actions button').trigger('click')
+    await flushPromises()
+    expect(bridge.agentInstaller.start).toHaveBeenCalledWith('openclaw')
+    wrapper.unmount()
+  })
+
   it('shows verified native CLI Provider readiness separately from a saved profile', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.agents[0].availabilitySource = 'native-credential'

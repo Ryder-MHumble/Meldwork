@@ -35,4 +35,17 @@ describe('Agent compatibility state', () => {
     expect(state.label).toBe(label)
     expect(state.tone).toBe('warning')
   })
+
+  it('distinguishes an unidentified version from missing runtime prerequisites', () => {
+    setLocale('en')
+    expect(catalogFor({
+      kind: 'codex', installed: true, available: false,
+      versionIdentified: false, compatibilityState: 'unknown', credentialState: 'ready',
+    }).label).toBe('Version not identified')
+    expect(catalogFor({
+      kind: 'openclaw', installed: true, available: false,
+      versionIdentified: true, compatibilityState: 'compatible',
+      credentialState: 'ready', runtimePrerequisitesReady: false,
+    }).label).toBe('Local runtime unavailable')
+  })
 })
