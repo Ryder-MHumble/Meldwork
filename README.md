@@ -32,13 +32,6 @@ The current desktop build is for Apple silicon Macs.
 
 If the latest Release includes a DMG, it can be downloaded and installed locally. Developers can also run Meldwork from source with the commands below.
 
-## What is improved in V1.0.1
-
-- **Long-running work is more reliable:** an Agent is no longer treated as failed just because a task takes time. As long as it is still producing useful progress, the conversation can continue.
-- **Unlimited discussions are more rigorous:** when you choose unlimited rounds, Agents are asked to challenge unsupported claims and review each other's work carefully before accepting a conclusion.
-- **Cleaner conversation controls:** loading states, sidebar actions, and execution details are easier to scan, so you can tell what is active and what needs your attention.
-- **More dependable recovery:** interrupted or stalled work keeps its useful progress and exposes a clearer recovery path instead of leaving the conversation in an ambiguous state.
-
 ## See the core workflow
 
 | Local Agent discovery | Direct multimodal work | Targeted multi-Agent review |
