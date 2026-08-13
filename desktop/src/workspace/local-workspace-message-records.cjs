@@ -16,7 +16,7 @@ const {
   terminalMessageContentLimit,
 } = require('./local-workspace-runtime-contracts.cjs')
 
-const MAX_MESSAGE_ATTACHMENTS = 4
+const MAX_MESSAGE_ATTACHMENTS = 32
 const MAX_SKILL_HINTS = 4
 const MAX_KNOWLEDGE_BASE_HINTS = 4
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024

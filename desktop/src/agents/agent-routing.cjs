@@ -7,6 +7,7 @@ const {
   AGENT_PERMISSION_MODES,
   AGENT_TOOL_CLASSES,
   agentRuntimeCapabilities,
+  isCodeReviewAgentKind,
 } = require('./agent-runtime-contract.cjs')
 const { parseFitMatrix } = require('../evaluations/eval-records.cjs')
 const { cleanInline, isSupportedAgentKind } = require('../workspace/local-workspace-contracts.cjs')
@@ -331,18 +332,24 @@ class AgentRouter {
     )) {
       throw routingError('LOCAL_AGENT_ROUTING_CONTEXT_CONFLICT')
     }
-    const requirements = normalizeRoutingRequirements(input.routingRequirements, {
-      domains: effectiveMode === 'automatic' ? ['general'] : [],
-      inputTypes,
-      outputTypes: ['text'],
-      permissionMode: group.allowWrite === true ? 'workspace-write' : 'read-only',
-      minContextChars,
-      collaboration: mode === 'auto' ? 'required' : 'none',
-    })
     const approvedKinds = targetList(group.agentKinds)
     const explicitTargets = effectiveMode === 'explicit' && !requestedTargets.length
       ? approvedKinds
       : requestedTargets
+    const explicitReadOnlyTargets = effectiveMode === 'explicit'
+      && explicitTargets.length > 0
+      && explicitTargets.every(kind => isCodeReviewAgentKind(kind))
+    const permissionMode = explicitReadOnlyTargets
+      ? 'read-only'
+      : group.allowWrite === true ? 'workspace-write' : 'read-only'
+    const requirements = normalizeRoutingRequirements(input.routingRequirements, {
+      domains: effectiveMode === 'automatic' ? ['general'] : [],
+      inputTypes,
+      outputTypes: ['text'],
+      permissionMode,
+      minContextChars,
+      collaboration: mode === 'auto' ? 'required' : 'none',
+    })
     if (explicitTargets.some(kind => !approvedKinds.includes(kind))) {
       const kind = explicitTargets.find(target => !approvedKinds.includes(target))
       throw routingError('LOCAL_MESSAGE_TARGET_OUT_OF_GROUP', { kind })

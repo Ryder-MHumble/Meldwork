@@ -574,6 +574,34 @@
   color: var(--accent);
 }
 
+.composer-attachment-media-icon[data-attachment-icon="spreadsheet"] {
+  color: #3f7d5b;
+}
+
+.composer-attachment-media-icon[data-attachment-icon="presentation"] {
+  color: #b15d3b;
+}
+
+.composer-attachment-media-icon[data-attachment-icon="pdf"] {
+  color: #c14f4f;
+}
+
+.composer-attachment-media-icon[data-attachment-icon="code"] {
+  color: #5866a9;
+}
+
+.composer-attachment-media-icon[data-attachment-icon="archive"] {
+  color: #8b6841;
+}
+
+.composer-attachment-media-icon[data-attachment-icon="audio"] {
+  color: #8b5aa5;
+}
+
+.composer-attachment-media-icon[data-attachment-icon="video"] {
+  color: #397d89;
+}
+
 .composer-attachment-media-icon svg {
   width: 18px;
   height: 18px;

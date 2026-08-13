@@ -2,7 +2,7 @@ import { computed, ref } from 'vue'
 import { errorCode } from '../desktop.js'
 import { useAttachmentPreviews } from './useAttachmentPreviews.js'
 
-export const MAX_ATTACHMENTS = 4
+export const MAX_ATTACHMENTS = 32
 
 const MAX_ATTACHMENT_BYTES = 128 * 1024 * 1024
 const ATTACHMENT_TYPES = new Set(['image', 'audio', 'video', 'file'])

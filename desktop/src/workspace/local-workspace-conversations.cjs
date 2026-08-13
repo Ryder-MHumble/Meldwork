@@ -1,5 +1,4 @@
 const path = require('node:path')
-const { isReviewOnlyAgentKind } = require('../agents/agent-runtime-contract.cjs')
 const { normalizeTraceCapsule } = require('../runs/run-harness.cjs')
 const { normalizeRoutingDecision } = require('../agents/agent-routing.cjs')
 const {
@@ -72,7 +71,7 @@ class LocalWorkspaceConversations {
 
   createGroup(input) {
     const available = new Set(this.detectedAgents()
-      .filter(agent => agent.available && !isReviewOnlyAgentKind(agent.kind))
+      .filter(agent => agent.available)
       .map(agent => agent.kind))
     const conversationType = input.conversationType === 'direct' ? 'direct' : 'group'
     const directAgentKind = conversationType === 'direct'
@@ -118,7 +117,7 @@ class LocalWorkspaceConversations {
     let nextAgentKinds = group.agentKinds
     if (input.agentKinds != null) {
       const available = new Set(this.detectedAgents()
-        .filter(agent => agent.available && !isReviewOnlyAgentKind(agent.kind))
+        .filter(agent => agent.available)
         .map(agent => agent.kind))
       const kinds = [...new Set(input.agentKinds.filter(kind => available.has(kind)))]
       if (!kinds.length) throw new Error('LOCAL_GROUP_AGENT_REQUIRED')

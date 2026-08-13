@@ -119,6 +119,7 @@ const AGENT_RUNTIME_CAPABILITIES = Object.freeze({
 })
 
 const DEFAULT_RUNTIME_CAPABILITIES = generalProfile({ resumable: false })
+const REVIEW_ONLY_AGENT_KINDS = Object.freeze(new Set())
 
 function boundedValues(value, allowed, fallback) {
   if (!Array.isArray(value) || !value.length) return [...fallback]
@@ -298,6 +299,10 @@ function requireTerminalAgentResult(result) {
 }
 
 function isReviewOnlyAgentKind(kind) {
+  return REVIEW_ONLY_AGENT_KINDS.has(kind)
+}
+
+function isCodeReviewAgentKind(kind) {
   return agentRuntimeCapabilities(kind).task === 'code_review'
 }
 
@@ -316,6 +321,7 @@ module.exports = {
   agentRuntimeCapabilities,
   agentRuntimeError,
   agentRuntimeFailure,
+  isCodeReviewAgentKind,
   isReviewOnlyAgentKind,
   normalizeAgentResult,
   normalizeExternalRunRef,

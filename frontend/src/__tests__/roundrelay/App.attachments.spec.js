@@ -242,7 +242,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
 
-    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(4)
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(32)
     expect(wrapper.get('.composer-attachment').text()).toContain('plan.pdf')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
 
@@ -427,9 +427,9 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('passes the remaining image capacity to the picker and reports truncated selections', async () => {
+  it('keeps attachment picking available beyond four files and reports the remaining safe capacity', async () => {
     const firstPick = [imageAttachment('picked-1')]
-    const secondPick = Array.from({ length: 3 }, (_, index) => imageAttachment(`picked-${index + 2}`))
+    const secondPick = Array.from({ length: 4 }, (_, index) => imageAttachment(`picked-${index + 2}`))
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
         id: 'direct-codex',
@@ -444,7 +444,7 @@ describe('RoundRelay workbench', () => {
       })
       desktopBridge.localAttachments.pickAttachments
         .mockResolvedValueOnce({ attachments: firstPick, truncated: false })
-        .mockResolvedValueOnce({ attachments: secondPick, truncated: true })
+        .mockResolvedValueOnce({ attachments: secondPick, truncated: false })
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
@@ -453,10 +453,10 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('[aria-label="Attach files"]').trigger('click')
     await flushPromises()
 
-    expect(wrapper.findAll('.composer-attachment')).toHaveLength(4)
-    expect(bridge.localAttachments.pickAttachments.mock.calls).toEqual([[4], [3]])
+    expect(wrapper.findAll('.composer-attachment')).toHaveLength(5)
+    expect(bridge.localAttachments.pickAttachments.mock.calls).toEqual([[32], [31]])
     expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('up to 4 files')
+    expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -485,7 +485,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(wrapper.findAll('.composer-attachment')).toHaveLength(1)
-    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(4)
+    expect(bridge.localAttachments.pickAttachments).toHaveBeenCalledWith(32)
     expect(bridge.localAttachments.discard).not.toHaveBeenCalled()
     expect(wrapper.get('[aria-label="Attach files"]').attributes()).not.toHaveProperty('disabled')
 
