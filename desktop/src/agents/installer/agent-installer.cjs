@@ -10,6 +10,7 @@ const {
   defaultFindCommand,
   defaultVerifyNpmIntegrity,
   defaultVerifyScriptIntegrity,
+  installAction,
   installRecipe,
   installerError,
   npmPackageSpec,
@@ -180,6 +181,7 @@ class AgentInstaller extends EventEmitter {
           ...publicCompatibility(agent),
           installSupported,
           installErrorCode,
+          installAction: installSupported ? installAction(agent, recipe) : '',
         }
       }),
     }
@@ -230,7 +232,8 @@ class AgentInstaller extends EventEmitter {
     this.invalidateDetectionCache()
     const installed = await abortable(this.detectedAgents(), signal)
     if (signal.aborted) throw abortError()
-    if (installed.some(agent => agent.kind === profile.kind)) {
+    const existing = installed.find(agent => agent.kind === profile.kind)
+    if (existing && !installAction(existing, recipe)) {
       throw installerError('INSTALL_AGENT_ALREADY_INSTALLED')
     }
     let command = recipe.interpreter || ''

@@ -283,6 +283,46 @@ test('review-only Agents cannot be enabled in the conversation sidebar', () => {
   assert.deepEqual(events, [])
 })
 
+test('runtime credential updates preserve review-only visibility and runtime prerequisites', () => {
+  const initialAgents = [
+    {
+      kind: 'opencodereview', compatibilityState: 'compatible',
+      available: false, runtimePrerequisitesReady: true, showInSidebar: false,
+    },
+    {
+      kind: 'openclaw', compatibilityState: 'compatible',
+      available: false, runtimePrerequisitesReady: false, showInSidebar: false,
+    },
+  ]
+  const { agents, catalog } = fixture({ initialAgents })
+
+  catalog.markRuntimeCredential('opencodereview', 'ready')
+  catalog.markRuntimeCredential('openclaw', 'ready')
+
+  assert.equal(agents()[0].available, true)
+  assert.equal(agents()[0].showInSidebar, false)
+  assert.equal(agents()[1].invocable, false)
+  assert.equal(agents()[1].available, false)
+})
+
+test('runtime credential updates retain shared Provider readiness', () => {
+  const initialAgents = [{
+    kind: 'hermes', compatibilityState: 'compatible',
+    available: true, runtimePrerequisitesReady: true, showInSidebar: true,
+  }]
+  const { agents, catalog } = fixture({
+    initialAgents,
+    sharedProviderReady: kind => kind === 'hermes',
+  })
+
+  catalog.markRuntimeCredential('hermes', 'unknown')
+
+  assert.equal(agents()[0].configured, true)
+  assert.equal(agents()[0].authenticated, true)
+  assert.equal(agents()[0].invocable, true)
+  assert.equal(agents()[0].available, true)
+})
+
 test('runtime credential cleanup removes only missing entries and never emits', () => {
   const { catalog, events, state } = fixture()
   state.agentRuntime = {

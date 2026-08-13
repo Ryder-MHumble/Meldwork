@@ -1081,6 +1081,7 @@ class LocalWorkspaceAutoRunner {
         )
       )))
       for (let index = 0; index < batch.length; index += 1) {
+        if (controller.signal.aborted) break
         const node = batch[index]
         const outcome = settled[index]
         if (outcome.status === 'fulfilled' && outcome.value?.result) {
@@ -1198,7 +1199,11 @@ class LocalWorkspaceAutoRunner {
     let totalSuccesses = cursor?.totalSuccesses || 0
     let consensusReached = false
     const reportedFailures = new Set()
-    const firstRound = resume ? Math.max(0, controller.currentRound - 1) : 0
+    const resumedCurrentRound = Number.isSafeInteger(controller.currentRound)
+      && controller.currentRound > 0
+      ? controller.currentRound
+      : 1
+    const firstRound = resume ? resumedCurrentRound - 1 : 0
 
     for (
       let round = firstRound;

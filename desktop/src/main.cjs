@@ -625,6 +625,8 @@ async function localAgentCatalog() {
           ?? agent.compatible ?? agent.compatibilityState === 'compatible')),
         configured: Boolean(agent.installed && state?.configured),
         authenticated: Boolean(agent.installed && state?.authenticated),
+        runtimePrerequisitesReady: Boolean(agent.installed
+          && state?.runtimePrerequisitesReady !== false),
         invocable: Boolean(agent.installed && state?.invocable),
         recentlyVerified: Boolean(agent.installed && state?.recentlyVerified),
         capabilities: state?.capabilities || agent.capabilities || null,

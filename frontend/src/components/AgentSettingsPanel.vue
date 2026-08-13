@@ -49,8 +49,8 @@
             <ChevronForwardOutline class="card-chevron" />
           </button>
           <div v-if="installConfirmKind === agent.kind" class="install-confirm">
-            <strong>{{ t('installer.confirm', { agent: agent.label }) }}</strong>
-            <span>{{ t('installer.confirmHint') }}</span>
+            <strong>{{ t(`installer.confirm.${agent.installAction || 'install'}`, { agent: agent.label }) }}</strong>
+            <span>{{ t(`installer.confirmHint.${agent.installAction || 'install'}`) }}</span>
           </div>
           <div v-if="installerState.kind === agent.kind && installerState.phase !== 'idle'" class="install-progress">
             <span>{{ installerPhaseLabel }}</span>
@@ -74,13 +74,15 @@
                 {{ t('home.openChat') }}
               </button>
               <button
-                v-else-if="!agent.installed && agent.installSupported"
+                v-if="agent.installSupported && agent.installAction"
                 type="button"
                 :disabled="installerBusy && installerState.kind !== agent.kind"
                 @click.stop="$emit('request-install', agent)"
               >
                 <DownloadOutline />
-                {{ installConfirmKind === agent.kind ? t('installer.confirm', { agent: agent.label }) : t('installer.install') }}
+                {{ installConfirmKind === agent.kind
+                  ? t(`installer.confirm.${agent.installAction}`, { agent: agent.label })
+                  : t(`installer.${agent.installAction}`) }}
               </button>
               <span v-else-if="!agent.installed" class="manager-note">
                 {{ agent.custom

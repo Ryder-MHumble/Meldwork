@@ -24,6 +24,20 @@ test('private file writes replace contents atomically with restrictive permissio
   assert.deepEqual(fs.readdirSync(path.dirname(filename)), ['private.json'])
 })
 
+test('private file writes repair permissions on an existing directory', {
+  skip: process.platform === 'win32',
+}, (t) => {
+  const directory = fixture(t)
+  const parent = path.join(directory, 'broad')
+  const filename = path.join(parent, 'private.json')
+  fs.mkdirSync(parent, { mode: 0o755 })
+  fs.chmodSync(parent, 0o755)
+
+  atomicWritePrivateFile(filename, 'private')
+
+  assert.equal(fs.statSync(parent).mode & 0o777, 0o700)
+})
+
 test('private file writes remove their temporary file when replacement fails', (t) => {
   const directory = fixture(t)
   const filename = path.join(directory, 'occupied')

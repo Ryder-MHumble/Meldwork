@@ -21,14 +21,15 @@ const MEDIA_TYPE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/
 const CONTEXT_PACK_ID = /^context-pack-[a-f0-9]{64}$/
 const DELIVERY_RECORD_ID = /^delivery-record-[a-f0-9]{64}$/
 
-function contextRecordError(code) {
+function contextRecordError(code, path = []) {
   const error = new Error(code)
   error.code = code
+  if (path.length) error.path = [...path]
   return error
 }
 
-function fail(code) {
-  throw contextRecordError(code)
+function fail(code, path = []) {
+  throw contextRecordError(code, path)
 }
 
 function isPlainObject(value) {
@@ -269,12 +270,18 @@ function validateDeliveryRelations(delivery, context) {
   if (delivery.payloadHash !== delivery.payloadRef.hash) {
     context.addIssue({ code: 'custom', path: ['payloadHash'], message: 'payload hash mismatch' })
   }
-  if (delivery.wirePayloadHash !== delivery.wirePayloadRef.hash
-      || delivery.wirePayloadBytes !== delivery.wirePayloadRef.size) {
+  if (delivery.wirePayloadHash !== delivery.wirePayloadRef.hash) {
     context.addIssue({
       code: 'custom',
       path: ['wirePayloadHash'],
-      message: 'wire payload reference mismatch',
+      message: 'wire payload hash mismatch',
+    })
+  }
+  if (delivery.wirePayloadBytes !== delivery.wirePayloadRef.size) {
+    context.addIssue({
+      code: 'custom',
+      path: ['wirePayloadBytes'],
+      message: 'wire payload byte mismatch',
     })
   }
   const additionIds = delivery.runtimeAdditions.map(addition => addition.additionId)
@@ -297,23 +304,22 @@ const deliveryRecordSchema = z.strictObject({
 }).superRefine(validateDeliveryRelations)
 
 function forbiddenField(key) {
-  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
-  return normalized.includes('credential')
-    || normalized.includes('password')
-    || normalized.includes('apikey')
-    || normalized.includes('accesskey')
-    || normalized.includes('token')
-    || normalized.includes('secret')
-    || normalized.includes('authorization')
-    || normalized.includes('privatekey')
-    || normalized.includes('executable')
-    || normalized.includes('command')
-    || normalized.includes('reasoning')
-    || normalized.includes('chainofthought')
-    || normalized === 'cot'
-    || normalized.includes('sessionref')
-    || normalized === 'thought'
-    || normalized === 'thoughts'
+  const words = String(key)
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean)
+  const normalized = words.join('')
+  if (normalized === 'tokencount' || normalized === 'commandhistory') return false
+  if (words.some(word => [
+    'credential', 'credentials', 'password', 'secret', 'secrets',
+    'authorization', 'executable', 'reasoning',
+  ].includes(word))) return true
+  if (words.includes('token') || words.includes('command')) return true
+  return [
+    'apikey', 'accesskey', 'privatekey', 'privatechainofthought', 'chainofthought', 'cot',
+    'sessionref', 'thought', 'thoughts',
+  ].includes(normalized)
 }
 
 function assertNoForbiddenContent(value, prefix, seen = new Set()) {
@@ -336,6 +342,11 @@ function assertNoForbiddenContent(value, prefix, seen = new Set()) {
 
 function parseInput(value, prefix, maxBytes) {
   if (Buffer.isBuffer(value) || value instanceof Uint8Array || typeof value === 'string') {
+    if (typeof value === 'string' && (
+      !value.length || value.length > maxBytes || Buffer.byteLength(value, 'utf8') > maxBytes
+    )) {
+      fail(`${prefix}_JSON_INVALID`)
+    }
     const bytes = typeof value === 'string' ? Buffer.from(value, 'utf8') : Buffer.from(value)
     if (!bytes.length || bytes.length > maxBytes) fail(`${prefix}_JSON_INVALID`)
     let parsed
@@ -347,7 +358,7 @@ function parseInput(value, prefix, maxBytes) {
 
 function validated(schema, value, prefix) {
   const result = schema.safeParse(value)
-  if (!result.success) fail(`${prefix}_SCHEMA_INVALID`)
+  if (!result.success) fail(`${prefix}_SCHEMA_INVALID`, result.error.issues[0]?.path || [])
   return result.data
 }
 
@@ -375,8 +386,10 @@ function createContextPackRecord(input) {
     ...body,
   }
   if (record.parentPackId === record.contextPackId) fail('CONTEXT_PACK_SCHEMA_INVALID')
-  enforceCanonicalSize(record, 'CONTEXT_PACK', MAX_CONTEXT_PACK_RECORD_BYTES)
-  return JSON.parse(canonicalJson(record))
+  const canonical = enforceCanonicalSize(
+    record, 'CONTEXT_PACK', MAX_CONTEXT_PACK_RECORD_BYTES,
+  )
+  return JSON.parse(canonical)
 }
 
 function parseContextPackRecord(input) {
@@ -405,8 +418,10 @@ function createDeliveryRecord(input) {
     deliveryRecordId: deriveId('delivery-record', body),
     ...body,
   }
-  enforceCanonicalSize(record, 'DELIVERY_RECORD', MAX_DELIVERY_RECORD_BYTES)
-  return JSON.parse(canonicalJson(record))
+  const canonical = enforceCanonicalSize(
+    record, 'DELIVERY_RECORD', MAX_DELIVERY_RECORD_BYTES,
+  )
+  return JSON.parse(canonical)
 }
 
 function parseDeliveryRecord(input) {

@@ -25,6 +25,7 @@ const AGENT_PROFILES = {
 }
 const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const DEFAULT_WINDOWS_PATHEXT = ['.COM', '.EXE', '.BAT', '.CMD']
+const SEARCH_DIRECTORIES = Symbol('searchDirectories')
 const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
   'HOME', 'USER', 'LOGNAME', 'SHELL',
   'TMPDIR', 'TMP', 'TEMP',
@@ -99,6 +100,7 @@ function versionManagerBins(root, suffix, options = {}) {
 }
 
 function searchDirectories(options = {}) {
+  if (Array.isArray(options[SEARCH_DIRECTORIES])) return options[SEARCH_DIRECTORIES]
   const { platform, env, home, pathApi } = runtimeOptions(options)
   const configured = String(envValue(env, 'PATH') || '').split(pathApi.delimiter)
   const pnpmHome = envValue(env, 'PNPM_HOME')
@@ -470,12 +472,14 @@ async function detectAgentKind(kind, options, childEnv) {
 async function detectAgents(options = {}) {
   const runtime = runtimeOptions(options)
   const { env, platform } = runtime
+  const directories = searchDirectories(options)
+  const detectionOptions = { ...options, [SEARCH_DIRECTORIES]: directories }
   const childEnv = {
     ...systemChildEnvironment(env, platform),
-    PATH: searchPath(options),
+    PATH: searchPath(detectionOptions),
   }
   const detected = await Promise.all(ALLOWED_KINDS.map(kind => (
-    detectAgentKind(kind, options, childEnv).catch(() => null)
+    detectAgentKind(kind, detectionOptions, childEnv).catch(() => null)
   )))
   return detected.filter(Boolean)
 }

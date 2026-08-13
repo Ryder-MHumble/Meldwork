@@ -179,6 +179,27 @@ test('macOS Finder cold starts include common Node version manager paths', () =>
   assert.ok(value.includes('/Users/Ryder/.custom-bun/bin'))
 })
 
+test('Agent detection scans version-manager directories once per detection pass', async () => {
+  let readdirCount = 0
+  await detectAgents({
+    platform: 'darwin',
+    home: '/Users/Ryder',
+    env: { PATH: '/usr/bin:/bin' },
+    readdirFn: () => {
+      readdirCount += 1
+      return []
+    },
+    accessFn: async () => {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    },
+    execFileFn: async () => {
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    },
+  })
+
+  assert.equal(readdirCount, 3)
+})
+
 test('Windows search path includes npm, app, and user CLI locations', () => {
   const value = searchPath({
     platform: 'win32',

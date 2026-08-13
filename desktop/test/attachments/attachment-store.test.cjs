@@ -94,6 +94,28 @@ test('reads preview metadata and bytes through one integrity-checked entry load'
   assert.equal('path' in result, false)
 })
 
+test('opens a bounded media stream without loading the complete stored content', async (t) => {
+  const { store } = fixture(t)
+  const metadata = store.importBuffer({
+    bytes: MP3, name: 'briefing.mp3', mimeType: 'audio/mpeg',
+  })
+  const readStoredFile = store.readStoredFile.bind(store)
+  let contentReads = 0
+  store.readStoredFile = (filename, ...args) => {
+    if (path.basename(filename) !== 'metadata.json') contentReads += 1
+    return readStoredFile(filename, ...args)
+  }
+
+  const entry = store.openMedia(metadata.id)
+  const chunks = []
+  for await (const chunk of entry.stream({ start: 2, end: 5 })) chunks.push(chunk)
+
+  assert.deepEqual(entry.metadata, metadata)
+  assert.deepEqual(Buffer.concat(chunks), MP3.subarray(2, 6))
+  assert.equal(contentReads, 0)
+  entry.close()
+})
+
 test('accepts PNG and JPEG using their real magic bytes', (t) => {
   const { store } = fixture(t)
 
@@ -229,6 +251,16 @@ test('rejects unsupported bytes and declared type or extension mismatches', (t) 
     { message: 'LOCAL_ATTACHMENT_BYTES_INVALID' },
   )
   assert.deepEqual(fs.readdirSync(path.join(directory, 'attachments')), [])
+})
+
+test('rejects invalid MPEG sync words that do not describe a complete frame header', (t) => {
+  const { store } = fixture(t)
+
+  assert.throws(() => store.importBuffer({
+    bytes: Buffer.from([0xff, 0xe0, 0x00, 0x00]),
+    name: 'invalid.mp3',
+    mimeType: 'audio/mpeg',
+  }), { message: 'LOCAL_ATTACHMENT_TYPE_UNSUPPORTED' })
 })
 
 test('enforces the 8 MiB per-image limit and four-image batch limit', (t) => {

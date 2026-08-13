@@ -9,6 +9,7 @@ const {
   canonicalJson,
   createContextPackRecord,
   createDeliveryRecord,
+  MAX_CONTEXT_PACK_RECORD_BYTES,
   parseContextPackRecord,
   parseDeliveryRecord,
 } = require('../../src/collaboration/context-pack-records.cjs')
@@ -227,6 +228,47 @@ test('rejects unknown, credential, executable, raw command, and reasoning fields
     ...deliveryInput(pack.contextPackId),
     privateChainOfThought: 'hidden reasoning',
   }), { message: 'DELIVERY_RECORD_FORBIDDEN_FIELD' })
+})
+
+test('allows non-sensitive token and command metric field names through the security filter', () => {
+  assert.throws(
+    () => createContextPackRecord({ ...packInput(), tokenCount: 42 }),
+    { message: 'CONTEXT_PACK_SCHEMA_INVALID' },
+  )
+  assert.throws(
+    () => createContextPackRecord({ ...packInput(), commandHistory: ['summarized action'] }),
+    { message: 'CONTEXT_PACK_SCHEMA_INVALID' },
+  )
+})
+
+test('reports wire byte mismatches on wirePayloadBytes', () => {
+  const pack = createContextPackRecord(packInput())
+  assert.throws(
+    () => createDeliveryRecord(deliveryInput(pack.contextPackId, {
+      wirePayloadBytes: deliveryInput(pack.contextPackId).wirePayloadBytes + 1,
+    })),
+    error => error?.message === 'DELIVERY_RECORD_SCHEMA_INVALID'
+      && Array.isArray(error.path)
+      && error.path.join('.') === 'wirePayloadBytes',
+  )
+})
+
+test('rejects clearly oversized JSON strings before allocating a full Buffer', (t) => {
+  const originalFrom = Buffer.from
+  let oversizedAllocations = 0
+  Buffer.from = function trackedFrom(value, ...args) {
+    if (typeof value === 'string' && value.length > MAX_CONTEXT_PACK_RECORD_BYTES) {
+      oversizedAllocations += 1
+    }
+    return originalFrom.call(Buffer, value, ...args)
+  }
+  t.after(() => { Buffer.from = originalFrom })
+
+  assert.throws(
+    () => parseContextPackRecord('x'.repeat(MAX_CONTEXT_PACK_RECORD_BYTES + 1)),
+    { message: 'CONTEXT_PACK_JSON_INVALID' },
+  )
+  assert.equal(oversizedAllocations, 0)
 })
 
 test('enforces collection bounds, uniqueness, target scope, and matching hashes', () => {
