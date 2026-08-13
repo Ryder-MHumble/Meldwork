@@ -194,6 +194,8 @@
 .message-row.agent .message-body:focus-within .message-footer-actions > button,
 .message-row.user .message-body:hover .message-meta-actions > button,
 .message-row.user .message-body:focus-within .message-meta-actions > button,
+.message-row.system:hover .message-trace-button,
+.message-row.system:focus-within .message-trace-button,
 .message-row.copied .message-copy-button,
 .message-delete-button.armed,
 .message-delete-button.deleting {
