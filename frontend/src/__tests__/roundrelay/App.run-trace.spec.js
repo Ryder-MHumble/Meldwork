@@ -394,7 +394,7 @@ describe('RoundRelay workbench', () => {
     const currentClaudeMessage = wrapper.findAll('.message-row.agent[data-agent-kind="claude"]')
       .find(row => row.text().includes('Current Claude answer'))
     expect(currentClaudeMessage).toBeTruthy()
-    await currentClaudeMessage.get('.message-trace-button').trigger('click')
+    await currentClaudeMessage.get('.message-trace-surface').trigger('click')
     await flushPromises()
 
     await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
@@ -510,7 +510,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    const traceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    const traceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface')
     expect(traceButton.exists()).toBe(true)
     await traceButton.trigger('click')
     await flushPromises()
@@ -710,7 +710,7 @@ describe('RoundRelay workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    await wrapper.get('.message-trace-button').trigger('click')
+    await wrapper.get('.message-row.agent .message-trace-surface').trigger('click')
     await flushPromises()
     expect(historyPush).toHaveBeenCalledTimes(1)
 
@@ -864,7 +864,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.findAll('.message-row.agent[data-agent-kind="codex"]')).toHaveLength(1)
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('live output')
-    const provisionalTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    const provisionalTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface')
     await provisionalTraceButton.trigger('click')
     await flushPromises()
     expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
@@ -915,7 +915,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
     expect(wrapper.find('.run-status-panel').exists()).toBe(false)
     expect(historyBack).toHaveBeenCalledTimes(1)
-    const durableTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-button')
+    const durableTraceButton = wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface')
     await durableTraceButton.trigger('click')
     await flushPromises()
 
@@ -1009,7 +1009,7 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.find('.run-status-panel').exists()).toBe(false)
-    expect(wrapper.findAll('.message-trace-button')).toHaveLength(2)
+    expect(wrapper.findAll('.message-trace-button')).toHaveLength(1)
     expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
     await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface').trigger('click')
     await flushPromises()

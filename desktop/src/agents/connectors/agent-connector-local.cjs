@@ -574,7 +574,7 @@ class LocalAgentConnectors {
         installErrorCode: '',
         providerCompatible: false,
         providerMode: 'connector',
-        imageAttachmentLimit: manifest.inputTypes.includes('image') ? 4 : 0,
+        imageAttachmentLimit: manifest.inputTypes.includes('image') ? 32 : 0,
         custom: true,
         connector: true,
         connectorId: manifest.connectorId,
@@ -597,10 +597,10 @@ class LocalAgentConnectors {
     if (!this.has(kind)) return null
     const snapshot = this.registry.runSnapshot(kind)
     return {
-      image: snapshot.capabilities.inputTypes.includes('image') ? 4 : 0,
-      audio: snapshot.capabilities.inputTypes.includes('audio') ? 4 : 0,
-      video: snapshot.capabilities.inputTypes.includes('video') ? 4 : 0,
-      file: snapshot.capabilities.inputTypes.includes('file') ? 4 : 0,
+      image: snapshot.capabilities.inputTypes.includes('image') ? 32 : 0,
+      audio: snapshot.capabilities.inputTypes.includes('audio') ? 32 : 0,
+      video: snapshot.capabilities.inputTypes.includes('video') ? 32 : 0,
+      file: snapshot.capabilities.inputTypes.includes('file') ? 32 : 0,
     }
   }
 

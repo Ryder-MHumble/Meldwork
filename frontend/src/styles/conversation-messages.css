@@ -110,7 +110,7 @@
 
 .message-row.agent .message-body {
   position: relative;
-  padding: 8px 10px;
+  padding: 8px 10px 34px;
   border-radius: var(--radius);
   transition: background 0.14s ease;
 }
@@ -156,6 +156,15 @@
   margin-left: auto;
 }
 
+.message-footer-actions {
+  position: absolute;
+  right: 8px;
+  bottom: 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
 .message-trace-button,
 .message-copy-button,
 .message-delete-button,
@@ -174,68 +183,104 @@
   color: var(--muted);
   flex: 0 0 auto;
   cursor: pointer;
+  pointer-events: none;
   opacity: 0;
   transition: color 0.14s ease, opacity 0.14s ease, transform 0.14s ease;
 }
 
-.message-row.agent .message-meta-actions > button,
-.message-row:hover .message-meta-actions > button,
-.message-row:focus-within .message-meta-actions > button,
+.message-row.agent .message-body:hover .message-meta-actions > button,
+.message-row.agent .message-body:hover .message-footer-actions > button,
+.message-row.agent .message-body:focus-within .message-meta-actions > button,
+.message-row.agent .message-body:focus-within .message-footer-actions > button,
+.message-row.user .message-body:hover .message-meta-actions > button,
+.message-row.user .message-body:focus-within .message-meta-actions > button,
 .message-row.copied .message-copy-button,
 .message-delete-button.armed,
 .message-delete-button.deleting {
-  opacity: 0.68;
+  pointer-events: auto;
+  opacity: 0.72;
 }
 
 .message-meta-actions > button:hover,
-.message-meta-actions > button:focus-visible {
+.message-meta-actions > button:focus-visible,
+.message-footer-actions > button:hover,
+.message-footer-actions > button:focus-visible {
   background: transparent;
   color: var(--text);
   opacity: 1;
 }
 
-.message-meta-actions > button:active {
+.message-meta-actions > button:active,
+.message-footer-actions > button:active {
   transform: translateY(1px);
 }
 
 .message-meta-actions > button::after,
+.message-footer-actions > button::after,
 .code-copy-button::after {
   content: attr(data-tooltip);
   position: absolute;
-  top: calc(100% + 6px);
+  bottom: calc(100% + 6px);
   left: 50%;
   z-index: 24;
   padding: 5px 7px;
   border-radius: 4px;
-  background: var(--text);
-  color: var(--surface);
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 6px 18px rgb(32 43 53 / 0.16);
   font-size: 9px;
   font-weight: 600;
   line-height: 1.2;
   white-space: nowrap;
   pointer-events: none;
   opacity: 0;
-  transform: translate(-50%, -2px);
+  transform: translate(-50%, 2px);
   transition: opacity 0.12s ease, transform 0.12s ease;
 }
 
 .message-meta-actions > button:hover::after,
 .message-meta-actions > button:focus-visible::after,
+.message-footer-actions > button:hover::after,
+.message-footer-actions > button:focus-visible::after,
 .code-copy-button:hover::after,
 .code-copy-button:focus-visible::after {
   opacity: 1;
   transform: translate(-50%, 0);
 }
 
-.message-meta-actions > button:last-child::after {
+.message-meta-actions > button:last-child::after,
+.message-footer-actions > button:last-child::after {
   right: 0;
   left: auto;
   transform: translateY(-2px);
 }
 
 .message-meta-actions > button:last-child:hover::after,
-.message-meta-actions > button:last-child:focus-visible::after {
+.message-meta-actions > button:last-child:focus-visible::after,
+.message-footer-actions > button:last-child:hover::after,
+.message-footer-actions > button:last-child:focus-visible::after {
   transform: translateY(0);
+}
+
+.message-footer-actions > button::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  transform: translate(-50%, -2px);
+}
+
+.message-footer-actions > button:hover::after,
+.message-footer-actions > button:focus-visible::after {
+  transform: translate(-50%, 0);
+}
+
+.message-footer-actions > button:last-child::after {
+  transform: translateY(-2px);
+}
+
+:root[data-theme="dark"] .message-meta-actions > button::after,
+:root[data-theme="dark"] .message-footer-actions > button::after,
+:root[data-theme="dark"] .code-copy-button::after {
+  box-shadow: 0 7px 20px rgb(0 0 0 / 0.34);
 }
 
 .message-row[tabindex="-1"]:focus {
@@ -496,6 +541,11 @@
 
 .message-row.agent-reply-collapsed .message-body {
   min-height: 32px;
+  padding-bottom: 8px;
+}
+
+.message-row.agent-reply-collapsed .message-footer-actions {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

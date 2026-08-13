@@ -198,9 +198,12 @@
               :alt="attachment.name"
             />
             <template v-else>
-              <span class="composer-attachment-media-icon" aria-hidden="true">
-                <DocumentTextOutline v-if="attachmentKind(attachment) === 'file'" />
-                <AttachOutline v-else />
+              <span
+                class="composer-attachment-media-icon"
+                :data-attachment-icon="composerAttachmentIconName(attachment)"
+                aria-hidden="true"
+              >
+                <component :is="composerAttachmentIcon(attachment)" />
               </span>
               <span class="composer-attachment-file-copy">
                 <strong :title="attachment.name">{{ attachment.name }}</strong>
@@ -423,16 +426,24 @@
 import { ref } from 'vue'
 import {
   AddOutline,
+  ArchiveOutline,
   AttachOutline,
   AtOutline,
   ChevronDownOutline,
   CloseCircleOutline,
   CloseOutline,
+  CodeOutline,
+  DocumentOutline,
   DocumentTextOutline,
+  EaselOutline,
+  GridOutline,
   LibraryOutline,
+  MusicalNotesOutline,
+  ReaderOutline,
   RefreshOutline,
   SendOutline,
   StopCircleOutline,
+  VideocamOutline,
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
 import { MAX_SKILLS, skillKey } from '../composables/useComposerContext.js'
@@ -440,6 +451,42 @@ import { MAX_SKILLS, skillKey } from '../composables/useComposerContext.js'
 const props = defineProps({
   controller: { type: Object, required: true },
 })
+
+const COMPOSER_FILE_ICON_COMPONENTS = {
+  archive: ArchiveOutline,
+  code: CodeOutline,
+  document: DocumentOutline,
+  pdf: DocumentTextOutline,
+  presentation: EaselOutline,
+  spreadsheet: GridOutline,
+  text: ReaderOutline,
+}
+const COMPOSER_FILE_ICON_BY_EXTENSION = {
+  '7z': 'archive', gz: 'archive', tar: 'archive', tgz: 'archive', zip: 'archive',
+  c: 'code', cc: 'code', cjs: 'code', cpp: 'code', css: 'code', go: 'code', h: 'code',
+  hpp: 'code', html: 'code', java: 'code', js: 'code', json: 'code', md: 'code', mjs: 'code',
+  py: 'code', rs: 'code', sh: 'code', ts: 'code', tsx: 'code', vue: 'code', xml: 'code', yaml: 'code', yml: 'code',
+  csv: 'spreadsheet', ods: 'spreadsheet', xls: 'spreadsheet', xlsx: 'spreadsheet',
+  doc: 'text', docx: 'text', odt: 'text', rtf: 'text', txt: 'text',
+  key: 'presentation', odp: 'presentation', ppt: 'presentation', pptx: 'presentation',
+  pdf: 'pdf',
+}
+
+function composerAttachmentIcon(attachment) {
+  const name = composerAttachmentIconName(attachment)
+  if (name === 'audio') return MusicalNotesOutline
+  if (name === 'video') return VideocamOutline
+  if (name === 'attachment') return AttachOutline
+  return COMPOSER_FILE_ICON_COMPONENTS[name] || DocumentOutline
+}
+
+function composerAttachmentIconName(attachment) {
+  const type = attachmentKind(attachment)
+  if (type === 'audio' || type === 'video') return type
+  if (type !== 'file') return 'attachment'
+  const extension = String(attachment?.name || '').split('.').pop()?.toLowerCase() || ''
+  return COMPOSER_FILE_ICON_BY_EXTENSION[extension] || 'document'
+}
 
 const {
   activeGroup,

@@ -550,7 +550,7 @@
   min-width: 0;
   height: 40px;
   display: grid;
-  grid-template-columns: 26px minmax(0, 1fr) 20px;
+  grid-template-columns: 26px minmax(0, 1fr) 58px;
   align-items: center;
   gap: 9px;
   padding: 0 9px;

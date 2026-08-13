@@ -103,24 +103,21 @@ test('persisted message normalization keeps collection ordering and terminal lim
     mimeType: 'image/png',
     size: index,
   })
+  const attachments = Array.from(
+    { length: inputs.MAX_MESSAGE_ATTACHMENTS + 1 },
+    (_, index) => validAttachment(index + 1),
+  )
+  attachments[0] = { ...attachments[0], mimeType: 'image/webp' }
+
   const message = inputs.normalizeLoadedMessage({
     id: 'message-id',
     groupId: 'group-id',
     role: 'user',
     content: 'x'.repeat(20001),
-    attachments: [
-      { ...validAttachment(1), mimeType: 'image/webp' },
-      validAttachment(2),
-      validAttachment(3),
-      validAttachment(4),
-      validAttachment(5),
-    ],
+    attachments,
   })
   assert.equal(message.content.length, 20000)
-  assert.deepEqual(message.attachments, [
-    { ...validAttachment(1), mimeType: 'image/webp' },
-    validAttachment(2), validAttachment(3), validAttachment(4),
-  ])
+  assert.deepEqual(message.attachments, attachments.slice(0, inputs.MAX_MESSAGE_ATTACHMENTS))
 
   const terminal = inputs.normalizeLoadedMessage({
     id: 'terminal-id',

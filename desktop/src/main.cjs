@@ -401,13 +401,13 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
 
 function localAttachmentSupport(kind) {
   if (customAgentStore?.has(kind)) {
-    return { image: 4, audio: 4, video: 4, file: 4 }
+    return { image: 32, audio: 32, video: 32, file: 32 }
   }
   const connectorSupport = agentConnectors?.attachmentSupport(kind)
   if (connectorSupport) return connectorSupport
   return {
     image: imageAttachmentLimit(kind),
-    file: kind === 'opencodereview' ? 0 : 4,
+    file: kind === 'opencodereview' ? 0 : 32,
   }
 }
 

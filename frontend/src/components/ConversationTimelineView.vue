@@ -158,18 +158,7 @@
                 </span>
                 <div class="message-meta-actions">
                   <button
-                    v-if="activeGroup.conversationType !== 'direct' && messageHasTrace(message)"
-                    class="message-trace-button"
-                    type="button"
-                    :data-trace-agent-run-id="messageAgentRunId(message) || undefined"
-                    :data-tooltip="t('trace.viewProcess')"
-                    :aria-label="t('trace.viewProcess')"
-                    @click.stop="openTraceForMessage(message, $event.currentTarget)"
-                  >
-                    <TerminalOutline />
-                  </button>
-                  <button
-                    v-if="message.content"
+                    v-if="message.role === 'user' && message.content"
                     class="message-copy-button"
                     type="button"
                     :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
@@ -182,33 +171,7 @@
                     <CopyOutline v-else />
                   </button>
                   <button
-                    v-if="message.role === 'agent' && !message.provisional"
-                    class="message-regenerate-button"
-                    type="button"
-                    :disabled="messageRegenerateDisabled(message)"
-                    :data-tooltip="messageRegenerateTitle(message)"
-                    :aria-label="messageRegenerateTitle(message)"
-                    @click.stop="regenerateMessage(message)"
-                  >
-                    <RefreshOutline :class="{ spinning: isMessageRegenerating(message) }" />
-                  </button>
-                  <button
-                    v-if="message.role === 'agent' && activeGroup.conversationType !== 'direct'"
-                    class="message-reply-toggle"
-                    type="button"
-                    :data-tooltip="t(isAgentReplyExpanded(message)
-                      ? 'conversation.collapseAgentResponse'
-                      : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
-                    :aria-label="t(isAgentReplyExpanded(message)
-                      ? 'conversation.collapseAgentResponse'
-                      : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
-                    :aria-expanded="String(isAgentReplyExpanded(message))"
-                    @click.stop="toggleAgentReply(message)"
-                  >
-                    <ChevronDownOutline :class="{ expanded: isAgentReplyExpanded(message) }" />
-                  </button>
-                  <button
-                    v-if="!message.provisional"
+                    v-if="message.role === 'user' && !message.provisional"
                     class="message-delete-button"
                     :class="{
                       armed: messageDeleteArmedId === message.id,
@@ -224,6 +187,34 @@
                     <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
                     <TrashOutline v-else />
                   </button>
+                  <button
+                    v-if="message.role === 'agent' && message.content"
+                    class="message-copy-button"
+                    type="button"
+                    :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    @click.stop="copyMessageContent(message, $event, true)"
+                    @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                    @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                  >
+                    <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                    <CopyOutline v-else />
+                  </button>
+                  <button
+                    v-if="message.role === 'agent'"
+                    class="message-reply-toggle"
+                    type="button"
+                    :data-tooltip="t(isAgentReplyExpanded(message)
+                      ? 'conversation.collapseAgentResponse'
+                      : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
+                    :aria-label="t(isAgentReplyExpanded(message)
+                      ? 'conversation.collapseAgentResponse'
+                      : 'conversation.expandAgentResponse', { agent: agentLabel(message.agentKind) })"
+                    :aria-expanded="String(isAgentReplyExpanded(message))"
+                    @click.stop="toggleAgentReply(message)"
+                  >
+                    <ChevronDownOutline :class="{ expanded: isAgentReplyExpanded(message) }" />
+                  </button>
                 </div>
               </div>
               <template v-if="message.role === 'agent'">
@@ -231,7 +222,12 @@
                   <div
                     class="message-copy-surface message-trace-surface"
                     :class="{ copied: isMessageCopied(message.id) }"
+                    :tabindex="messageHasTrace(message) ? 0 : undefined"
+                    :role="messageHasTrace(message) ? 'button' : undefined"
+                    :aria-label="messageHasTrace(message) ? t('trace.viewProcess') : undefined"
                     @click="openAgentMessageTrace(message, $event)"
+                    @keydown.enter.prevent="openAgentMessageTrace(message, $event)"
+                    @keydown.space.prevent="openAgentMessageTrace(message, $event)"
                   >
                     <MarkdownMessage v-if="message.content" :content="message.content" />
                     <span v-else class="trace-waiting-output">
@@ -477,6 +473,49 @@
                   @click.stop="selectResponseVersion(message, 1)"
                 >
                   <ChevronForwardOutline />
+                </button>
+              </div>
+              <div v-if="message.role === 'agent'" class="message-footer-actions">
+                <button
+                  v-if="!message.provisional"
+                  class="message-regenerate-button"
+                  type="button"
+                  :disabled="messageRegenerateDisabled(message)"
+                  :data-tooltip="messageRegenerateTitle(message)"
+                  :aria-label="messageRegenerateTitle(message)"
+                  @click.stop="regenerateMessage(message)"
+                >
+                  <RefreshOutline :class="{ spinning: isMessageRegenerating(message) }" />
+                </button>
+                <button
+                  v-if="message.content"
+                  class="message-copy-button"
+                  type="button"
+                  :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                  :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                  @click.stop="copyMessageContent(message, $event, true)"
+                  @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                  @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                >
+                  <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                  <CopyOutline v-else />
+                </button>
+                <button
+                  v-if="!message.provisional"
+                  class="message-delete-button"
+                  :class="{
+                    armed: messageDeleteArmedId === message.id,
+                    deleting: deletingMessageId === message.id,
+                  }"
+                  type="button"
+                  :disabled="messageDeleteDisabled(message)"
+                  :data-tooltip="messageDeleteTitle(message)"
+                  :aria-label="messageDeleteTitle(message)"
+                  :aria-pressed="messageDeleteArmedId === message.id ? 'true' : 'false'"
+                  @click.stop="requestMessageDelete(message)"
+                >
+                  <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
+                  <TrashOutline v-else />
                 </button>
               </div>
             </div>

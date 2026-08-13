@@ -232,20 +232,21 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 18px;
+  gap: 22px;
   padding: 40px 24px 120px;
   text-align: center;
 }
 
 .conversation-empty-wordmark {
-  width: min(210px, 52vw);
+  width: min(276px, 60vw);
   height: auto;
   display: block;
   opacity: 0.92;
 }
 
 .conversation-empty-copy {
-  min-height: 58px;
+  width: min(920px, 100%);
+  min-height: 60px;
   display: grid;
   place-items: center;
   gap: 6px;
@@ -255,14 +256,23 @@
   color: var(--text-soft);
   font-size: 16px;
   font-weight: 650;
+  white-space: nowrap;
 }
 
 .conversation-empty-copy p {
-  max-width: 520px;
+  max-width: none;
   margin: 0;
   color: var(--muted);
   font-size: 13px;
   line-height: 1.6;
+  white-space: nowrap;
+}
+
+@media (max-width: 840px) {
+  .conversation-empty-copy strong,
+  .conversation-empty-copy p {
+    white-space: normal;
+  }
 }
 
 .empty-showcase-enter-active,

@@ -363,11 +363,11 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(writeText).not.toHaveBeenCalled()
 
-    await wrapper.get('.message-row.agent .message-copy-button').trigger('click')
+    await wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').trigger('click')
     await flushPromises()
     expect(writeText).toHaveBeenCalledWith('[Open docs](https://example.com)\n\nCopy this answer.')
     expect(wrapper.get('.message-row.agent').classes()).toContain('copied')
-    expect(wrapper.get('.message-row.agent .message-copy-button').attributes('aria-label')).toBe('Copied')
+    expect(wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').attributes('aria-label')).toBe('Copied')
     expect(wrapper.get('.copy-toast-message').text()).toBe('Copied to clipboard')
 
     writeText.mockClear()
@@ -378,7 +378,7 @@ describe('RoundRelay workbench', () => {
     const execCommand = vi.fn(() => true)
     Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
     writeText.mockRejectedValueOnce(new Error('Clipboard permission denied'))
-    await wrapper.get('.message-row.agent .message-copy-button').trigger('click')
+    await wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').trigger('click')
     await flushPromises()
     expect(execCommand).toHaveBeenCalledWith('copy')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
@@ -1818,6 +1818,10 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.findAll('.message-row.agent')).toHaveLength(2)
     expect(codexReply().text()).toContain('Codex regenerated response')
     expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
+    expect(codexReply().findAll('.message-meta-actions > button').map(button => button.classes()[0]))
+      .toEqual(['message-copy-button', 'message-reply-toggle'])
+    expect(codexReply().findAll('.message-footer-actions > button').map(button => button.classes()[0]))
+      .toEqual(['message-regenerate-button', 'message-copy-button', 'message-delete-button'])
 
     await codexReply().get('.message-reply-toggle').trigger('click')
     expect(codexReply().classes()).toContain('agent-reply-collapsed')

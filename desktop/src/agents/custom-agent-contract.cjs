@@ -7,7 +7,7 @@ const PROMPT_MODES = new Set(['stdin', 'argument'])
 const MAX_AGENTS = 32
 const MAX_ARGUMENTS = 24
 const MAX_ARGUMENT_LENGTH = 512
-const MAX_ATTACHMENTS = 4
+const MAX_ATTACHMENTS = 32
 const MAX_PROMPT_BYTES = 1024 * 1024
 const MAX_STDOUT_BYTES = 4 * 1024 * 1024
 const MAX_STDERR_BYTES = 1024 * 1024
@@ -133,7 +133,7 @@ function publicProfile(definition, version = '') {
     installed: true,
     installSupported: false,
     installErrorCode: '',
-    imageAttachmentLimit: MAX_ATTACHMENTS,
+    imageAttachmentLimit: 32,
     attachmentTypes: ['image', 'audio', 'video', 'file'],
     version: String(version || '').slice(0, VERSION_LINE_LIMIT),
   }

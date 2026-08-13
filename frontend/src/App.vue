@@ -986,6 +986,7 @@ function closeModal(options = {}) {
   customAgentDeleteArmed.value = false
   providerRemoveArmed.value = false
   installConfirmKind.value = ''
+  focusedAgentKind.value = ''
   resetAgentDetailSkills()
   return true
 }
