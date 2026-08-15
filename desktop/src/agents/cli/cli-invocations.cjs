@@ -63,7 +63,8 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
   }
   if (kind === 'hermes') {
     const legacySessionRef = options.sessionTransport === 'acp' ? '' : sessionRef
-    const useAcp = !attachments.length
+    const useAcp = options.invocationTransport !== 'legacy'
+      && !attachments.length
       && options.hermesAcpAvailable !== false
       && (!sessionRef || options.sessionTransport === 'acp')
     if (useAcp) {
@@ -71,6 +72,9 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         command: executable,
         args: ['acp'],
         acpMode: options.sandbox === 'workspace-write' ? 'accept_edits' : 'default',
+        eventTransport: 'acp',
+        fallbackTransport: 'legacy',
+        fallbackSessionPolicy: 'invalidate',
       }
     }
     return {
@@ -86,9 +90,28 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--query',
       ],
       promptArg: true,
+      eventTransport: 'legacy',
     }
   }
   if (kind === 'openclaw') {
+    if (options.invocationTransport !== 'legacy') {
+      return {
+        command: executable,
+        args: [
+          '--no-color', '--log-level', 'info',
+          'acp',
+          ...(sessionRef ? ['--session', sessionRef] : []),
+          '--no-prefix-cwd',
+          '--verbose',
+        ],
+        eventTransport: 'acp',
+        acpSessionStrategy: 'new',
+        publicSessionRef: sessionRef,
+        openClawGateway: true,
+        fallbackTransport: 'legacy',
+        fallbackSessionPolicy: 'preserve',
+      }
+    }
     return {
       command: executable,
       args: [
@@ -98,6 +121,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       ],
       suffixArgs: ['--json'],
       promptArg: true,
+      eventTransport: 'legacy',
     }
   }
   if (kind === 'workbuddy') {
@@ -105,12 +129,14 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       command: executable,
       args: [
         '--print',
-        '--output-format', 'json',
+        '--output-format', 'stream-json',
+        '--include-partial-messages',
         '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
         '--max-turns', '20',
         ...(sessionRef ? ['--resume', sessionRef] : []),
       ],
       promptArg: true,
+      eventTransport: 'stream-json',
     }
   }
   if (kind === 'kimi') {
@@ -119,6 +145,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         command: executable,
         args: ['acp'],
         acpMode: 'plan',
+        eventTransport: 'acp',
       }
     }
     return {
@@ -130,9 +157,20 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--prompt',
       ],
       promptArg: true,
+      eventTransport: 'stream-json',
     }
   }
   if (kind === 'mimo') {
+    if (options.invocationTransport !== 'json') {
+      return {
+        command: executable,
+        args: ['acp', '--pure', '--cwd', workdir],
+        acpMode: options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        eventTransport: 'acp',
+        fallbackTransport: 'json',
+        fallbackSessionPolicy: 'preserve',
+      }
+    }
     return {
       command: executable,
       args: [
@@ -184,6 +222,16 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'opencode') {
+    if (!attachments.length && options.invocationTransport !== 'json') {
+      return {
+        command: executable,
+        args: ['acp', '--pure', '--cwd', workdir],
+        acpMode: options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        eventTransport: 'acp',
+        fallbackTransport: 'json',
+        fallbackSessionPolicy: 'preserve',
+      }
+    }
     return {
       command: executable,
       args: [

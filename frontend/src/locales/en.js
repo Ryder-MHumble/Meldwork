@@ -246,6 +246,7 @@ export default {
     'trace.agentSelector': 'Agent',
     'trace.selectAgent': 'Select an Agent run',
     'trace.round': 'Round {count}',
+    'trace.response': 'Response',
     'trace.roundSelector': 'Round',
     'trace.selectRound': 'Select a round for {agent}',
     'trace.live': 'Live',

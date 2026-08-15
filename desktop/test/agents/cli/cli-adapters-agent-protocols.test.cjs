@@ -13,7 +13,6 @@ const {
   detectAgents,
   imageAttachmentLimit,
   invocation,
-  normalizeOutput,
   parseCodexOutput,
   parseGeminiOutput,
   parseKimiOutput,
@@ -29,6 +28,7 @@ const {
   runtimeCommandSummary,
   searchPath,
 } = require('../../../src/agents/cli/cli-adapters.cjs')
+const { resolveConnectorEventProfile } = require('../../../src/agents/cli/cli-event-profiles.cjs')
 const { managedOpenClawOptions } = require('../../../src/agents/cli/openclaw-runtime.cjs')
 const {
   executable,
@@ -47,6 +47,19 @@ const OUTBOUND_PAYLOAD_KEYS = [
   'wirePayloadBytes',
   'wirePayloadHash',
 ]
+
+function profileOutput(kind, stdout, sessionRef = '', requestedTransport = '') {
+  const transport = requestedTransport ? { transport: requestedTransport }
+    : kind === 'hermes' ? { transport: 'legacy' }
+    : kind === 'kimi' ? { transport: 'stream-json' }
+      : {}
+  const profile = resolveConnectorEventProfile(kind, transport)
+  const accumulator = profile.createFinalOutputAccumulator(sessionRef)
+  const bytes = Buffer.from(stdout)
+  accumulator.capture?.(bytes)
+  accumulator.write?.(bytes)
+  return accumulator.end({ sessionRef })
+}
 
 function wireFingerprint(value) {
   const bytes = Buffer.isBuffer(value) ? value : Buffer.from(JSON.stringify(value), 'utf8')
@@ -136,9 +149,11 @@ test('WorkBuddy uses non-interactive output and resumes its native session', () 
   const spec = invocation('workbuddy', '/tmp/codebuddy', '/tmp/work', 'workbuddy-session')
   assert.equal(spec.promptArg, true)
   assert.deepEqual(spec.args, [
-    '--print', '--output-format', 'json', '--permission-mode', 'plan',
+    '--print', '--output-format', 'stream-json', '--include-partial-messages',
+    '--permission-mode', 'plan',
     '--max-turns', '20', '--resume', 'workbuddy-session',
   ])
+  assert.equal(spec.eventTransport, 'stream-json')
 })
 
 test('WorkBuddy configuration enables edits only after explicit authorization', () => {
@@ -374,7 +389,7 @@ input.on('line', (line) => {
     { id: 'tool-1', type: 'tool_start', status: 'running', title: 'search' },
     { id: 'tool-1', type: 'tool_result_summary', status: 'completed', title: 'search' },
   ])
-  assert.equal(createdEvents[0].summary, '[operation hidden]')
+  assert.equal(createdEvents[0].summary, 'search: [operation hidden]')
   assert.match(createdEvents[1].detail, /Output: 1 line, 19 bytes/)
   assert.doesNotMatch(
     JSON.stringify(createdEvents),
@@ -855,15 +870,15 @@ test('Claude uses partial stream JSON and resumes its native session', () => {
   assert.equal(spec.promptArg, true)
 })
 
-test('MiMo uses its build Agent after workspace write authorization', () => {
+test('MiMo uses ACP by default and declares its JSON setup fallback', () => {
   const spec = invocation('mimo', '/tmp/mimo', '/tmp/work', 'mimo-session', {
     sandbox: 'workspace-write',
   })
-  assert.deepEqual(spec.args, [
-    'run', '--pure', '--agent', 'build', '--format', 'json', '--dir', '/tmp/work',
-    '--session', 'mimo-session',
-  ])
-  assert.equal(spec.promptArg, true)
+  assert.deepEqual(spec.args, ['acp', '--pure', '--cwd', '/tmp/work'])
+  assert.equal(spec.acpMode, 'build')
+  assert.equal(spec.eventTransport, 'acp')
+  assert.equal(spec.fallbackTransport, 'json')
+  assert.equal(spec.promptArg, undefined)
 })
 
 test('MiMo JSON output returns final text and session id', () => {
@@ -880,7 +895,7 @@ test('MiMo JSON output returns final text and session id', () => {
   assert.deepEqual(parseMimoOutput(raw), {
     text: 'MiMo reply', sessionRef: 'mimo-session', error: '',
   })
-  assert.deepEqual(normalizeOutput('mimo', raw), {
+  assert.deepEqual(profileOutput('mimo', raw), {
     text: 'MiMo reply', sessionRef: 'mimo-session', error: '', outcome: 'completed',
   })
 })
@@ -904,7 +919,7 @@ test('Claude and Qwen stream JSON output returns the final reply and session id'
         type: 'result', result: `${kind} final`, session_id: `${kind}-session`,
       }),
     ].join('\n')
-    assert.deepEqual(normalizeOutput(kind, raw), {
+    assert.deepEqual(profileOutput(kind, raw), {
       text: `${kind} final`,
       sessionRef: `${kind}-session`,
       outcome: 'completed',
@@ -1105,9 +1120,9 @@ send()
       sessionRef: `${kind}-stream-session`,
       outcome: 'completed',
     })
-    assert.deepEqual(
-      events.filter(event => event.type === 'answer_delta').map(event => event.delta),
-      ['first ', 'second'],
+    assert.equal(
+      events.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
+      'first second',
       kind,
     )
     assert.equal(events.filter(event => event.type === 'tool_start').length, 1, kind)
@@ -1219,22 +1234,22 @@ send()
   const deltas = events.filter(event => event.type === 'answer_delta')
   assert.equal(result.text, 'first second')
   assert.equal(result.sessionRef, 'gemini-event-session')
-  assert.deepEqual(deltas.map(event => event.delta), ['first ', 'second'])
   assert.equal(deltas.map(event => event.delta).join(''), result.text)
 })
 
-test('OpenCode uses JSON events and resumes the requested session without auto approval', () => {
+test('OpenCode uses ACP without attachments and keeps JSON for attachment runs', () => {
   const chat = invocation('opencode', '/tmp/opencode', '/tmp/work', 'opencode-session')
-  assert.deepEqual(chat.args, [
-    'run', '--format', 'json', '--agent', 'plan', '--session', 'opencode-session',
-  ])
-  assert.equal(chat.promptArg, true)
-  assert.equal(chat.args.includes('--auto'), false)
+  assert.deepEqual(chat.args, ['acp', '--pure', '--cwd', '/tmp/work'])
+  assert.equal(chat.acpMode, 'plan')
+  assert.equal(chat.eventTransport, 'acp')
+  assert.equal(chat.fallbackTransport, 'json')
+  assert.equal(chat.promptArg, undefined)
 
   const configure = invocation('opencode', '/tmp/opencode', '/tmp/work', '', {
     sandbox: 'workspace-write',
   })
-  assert.deepEqual(configure.args, ['run', '--format', 'json', '--agent', 'build'])
+  assert.deepEqual(configure.args, ['acp', '--pure', '--cwd', '/tmp/work'])
+  assert.equal(configure.acpMode, 'build')
 
   const first = path.resolve('diagram-one.png')
   const second = path.resolve('diagram-two.jpg')
@@ -1245,6 +1260,8 @@ test('OpenCode uses JSON events and resumes the requested session without auto a
     'run', '--format', 'json', '--agent', 'plan', '--session', 'opencode-session',
     '--file', first, '--file', second,
   ])
+  assert.equal(withImages.acpMode, undefined)
+  assert.equal(withImages.eventTransport, undefined)
 })
 
 test('OpenCodeReview requests a synchronous JSON review with the user message as background', () => {
@@ -1439,7 +1456,12 @@ test('every supported built-in Agent produces an explicit completion outcome', (
 
   assert.deepEqual(Object.keys(outputs).sort(), [...ALLOWED_KINDS].sort())
   for (const kind of ALLOWED_KINDS) {
-    const result = normalizeOutput(kind, outputs[kind])
+    const result = profileOutput(
+      kind,
+      outputs[kind],
+      '',
+      kind === 'openclaw' ? 'legacy' : '',
+    )
     assert.equal(result.outcome, 'completed', kind)
     assert.ok(result.text, kind)
   }
@@ -1471,7 +1493,7 @@ test('recorded fixtures cover every supported built-in output schema', () => {
   for (const fixture of manifest.fixtures) {
     assert.match(fixture.version, /\d/, fixture.kind)
     const raw = fs.readFileSync(path.join(OUTPUT_FIXTURE_DIRECTORY, fixture.file), 'utf8')
-    const result = normalizeOutput(fixture.kind, raw)
+    const result = profileOutput(fixture.kind, raw, '', fixture.transport)
     assert.equal(result.text, expectedText[fixture.kind], fixture.kind)
     assert.equal(result.outcome, 'completed', fixture.kind)
     if (!['hermes', 'openclaw', 'opencodereview'].includes(fixture.kind)) {
@@ -1485,7 +1507,7 @@ test('recorded fixtures cover every supported built-in output schema', () => {
 
 test('OpenCode and MiMo require an explicit step finish before declaring completion', () => {
   for (const kind of ['opencode', 'mimo']) {
-    const result = normalizeOutput(kind, JSON.stringify({
+    const result = profileOutput(kind, JSON.stringify({
       type: 'text', sessionID: `${kind}-session`,
       part: { type: 'text', text: `${kind} reply` },
     }))

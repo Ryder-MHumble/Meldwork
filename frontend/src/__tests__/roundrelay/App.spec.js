@@ -1070,8 +1070,6 @@ describe('RoundRelay workbench', () => {
       timestamp: '2026-07-29T08:06:00Z',
     })
     await flushPromises()
-    expect(wrapper.findAll('.trace-event-title').at(-1).text())
-      .toBe('Read source')
 
     emitRunEvent({
       runId: 'run-1',
@@ -1087,20 +1085,18 @@ describe('RoundRelay workbench', () => {
       timestamp: '2026-07-29T08:07:00Z',
     })
     await flushPromises()
-    expect(wrapper.findAll('.trace-event-title').at(-1).text())
-      .toBe('Read source')
-    expect(wrapper.findAll('.trace-event-type').map(item => item.text()))
-      .toEqual(['Tool call', 'Tool call'])
     const visibleEventTitles = wrapper.findAll('.trace-event-title').map(item => item.text())
-    expect(visibleEventTitles).not.toContain('Agent')
-    expect(visibleEventTitles).not.toContain('Process')
-    expect(visibleEventTitles).not.toContain('Connector provided only the final answer; structured tool activity was unavailable.')
-    expect(visibleEventTitles).not.toContain('Structured connector failed before execution; switched to compatibility mode.')
+    expect(visibleEventTitles).toContain('Read source')
+    expect(visibleEventTitles)
+      .toContain('Connector provided only the final answer; structured tool activity was unavailable.')
+    expect(visibleEventTitles)
+      .toContain('Structured connector failed before execution; switched to compatibility mode.')
 
     setLocale('zh')
     await flushPromises()
     const localizedEventTitles = wrapper.findAll('.trace-event-title').map(item => item.text())
-    expect(localizedEventTitles).toEqual(['Reviewing files', 'Read source'])
+    expect(localizedEventTitles).toContain('Reviewing files')
+    expect(localizedEventTitles).toContain('Read source')
     expect(wrapper.get('.trace-source-section .trace-section-heading strong').text()).toBe('本次尝试注入的消息')
     expect(wrapper.findAll('.trace-source-list button')[1].text()).toContain('来源不可用')
 

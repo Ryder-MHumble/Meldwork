@@ -1,6 +1,5 @@
 const {
   runtimeCommandSummary,
-  runtimeEventId,
   runtimeToolOperation,
   runtimeToolResultDetail,
   runtimeToolTitle,
@@ -64,14 +63,34 @@ function streamBlockId(event, update, index = update?.index, messageId = '') {
   return `${parent}:${message}:${Number.isInteger(index) ? index : 'block'}`
 }
 
+function streamBlockKey(event, index, messageId = '') {
+  const parent = event?.parent_tool_use_id || 'root'
+  const message = String(messageId || '')
+  return `${parent}:${message ? `${message}:` : ''}${Number.isInteger(index) ? index : 'block'}`
+}
+
+function clearStreamBlock(state, blockKey, id) {
+  if (state.blockIds.get(blockKey) === id) state.blockIds.delete(blockKey)
+  state.blocks.delete(id)
+}
+
 function createClaudeQwenRuntimeState() {
   return {
     blocks: new Map(),
+    blockIds: new Map(),
     completedTools: new Set(),
     messageIds: new Map(),
     plans: new Map(),
     reasoning: new Map(),
     startedTools: new Set(),
+    toolSummaries: new Map(),
+    toolTitles: new Map(),
+  }
+}
+
+function createGeminiRuntimeState() {
+  return {
+    completedTools: new Set(),
     toolSummaries: new Map(),
     toolTitles: new Map(),
   }
@@ -144,6 +163,10 @@ function toolResultLifecycleEvent(state, block, fallbackId = '') {
   const id = String(block?.tool_use_id || block?.toolUseId || block?.id || fallbackId)
   if (id && state.completedTools.has(id)) return null
   if (id) state.completedTools.add(id)
+  for (const [key, blockId] of state.blockIds) {
+    if (blockId === id) state.blockIds.delete(key)
+  }
+  state.blocks.delete(id)
   return {
     ...(id ? { id } : {}),
     type: 'tool_result_summary',
@@ -165,11 +188,14 @@ function claudeQwenRuntimeEvents(event, state) {
       return []
     }
     const messageId = update.message_id || state.messageIds.get(parent) || ''
-    const id = streamBlockId(event, update, update.index, messageId)
+    const blockKey = streamBlockKey(event, update.index, messageId)
+    let id = state.blockIds.get(blockKey) || streamBlockId(event, update, update.index, messageId)
     if (update.type === 'content_block_start') {
       const block = update.content_block
       if (!block || typeof block !== 'object') return []
+      if (typeof block.id === 'string' && block.id) id = block.id
       state.blocks.set(id, block)
+      state.blockIds.set(blockKey, id)
       if (block.type === 'tool_use') {
         return [toolStartLifecycleEvent(state, block, id)].filter(Boolean)
       }
@@ -186,13 +212,26 @@ function claudeQwenRuntimeEvents(event, state) {
           && update.delta?.type === 'text_delta' && typeof update.delta.text === 'string') {
         return [{ type: 'answer_delta', status: 'running', delta: update.delta.text }]
       }
+      if (update.delta?.type === 'input_json_delta' && state.blocks.get(id)?.type === 'tool_use') {
+        return [{
+          id,
+          type: 'tool_update',
+          title: state.toolTitles.get(id) || runtimeToolTitle({ type: 'tool_use' }),
+          status: 'running',
+          ...(state.toolSummaries.get(id) ? { summary: state.toolSummaries.get(id) } : {}),
+        }]
+      }
       if (update.delta?.type === 'thinking_delta') {
         return [reasoningLifecycleEvent(state, `reasoning:${id}`, 'running')].filter(Boolean)
       }
       return []
     }
-    if (update.type === 'content_block_stop' && state.blocks.get(id)?.type === 'thinking') {
-      return [reasoningLifecycleEvent(state, `reasoning:${id}`, 'completed')].filter(Boolean)
+    if (update.type === 'content_block_stop') {
+      const block = state.blocks.get(id)
+      clearStreamBlock(state, blockKey, id)
+      if (block?.type === 'thinking') {
+        return [reasoningLifecycleEvent(state, `reasoning:${id}`, 'completed')].filter(Boolean)
+      }
     }
     return []
   }
@@ -239,53 +278,75 @@ function claudeQwenRuntimeEvents(event, state) {
   return events.filter(Boolean)
 }
 
-function jsonCliRuntimeEvents(kind, event) {
+function kimiStreamJsonRuntimeEvents(event) {
   if (!event || typeof event !== 'object') return []
-  if (kind === 'kimi' && event.role === 'assistant' && typeof event.content === 'string') {
+  if (event.role === 'assistant' && typeof event.content === 'string') {
     return [{ type: 'answer_delta', status: 'running', delta: event.content }]
   }
-  if (kind === 'gemini' && event.type === 'message' && event.role === 'assistant'
+  return []
+}
+
+function mimoJsonRuntimeEvents(event) {
+  if (!event || typeof event !== 'object') return []
+  if (event.type === 'text' && typeof event.part?.text === 'string') {
+    return [{ type: 'answer_delta', status: 'running', delta: event.part.text }]
+  }
+  return []
+}
+
+function geminiToolId(event) {
+  return typeof event?.tool_id === 'string' && event.tool_id ? event.tool_id : ''
+}
+
+function geminiStreamJsonRuntimeEvents(event, state) {
+  if (!event || typeof event !== 'object') return []
+  if (event.type === 'message' && event.role === 'assistant'
       && typeof event.content === 'string') {
     return [{ type: 'answer_delta', status: 'running', delta: event.content }]
   }
-  if (kind === 'mimo' && event.type === 'text' && typeof event.part?.text === 'string') {
-    return [{ type: 'answer_delta', status: 'running', delta: event.part.text }]
+  const id = geminiToolId(event)
+  if (!id) return []
+  if (event.type === 'tool_use') {
+    const tool = { ...event, id, name: event.tool_name, input: event.parameters }
+    const summary = runtimeToolOperation(tool)
+    const title = runtimeToolTitle(tool)
+    state?.toolSummaries.set(id, summary)
+    state?.toolTitles.set(id, title)
+    return [{
+      id,
+      type: 'tool_start',
+      title,
+      status: 'running',
+      ...(summary ? { summary } : {}),
+    }]
   }
-  if (kind === 'opencode' && event.type === 'text' && event.part?.type === 'text'
+  if (event.type === 'tool_result' && ['success', 'error'].includes(event.status)) {
+    if (state?.completedTools.has(id)) return []
+    state?.completedTools.add(id)
+    const detail = runtimeToolResultDetail(event)
+    return [{
+      id,
+      type: 'tool_result_summary',
+      title: state?.toolTitles.get(id) || runtimeToolTitle(event),
+      status: event.status === 'success' ? 'completed' : 'failed',
+      ...(state?.toolSummaries.get(id) ? { summary: state.toolSummaries.get(id) } : {}),
+      ...(detail ? { detail } : {}),
+    }]
+  }
+  return []
+}
+
+function openCodeJsonRuntimeEvents(event) {
+  if (!event || typeof event !== 'object') return []
+  if (event.type === 'text' && event.part?.type === 'text'
       && typeof event.part.text === 'string') {
     return [{ type: 'answer_delta', status: 'running', delta: event.part.text }]
   }
+  return []
+}
 
-  const type = String(event.type || event.part?.type || '').toLowerCase()
-  if (/\bplan(?:_update|_removed)?\b/.test(type)) {
-    const summary = typeof event.summary === 'string'
-      ? event.summary
-      : typeof event.content === 'string' ? event.content : event.text
-    return [{
-      id: runtimeEventId(event),
-      type: 'plan',
-      title: 'plan',
-      status: /removed/.test(type) ? 'stopped' : runtimeEventStatus(event.status),
-      ...(typeof summary === 'string' ? { summary } : {}),
-    }]
-  }
-  if (!/tool|function_call/.test(type)) return []
-  const status = runtimeEventStatus(
-    event.status || event.part?.status || event.part?.state?.status,
-  )
-  const completed = ['completed', 'failed', 'stopped', 'timeout'].includes(status)
-    || /result|complete|finish|end/.test(type)
-  const update = /update|progress/.test(type)
-  const summary = runtimeToolOperation(event)
-  const detail = completed ? runtimeToolResultDetail(event) : ''
-  return [{
-    id: runtimeEventId(event),
-    type: completed ? 'tool_result_summary' : update ? 'tool_update' : 'tool_start',
-    title: runtimeToolTitle(event),
-    status: status || (completed ? 'completed' : 'running'),
-    ...(summary ? { summary } : {}),
-    ...(detail ? { detail } : {}),
-  }]
+function finalOnlyRuntimeEvents() {
+  return []
 }
 
 function acpPlanSummary(update) {
@@ -303,6 +364,22 @@ function createAcpRuntimeState() {
   return { tools: new Map() }
 }
 
+const ACP_TOOL_KINDS = new Set([
+  'read', 'edit', 'delete', 'move', 'search',
+  'execute', 'think', 'fetch', 'switch_mode', 'other',
+])
+
+function acpToolOperation(update) {
+  const name = ACP_TOOL_KINDS.has(update.kind) ? update.kind : 'tool'
+  const input = update.rawInput ?? update.input ?? update.arguments ?? update.args
+  if (typeof update.command === 'string'
+      || (input && typeof input === 'object' && !Array.isArray(input)
+        && (Object.hasOwn(input, 'command') || Object.hasOwn(input, 'cmd')))) {
+    return `${name}: [operation hidden]`
+  }
+  return runtimeToolOperation({ ...update, name, title: undefined })
+}
+
 function acpRuntimeEvents(update, state) {
   if (!update || typeof update !== 'object') return []
   if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
@@ -315,7 +392,7 @@ function acpRuntimeEvents(update, state) {
     const status = runtimeEventStatus(update.status)
     const completed = ['completed', 'failed', 'stopped', 'timeout'].includes(status)
     const id = String(update.toolCallId || '')
-    const operation = runtimeToolOperation(update)
+    const operation = acpToolOperation(update)
     if (id && operation && update.sessionUpdate === 'tool_call') state?.tools.set(id, operation)
     const summary = state?.tools.get(id) || operation
     const detail = completed ? runtimeToolResultDetail(update) : ''
@@ -349,5 +426,10 @@ module.exports = {
   codexRuntimeEvents,
   createAcpRuntimeState,
   createClaudeQwenRuntimeState,
-  jsonCliRuntimeEvents,
+  createGeminiRuntimeState,
+  finalOnlyRuntimeEvents,
+  geminiStreamJsonRuntimeEvents,
+  kimiStreamJsonRuntimeEvents,
+  mimoJsonRuntimeEvents,
+  openCodeJsonRuntimeEvents,
 }

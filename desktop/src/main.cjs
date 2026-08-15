@@ -18,7 +18,12 @@ const {
   captureArtifactOutputState,
   importAgentOutputs,
 } = require('./agents/agent-output-importer.cjs')
-const { detectAgents, imageAttachmentLimit, runAgent } = require('./agents/cli/cli-adapters.cjs')
+const {
+  detectAgents,
+  imageAttachmentLimit,
+  runAgent,
+  shutdownAcpSessionRuntime,
+} = require('./agents/cli/cli-adapters.cjs')
 const { AgentInstaller } = require('./agents/installer/agent-installer.cjs')
 const { AgentConnectorInstanceStore } = require('./agents/connectors/agent-connector-instance-store.cjs')
 const { LocalAgentConnectors } = require('./agents/connectors/agent-connector-local.cjs')
@@ -856,7 +861,13 @@ if (!hasSingleInstanceLock) {
     quitCleanup = runQuitCleanup([
       () => channelIngressRuntime?.shutdown(),
       () => cloudAgentRuntime?.shutdown(),
-      () => workspace?.stopAll(),
+      async () => {
+        try {
+          await workspace?.stopAll()
+        } finally {
+          await shutdownAcpSessionRuntime()
+        }
+      },
       () => installer?.waitForIdle(),
     ]).then(() => {
       app.exit(0)

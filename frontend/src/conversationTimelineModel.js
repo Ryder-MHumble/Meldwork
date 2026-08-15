@@ -17,11 +17,25 @@ export function traceRound(item) {
 }
 
 export function retainedTraceEvents(events) {
-  return (Array.isArray(events) ? events : []).filter((event) => {
-    const type = String(event?.type || '').toLowerCase()
-    const title = String(event?.title || '').trim().toLowerCase()
-    return type !== 'answer_delta' && !(type === 'status' && ['agent', 'process'].includes(title))
-  })
+  return (Array.isArray(events) ? events : [])
+    .filter(event => String(event?.type || '').toLowerCase() !== 'answer_delta')
+    .map((event, index) => ({ event, index }))
+    .sort((left, right) => {
+      const leftSeq = Number(left.event?.seq)
+      const rightSeq = Number(right.event?.seq)
+      const leftHasSeq = Number.isInteger(leftSeq)
+      const rightHasSeq = Number.isInteger(rightSeq)
+      if (leftHasSeq && rightHasSeq) return leftSeq - rightSeq || left.index - right.index
+      if (leftHasSeq !== rightHasSeq) return leftHasSeq ? 1 : -1
+      const leftTime = Date.parse(left.event?.timestamp)
+      const rightTime = Date.parse(right.event?.timestamp)
+      const leftHasTime = Number.isFinite(leftTime)
+      const rightHasTime = Number.isFinite(rightTime)
+      if (leftHasTime && rightHasTime) return leftTime - rightTime || left.index - right.index
+      if (leftHasTime !== rightHasTime) return leftHasTime ? 1 : -1
+      return left.index - right.index
+    })
+    .map(item => item.event)
 }
 
 export function runStatusTone(status) {

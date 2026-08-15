@@ -12,6 +12,75 @@ function runAgentTerminal(status) {
   return ['completed', 'failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted'].includes(status)
 }
 
+function eventAdvancesAgentState(event) {
+  return event.type === 'status'
+    || (event.type === 'answer_delta' && runAgentTerminal(event.status))
+}
+
+function lifecycleEventFamily(type) {
+  const normalized = String(type || '').toLowerCase()
+  if (normalized.startsWith('tool_')) return 'tool'
+  return ['reasoning_summary', 'plan', 'status', 'warning'].includes(normalized)
+    ? normalized
+    : ''
+}
+
+function lifecycleEventKey(event) {
+  const family = lifecycleEventFamily(event?.type)
+  return family && event?.id ? `${family}:${event.id}` : ''
+}
+
+function orderedRunEvents(events) {
+  return events.map((event, index) => ({ event, index }))
+    .sort((left, right) => {
+      const leftSeq = Number(left.event?.seq)
+      const rightSeq = Number(right.event?.seq)
+      if (Number.isInteger(leftSeq) && Number.isInteger(rightSeq) && leftSeq !== rightSeq) {
+        return leftSeq - rightSeq
+      }
+      return left.index - right.index
+    })
+    .map(item => item.event)
+}
+
+function scopedLiveRun(snapshot, event) {
+  const messages = Array.isArray(snapshot.messages) ? snapshot.messages : []
+  if (messages.some(message => (
+    message?.trace?.runId === event.runId
+    && message?.trace?.agentRunId === event.agentRunId
+  ))) return null
+  const group = (Array.isArray(snapshot.groups) ? snapshot.groups : [])
+    .find(item => item?.id === event.groupId)
+  if (!group || !event.threadRootId) return null
+  const rootMessage = messages.find(message => (
+    message?.id === event.threadRootId
+    && message?.groupId === event.groupId
+    && message?.role === 'user'
+  ))
+  if (!rootMessage) return null
+  const messageTargets = normalizedAgentKinds(rootMessage.targetKinds)
+  const mentionedTargets = normalizedAgentKinds(rootMessage.mentionedAgentKinds)
+  const groupTargets = normalizedAgentKinds([
+    group.directAgentKind,
+    ...(Array.isArray(group.agentKinds) ? group.agentKinds : []),
+  ])
+  const targetKinds = messageTargets.length
+    ? messageTargets
+    : (mentionedTargets.length ? mentionedTargets : groupTargets)
+  if (!targetKinds.includes(event.agentKind)) return null
+  return {
+    runId: event.runId,
+    groupId: event.groupId,
+    threadRootId: event.threadRootId,
+    targetKinds,
+    completedKinds: [],
+    failedKinds: [],
+    currentKind: '',
+    currentRound: 0,
+    agentRuns: [],
+  }
+}
+
 function mergeMissingRunEventFields(existing, incoming) {
   const next = { ...existing }
   let changed = false
@@ -29,17 +98,29 @@ function mergeMissingRunEventFields(existing, incoming) {
 export function mergeRunEvent(snapshot, value) {
   const event = normalizeRunEvent(value)
   if (!event || !record(snapshot)) return snapshot
-  const existingRuns = Array.isArray(snapshot.runs) ? snapshot.runs : []
-  const runIndex = existingRuns.findIndex(run => run?.runId === event.runId)
-  if (runIndex < 0) return snapshot
+  let existingRuns = Array.isArray(snapshot.runs) ? snapshot.runs : []
+  let runIndex = existingRuns.findIndex(run => run?.runId === event.runId)
+  if (runIndex < 0) {
+    const run = scopedLiveRun(snapshot, event)
+    if (!run) return snapshot
+    existingRuns = [...existingRuns, run]
+    runIndex = existingRuns.length - 1
+  }
 
   const existingRun = existingRuns[runIndex]
+  if (existingRun.groupId !== event.groupId) return snapshot
+  if (existingRun.threadRootId && event.threadRootId
+      && existingRun.threadRootId !== event.threadRootId) return snapshot
   const existingTargetKinds = normalizedAgentKinds(existingRun.targetKinds)
   if (existingTargetKinds.length && !existingTargetKinds.includes(event.agentKind)) return snapshot
   const existingAgents = Array.isArray(existingRun.agentRuns)
     ? existingRun.agentRuns
     : (Array.isArray(existingRun.agents) ? existingRun.agents : [])
   let agentIndex = existingAgents.findIndex(agent => agent?.agentRunId === event.agentRunId)
+  if (agentIndex >= 0 && (
+    existingAgents[agentIndex]?.kind !== event.agentKind
+    || existingAgents[agentIndex]?.round !== event.round
+  )) return snapshot
   const existingAgent = agentIndex >= 0 ? existingAgents[agentIndex] : {
     agentRunId: event.agentRunId,
     kind: event.agentKind,
@@ -73,19 +154,28 @@ export function mergeRunEvent(snapshot, value) {
   }
 
   const existingEvents = Array.isArray(existingAgent.events) ? [...existingAgent.events] : []
-  const lifecycleIndex = event.id && event.type.startsWith('tool_')
-    ? existingEvents.findIndex(item => item?.id === event.id && String(item?.type || '').startsWith('tool_'))
-    : -1
-  if (lifecycleIndex >= 0) existingEvents[lifecycleIndex] = event
-  else existingEvents.push(event)
-  const events = existingEvents.slice(-MAX_TRACE_EVENTS)
+  if (event.type !== 'answer_delta') {
+    const eventLifecycleKey = lifecycleEventKey(event)
+    const lifecycleIndex = eventLifecycleKey
+      ? existingEvents.findIndex(item => lifecycleEventKey(item) === eventLifecycleKey)
+      : -1
+    if (lifecycleIndex >= 0) existingEvents[lifecycleIndex] = event
+    else existingEvents.push(event)
+  }
+  const events = orderedRunEvents(existingEvents).slice(-MAX_TRACE_EVENTS)
   const nextSeenSeqs = [...seenSeqs, event.seq].slice(-MAX_SEEN_EVENT_SEQUENCES)
   let output = boundedString(existingAgent.output, MAX_AGENT_OUTPUT, { trim: false })
   if (event.type === 'answer_delta') {
-    output += event.delta.slice(0, Math.max(0, MAX_AGENT_OUTPUT - output.length))
+    output = event.replace === true
+      ? event.delta.slice(0, MAX_AGENT_OUTPUT)
+      : output + event.delta.slice(0, Math.max(0, MAX_AGENT_OUTPUT - output.length))
   }
-  const nextStatus = event.status
-    || (event.type === 'answer_delta' ? 'running' : existingAgent.status || 'running')
+  const advancesAgentState = eventAdvancesAgentState(event)
+  const nextStatus = runAgentTerminal(existingAgent.status)
+    ? existingAgent.status
+    : advancesAgentState
+    ? (event.status || existingAgent.status || 'running')
+    : (existingAgent.status === 'queued' ? 'running' : existingAgent.status || 'running')
   const nextAgent = {
     ...existingAgent,
     kind: event.agentKind,
@@ -107,7 +197,9 @@ export function mergeRunEvent(snapshot, value) {
   const targetKinds = existingTargetKinds.length ? existingTargetKinds : [event.agentKind]
   const completedKinds = [...new Set(existingRun.completedKinds || [])]
   const failedKinds = [...new Set(existingRun.failedKinds || [])]
-  if (runAgentTerminal(nextStatus)) {
+  const agentTerminal = runAgentTerminal(existingAgent.status)
+    || (advancesAgentState && runAgentTerminal(nextStatus))
+  if (agentTerminal) {
     if (!completedKinds.includes(event.agentKind)) completedKinds.push(event.agentKind)
     if (['failed', 'timeout', 'interrupted'].includes(nextStatus) && !failedKinds.includes(event.agentKind)) {
       failedKinds.push(event.agentKind)
@@ -118,11 +210,11 @@ export function mergeRunEvent(snapshot, value) {
     runId: event.runId,
     groupId: event.groupId,
     threadRootId: event.threadRootId || existingRun.threadRootId || '',
-    phase: runAgentTerminal(nextStatus) ? existingRun.phase : 'running',
+    phase: agentTerminal ? existingRun.phase : 'running',
     targetKinds,
     completedKinds,
     failedKinds,
-    currentKind: runAgentTerminal(nextStatus) ? '' : event.agentKind,
+    currentKind: agentTerminal ? '' : event.agentKind,
     currentRound: Math.max(Number(existingRun.currentRound) || 0, event.round),
     agentRuns: agents,
   }

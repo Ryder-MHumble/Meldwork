@@ -196,7 +196,8 @@ class RunHarness {
   record(run, normalized) {
     let input = normalized
     if (normalized.type === 'answer_delta') {
-      const remaining = Math.max(0, this.maxOutputChars - run.output.length)
+      const currentLength = normalized.replace === true ? 0 : run.output.length
+      const remaining = Math.max(0, this.maxOutputChars - currentLength)
       if (!remaining) {
         run.truncated = true
         return null
@@ -220,7 +221,7 @@ class RunHarness {
       run.seenSeqs.splice(0, run.seenSeqs.length - MAX_SEEN_EVENT_SEQUENCES)
     }
     if (event.type === 'answer_delta') {
-      const next = `${run.output}${event.delta}`
+      const next = event.replace === true ? event.delta : `${run.output}${event.delta}`
       if (next.length > this.maxOutputChars) run.truncated = true
       run.output = next.slice(0, this.maxOutputChars)
       return event

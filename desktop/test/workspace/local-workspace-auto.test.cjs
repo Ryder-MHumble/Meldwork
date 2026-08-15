@@ -897,7 +897,7 @@ test('automatic dialogue reuses Kimi ACP sessions across rounds', async (t) => {
   assert.equal(workspace.state.sessionMeta[kimiSessionKey].transport, 'acp')
 })
 
-test('automatic dialogue keeps Hermes on one legacy session across rounds', async (t) => {
+test('automatic dialogue keeps Hermes on one persistent ACP session across rounds', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -905,10 +905,10 @@ test('automatic dialogue keeps Hermes on one legacy session across rounds', asyn
     const agentCallCount = calls.filter(call => call.agent.kind === agent.kind).length
     const consensus = agentCallCount > 1 ? 'agree' : 'continue'
     const sessionRef = agent.kind === 'hermes'
-      ? (runOptions.sessionRef || 'hermes-legacy-session')
+      ? (runOptions.sessionRef || 'hermes-acp-session')
       : (runOptions.sessionRef || `${agent.kind}-session`)
     if (agent.kind === 'hermes') {
-      await runOptions.onSessionRef(sessionRef, { transport: 'legacy' })
+      await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
     }
     return {
       text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
@@ -918,7 +918,7 @@ test('automatic dialogue keeps Hermes on one legacy session across rounds', asyn
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Hermes legacy discussion', agentKinds: ['codex', 'hermes'], workdir: directory,
+    name: 'Hermes ACP discussion', agentKinds: ['codex', 'hermes'], workdir: directory,
   })
 
   const started = await workspace.sendMessage({
@@ -932,11 +932,15 @@ test('automatic dialogue keeps Hermes on one legacy session across rounds', asyn
 
   const hermesCalls = calls.filter(call => call.agent.kind === 'hermes')
   const hermesSessionKey = workspace.sessionKey(group.id, 'hermes', started.threadRootId)
-  assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionRef), ['', 'hermes-legacy-session'])
-  assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionTransport), ['', 'legacy'])
-  assert.deepEqual(hermesCalls.map(call => call.runOptions.hermesAcpAvailable), [false, false])
-  assert.equal(workspace.state.sessions[hermesSessionKey], 'hermes-legacy-session')
-  assert.equal(workspace.state.sessionMeta[hermesSessionKey].transport, 'legacy')
+  assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionRef), ['', 'hermes-acp-session'])
+  assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionTransport), ['', 'acp'])
+  assert.deepEqual(hermesCalls.map(call => call.runOptions.hermesAcpAvailable), [true, true])
+  assert.deepEqual(
+    hermesCalls.map(call => call.runOptions.acpPersistenceKey),
+    [hermesSessionKey, hermesSessionKey],
+  )
+  assert.equal(workspace.state.sessions[hermesSessionKey], 'hermes-acp-session')
+  assert.equal(workspace.state.sessionMeta[hermesSessionKey].transport, 'acp')
 })
 
 test('automatic dialogue queues only the explicitly targeted group members', async (t) => {

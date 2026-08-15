@@ -36,9 +36,8 @@ const PROGRESS_TITLES = new Set([
   'reasoning', 'process', 'read_file', 'write_file', 'search',
   'image_generation', 'audio_generation', 'video_generation', 'tool',
 ])
-// Hermes ACP resume currently returns provider 401 after a successful first turn.
-// Keep RoundRelay conversations on Hermes legacy transport so native sessions remain continuous.
-const HERMES_WORKSPACE_ACP_ENABLED = false
+// Hermes sessions stay on one main-process ACP connection; cross-process resume is rejected.
+const HERMES_WORKSPACE_ACP_ENABLED = true
 
 function isTracedAgentTerminalMessage(message) {
   return message?.role === 'system'

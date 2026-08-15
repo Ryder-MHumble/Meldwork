@@ -1,0 +1,5 @@
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"WorkBuddy fixture reply"}},"session_id":"workbuddy-fixture-session","parent_tool_use_id":null,"uuid":"workbuddy-text-1"}
+{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"workbuddy-tool-search-1","name":"web_search","input":{}}},"session_id":"workbuddy-fixture-session","parent_tool_use_id":null,"uuid":"workbuddy-tool-start-1"}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"Meldwork\"}"}},"session_id":"workbuddy-fixture-session","parent_tool_use_id":null,"uuid":"workbuddy-tool-update-1"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"workbuddy-tool-search-1","content":[{"type":"text","text":"fixture-private-token /Users/private/result"}],"is_error":false}]},"session_id":"workbuddy-fixture-session"}
+{"type":"result","subtype":"success","is_error":false,"result":"WorkBuddy fixture reply","session_id":"workbuddy-fixture-session"}

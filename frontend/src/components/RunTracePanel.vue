@@ -383,6 +383,7 @@ import {
   CloseOutline,
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
+import { retainedTraceEvents } from '../conversationTimelineModel.js'
 import { locale, t } from '../i18n.js'
 
 const props = defineProps({
@@ -624,9 +625,7 @@ function trapFocus(event) {
 }
 
 function filteredEvents(item) {
-  const toolEventTypes = new Set(['tool_start', 'tool_update', 'tool_result_summary'])
-  return (Array.isArray(item?.events) ? item.events : [])
-    .filter(event => toolEventTypes.has(String(event?.type || '').toLowerCase()))
+  return retainedTraceEvents(item?.events)
 }
 
 function eventHasDetails(event) {
@@ -639,7 +638,15 @@ function hasOnlyBareEvents(item) {
 }
 
 function eventKey(event, index) {
-  return `${event?.evidenceId || event?.seq || event?.timestamp || 'event'}-${index}`
+  const type = String(event?.type || '').toLowerCase()
+  const family = type.startsWith('tool_')
+    ? 'tool'
+    : (['reasoning_summary', 'plan', 'status', 'warning'].includes(type) ? type : '')
+  if (family && event?.id) return `lifecycle:${family}:${event.id}`
+  if (event?.evidenceId) return `evidence:${event.evidenceId}`
+  if (event?.seq != null) return `seq:${event.seq}`
+  if (event?.timestamp) return `timestamp:${event.timestamp}`
+  return `event:${index}`
 }
 
 function eventTypeLabel(type) {
@@ -700,9 +707,10 @@ function statusLabel(status) {
 function roundLabel(item) {
   const round = Number(item?.round)
   if (Number.isInteger(round) && round > 0) return t('trace.round', { count: round })
+  if (Number.isInteger(round) && round === 0) return t('trace.response')
   return item?.live && ['running', 'streaming', 'waiting'].includes(String(item?.status || '').toLowerCase())
     ? t('trace.live')
-    : t('trace.singleResponse')
+    : t('trace.response')
 }
 
 function hasTraceContext(context) {

@@ -246,6 +246,7 @@ export default {
     'trace.agentSelector': 'Agent',
     'trace.selectAgent': '选择 Agent 运行记录',
     'trace.round': '第 {count} 轮',
+    'trace.response': '回复',
     'trace.roundSelector': '轮次',
     'trace.selectRound': '选择 {agent} 的轮次',
     'trace.live': '实时',

@@ -45,6 +45,63 @@ afterEach(() => {
 })
 
 describe('RoundRelay workbench', () => {
+  it('creates one live non-Codex tool row from trusted scope without a durable Run', async () => {
+    const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-live-hermes',
+        conversationType: 'group',
+        name: 'Live Hermes trace',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/roundrelay-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'live-hermes-root',
+        groupId: 'group-live-hermes',
+        role: 'user',
+        content: 'Hermes, inspect the result',
+        targetKinds: ['codex', 'hermes'],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const emitTool = (seq, type, status, summary, detail) => emitRunEvent({
+      runId: 'run-live-hermes',
+      agentRunId: 'agent-live-hermes',
+      groupId: 'group-live-hermes',
+      threadRootId: 'live-hermes-root',
+      agentKind: 'hermes',
+      round: 1,
+      seq,
+      id: 'tool-live-hermes',
+      type,
+      status,
+      title: 'research',
+      summary,
+      detail,
+      timestamp: `2026-07-29T08:01:0${seq}.000Z`,
+    })
+    emitTool(1, 'tool_start', 'running', 'starting sanitized research')
+    emitTool(2, 'tool_update', 'running', 'updated sanitized research')
+    emitTool(3, 'tool_result_summary', 'completed', 'final sanitized summary', '3 public results')
+    await flushPromises()
+
+    const hermesRow = wrapper.findAll('.run-agent-row').find(row => row.text().includes('Hermes'))
+    expect(hermesRow).toBeTruthy()
+    await hermesRow.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.trace-event-list > li')).toHaveLength(1)
+    expect(wrapper.get('.trace-event-list').text()).toContain('Tool result')
+    expect(wrapper.get('.trace-event-list').text()).toContain('final sanitized summary')
+    expect(wrapper.get('.trace-event-status').attributes('data-status')).toBe('completed')
+    wrapper.unmount()
+  })
+
   it('opens the selected Agent execution details in a group trace panel', async () => {
     const addMediaListener = vi.fn()
     const removeMediaListener = vi.fn()
@@ -400,7 +457,7 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
     expect(wrapper.findAll('.trace-agent-selector .trace-select-option strong').map(item => item.text()))
       .toEqual(['Claude Code', 'Hermes'])
-    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude evidence')
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Historical Codex answer')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Active Claude work')
 
@@ -411,7 +468,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(wrapper.find('.run-trace-panel').exists()).toBe(true)
-    expect(wrapper.get('.run-trace-panel').text()).not.toContain('Current Claude evidence')
+    expect(wrapper.get('.run-trace-panel').text()).toContain('Current Claude evidence')
     expect(historyBack).not.toHaveBeenCalled()
 
     await wrapper.get('.run-trace-panel .icon-button').trigger('click')
@@ -902,7 +959,7 @@ describe('RoundRelay workbench', () => {
     expect(provisionalTraceButton.element.isConnected).toBe(false)
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('durable summary')
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('durable output')
-    expect(wrapper.get('.trace-event-list').text()).not.toContain('live reasoning')
+    expect(wrapper.get('.trace-event-list').text()).toContain('live reasoning')
     expect(wrapper.get('.trace-event-list').text()).toContain('Bash')
     expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
       .toBe('Round 1 / Completed')
@@ -1119,7 +1176,7 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
-  it('labels a retained manual trace as a completed single response', () => {
+  it('labels a retained manual trace as a completed response', () => {
     const wrapper = mount(RunTracePanel, {
       props: {
         open: true,
@@ -1138,7 +1195,7 @@ describe('RoundRelay workbench', () => {
     })
 
     expect(wrapper.get('.trace-agent-selector .trace-select-trigger small').text())
-      .toBe('Single response / Completed')
+      .toBe('Response / Completed')
     wrapper.unmount()
   })
 
@@ -1168,6 +1225,80 @@ describe('RoundRelay workbench', () => {
     await wrapper.get('.trace-event-list summary').trigger('click')
     expect(wrapper.get('.trace-event-detail-unavailable').text())
       .toContain('was not captured')
+    wrapper.unmount()
+  })
+
+  it('shows sanitized lifecycle events while retaining answer text outside Trace', () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-event-visibility',
+          agentRunId: 'agent-event-visibility',
+          agentKind: 'hermes',
+          round: 1,
+          status: 'running',
+          events: [
+            { id: 'status-1', seq: 1, type: 'status', status: 'running', summary: 'sanitized status' },
+            { id: 'reasoning-1', seq: 2, type: 'reasoning_summary', status: 'completed', summary: 'sanitized reasoning' },
+            { id: 'plan-1', seq: 3, type: 'plan', status: 'completed', summary: 'sanitized plan' },
+            { id: 'tool-1', seq: 4, type: 'tool_start', status: 'running', title: 'search' },
+            { id: 'tool-2', seq: 5, type: 'tool_update', status: 'running', title: 'search update' },
+            { id: 'tool-3', seq: 6, type: 'tool_result_summary', status: 'completed', title: 'search result' },
+            { id: 'warning-1', seq: 7, type: 'warning', status: 'partial', summary: 'sanitized warning' },
+            { seq: 8, type: 'answer_delta', status: 'running', delta: 'answer body token' },
+          ],
+        }],
+        selectedAgentRunId: 'agent-event-visibility',
+      },
+    })
+
+    expect(wrapper.findAll('.trace-event-list > li')).toHaveLength(7)
+    expect(wrapper.get('.trace-event-list').text()).toContain('Status')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Reasoning summary')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Plan')
+    expect(wrapper.get('.trace-event-list').text()).toContain('Warning')
+    expect(wrapper.get('.trace-event-list').text()).not.toContain('answer body token')
+    wrapper.unmount()
+  })
+
+  it('keeps an opened lifecycle disclosure mounted and announces the latest interleaved update', async () => {
+    const item = events => ({
+      runId: 'run-stable-event',
+      agentRunId: 'agent-stable-event',
+      agentKind: 'hermes',
+      round: 1,
+      status: events.at(-1).status,
+      events,
+    })
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [item([
+          { id: 'tool-stable', seq: 1, type: 'tool_start', status: 'running', title: 'search' },
+          { id: 'warning-stable', seq: 2, type: 'warning', status: 'partial', title: 'rate limit' },
+        ])],
+        selectedAgentRunId: 'agent-stable-event',
+      },
+    })
+    const disclosure = wrapper.findAll('.trace-event-list details')[0].element
+    disclosure.open = true
+
+    await wrapper.setProps({
+      items: [item([
+        {
+          id: 'tool-stable', seq: 3, type: 'tool_result_summary', status: 'completed',
+          title: 'search', summary: 'final sanitized summary',
+        },
+        { id: 'warning-stable', seq: 2, type: 'warning', status: 'partial', title: 'rate limit' },
+      ])],
+    })
+
+    expect(wrapper.findAll('.trace-event-title').map(item => item.text())).toEqual(['rate limit', 'search'])
+    expect(wrapper.findAll('.trace-event-list details')[1].element).toBe(disclosure)
+    expect(wrapper.findAll('.trace-event-list details')[1].element.open).toBe(true)
+    expect(wrapper.get('.trace-event-live-status').text())
+      .toBe('Hermes / Tool result / search / Completed')
     wrapper.unmount()
   })
 

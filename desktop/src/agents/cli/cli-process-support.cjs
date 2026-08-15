@@ -70,7 +70,7 @@ function openClawChildEnvironment(workdir, options, platform) {
   }
 
   for (const key of OPENCLAW_RUNTIME_PATH_KEYS) env[key] = source[key]
-  env[guard.credentialKey] = source[guard.credentialKey]
+  for (const key of guard.credentialKeys) env[key] = source[key]
   const isolatedHome = source.OPENCLAW_HOME
   env.HOME = isolatedHome
   env.USERPROFILE = isolatedHome
@@ -79,6 +79,10 @@ function openClawChildEnvironment(workdir, options, platform) {
   env.XDG_STATE_HOME = path.join(isolatedHome, '.local', 'state')
   env.XDG_CACHE_HOME = path.join(isolatedHome, '.cache')
   env.XDG_RUNTIME_DIR = path.join(isolatedHome, '.runtime')
+  env.TMPDIR = env.XDG_RUNTIME_DIR
+  env.TMP = env.XDG_RUNTIME_DIR
+  env.TEMP = env.XDG_RUNTIME_DIR
+  env.OPENCLAW_DISABLE_BONJOUR = '1'
   env.APPDATA = path.join(isolatedHome, 'AppData', 'Roaming')
   env.LOCALAPPDATA = path.join(isolatedHome, 'AppData', 'Local')
   env.PATH = searchPath({ platform })

@@ -10,7 +10,6 @@ const {
   detectAgents,
   imageAttachmentLimit,
   invocation,
-  normalizeOutput,
   parseCodexOutput,
   parseGeminiOutput,
   parseKimiOutput,
@@ -25,6 +24,7 @@ const {
   runtimeCommandSummary,
   searchPath,
 } = require('../../../src/agents/cli/cli-adapters.cjs')
+const { resolveConnectorEventProfile } = require('../../../src/agents/cli/cli-event-profiles.cjs')
 const { managedOpenClawOptions } = require('../../../src/agents/cli/openclaw-runtime.cjs')
 const {
   executable,
@@ -42,6 +42,18 @@ const OUTBOUND_PAYLOAD_KEYS = [
   'wirePayloadBytes',
   'wirePayloadHash',
 ]
+
+function profileOutput(kind, stdout, sessionRef = '') {
+  const profile = resolveConnectorEventProfile(
+    kind,
+    ['hermes', 'openclaw'].includes(kind) ? { transport: 'legacy' } : {},
+  )
+  const accumulator = profile.createFinalOutputAccumulator(sessionRef)
+  const bytes = Buffer.from(stdout)
+  accumulator.capture?.(bytes)
+  accumulator.write?.(bytes)
+  return accumulator.end({ sessionRef })
+}
 
 function wireFingerprint(value) {
   const bytes = Buffer.from(JSON.stringify(value), 'utf8')
@@ -323,6 +335,187 @@ send()
   )
 })
 
+test('runAgent never reconstructs a configured credential across any answer-delta split', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-answer-redaction-'))
+  const secret = 'provider-secret-value'
+  const cli = executable(directory, 'answer-redaction.cjs', `
+const secret = process.env.CONNECTOR_TEST_API_KEY
+const split = Number(process.env.ROUNDRELAY_SECRET_SPLIT)
+for (const text of [secret.slice(0, split), secret.slice(split)]) {
+  process.stdout.write(JSON.stringify({
+    type: 'item.completed', item: { type: 'agent_message', text },
+  }) + '\\n')
+}
+process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n')
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  for (let split = 1; split < secret.length; split += 1) {
+    const events = []
+    await runAgent(
+      { kind: 'codex', executable: cli, name: 'Codex' },
+      'reply',
+      directory,
+      {
+        env: { CONNECTOR_TEST_API_KEY: secret, ROUNDRELAY_SECRET_SPLIT: String(split) },
+        onEvent: event => events.push(event),
+      },
+    )
+    const delivered = events.filter(event => event.type === 'answer_delta').map(event => event.delta).join('')
+    assert.doesNotMatch(delivered, new RegExp(secret), `split ${split}`)
+    assert.doesNotMatch(JSON.stringify(events), new RegExp(secret), `split ${split}`)
+  }
+})
+
+test('WorkBuddy stream-json emits text and tool lifecycle events before child close', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-workbuddy-stream-'))
+  const releaseFile = path.join(directory, 'release')
+  const cli = executable(directory, 'workbuddy-stream.cjs', `
+const fs = require('node:fs')
+const records = [
+  { type: 'stream_event', event: { type: 'content_block_delta', index: 0,
+    delta: { type: 'text_delta', text: 'streamed reply' } },
+    session_id: 'workbuddy-stream-session', parent_tool_use_id: null, uuid: 'text-1' },
+  { type: 'stream_event', event: { type: 'content_block_start', index: 1,
+    content_block: { type: 'tool_use', id: 'workbuddy-tool-1', name: 'web_search', input: {} } },
+    session_id: 'workbuddy-stream-session', parent_tool_use_id: null, uuid: 'tool-start-1' },
+  { type: 'stream_event', event: { type: 'content_block_delta', index: 1,
+    delta: { type: 'input_json_delta', partial_json: '{"query":"RoundRelay"}' } },
+    session_id: 'workbuddy-stream-session', parent_tool_use_id: null, uuid: 'tool-update-1' },
+  { type: 'user', message: { role: 'user', content: [{ type: 'tool_result',
+    tool_use_id: 'workbuddy-tool-1', content: [{ type: 'text', text: 'one result' }],
+    is_error: false }] }, session_id: 'workbuddy-stream-session' },
+]
+for (const record of records) process.stdout.write(JSON.stringify(record) + '\\n')
+const finish = () => {
+  if (!fs.existsSync(process.env.ROUNDRELAY_TEST_RELEASE_FILE)) return setTimeout(finish, 10)
+  process.stdout.write(JSON.stringify({
+    type: 'result', subtype: 'success', is_error: false,
+    result: 'streamed reply', session_id: 'workbuddy-stream-session',
+  }) + '\\n')
+}
+finish()
+`)
+  t.after(() => {
+    try { fs.writeFileSync(releaseFile, 'release') } catch { /* test cleanup */ }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  const events = []
+  let lifecycleResolve
+  const lifecycle = new Promise(resolve => { lifecycleResolve = resolve })
+  let resultResolved = false
+  const resultPromise = runAgent(
+    { kind: 'workbuddy', executable: cli, name: 'WorkBuddy' },
+    'hello',
+    directory,
+    {
+      env: { ROUNDRELAY_TEST_RELEASE_FILE: releaseFile },
+      onEvent: event => {
+        events.push(event)
+        if (event.type === 'tool_result_summary') lifecycleResolve()
+      },
+    },
+  ).then((result) => {
+    resultResolved = true
+    return result
+  })
+
+  await within(lifecycle)
+  assert.equal(resultResolved, false)
+  assert.deepEqual(events.map(event => event.type), [
+    'answer_delta', 'tool_start', 'tool_update', 'tool_result_summary',
+  ])
+  assert.equal(events.some(event => event.title === 'connector_limited'), false)
+  fs.writeFileSync(releaseFile, 'release')
+  const result = await resultPromise
+  assert.equal(result.text, 'streamed reply')
+  assert.equal(result.sessionRef, 'workbuddy-stream-session')
+  assert.equal(events.filter(event => event.type === 'answer_delta')
+    .map(event => event.delta).join(''), result.text)
+})
+
+test('Gemini profile state retains one real tool lifecycle id and summary', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-gemini-profile-state-'))
+  const cli = executable(directory, 'gemini-profile-state.cjs', `
+const records = [
+  { type: 'init', session_id: 'gemini-profile-session' },
+  { type: 'tool_use', tool_name: 'google_search', tool_id: 'gemini-tool-1',
+    parameters: { query: 'RoundRelay' } },
+  { type: 'tool_result', tool_id: 'gemini-tool-1', status: 'success', output: 'one result' },
+  { type: 'message', role: 'assistant', content: 'Gemini reply', delta: true },
+  { type: 'result', status: 'success' },
+]
+for (const record of records) process.stdout.write(JSON.stringify(record) + '\\n')
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const events = []
+
+  const result = await runAgent(
+    { kind: 'gemini', executable: cli, name: 'Gemini' },
+    'hello',
+    directory,
+    { onEvent: event => events.push(event) },
+  )
+
+  const lifecycle = events.filter(event => event.type.startsWith('tool_'))
+  assert.equal(result.text, 'Gemini reply')
+  assert.deepEqual(lifecycle.map(event => event.id), ['gemini-tool-1', 'gemini-tool-1'])
+  assert.equal(lifecycle[0].title, lifecycle[1].title)
+  assert.equal(lifecycle[0].summary, lifecycle[1].summary)
+  assert.match(lifecycle[1].summary, /query/)
+})
+
+test('final-only profiles warn early but emit the completed answer only after close', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-final-only-profile-'))
+  const readyFile = path.join(directory, 'ready')
+  const releaseFile = path.join(directory, 'release')
+  const cli = executable(directory, 'opencodereview-final-only.cjs', `
+const fs = require('node:fs')
+process.stdout.write(JSON.stringify({
+  status: 'complete', message: 'Review complete.', comments: [], session_id: 'ocr-run-1',
+  manifest: { schema_version: 'ocr.run-manifest/v1', operation: 'review', terminal_state: 'complete' },
+}))
+fs.writeFileSync(process.env.ROUNDRELAY_TEST_READY_FILE, 'ready')
+const finish = () => {
+  if (!fs.existsSync(process.env.ROUNDRELAY_TEST_RELEASE_FILE)) return setTimeout(finish, 10)
+}
+finish()
+`)
+  t.after(() => {
+    try { fs.writeFileSync(releaseFile, 'release') } catch { /* test cleanup */ }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  const events = []
+  let resultResolved = false
+  const resultPromise = runAgent(
+    { kind: 'opencodereview', executable: cli, name: 'OpenCodeReview' },
+    'review',
+    directory,
+    {
+      env: {
+        ROUNDRELAY_TEST_READY_FILE: readyFile,
+        ROUNDRELAY_TEST_RELEASE_FILE: releaseFile,
+      },
+      onEvent: event => events.push(event),
+    },
+  ).then((result) => {
+    resultResolved = true
+    return result
+  })
+
+  await readWhenReady(readyFile)
+  assert.equal(resultResolved, false)
+  assert.equal(events.some(event => event.type === 'answer_delta'), false)
+  assert.equal(events.filter(event => event.title === 'connector_limited').length, 1)
+  fs.writeFileSync(releaseFile, 'release')
+  const result = await resultPromise
+  const answers = events.filter(event => event.type === 'answer_delta')
+  assert.equal(result.text, 'Review complete.')
+  assert.deepEqual(answers.map(event => event.status), ['completed'])
+  assert.equal(answers[0].delta, result.text)
+})
+
 test('Hermes starts ACP sessions but keeps unmarked historical sessions on the legacy transport', () => {
   const created = invocation('hermes', '/tmp/hermes', '/tmp')
   assert.deepEqual(created.args, ['acp'])
@@ -346,6 +539,9 @@ test('Hermes starts ACP sessions but keeps unmarked historical sessions on the l
   })
   assert.deepEqual(writable.args, ['acp'])
   assert.equal(writable.acpMode, 'accept_edits')
+  for (const spec of [created, resumed, legacy, writable]) {
+    assert.equal(spec.args.some(arg => /(?:tool.*(?:crop|trunc)|(?:crop|trunc).*tool)/iu.test(arg)), false)
+  }
 })
 
 test('Hermes falls back to legacy quiet mode when ACP startup fails before the prompt', async (t) => {
@@ -356,7 +552,7 @@ if (process.argv[2] !== 'chat' || !process.argv.includes('--quiet') || process.a
   process.exit(2)
 }
 process.stdout.write('\\u001b[36mHermes legacy fallback\\u001b[0m\\n')
-process.stderr.write('session_id: hermes-fallback-session\\n')
+  process.stderr.write('session_id: hermes-fallback-session\\n')
 `)
   const events = []
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -815,8 +1011,394 @@ input.on('line', (line) => {
   }])
 })
 
-test('Hermes normalizes official quiet stdout as the fallback reply', () => {
-  assert.deepEqual(normalizeOutput(
+test('MiMo ACP uses the selected profile for pre-terminal plan, tool, and text events', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-mimo-acp-profile-'))
+  const readyFile = path.join(directory, 'ready')
+  const releaseFile = path.join(directory, 'release')
+  const cli = executable(directory, 'mimo-acp-profile.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+const update = (sessionId, value) => send({
+  jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: value },
+})
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'mimo-acp-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    update(sessionId, {
+      sessionUpdate: 'plan',
+      entries: [{ content: 'Inspect workspace', priority: 'medium', status: 'in_progress' }],
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call', toolCallId: 'mimo-tool-1', title: 'search',
+      kind: 'search', status: 'in_progress', rawInput: { query: 'runtime bridge' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'tool_call_update', toolCallId: 'mimo-tool-1', title: 'search',
+      kind: 'search', status: 'completed', rawOutput: { matches: 1 },
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'MiMo ACP reply' },
+    })
+    fs.writeFileSync(process.env.ROUNDRELAY_TEST_READY_FILE, 'ready')
+    const finish = () => {
+      if (!fs.existsSync(process.env.ROUNDRELAY_TEST_RELEASE_FILE)) return setTimeout(finish, 10)
+      send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+    }
+    finish()
+  }
+})
+`)
+  t.after(() => {
+    try { fs.writeFileSync(releaseFile, 'release') } catch { /* test cleanup */ }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  const events = []
+  let answerResolve
+  const answer = new Promise(resolve => { answerResolve = resolve })
+  let resultResolved = false
+  let resultError = null
+  const resultPromise = runAgent(
+    { kind: 'mimo', executable: cli, name: 'MiMo' },
+    'hello',
+    directory,
+    {
+      env: {
+        ROUNDRELAY_TEST_READY_FILE: readyFile,
+        ROUNDRELAY_TEST_RELEASE_FILE: releaseFile,
+      },
+      onEvent: event => {
+        events.push(event)
+        if (event.type === 'answer_delta') answerResolve()
+      },
+    },
+  ).then((result) => {
+    resultResolved = true
+    return result
+  }).catch((error) => {
+    resultError = error
+    return null
+  })
+
+  await within(answer)
+  await readWhenReady(readyFile)
+  assert.equal(resultResolved, false)
+  assert.deepEqual(events.map(event => event.type), [
+    'plan', 'tool_start', 'tool_result_summary', 'answer_delta',
+  ])
+  fs.writeFileSync(releaseFile, 'release')
+  const result = await resultPromise
+  assert.equal(resultError, null)
+  assert.deepEqual(result, {
+    text: 'MiMo ACP reply', sessionRef: 'mimo-acp-session', outcome: 'completed',
+  })
+  assert.equal(events.filter(event => event.type === 'answer_delta').length, 1)
+})
+
+test('ACP terminal stop reasons preserve exact outcome and failure semantics', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-acp-stop-reasons-'))
+  const cli = executable(directory, 'acp-stop-reasons.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'stop-reason-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    const prompt = message.params.prompt[0].text
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId: message.params.sessionId,
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: prompt + ' reply' },
+        },
+      },
+    })
+    const stopReasons = {
+      refusal: 'refusal',
+      unknown: 'future_stop_reason',
+      limited: 'max_tokens',
+      cancelled: 'cancelled',
+    }
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: stopReasons[prompt] } })
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const agent = { kind: 'mimo', executable: cli, name: 'MiMo' }
+
+  await t.test('refusal', async () => {
+    await assert.rejects(
+      runAgent(agent, 'refusal', directory),
+      error => error.message === 'LOCAL_AGENT_REFUSED'
+        && error.failure.code === 'LOCAL_AGENT_REFUSED',
+    )
+  })
+  await t.test('unknown stop reason', async () => {
+    await assert.rejects(
+      runAgent(agent, 'unknown', directory),
+      error => error.message === 'LOCAL_AGENT_OUTCOME_INVALID'
+        && error.failure.code === 'LOCAL_AGENT_OUTCOME_INVALID',
+    )
+  })
+  await t.test('max tokens', async () => {
+    assert.deepEqual(await runAgent(agent, 'limited', directory), {
+      text: 'limited reply',
+      sessionRef: 'stop-reason-session',
+      outcome: 'partial',
+    })
+  })
+  await t.test('cancellation', async () => {
+    await assert.rejects(
+      runAgent(agent, 'cancelled', directory),
+      error => error.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
+        && error.failure.category === 'cancellation',
+    )
+  })
+})
+
+test('MiMo and OpenCode retry JSON only after ACP setup failure', async (t) => {
+  for (const kind of ['mimo', 'opencode']) {
+    await t.test(kind, async (t) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `roundrelay-${kind}-acp-fallback-`))
+      const callsFile = path.join(directory, 'calls.jsonl')
+      const cli = executable(directory, `${kind}-fallback.cjs`, `
+const fs = require('node:fs')
+fs.appendFileSync(process.env.ROUNDRELAY_TEST_CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'text', sessionID: '${kind}-json-session',
+  part: { type: 'text', text: '${kind} JSON fallback' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'step_finish', sessionID: '${kind}-json-session',
+  part: { type: 'step-finish', reason: 'stop' },
+}) + '\\n')
+`)
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const events = []
+
+      const result = await runAgent(
+        { kind, executable: cli, name: kind },
+        'hello',
+        directory,
+        {
+          env: { ROUNDRELAY_TEST_CALLS_FILE: callsFile },
+          loadAcpSdkFn: async () => { throw new Error('ACP SDK unavailable') },
+          onEvent: event => events.push(event),
+        },
+      )
+
+      const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+      assert.equal(result.text, `${kind} JSON fallback`)
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0][0], 'run')
+      assert.equal(events.filter(event => event.title === 'connector_fallback').length, 1)
+    })
+  }
+})
+
+test('MiMo and OpenCode preserve resumed sessions through JSON setup fallback', async (t) => {
+  for (const kind of ['mimo', 'opencode']) {
+    await t.test(kind, async (t) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `roundrelay-${kind}-resume-fallback-`))
+      const cli = executable(directory, `${kind}-resume-fallback.cjs`, `
+const sessionIndex = process.argv.indexOf('--session')
+const sessionRef = sessionIndex === -1 ? '' : process.argv[sessionIndex + 1]
+if (!sessionRef) {
+  process.stdout.write(JSON.stringify({
+    type: 'text', sessionID: '${kind}-fresh-session',
+    part: { type: 'text', text: 'unexpected fresh success' },
+  }) + '\\n')
+  process.stdout.write(JSON.stringify({
+    type: 'step_finish', sessionID: '${kind}-fresh-session',
+    part: { type: 'step-finish', reason: 'stop' },
+  }) + '\\n')
+} else {
+  process.stdout.write(JSON.stringify({
+    type: 'text', sessionID: sessionRef,
+    part: { type: 'text', text: 'resumed ' + sessionRef },
+  }) + '\\n')
+  process.stdout.write(JSON.stringify({
+    type: 'step_finish', sessionID: sessionRef,
+    part: { type: 'step-finish', reason: 'stop' },
+  }) + '\\n')
+}
+`)
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const sessionRef = `${kind}-existing-session`
+
+      const result = await runAgent(
+        { kind, executable: cli, name: kind },
+        'continue',
+        directory,
+        {
+          sessionRef,
+          loadAcpSdkFn: async () => { throw new Error('ACP SDK unavailable') },
+        },
+      )
+
+      assert.deepEqual(result, {
+        text: `resumed ${sessionRef}`,
+        sessionRef,
+        outcome: 'completed',
+      })
+    })
+  }
+})
+
+test('MiMo and OpenCode propagate invalid resumed sessions from JSON setup fallback', async (t) => {
+  for (const kind of ['mimo', 'opencode']) {
+    await t.test(kind, async (t) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `roundrelay-${kind}-invalid-fallback-`))
+      const cli = executable(directory, `${kind}-invalid-fallback.cjs`, `
+const sessionIndex = process.argv.indexOf('--session')
+const sessionRef = sessionIndex === -1 ? '' : process.argv[sessionIndex + 1]
+if (sessionRef) {
+  process.stderr.write('No session found with session ID ' + sessionRef)
+  process.exit(1)
+}
+process.stdout.write(JSON.stringify({
+  type: 'text', sessionID: '${kind}-fresh-session',
+  part: { type: 'text', text: 'unexpected fresh success' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'step_finish', sessionID: '${kind}-fresh-session',
+  part: { type: 'step-finish', reason: 'stop' },
+}) + '\\n')
+`)
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const sessionRef = `${kind}-stale-session`
+
+      await assert.rejects(
+        runAgent(
+          { kind, executable: cli, name: kind },
+          'continue',
+          directory,
+          {
+            sessionRef,
+            loadAcpSdkFn: async () => { throw new Error('ACP SDK unavailable') },
+          },
+        ),
+        error => error.message === 'LOCAL_AGENT_SESSION_INVALID'
+          && error.failure.sessionInvalid === true,
+      )
+    })
+  }
+})
+
+test('ACP setup fallback absorbs asynchronous warning callback rejection', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-acp-fallback-async-event-'))
+  const cli = executable(directory, 'acp-fallback-async-event.cjs', `
+process.stdout.write(JSON.stringify({
+  type: 'text', sessionID: 'fallback-event-session',
+  part: { type: 'text', text: 'fallback reply' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'step_finish', sessionID: 'fallback-event-session',
+  part: { type: 'step-finish', reason: 'stop' },
+}) + '\\n')
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const rejection = Promise.reject(new Error('renderer callback failed'))
+  rejection.then(undefined, () => {})
+  const originalCatch = rejection.catch.bind(rejection)
+  let absorbed = false
+  rejection.catch = (handler) => {
+    absorbed = true
+    return originalCatch(handler)
+  }
+
+  const result = await runAgent(
+    { kind: 'mimo', executable: cli, name: 'MiMo' },
+    'hello',
+    directory,
+    {
+      loadAcpSdkFn: async () => { throw new Error('ACP SDK unavailable') },
+      onEvent: event => event.title === 'connector_fallback' ? rejection : undefined,
+    },
+  )
+
+  assert.equal(result.text, 'fallback reply')
+  assert.equal(absorbed, true)
+})
+
+test('MiMo and OpenCode never retry JSON after session prompt delivery', async (t) => {
+  for (const kind of ['mimo', 'opencode']) {
+    await t.test(kind, async (t) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), `roundrelay-${kind}-acp-no-retry-`))
+      const callsFile = path.join(directory, 'calls.jsonl')
+      const cli = executable(directory, `${kind}-no-retry.cjs`, `
+const fs = require('node:fs')
+const readline = require('node:readline')
+fs.appendFileSync(process.env.ROUNDRELAY_TEST_CALLS_FILE, JSON.stringify(process.argv.slice(2)) + '\\n')
+if (process.argv[2] !== 'acp') {
+  process.stdout.write(JSON.stringify({
+    type: 'text', sessionID: '${kind}-unexpected-fallback',
+    part: { type: 'text', text: 'unexpected fallback' },
+  }) + '\\n')
+  process.stdout.write(JSON.stringify({
+    type: 'step_finish', sessionID: '${kind}-unexpected-fallback',
+    part: { type: 'step-finish', reason: 'stop' },
+  }) + '\\n')
+} else {
+  const input = readline.createInterface({ input: process.stdin })
+  const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+  input.on('line', (line) => {
+    const message = JSON.parse(line)
+    if (message.method === 'initialize') {
+      send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+    } else if (message.method === 'session/new') {
+      send({ jsonrpc: '2.0', id: message.id, result: { sessionId: '${kind}-acp-session' } })
+    } else if (message.method === 'session/set_mode') {
+      send({ jsonrpc: '2.0', id: message.id, result: {} })
+    } else if (message.method === 'session/prompt') {
+      send({ jsonrpc: '2.0', id: message.id,
+        error: { code: -32000, message: 'failed after prompt delivery' } })
+    }
+  })
+}
+`)
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const events = []
+
+      await assert.rejects(
+        runAgent(
+          { kind, executable: cli, name: kind },
+          'hello',
+          directory,
+          {
+            env: { ROUNDRELAY_TEST_CALLS_FILE: callsFile },
+            onEvent: event => events.push(event),
+          },
+        ),
+        error => error.message === 'LOCAL_AGENT_PROCESS_FAILED',
+      )
+
+      const calls = fs.readFileSync(callsFile, 'utf8').trim().split('\n').map(line => JSON.parse(line))
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0][0], 'acp')
+      assert.equal(events.some(event => event.title === 'connector_fallback'), false)
+    })
+  }
+})
+
+test('Hermes legacy profile accumulates official quiet stdout as the fallback reply', () => {
+  assert.deepEqual(profileOutput(
     'hermes',
     '\u001b[32mHermes process output\u001b[0m\n',
     'hermes-session-123',
@@ -953,44 +1535,73 @@ process.stderr.write('diagnostic\\nsession_id: hermes-session-123\\n')
   })
 })
 
-test('runAgent prefers the authoritative Hermes reply and keeps stderr progress out of content', async (t) => {
+test('legacy profile restores Session/final after close without review-diff progress', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-final-'))
+  const readyFile = path.join(directory, 'ready')
+  const releaseFile = path.join(directory, 'release')
   const cli = executable(directory, 'hermes-final.cjs', `
+const fs = require('node:fs')
 process.stdout.write('┊ planning\\nnoisy stdout fallback')
 process.stderr.write('┊ review diff\\na//tmp/report.py → b//tmp/report.py\\n@@ -0,0 +1 @@\\n+tool trace\\nsession_id: hermes-session-final\\n')
+fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready')
+const finish = () => {
+  if (!fs.existsSync(${JSON.stringify(releaseFile)})) return setTimeout(finish, 10)
+}
+finish()
   `)
   const progress = []
+  const events = []
+  const lifecycle = []
   let finalLookup
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  t.after(() => {
+    try { fs.writeFileSync(releaseFile, 'release') } catch { /* test cleanup */ }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
 
-  const result = await runAgent(
+  let resultResolved = false
+  const resultPromise = runAgent(
     { kind: 'hermes', executable: cli, name: 'Hermes' },
     'hello',
     directory,
     {
       env: { OPENAI_API_KEY: 'test-secret-value' },
       hermesAcpAvailable: false,
+      onEvent: event => events.push(event),
       onProgress: step => progress.push(step),
+      onSessionRef: async (sessionRef) => lifecycle.push(`session:${sessionRef}`),
       hermesMessageWatermarkFn: () => 41,
       hermesFinalResponseFn: (sessionRef, lookupOptions) => {
+        lifecycle.push('final-lookup')
         finalLookup = { sessionRef, lookupOptions }
         return sessionRef === 'hermes-session-final'
           ? 'Hermes authoritative final test-secret-value'
           : ''
       },
     },
-  )
+  ).then((result) => {
+    resultResolved = true
+    return result
+  })
+
+  await readWhenReady(readyFile)
+  assert.equal(resultResolved, false)
+  assert.equal(events.some(event => event.type === 'answer_delta'), false)
+  fs.writeFileSync(releaseFile, 'release')
+  const result = await resultPromise
 
   assert.deepEqual(result, {
     text: 'Hermes authoritative final [redacted]',
     sessionRef: 'hermes-session-final',
     outcome: 'completed',
-    progress: [{ title: 'write_file', status: 'completed' }],
   })
-  assert.deepEqual(progress, [{ title: 'write_file', status: 'completed' }])
+  assert.deepEqual(progress, [])
+  assert.deepEqual(lifecycle, ['session:hermes-session-final', 'final-lookup'])
   assert.equal(finalLookup.sessionRef, 'hermes-session-final')
   assert.equal(finalLookup.lookupOptions.afterMessageId, 41)
   assert.doesNotMatch(result.text, /review diff|tool trace|noisy stdout|test-secret-value/)
+  assert.deepEqual(events.filter(event => event.type === 'answer_delta'), [{
+    type: 'answer_delta', status: 'completed', delta: 'Hermes authoritative final [redacted]',
+  }])
 })
 
 test('Hermes final lookup accepts post-watermark stop and length rows through a read-only query seam', () => {
@@ -1099,8 +1710,7 @@ process.stderr.write(${JSON.stringify(`${processProgress}\nsession_id: hermes-se
     'session:hermes-session-no-final',
     'final-lookup',
   ])
-  assert.equal(progress.length, 8)
-  assert.deepEqual(progress.at(-1), { title: 'write_file', status: 'completed' })
+  assert.deepEqual(progress, [])
 })
 
 test('runAgent persists the Hermes session before falling back from a throwing final lookup', async (t) => {
@@ -1167,27 +1777,30 @@ process.stderr.write('session_id: hermes-session-no-watermark\\n')
   assert.equal(finalLookupCount, 0)
 })
 
-test('OpenClaw JSON output is reduced to reply text', () => {
+test('OpenClaw terminal profile accumulates JSON output as reply text', () => {
   const raw = JSON.stringify({
     payloads: [{ text: '第一段' }, { text: '第二段' }],
     meta: { aborted: false, completion: { stopReason: 'stop' } },
   })
-  assert.deepEqual(normalizeOutput('openclaw', raw, 'agent:main:desktop-roundrelay-group-openclaw'), {
+  assert.deepEqual(profileOutput('openclaw', raw, 'agent:main:desktop-roundrelay-group-openclaw'), {
     text: '第一段\n第二段',
     sessionRef: 'agent:main:desktop-roundrelay-group-openclaw',
     outcome: 'completed',
   })
 })
 
-test('OpenClaw uses a stable session key for group isolation', () => {
+test('OpenClaw ACP binds the stable group Session key without prefixing cwd', () => {
   const spec = invocation(
     'openclaw', '/tmp/openclaw', '/tmp/work', 'agent:main:desktop-roundrelay-group-openclaw',
   )
   assert.deepEqual(spec.args, [
-    'agent', '--local', '--agent', 'main',
-    '--session-key', 'agent:main:desktop-roundrelay-group-openclaw', '--message',
+    '--no-color', '--log-level', 'info',
+    'acp', '--session', 'agent:main:desktop-roundrelay-group-openclaw',
+    '--no-prefix-cwd', '--verbose',
   ])
-  assert.deepEqual(spec.suffixArgs, ['--json'])
+  assert.equal(spec.eventTransport, 'acp')
+  assert.equal(spec.openClawGateway, true)
+  assert.equal(spec.publicSessionRef, 'agent:main:desktop-roundrelay-group-openclaw')
 })
 
 test('runAgent uses the app-signed OpenClaw workspace', async (t) => {
@@ -1223,10 +1836,98 @@ process.stdout.write(JSON.stringify({
   )
 
   assert.equal(result.text, workdir)
-  assert.deepEqual(events[0], {
-    id: 'openclaw-connector',
-    type: 'warning',
-    status: 'waiting',
-    title: 'connector_limited',
+  assert.deepEqual(events.filter(event => event.type === 'warning').map(event => event.title), [
+    'connector_fallback',
+    'connector_limited',
+  ])
+  assert.equal(events.filter(event => event.type === 'answer_delta')
+    .map(event => event.delta).join(''), '[path]')
+})
+
+test('OpenClaw keeps the re-signed runtime guard when ACP setup falls back to legacy', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-acp-fallback-'))
+  const workdir = path.join(directory, 'workspace')
+  const stoppedFile = path.join(directory, 'gateway-stopped')
+  const healthProbeFile = path.join(directory, 'gateway-health-probe.json')
+  const legacyProbeFile = path.join(directory, 'legacy-probe.json')
+  fs.mkdirSync(workdir)
+  const cli = executable(directory, 'openclaw-acp-fallback.cjs', `
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+const globalArgs = ['--no-color', '--log-level', 'info']
+const commandOffset = globalArgs.every((value, index) => args[index] === value)
+  ? globalArgs.length
+  : 0
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'health') {
+  const token = process.env.OPENCLAW_GATEWAY_TOKEN || ''
+  fs.writeFileSync(${JSON.stringify(healthProbeFile)}, JSON.stringify({
+    args,
+    hasGatewayToken: token.length >= 32,
+    tokenInArgs: Boolean(token && args.join(' ').includes(token)),
+  }))
+  process.stdout.write(JSON.stringify({ ok: true }))
+  process.exit(0)
+}
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'run') {
+  process.stdout.write('[gateway] ready\\n')
+  process.on('SIGTERM', () => {
+    fs.writeFileSync(${JSON.stringify(stoppedFile)}, 'stopped')
+    process.exit(0)
   })
+  setInterval(() => {}, 1000)
+  return
+}
+if (args[commandOffset] === 'acp') {
+  process.stderr.write('ACP setup failed')
+  process.exit(2)
+}
+if (args[0] !== 'agent') process.exit(3)
+const config = JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH, 'utf8'))
+fs.writeFileSync(${JSON.stringify(legacyProbeFile)}, JSON.stringify({
+  gatewayPort: config.gateway?.port,
+  hasGatewayToken: (process.env.OPENCLAW_GATEWAY_TOKEN || '').length >= 32,
+}))
+process.stdout.write(JSON.stringify({
+  payloads: [{ text: 'OpenClaw legacy fallback' }],
+  meta: { aborted: false, completion: { stopReason: 'stop' } },
+}))
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const stableSessionRef = 'agent:main:openclaw-acp-fallback'
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: stableSessionRef,
+    provider: {
+      OPENAI_API_KEY: 'adapter-openclaw-key',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      OPENAI_MODEL: 'adapter-model',
+    },
+  })
+
+  const result = await runAgent(
+    { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
+    'hello',
+    workdir,
+    { ...runtime, sessionRef: stableSessionRef },
+  )
+
+  assert.deepEqual(result, {
+    text: 'OpenClaw legacy fallback',
+    sessionRef: stableSessionRef,
+    outcome: 'completed',
+  })
+  assert.equal(await readWhenReady(stoppedFile), 'stopped')
+  const probe = await readJsonWhenReady(legacyProbeFile)
+  const healthProbe = await readJsonWhenReady(healthProbeFile)
+  assert.equal(Number.isInteger(probe.gatewayPort), true)
+  assert.equal(probe.hasGatewayToken, true)
+  assert.equal(healthProbe.hasGatewayToken, true)
+  assert.equal(healthProbe.tokenInArgs, false)
+  assert.deepEqual(healthProbe.args, [
+    '--no-color', '--log-level', 'info', 'gateway', 'health',
+    '--port', String(probe.gatewayPort),
+    '--timeout', '5000',
+    '--json',
+  ])
 })

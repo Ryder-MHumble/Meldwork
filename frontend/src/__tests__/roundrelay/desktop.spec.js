@@ -498,22 +498,149 @@ describe('run event normalization', () => {
     expect(first.runs[0].agentRuns[0].output).toBe('First')
     expect(duplicate).toBe(first)
     expect(second.runs[0].agentRuns[0].output).toBe('First answer')
-    expect(second.runs[0].agentRuns[0].events.map(item => item.seq)).toEqual([10, 11])
+    expect(second.runs[0].agentRuns[0].events).toEqual([])
+    expect(second.runs[0].agentRuns[0].seenSeqs).toEqual([10, 11])
     expect(mergeRunEvent(second, event({ seq: 12, type: 'unknown' }))).toBe(second)
   })
 
-  it('does not synthesize a Run from an event without a durable snapshot record', () => {
+  it('replaces provisional streamed output with an explicit authoritative correction', () => {
+    const base = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
+        targetKinds: ['codex'], agentRuns: [],
+      }],
+    })
+    const provisional = mergeRunEvent(base, event({ seq: 10, delta: 'partial' }))
+    const corrected = mergeRunEvent(provisional, event({
+      seq: 11, status: 'completed', delta: 'authoritative final', replace: true,
+    }))
+
+    expect(normalizeRunEvent(event({ replace: true }))).toMatchObject({ replace: true })
+    expect(normalizeRunEvent(event({ replace: 'true' }))).not.toHaveProperty('replace')
+    expect(normalizeRunEvent(event({ type: 'warning', delta: undefined, replace: true })))
+      .not.toHaveProperty('replace')
+    expect(corrected.runs[0].agentRuns[0].output).toBe('authoritative final')
+    expect(corrected.runs[0].agentRuns[0].seenSeqs).toEqual([10, 11])
+    expect(corrected.runs[0].agentRuns[0].events).toEqual([])
+  })
+
+  it('synthesizes a scoped live Run from a known group and root message', () => {
     const snapshot = normalizeSnapshot({
       agents: [],
-      groups: [],
-      messages: [],
+      groups: [{ id: 'group-1', agentKinds: ['codex', 'hermes'] }],
+      messages: [{
+        id: 'root-1',
+        groupId: 'group-1',
+        role: 'user',
+        content: 'Compare both approaches',
+        targetKinds: ['codex', 'hermes'],
+      }],
       runningGroupIds: [],
       runs: [],
     })
 
-    expect(mergeRunEvent(snapshot, event({ seq: 13 }))).toBe(snapshot)
+    const next = mergeRunEvent(snapshot, event({
+      runId: 'run-live',
+      agentRunId: 'agent-hermes-live',
+      agentKind: 'hermes',
+      seq: 13,
+      type: 'tool_start',
+      delta: undefined,
+      id: 'tool-live',
+      title: 'search',
+      status: 'running',
+    }))
+
+    expect(next.runs).toHaveLength(1)
+    expect(next.runs[0]).toMatchObject({
+      runId: 'run-live',
+      groupId: 'group-1',
+      threadRootId: 'root-1',
+      targetKinds: ['codex', 'hermes'],
+    })
+    expect(next.runs[0].agentRuns).toEqual([
+      expect.objectContaining({ agentRunId: 'agent-hermes-live', kind: 'hermes' }),
+    ])
+    expect(next.runningGroupIds).toContain('group-1')
+  })
+
+  it('rejects live Run synthesis without a trusted group and root Agent scope', () => {
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [{ id: 'group-1', agentKinds: ['codex', 'hermes'] }],
+      messages: [{
+        id: 'root-1', groupId: 'group-1', role: 'user', content: 'Codex only', targetKinds: ['codex'],
+      }],
+      runningGroupIds: [],
+      runs: [],
+    })
+
+    expect(mergeRunEvent(snapshot, event({ groupId: 'missing-group', seq: 14 }))).toBe(snapshot)
+    expect(mergeRunEvent(snapshot, event({ agentKind: 'hermes', seq: 15 }))).toBe(snapshot)
     expect(snapshot.runs).toEqual([])
     expect(snapshot.runningGroupIds).toEqual([])
+  })
+
+  it('keeps existing and synthetic Runs bound to their original group, root, and Agent identity', () => {
+    const workspace = {
+      agents: [],
+      groups: [
+        { id: 'group-1', agentKinds: ['codex', 'hermes'] },
+        { id: 'group-2', agentKinds: ['codex', 'hermes'] },
+      ],
+      messages: [
+        {
+          id: 'root-1', groupId: 'group-1', role: 'user', content: 'First root',
+          targetKinds: ['codex', 'hermes'],
+        },
+        {
+          id: 'root-1-other', groupId: 'group-1', role: 'user', content: 'Other root',
+          targetKinds: ['codex', 'hermes'],
+        },
+        {
+          id: 'root-2', groupId: 'group-2', role: 'user', content: 'Second group root',
+          targetKinds: ['codex', 'hermes'],
+        },
+      ],
+      runningGroupIds: ['group-1'],
+    }
+    const existing = normalizeSnapshot({
+      ...workspace,
+      runs: [{
+        runId: 'run-bound',
+        groupId: 'group-1',
+        threadRootId: 'root-1',
+        targetKinds: ['codex', 'hermes'],
+        agentRuns: [{
+          agentRunId: 'agent-bound', kind: 'hermes', round: 1, status: 'running', events: [],
+        }],
+      }],
+    })
+    const synthetic = mergeRunEvent(normalizeSnapshot({ ...workspace, runs: [] }), event({
+      runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
+      groupId: 'group-1', threadRootId: 'root-1', round: 1, seq: 20,
+      type: 'status', delta: undefined, status: 'running',
+    }))
+
+    for (const candidate of [existing, synthetic]) {
+      expect(mergeRunEvent(candidate, event({
+        runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
+        groupId: 'group-2', threadRootId: 'root-2', round: 1, seq: 21,
+      }))).toBe(candidate)
+      expect(mergeRunEvent(candidate, event({
+        runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
+        groupId: 'group-1', threadRootId: 'root-1-other', round: 1, seq: 22,
+      }))).toBe(candidate)
+      expect(mergeRunEvent(candidate, event({
+        runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'codex',
+        groupId: 'group-1', threadRootId: 'root-1', round: 1, seq: 23,
+      }))).toBe(candidate)
+      expect(mergeRunEvent(candidate, event({
+        runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
+        groupId: 'group-1', threadRootId: 'root-1', round: 2, seq: 24,
+      }))).toBe(candidate)
+    }
   })
 
   it('upserts a tool lifecycle by public tool id', () => {
@@ -546,6 +673,165 @@ describe('run event normalization', () => {
       summary: 'Found three files',
     })])
     expect(completed.runs[0].agentRuns[0].seenSeqs).toEqual([20, 21])
+  })
+
+  it('keeps tool and warning terminal statuses local until an Agent terminal event arrives', () => {
+    const base = normalizeSnapshot({
+      agents: [], messages: [], groups: [], runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
+        targetKinds: ['codex'], agentRuns: [],
+      }],
+    })
+    const toolSucceeded = mergeRunEvent(base, event({
+      id: 'tool-success', seq: 20, type: 'tool_result_summary', delta: undefined,
+      status: 'completed', title: 'search', summary: 'Found results',
+    }))
+    const toolFailed = mergeRunEvent(toolSucceeded, event({
+      id: 'tool-failed', seq: 21, type: 'tool_result_summary', delta: undefined,
+      status: 'failed', title: 'retry', summary: 'Temporary failure',
+    }))
+    const warned = mergeRunEvent(toolFailed, event({
+      id: 'warning-partial', seq: 22, type: 'warning', delta: undefined,
+      status: 'partial', title: 'rate limit', summary: 'Continue streaming',
+    }))
+    const streaming = mergeRunEvent(warned, event({
+      seq: 23, type: 'answer_delta', status: 'running', delta: 'Reply',
+    }))
+    const completed = mergeRunEvent(streaming, event({
+      id: 'agent-status', seq: 24, type: 'status', delta: undefined, status: 'completed',
+    }))
+
+    for (const candidate of [toolSucceeded, toolFailed, warned, streaming]) {
+      expect(candidate.runs[0].agentRuns[0].status).toBe('running')
+      expect(candidate.runs[0].completedKinds).toEqual([])
+      expect(candidate.runs[0].failedKinds).toEqual([])
+      expect(candidate.runningGroupIds).toContain('group-1')
+    }
+    expect(completed.runs[0].agentRuns[0].status).toBe('completed')
+    expect(completed.runs[0].completedKinds).toEqual(['codex'])
+    expect(completed.runningGroupIds).not.toContain('group-1')
+  })
+
+  it('does not reopen an Agent or group after a terminal status receives a later lifecycle event', () => {
+    const base = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
+        targetKinds: ['codex'], agentRuns: [],
+      }],
+    })
+    const completed = mergeRunEvent(base, event({
+      id: 'agent-status', seq: 30, type: 'status', delta: undefined, status: 'completed',
+    }))
+    const lateTool = mergeRunEvent(completed, event({
+      id: 'late-tool', seq: 31, type: 'tool_result_summary', delta: undefined,
+      status: 'completed', title: 'search', summary: 'Late lifecycle record',
+    }))
+
+    expect(lateTool.runs[0].agentRuns[0].status).toBe('completed')
+    expect(lateTool.runs[0].completedKinds).toEqual(['codex'])
+    expect(lateTool.runs[0].currentKind).toBe('')
+    expect(lateTool.runs[0].phase).not.toBe('running')
+    expect(lateTool.runningGroupIds).not.toContain('group-1')
+  })
+
+  it('does not reopen an Agent after a later explicit running status', () => {
+    const base = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
+        targetKinds: ['codex'], agentRuns: [],
+      }],
+    })
+    const completed = mergeRunEvent(base, event({
+      id: 'agent-status', seq: 40, type: 'status', delta: undefined, status: 'completed',
+    }))
+    const lateRunning = mergeRunEvent(completed, event({
+      id: 'late-status', seq: 41, type: 'status', delta: undefined, status: 'running',
+    }))
+
+    expect(lateRunning.runs[0].agentRuns[0].status).toBe('completed')
+    expect(lateRunning.runs[0].completedKinds).toEqual(['codex'])
+    expect(lateRunning.runs[0].currentKind).toBe('')
+    expect(lateRunning.runningGroupIds).not.toContain('group-1')
+  })
+
+  it('replaces every lifecycle family by family and public id without cross-family collisions', () => {
+    const base = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
+        targetKinds: ['codex'], agentRuns: [],
+      }],
+    })
+    const lifecycles = [
+      ['tool_start', 'tool_result_summary'],
+      ['reasoning_summary', 'reasoning_summary'],
+      ['plan', 'plan'],
+      ['status', 'status'],
+      ['warning', 'warning'],
+    ]
+    let next = base
+    lifecycles.forEach(([startedType, completedType], index) => {
+      next = mergeRunEvent(next, event({
+        id: 'shared-id', seq: 30 + (index * 2), type: startedType, delta: undefined,
+        status: 'running', summary: `started-${startedType}`,
+      }))
+      next = mergeRunEvent(next, event({
+        id: 'shared-id', seq: 31 + (index * 2), type: completedType, delta: undefined,
+        status: 'completed', summary: `completed-${completedType}`, detail: `detail-${completedType}`,
+      }))
+    })
+
+    const agent = next.runs[0].agentRuns[0]
+    expect(agent.events).toHaveLength(5)
+    expect(agent.events.map(item => item.type)).toEqual([
+      'tool_result_summary', 'reasoning_summary', 'plan', 'status', 'warning',
+    ])
+    expect(agent.events.map(item => item.seq)).toEqual([31, 33, 35, 37, 39])
+    expect(agent.events.map(item => item.status)).toEqual(Array(5).fill('completed'))
+    expect(agent.events.map(item => item.summary)).toEqual([
+      'completed-tool_result_summary',
+      'completed-reasoning_summary',
+      'completed-plan',
+      'completed-status',
+      'completed-warning',
+    ])
+    expect(agent.events.map(item => item.detail)).toEqual([
+      'detail-tool_result_summary',
+      'detail-reasoning_summary',
+      'detail-plan',
+      'detail-status',
+      'detail-warning',
+    ])
+    expect(agent.seenSeqs).toEqual([30, 31, 32, 33, 34, 35, 36, 37, 38, 39])
+  })
+
+  it('keeps interleaved lifecycle replacements in strictly increasing sequence order', () => {
+    const base = normalizeSnapshot({
+      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      runs: [{
+        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
+        targetKinds: ['codex'], agentRuns: [],
+      }],
+    })
+    const started = mergeRunEvent(base, event({
+      id: 'tool-interleaved', seq: 40, type: 'tool_start', delta: undefined,
+      title: 'search', status: 'running',
+    }))
+    const warned = mergeRunEvent(started, event({
+      id: 'warning-interleaved', seq: 41, type: 'warning', delta: undefined,
+      title: 'rate limit', status: 'partial',
+    }))
+    const completed = mergeRunEvent(warned, event({
+      id: 'tool-interleaved', seq: 42, type: 'tool_result_summary', delta: undefined,
+      title: 'search', summary: 'final result', status: 'completed',
+    }))
+
+    expect(completed.runs[0].agentRuns[0].events.map(item => item.seq)).toEqual([41, 42])
+    expect(completed.runs[0].agentRuns[0].events.map(item => item.type))
+      .toEqual(['warning', 'tool_result_summary'])
   })
 
   it('backfills missing fields for an already-seen sequence without replaying output', () => {
@@ -685,6 +971,7 @@ describe('run event normalization', () => {
       runId: 'run-subset',
       agentRunId: 'subset-codex-r3',
       agentKind: 'codex',
+      threadRootId: 'root-subset',
       round: 3,
       seq: 60,
       type: 'status',
@@ -697,6 +984,7 @@ describe('run event normalization', () => {
       runId: 'run-subset',
       agentRunId: 'subset-openclaw-r2',
       agentKind: 'openclaw',
+      threadRootId: 'root-subset',
       round: 2,
       seq: 61,
       type: 'reasoning_summary',

@@ -274,6 +274,7 @@ export function normalizeRunEvent(value, fallback = {}) {
   if (delta) event.delta = delta
   if (timestamp !== '') event.timestamp = timestamp
   if (type === 'answer_delta' && !delta) return null
+  if (type === 'answer_delta' && input.replace === true) event.replace = true
   return event
 }
 

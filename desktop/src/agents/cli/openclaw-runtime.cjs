@@ -38,6 +38,7 @@ const OPENCLAW_RUNTIME_PATH_ENV_KEYS = Object.freeze([
 const OPENCLAW_RUNTIME_CREDENTIAL_KEYS = new Set([
   'ROUNDRELAY_OPENCLAW_API_KEY',
   'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
+  'OPENCLAW_GATEWAY_TOKEN',
 ])
 const issuedOpenClawRuntimeGuards = new WeakSet()
 const openClawRuntimeCredentialDigests = new WeakMap()
@@ -239,7 +240,16 @@ function toolPolicy(allowWrite) {
   }
 }
 
-function writeRuntimeConfig(runtime, config, credentialKey, credentialValue) {
+function writeRuntimeConfig(runtime, config, credentials, credentialKey) {
+  const credentialEntries = Object.entries(credentials || {})
+  if (!credentialEntries.length
+      || credentialEntries.some(([key, value]) => (
+        !OPENCLAW_RUNTIME_CREDENTIAL_KEYS.has(key)
+          || typeof value !== 'string' || !value
+      ))
+      || !credentials[credentialKey]) {
+    throw new Error('OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID')
+  }
   const contents = `${JSON.stringify(config, null, 2)}\n`
   validateDirectoryIdentities(runtime.directoryIdentities)
   atomicWritePrivateFile(runtime.configPath, contents)
@@ -255,39 +265,105 @@ function writeRuntimeConfig(runtime, config, credentialKey, credentialValue) {
       OPENCLAW_WORKSPACE_DIR: runtime.resolvedWorkdir,
     }),
     credentialKey,
+    credentialKeys: Object.freeze(credentialEntries.map(([key]) => key)),
   })
   issuedOpenClawRuntimeGuards.add(guard)
-  openClawRuntimeCredentialDigests.set(
-    guard,
-    crypto.createHash('sha256').update(credentialValue).digest('hex'),
-  )
+  openClawRuntimeCredentialDigests.set(guard, Object.freeze(Object.fromEntries(
+    credentialEntries.map(([key, value]) => [
+      key,
+      crypto.createHash('sha256').update(value).digest('hex'),
+    ]),
+  )))
   return guard
 }
 
 function validateOpenClawRuntimeGuard(guard, env = {}) {
-  const credentialDigest = guard && typeof guard === 'object'
+  const credentialDigests = guard && typeof guard === 'object'
     ? openClawRuntimeCredentialDigests.get(guard)
     : undefined
   if (!guard || typeof guard !== 'object' || !issuedOpenClawRuntimeGuards.has(guard)
       || !Array.isArray(guard.directories)
       || !guard.config || !guard.paths
       || !OPENCLAW_RUNTIME_CREDENTIAL_KEYS.has(guard.credentialKey)
-      || typeof credentialDigest !== 'string') {
+      || !Array.isArray(guard.credentialKeys) || !guard.credentialKeys.length
+      || guard.credentialKeys.some(key => !OPENCLAW_RUNTIME_CREDENTIAL_KEYS.has(key))
+      || !credentialDigests || typeof credentialDigests !== 'object') {
     throw new Error('OPENCLAW_RUNTIME_GUARD_REQUIRED')
   }
   for (const key of OPENCLAW_RUNTIME_PATH_ENV_KEYS) {
     if (env[key] !== guard.paths[key]) throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
   }
-  if (typeof env[guard.credentialKey] !== 'string' || !env[guard.credentialKey]) {
-    throw new Error('OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID')
-  }
-  if (crypto.createHash('sha256').update(env[guard.credentialKey]).digest('hex')
-      !== credentialDigest) {
-    throw new Error('OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID')
+  for (const key of guard.credentialKeys) {
+    if (typeof env[key] !== 'string' || !env[key]
+        || crypto.createHash('sha256').update(env[key]).digest('hex')
+          !== credentialDigests[key]) {
+      throw new Error('OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID')
+    }
   }
   validateDirectoryIdentities(guard.directories)
   validateFileIdentity(guard.config)
   return true
+}
+
+function configureOpenClawGatewayRuntime(options, port) {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('OPENCLAW_GATEWAY_PORT_INVALID')
+  }
+  const guard = options?.openClawRuntimeGuard
+  const env = options?.env || {}
+  validateOpenClawRuntimeGuard(guard, env)
+
+  const config = JSON.parse(fs.readFileSync(guard.config.path, 'utf8'))
+  const gatewayCredentialKey = 'OPENCLAW_GATEWAY_TOKEN'
+  const nextConfig = {
+    ...config,
+    logging: {
+      ...(config.logging || {}),
+      file: path.join(guard.paths.OPENCLAW_STATE_DIR, 'gateway.log'),
+    },
+    update: {
+      ...(config.update || {}),
+      checkOnStart: false,
+      auto: { ...(config.update?.auto || {}), enabled: false },
+    },
+    discovery: {
+      ...(config.discovery || {}),
+      wideArea: { ...(config.discovery?.wideArea || {}), enabled: false },
+      mdns: { ...(config.discovery?.mdns || {}), mode: 'off' },
+    },
+    gateway: {
+      ...(config.gateway || {}),
+      port,
+      mode: 'local',
+      bind: 'loopback',
+      controlUi: { ...(config.gateway?.controlUi || {}), enabled: false },
+      auth: {
+        mode: 'token',
+        token: { source: 'env', provider: 'default', id: gatewayCredentialKey },
+      },
+      tailscale: { ...(config.gateway?.tailscale || {}), mode: 'off' },
+    },
+  }
+  const credentials = Object.fromEntries(
+    guard.credentialKeys.map(key => [key, env[key]]),
+  )
+  const runtime = {
+    resolvedWorkdir: guard.paths.OPENCLAW_WORKSPACE_DIR,
+    home: guard.paths.OPENCLAW_HOME,
+    state: guard.paths.OPENCLAW_STATE_DIR,
+    configPath: guard.paths.OPENCLAW_CONFIG_PATH,
+    directoryIdentities: guard.directories,
+  }
+  return {
+    ...options,
+    env: { ...env },
+    openClawRuntimeGuard: writeRuntimeConfig(
+      runtime,
+      nextConfig,
+      credentials,
+      guard.credentialKey,
+    ),
+  }
 }
 
 function normalizedNativeModel(input) {
@@ -332,6 +408,8 @@ function managedOpenClawOptions({
   const { resolvedWorkdir, home, state, configPath } = runtime
 
   const modelRef = `${MANAGED_OPENCLAW_PROVIDER_ID}/${normalized.model}`
+  const gatewayCredentialKey = 'OPENCLAW_GATEWAY_TOKEN'
+  const gatewayToken = crypto.randomBytes(32).toString('base64url')
   const config = {
     agents: {
       defaults: {
@@ -354,9 +432,21 @@ function managedOpenClawOptions({
       },
     },
     tools: toolPolicy(allowWrite),
+    gateway: {
+      mode: 'local',
+      bind: 'loopback',
+      auth: {
+        mode: 'token',
+        token: { source: 'env', provider: 'default', id: gatewayCredentialKey },
+      },
+      controlUi: { enabled: false },
+    },
   }
   const credentialKey = 'ROUNDRELAY_OPENCLAW_API_KEY'
-  const openClawRuntimeGuard = writeRuntimeConfig(runtime, config, credentialKey, normalized.apiKey)
+  const openClawRuntimeGuard = writeRuntimeConfig(runtime, config, {
+    [credentialKey]: normalized.apiKey,
+    [gatewayCredentialKey]: gatewayToken,
+  }, credentialKey)
 
   return {
     openClawRuntimeGuard,
@@ -366,6 +456,7 @@ function managedOpenClawOptions({
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: resolvedWorkdir,
       [credentialKey]: normalized.apiKey,
+      [gatewayCredentialKey]: gatewayToken,
     },
   }
 }
@@ -407,6 +498,8 @@ function nativeOpenClawOptions({
   })
   const { resolvedWorkdir, home, state, configPath } = runtimePathsResult
   const modelConfig = { primary: modelRef }
+  const gatewayCredentialKey = 'OPENCLAW_GATEWAY_TOKEN'
+  const gatewayToken = crypto.randomBytes(32).toString('base64url')
   const config = {
     agents: {
       defaults: {
@@ -429,10 +522,22 @@ function nativeOpenClawOptions({
       },
     },
     tools: toolPolicy(allowWrite),
+    gateway: {
+      mode: 'local',
+      bind: 'loopback',
+      auth: {
+        mode: 'token',
+        token: { source: 'env', provider: 'default', id: gatewayCredentialKey },
+      },
+      controlUi: { enabled: false },
+    },
   }
   const credentialKey = 'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY'
   const openClawRuntimeGuard = writeRuntimeConfig(
-    runtimePathsResult, config, credentialKey, apiKey,
+    runtimePathsResult,
+    config,
+    { [credentialKey]: apiKey, [gatewayCredentialKey]: gatewayToken },
+    credentialKey,
   )
   return {
     openClawRuntimeGuard,
@@ -442,11 +547,13 @@ function nativeOpenClawOptions({
       OPENCLAW_CONFIG_PATH: configPath,
       OPENCLAW_WORKSPACE_DIR: resolvedWorkdir,
       [credentialKey]: apiKey,
+      [gatewayCredentialKey]: gatewayToken,
     },
   }
 }
 
 module.exports = {
+  configureOpenClawGatewayRuntime,
   isOpenClawSecretReference,
   managedOpenClawOptions,
   nativeOpenClawOptions,

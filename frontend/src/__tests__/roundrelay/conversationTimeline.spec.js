@@ -7,15 +7,29 @@ import {
 } from '../../composables/useConversationTimeline.js'
 
 describe('conversation timeline helpers', () => {
-  it('keeps meaningful trace events and removes streaming placeholders', () => {
+  it('keeps sanitized trace events and removes answer deltas', () => {
     expect(retainedTraceEvents([
       { type: 'answer_delta', summary: 'partial answer' },
       { type: 'status', title: 'agent' },
       { type: 'status', title: 'process' },
       { type: 'tool_start', title: 'Read file' },
     ])).toEqual([
+      { type: 'status', title: 'agent' },
+      { type: 'status', title: 'process' },
       { type: 'tool_start', title: 'Read file' },
     ])
+  })
+
+  it('orders sequenced live events while preserving durable fallback order', () => {
+    expect(retainedTraceEvents([
+      { seq: 3, type: 'tool_result_summary', title: 'Latest' },
+      { seq: 2, type: 'warning', title: 'Earlier' },
+    ]).map(event => event.seq)).toEqual([2, 3])
+
+    expect(retainedTraceEvents([
+      { evidenceId: 'E-R1-02', type: 'warning', title: 'Second retained row' },
+      { evidenceId: 'E-R1-01', type: 'plan', title: 'First retained row' },
+    ]).map(event => event.evidenceId)).toEqual(['E-R1-02', 'E-R1-01'])
   })
 
   it('derives a round from explicit metadata before evidence identifiers', () => {

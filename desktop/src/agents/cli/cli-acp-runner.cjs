@@ -1,4 +1,5 @@
 const { spawn } = require('node:child_process')
+const { createHash } = require('node:crypto')
 const { Readable, Writable } = require('node:stream')
 const { AGENT_PROFILES, prepareCommand } = require('./cli-discovery.cjs')
 const {
@@ -6,12 +7,11 @@ const {
   requireTerminalAgentResult,
 } = require('../agent-runtime-contract.cjs')
 const {
-  acpRuntimeEvents,
-  createAcpRuntimeState,
   createRuntimeEventEmitter,
   redactChildSecrets,
   stripAnsi,
 } = require('./cli-runtime-events.cjs')
+const { connectorLimitedRuntimeEvent } = require('./cli-event-profiles.cjs')
 const {
   KILL_SETTLE_MS,
   TERMINATE_GRACE_MS,
@@ -26,6 +26,7 @@ const ACP_CANCEL_GRACE_MS = 250
 const ACP_MAX_LINE_BYTES = 1024 * 1024
 const ACP_MAX_INPUT_BYTES = 16 * 1024 * 1024
 const ACP_MAX_REPLY_BYTES = 10 * 1024 * 1024
+const ACP_PERSISTENT_RUNTIME_LIMIT = 16
 const ACP_PERMISSION_OPTION_LIMIT = 16
 const ACP_PERMISSION_OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 const ACP_PERMISSION_OPTION_KINDS = new Set([
@@ -37,6 +38,11 @@ const ACP_TOOL_KINDS = new Set([
 ])
 const ACP_TOOL_STATUSES = new Set(['pending', 'in_progress', 'completed', 'failed'])
 let acpSdkPromise
+const acpSessionRuntimes = new Map()
+const acpRuntimeLocks = new Map()
+const acpRuntimePreparations = new Set()
+const acpInitializingRuntimes = new Set()
+let acpShutdownGeneration = 0
 
 function loadAcpSdk() {
   acpSdkPromise ||= Promise.all([
@@ -103,7 +109,8 @@ function validateAcpInboundMessage(message, validators, replyState, protocolLabe
 }
 
 function boundedAcpStream(
-  output, input, validators, replyState = { bytes: 0, collecting: true },
+  output, input, validators,
+  replyState = { bytes: 0, inputBytes: 0, collecting: true, pendingUpdateSequences: [] },
   protocolLabel = 'ACP Agent', beforeWrite = null, onActivity = null,
 ) {
   const textEncoder = new TextEncoder()
@@ -111,7 +118,7 @@ function boundedAcpStream(
     async start(controller) {
       const reader = input.getReader()
       let pending = Buffer.alloc(0)
-      let inputBytes = 0
+      let updateSequence = 0
       const parseLine = (line) => {
         const text = line.toString('utf8').trim()
         if (!text) return
@@ -121,7 +128,16 @@ function boundedAcpStream(
         } catch {
           throw acpTransportError(`${protocolLabel} returned malformed JSON.`)
         }
-        controller.enqueue(validateAcpInboundMessage(message, validators, replyState, protocolLabel))
+        const validated = validateAcpInboundMessage(
+          message, validators, replyState, protocolLabel,
+        )
+        if (message.method === 'session/update' && message.params?.update) {
+          replyState.pendingUpdateSequences.push(++updateSequence)
+        } else if (replyState.collecting && replyState.promptRequestId != null
+            && !message.method && message.id === replyState.promptRequestId) {
+          replyState.promptTerminalSequence = updateSequence
+        }
+        controller.enqueue(validated)
       }
       const append = (left, right) => {
         const size = left.length + right.length
@@ -137,8 +153,8 @@ function boundedAcpStream(
           if (!value?.byteLength) continue
           try { onActivity?.() } catch { /* activity is best-effort */ }
           const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength)
-          inputBytes += chunk.length
-          if (inputBytes > ACP_MAX_INPUT_BYTES) {
+          replyState.inputBytes += chunk.length
+          if (replyState.inputBytes > ACP_MAX_INPUT_BYTES) {
             throw acpTransportError(`${protocolLabel} input exceeded the safe total limit.`)
           }
           let offset = 0
@@ -395,25 +411,72 @@ function allowAcpSetupFallback(error) {
   return error
 }
 
-async function runAcpAgent(agent, prompt, workdir, options, spec) {
+function persistenceKey(agent, options) {
+  const value = String(options.acpPersistenceKey || '')
+  if (!value) return ''
+  if (value.length > 512 || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
+  }
+  return `${agent.kind}:${value}`
+}
+
+function withAcpRuntimeLock(key, callback) {
+  const previous = acpRuntimeLocks.get(key) || Promise.resolve()
+  const current = previous.catch(() => {}).then(callback)
+  const tail = current.catch(() => {})
+  acpRuntimeLocks.set(key, tail)
+  return current.finally(() => {
+    if (acpRuntimeLocks.get(key) === tail) acpRuntimeLocks.delete(key)
+  })
+}
+
+function runtimeSignature(agent, workdir, spec, profile, childEnv) {
+  const environment = Object.keys(childEnv).sort().map(key => [key, childEnv[key]])
+  return createHash('sha256').update(JSON.stringify({
+    kind: agent.kind,
+    executable: agent.executable,
+    workdir,
+    command: spec.command,
+    args: spec.args,
+    acpMode: spec.acpMode || '',
+    profileId: profile.profileId,
+    environment,
+  })).digest('hex')
+}
+
+async function prepareAcpRuntime(agent, workdir, options, spec, profile) {
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
-  const noteActivity = () => {
-    try { options.onActivity?.() } catch { /* activity is best-effort */ }
-  }
+  const loadAcpSdkFn = options.loadAcpSdkFn || loadAcpSdk
   const prepared = prepareCommand(spec.command, spec.args, { platform })
   const childEnv = childEnvironment(agent, workdir, options, platform)
-  const runtimeEvents = createRuntimeEventEmitter({ ...options, onActivity: noteActivity }, childEnv)
-  const protocolLabel = `${agent.name || AGENT_PROFILES[agent.kind]?.label || 'Agent'} ACP`
   let sdk
   try {
-    const loadAcpSdkFn = options.loadAcpSdkFn || loadAcpSdk
     sdk = await loadAcpSdkFn()
   } catch (error) {
     throw allowAcpSetupFallback(acpProtocolError(error, childEnv))
   }
-  if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  return {
+    agent,
+    workdir,
+    spec,
+    profile,
+    platform,
+    spawnFn,
+    loadAcpSdkFn,
+    prepared,
+    childEnv,
+    sdk,
+    signature: runtimeSignature(agent, workdir, spec, profile, childEnv),
+    protocolLabel: `${agent.name || AGENT_PROFILES[agent.kind]?.label || 'Agent'} ACP`,
+  }
+}
 
+async function createAcpRuntime(input) {
+  const {
+    agent, workdir, platform, spawnFn, prepared, childEnv, sdk, protocolLabel,
+  } = input
+  if (input.options?.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
   let child
   try {
     child = spawnFn(prepared.command, prepared.args, {
@@ -431,155 +494,377 @@ async function runAcpAgent(agent, prompt, workdir, options, spec) {
   }
 
   const { ClientSideConnection, PROTOCOL_VERSION, validators } = sdk
-  const stderr = []
-  let stderrBytes = 0
-  let connection
-  let sessionRef = String(options.sessionRef || '')
-  const resumedSessionRef = sessionRef
-  let ending = false
+  const runtime = {
+    ...input,
+    child,
+    connection: null,
+    protocolSessionRef: '',
+    publicSessionRef: '',
+    activeTurn: null,
+    active: false,
+    ending: false,
+    closed: false,
+    failureError: null,
+    lastUsedAt: Date.now(),
+    replyState: {
+      bytes: 0,
+      inputBytes: 0,
+      collecting: false,
+      promptRequestId: null,
+      promptTerminalSequence: null,
+      pendingUpdateSequences: [],
+    },
+    stderr: [],
+    stderrBytes: 0,
+    stopPromise: null,
+  }
+  let rejectFailure
+  runtime.failurePromise = new Promise((_, reject) => { rejectFailure = reject })
+  runtime.failurePromise.catch(() => {})
+  const failRuntime = (error) => {
+    if (runtime.ending || runtime.failureError) return
+    runtime.failureError = error
+    rejectFailure(error)
+  }
+  runtime.failRuntime = failRuntime
+  child.once('error', (error) => failRuntime(agentExecutionError(
+    'LOCAL_AGENT_SPAWN_FAILED',
+    redactChildSecrets(error?.message || error, childEnv),
+  )))
+  child.once('close', () => {
+    if (runtime.ending) return
+    const detail = redactChildSecrets(
+      Buffer.concat(runtime.stderr).toString('utf8').trim(),
+      childEnv,
+    )
+    failRuntime(failedAgentProcessError(detail, { sessionRef: runtime.publicSessionRef }))
+  })
+  child.stderr.on('data', (chunk) => {
+    try { runtime.activeTurn?.noteActivity?.() } catch { /* activity is best-effort */ }
+    runtime.stderrBytes += chunk.length
+    if (runtime.stderrBytes <= 1024 * 1024) runtime.stderr.push(chunk)
+  })
+
+  const client = {
+    async requestPermission(params) {
+      return permissionOutcome(params, runtime.activeTurn?.options || {}, childEnv)
+    },
+    async sessionUpdate(params) {
+      const turn = runtime.activeTurn
+      try { turn?.noteActivity?.() } catch { /* activity is best-effort */ }
+      const sequence = runtime.replyState.pendingUpdateSequences.shift()
+      if (!turn || !runtime.replyState.collecting) return
+      if (runtime.replyState.promptTerminalSequence != null
+          && Number.isInteger(sequence)
+          && sequence > runtime.replyState.promptTerminalSequence) return
+      turn.structuredOutput.ingest?.(params)
+      for (const event of turn.profile.mapEvent(params.update, turn.runtimeState)) {
+        turn.runtimeEvents.emit(event)
+      }
+    },
+  }
+  const stream = boundedAcpStream(
+    Writable.toWeb(child.stdin),
+    Readable.toWeb(child.stdout),
+    validators,
+    runtime.replyState,
+    protocolLabel,
+    async (message, wireBytes) => {
+      const turn = runtime.activeTurn
+      try { turn?.noteActivity?.() } catch { /* activity is best-effort */ }
+      if (!turn || message?.method !== 'session/prompt') return
+      runtime.replyState.promptRequestId = message.id
+      if (typeof turn.options.onOutboundPayload !== 'function') return
+      try {
+        await turn.options.onOutboundPayload(createAcpOutboundPayload({
+          prompt: turn.prompt,
+          wireBytes,
+        }))
+      } catch (error) {
+        turn.outboundPayloadFailed = true
+        throw error
+      }
+    },
+    () => {
+      try { runtime.activeTurn?.noteActivity?.() } catch { /* activity is best-effort */ }
+    },
+  )
+  runtime.connection = new ClientSideConnection(() => client, stream)
+  acpInitializingRuntimes.add(runtime)
+  try {
+    await Promise.race([
+      runtime.connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} }),
+      runtime.failurePromise,
+    ])
+  } catch (error) {
+    await closeAcpRuntime(runtime)
+    throw allowAcpSetupFallback(acpProtocolError(error, childEnv))
+  } finally {
+    acpInitializingRuntimes.delete(runtime)
+  }
+  return runtime
+}
+
+async function closeAcpRuntime(runtime) {
+  if (!runtime) return
+  if (!runtime.closed) {
+    runtime.closed = true
+    runtime.failRuntime?.(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
+    runtime.ending = true
+    runtime.replyState.collecting = false
+    runtime.stopPromise ||= closeAcpChild(runtime.child, runtime.platform, runtime.spawnFn)
+  }
+  if (runtime.stopPromise) await runtime.stopPromise
+}
+
+function publicSessionRef(value, childEnv) {
+  const safe = redactChildSecrets(value, childEnv)
+  return safe.includes('[redacted]') ? '' : safe
+}
+
+async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
+  if (runtime.closed || runtime.failureError) {
+    throw runtime.failureError || agentExecutionError('LOCAL_AGENT_PROCESS_FAILED')
+  }
+  const noteActivity = () => {
+    try { options.onActivity?.() } catch { /* activity is best-effort */ }
+  }
+  const runtimeEvents = createRuntimeEventEmitter({ ...options, onActivity: noteActivity }, runtime.childEnv)
+  const capabilityWarning = connectorLimitedRuntimeEvent(runtime.agent.kind, profile)
+  if (capabilityWarning) runtimeEvents.emit(capabilityWarning)
+  const turn = {
+    options,
+    prompt,
+    profile,
+    runtimeEvents,
+    runtimeState: profile.createState(),
+    structuredOutput: profile.createFinalOutputAccumulator(
+      spec.publicSessionRef || options.sessionRef || runtime.publicSessionRef,
+    ),
+    noteActivity,
+    outboundPayloadFailed: false,
+  }
+  runtime.activeTurn = turn
+  runtime.replyState.bytes = 0
+  runtime.replyState.inputBytes = 0
+  runtime.replyState.collecting = false
+  runtime.replyState.promptRequestId = null
+  runtime.replyState.promptTerminalSequence = null
+  let protocolSessionRef = runtime.protocolSessionRef
+  let visibleSessionRef = String(
+    runtime.publicSessionRef || spec.publicSessionRef || options.sessionRef || '',
+  )
+  if (!runtime.publicSessionRef && visibleSessionRef) {
+    runtime.publicSessionRef = visibleSessionRef
+  }
+  let promptStarted = false
   let abortRequested = false
   let cancelPromise = Promise.resolve()
-  let stopPromise
   let rejectAbort
-  let timeout
-  const reply = []
-  const replyState = { bytes: 0, collecting: false }
-  const runtimeState = createAcpRuntimeState()
-  let promptStarted = false
-  let outboundPayloadFailed = false
   const abortPromise = new Promise((_, reject) => { rejectAbort = reject })
-  const stopChild = () => {
-    stopPromise ||= closeAcpChild(child, platform, spawnFn)
-    return stopPromise
-  }
   const abort = () => {
-    if (ending || abortRequested) return
+    if (abortRequested) return
     abortRequested = true
-    if (connection && sessionRef) {
+    if (protocolSessionRef) {
       try {
-        cancelPromise = Promise.resolve(connection.cancel({ sessionId: sessionRef }))
-          .catch(() => {})
+        cancelPromise = Promise.resolve(runtime.connection.cancel({
+          sessionId: protocolSessionRef,
+        })).catch(() => {})
       } catch { /* the ACP stream has already closed */ }
     }
     rejectAbort(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
   }
-  const childFailure = new Promise((_, reject) => {
-    child.once('error', (error) => {
-      reject(abortRequested
-        ? agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
-        : agentExecutionError(
-            'LOCAL_AGENT_SPAWN_FAILED',
-            redactChildSecrets(error?.message || error, childEnv),
-          ))
-    })
-    child.once('close', () => {
-      if (ending) return
-      if (abortRequested) {
-        reject(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
-        return
-      }
-      const detail = redactChildSecrets(Buffer.concat(stderr).toString('utf8').trim(), childEnv)
-      reject(failedAgentProcessError(detail, { sessionRef: resumedSessionRef }))
-    })
-  })
-  child.stderr.on('data', (chunk) => {
-    noteActivity()
-    stderrBytes += chunk.length
-    if (stderrBytes <= 1024 * 1024) stderr.push(chunk)
-  })
-  timeout = setTimeout(abort, 2 * 60 * 60 * 1000)
+  const operation = promise => Promise.race([promise, abortPromise, runtime.failurePromise])
+  const timeout = setTimeout(abort, 2 * 60 * 60 * 1000)
   if (options.signal?.aborted) abort()
   else options.signal?.addEventListener('abort', abort, { once: true })
 
-  const client = {
-    async requestPermission(params) {
-      return permissionOutcome(params, options, childEnv)
-    },
-    async sessionUpdate(params) {
-      noteActivity()
-      if (!replyState.collecting) return
-      const update = params.update
-      if (update.sessionUpdate === 'agent_message_chunk' && update.content?.type === 'text') {
-        reply.push(update.content.text)
+  try {
+    if (!protocolSessionRef) {
+      if (persistent && options.sessionRef) {
+        throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
       }
-      for (const event of acpRuntimeEvents(update, runtimeState)) runtimeEvents.emit(event)
-    },
-  }
-  const protocol = (async () => {
-    const stream = boundedAcpStream(
-      Writable.toWeb(child.stdin),
-      Readable.toWeb(child.stdout),
-      validators,
-      replyState,
-      protocolLabel,
-      async (message, wireBytes) => {
-        noteActivity()
-        if (message?.method !== 'session/prompt'
-            || typeof options.onOutboundPayload !== 'function') return
-        try {
-          await options.onOutboundPayload(createAcpOutboundPayload({ prompt, wireBytes }))
-        } catch (error) {
-          outboundPayloadFailed = true
-          throw error
-        }
-      },
-      noteActivity,
-    )
-    connection = new ClientSideConnection(() => client, stream)
-    await connection.initialize({ protocolVersion: PROTOCOL_VERSION, clientCapabilities: {} })
-    if (sessionRef) {
-      await connection.resumeSession({ sessionId: sessionRef, cwd: workdir, mcpServers: [] })
-    } else {
-      const session = await connection.newSession({ cwd: workdir, mcpServers: [] })
-      sessionRef = session.sessionId
+      if (spec.acpSessionStrategy !== 'new' && options.sessionRef) {
+        protocolSessionRef = String(options.sessionRef)
+        await operation(runtime.connection.resumeSession({
+          sessionId: protocolSessionRef,
+          cwd: runtime.workdir,
+          mcpServers: [],
+        }))
+        visibleSessionRef = protocolSessionRef
+      } else {
+        const session = await operation(runtime.connection.newSession({
+          cwd: runtime.workdir,
+          mcpServers: [],
+        }))
+        protocolSessionRef = String(session.sessionId || '')
+        visibleSessionRef = String(
+          spec.publicSessionRef || options.sessionRef || protocolSessionRef,
+        )
+      }
+      if (!protocolSessionRef) throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
+      runtime.protocolSessionRef = protocolSessionRef
+      runtime.publicSessionRef = visibleSessionRef
     }
-    const safeSessionRef = redactChildSecrets(sessionRef, childEnv)
-    const publicSessionRef = safeSessionRef.includes('[redacted]') ? '' : safeSessionRef
-    await connection.setSessionMode({ sessionId: sessionRef, modeId: spec.acpMode })
-    if (publicSessionRef && typeof options.onSessionRef === 'function') {
-      await options.onSessionRef(publicSessionRef, { transport: 'acp' })
+    visibleSessionRef = publicSessionRef(visibleSessionRef, runtime.childEnv)
+    if (spec.acpMode) {
+      await operation(runtime.connection.setSessionMode({
+        sessionId: protocolSessionRef,
+        modeId: spec.acpMode,
+      }))
     }
-    replyState.bytes = 0
-    replyState.collecting = true
+    if (visibleSessionRef && typeof options.onSessionRef === 'function') {
+      await operation(options.onSessionRef(visibleSessionRef, { transport: 'acp' }))
+    }
+    runtime.replyState.collecting = true
     let promptResult
     try {
-      const promptParams = {
-        sessionId: sessionRef,
-        prompt: [{ type: 'text', text: prompt }],
-      }
       promptStarted = true
-      promptResult = await connection.prompt(promptParams)
+      promptResult = await operation(runtime.connection.prompt({
+        sessionId: protocolSessionRef,
+        prompt: [{ type: 'text', text: prompt }],
+      }))
     } finally {
-      replyState.collecting = false
+      runtime.replyState.collecting = false
     }
-    const text = redactChildSecrets(reply.join('').trim(), childEnv)
+    const structuredResult = turn.structuredOutput.end({
+      sessionRef: visibleSessionRef,
+      stopReason: promptResult?.stopReason,
+    })
+    const text = redactChildSecrets(structuredResult?.text, runtime.childEnv)
     const result = requireTerminalAgentResult({
+      ...structuredResult,
       text,
-      sessionRef: publicSessionRef,
+      sessionRef: visibleSessionRef,
       ...outcomeForAcpStopReason(promptResult?.stopReason),
     })
     if (!result.text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
     runtimeEvents.emitFinalAnswer(text)
     return result
-  })().catch((error) => {
-    if (outboundPayloadFailed) throw error
-    const normalized = acpProtocolError(error, childEnv, resumedSessionRef)
-    if (!promptStarted) allowAcpSetupFallback(normalized)
-    throw normalized
-  })
-
-  try {
-    return await Promise.race([protocol, abortPromise, childFailure])
   } catch (error) {
-    if (!promptStarted && !outboundPayloadFailed) allowAcpSetupFallback(error)
-    throw error
+    if (turn.outboundPayloadFailed) throw error
+    const normalized = acpProtocolError(error, runtime.childEnv, visibleSessionRef)
+    if (!promptStarted && normalized.message !== 'LOCAL_AGENT_SESSION_INVALID') {
+      allowAcpSetupFallback(normalized)
+    }
+    throw normalized
   } finally {
-    ending = true
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
+    runtime.replyState.collecting = false
+    runtime.replyState.promptRequestId = null
+    runtime.replyState.promptTerminalSequence = null
+    runtime.activeTurn = null
+    runtime.lastUsedAt = Date.now()
     if (abortRequested) await settleWithin(cancelPromise, ACP_CANCEL_GRACE_MS)
-    await stopChild()
   }
 }
 
-module.exports = { runAcpAgent }
+async function evictIdleAcpRuntimes() {
+  while (acpSessionRuntimes.size > ACP_PERSISTENT_RUNTIME_LIMIT) {
+    const candidate = [...acpSessionRuntimes.entries()]
+      .filter(([, runtime]) => !runtime.active)
+      .sort((left, right) => left[1].lastUsedAt - right[1].lastUsedAt)[0]
+    if (!candidate) return
+    acpSessionRuntimes.delete(candidate[0])
+    await closeAcpRuntime(candidate[1])
+  }
+}
+
+async function runPersistentAcpAgent(agent, prompt, workdir, options, spec, profile, key) {
+  const shutdownGeneration = acpShutdownGeneration
+  return withAcpRuntimeLock(key, async () => {
+    if (shutdownGeneration !== acpShutdownGeneration) {
+      throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+    }
+    const preparation = prepareAcpRuntime(agent, workdir, options, spec, profile)
+    acpRuntimePreparations.add(preparation)
+    let input
+    try {
+      input = await preparation
+    } finally {
+      acpRuntimePreparations.delete(preparation)
+    }
+    if (shutdownGeneration !== acpShutdownGeneration) {
+      throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+    }
+    input.options = options
+    let runtime = acpSessionRuntimes.get(key)
+    if (runtime && options.sessionRef
+        && String(options.sessionRef) !== runtime.publicSessionRef) {
+      throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
+    }
+    const incompatible = runtime && (
+      runtime.closed || runtime.failureError
+      || runtime.signature !== input.signature
+      || runtime.spawnFn !== input.spawnFn
+      || runtime.loadAcpSdkFn !== input.loadAcpSdkFn
+      || !options.sessionRef
+    )
+    if (incompatible) {
+      acpSessionRuntimes.delete(key)
+      await closeAcpRuntime(runtime)
+      runtime = null
+      if (options.sessionRef) throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
+    }
+    if (!runtime && options.sessionRef) {
+      throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
+    }
+    if (!runtime) {
+      if (shutdownGeneration !== acpShutdownGeneration) {
+        throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+      }
+      runtime = await createAcpRuntime(input)
+      runtime.active = true
+      acpSessionRuntimes.set(key, runtime)
+      await evictIdleAcpRuntimes()
+    }
+    runtime.active = true
+    try {
+      return await runAcpTurn(runtime, prompt, options, spec, profile, true)
+    } catch (error) {
+      acpSessionRuntimes.delete(key)
+      await closeAcpRuntime(runtime)
+      throw error
+    } finally {
+      runtime.active = false
+      runtime.lastUsedAt = Date.now()
+      await evictIdleAcpRuntimes()
+    }
+  })
+}
+
+async function runDisposableAcpAgent(agent, prompt, workdir, options, spec, profile) {
+  const input = await prepareAcpRuntime(agent, workdir, options, spec, profile)
+  input.options = options
+  const runtime = await createAcpRuntime(input)
+  try {
+    return await runAcpTurn(runtime, prompt, options, spec, profile, false)
+  } finally {
+    await closeAcpRuntime(runtime)
+  }
+}
+
+async function runAcpAgent(agent, prompt, workdir, options, spec, profile) {
+  if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  const key = persistenceKey(agent, options)
+  return key
+    ? runPersistentAcpAgent(agent, prompt, workdir, options, spec, profile, key)
+    : runDisposableAcpAgent(agent, prompt, workdir, options, spec, profile)
+}
+
+async function shutdownAcpSessionRuntime() {
+  acpShutdownGeneration += 1
+  const preparations = [...acpRuntimePreparations]
+  const runtimes = [...new Set([
+    ...acpSessionRuntimes.values(),
+    ...acpInitializingRuntimes,
+  ])]
+  acpSessionRuntimes.clear()
+  await Promise.allSettled([
+    ...preparations,
+    ...runtimes.map(closeAcpRuntime),
+  ])
+}
+
+module.exports = { runAcpAgent, shutdownAcpSessionRuntime }

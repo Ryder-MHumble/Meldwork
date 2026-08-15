@@ -990,6 +990,7 @@ class LocalWorkspaceAgentInvocation {
         attachments: isolated ? [] : (stagedInputs?.nativeImagePaths || []),
         ...(kind === 'hermes'
           ? {
+              acpPersistenceKey: key,
               hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false,
             }
           : {}),

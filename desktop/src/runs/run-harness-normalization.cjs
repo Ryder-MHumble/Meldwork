@@ -109,6 +109,7 @@ function normalizeRawEvent(input) {
   if (detail) event.detail = detail
   if (delta) event.delta = delta
   if (type === 'answer_delta' && !delta) return null
+  if (type === 'answer_delta' && input.replace === true) event.replace = true
   return event
 }
 

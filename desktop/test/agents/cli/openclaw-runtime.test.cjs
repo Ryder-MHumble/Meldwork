@@ -6,10 +6,17 @@ const os = require('node:os')
 const path = require('node:path')
 
 const {
+  configureOpenClawGatewayRuntime,
   managedOpenClawOptions,
   nativeOpenClawOptions,
   validateOpenClawRuntimeGuard,
 } = require('../../../src/agents/cli/openclaw-runtime.cjs')
+const {
+  executable,
+  readJsonWhenReady,
+  readWhenReady,
+} = require('../../support/cli-adapters-test-helpers.cjs')
+const { invocation } = require('../../../src/agents/cli/cli-invocations.cjs')
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-'))
@@ -80,6 +87,269 @@ test('managed runtime isolates OpenClaw state and keeps the API key out of confi
   assert.equal(result.env.OPENCLAW_WORKSPACE_DIR, workdir)
   assert.ok(result.env.OPENCLAW_STATE_DIR.startsWith(fs.realpathSync(directory)))
   assert.equal(fs.statSync(result.env.OPENCLAW_CONFIG_PATH).mode & 0o777, 0o600)
+})
+
+test('Gateway setup rewrites the guarded config without persisting credentials', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:gateway-runtime',
+    provider: provider(),
+  })
+
+  const configured = configureOpenClawGatewayRuntime(runtime, 43123)
+  const configText = fs.readFileSync(configured.env.OPENCLAW_CONFIG_PATH, 'utf8')
+  const config = JSON.parse(configText)
+
+  assert.notEqual(configured.openClawRuntimeGuard, runtime.openClawRuntimeGuard)
+  assert.equal(validateOpenClawRuntimeGuard(
+    configured.openClawRuntimeGuard,
+    configured.env,
+  ), true)
+  assert.throws(() => validateOpenClawRuntimeGuard(
+    runtime.openClawRuntimeGuard,
+    runtime.env,
+  ), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+  assert.equal(config.gateway.port, 43123)
+  assert.equal(config.gateway.mode, 'local')
+  assert.equal(config.gateway.bind, 'loopback')
+  assert.equal(config.gateway.controlUi.enabled, false)
+  assert.equal(config.gateway.tailscale.mode, 'off')
+  assert.deepEqual(config.gateway.auth.token, {
+    source: 'env', provider: 'default', id: 'OPENCLAW_GATEWAY_TOKEN',
+  })
+  assert.equal(config.discovery.mdns.mode, 'off')
+  assert.equal(config.discovery.wideArea.enabled, false)
+  assert.equal(config.update.checkOnStart, false)
+  assert.equal(config.update.auto.enabled, false)
+  assert.equal(config.logging.file, path.join(runtime.env.OPENCLAW_STATE_DIR, 'gateway.log'))
+  assert.equal(configText.includes(runtime.env.ROUNDRELAY_OPENCLAW_API_KEY), false)
+  assert.equal(configText.includes(runtime.env.OPENCLAW_GATEWAY_TOKEN), false)
+})
+
+test('Gateway lifecycle retries setup before callback and closes the isolated process', async (t) => {
+  const { withOpenClawGateway } = require('../../../src/agents/cli/cli-openclaw-gateway.cjs')
+  const { directory, workdir } = fixture()
+  const attemptsFile = path.join(directory, 'gateway-attempts.txt')
+  const probeFile = path.join(directory, 'gateway-probe.json')
+  const healthProbeFile = path.join(directory, 'gateway-health-probe.json')
+  const stoppedFile = path.join(directory, 'gateway-stopped.txt')
+  const cli = executable(directory, 'openclaw-gateway.cjs', `
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+const globalArgs = ['--no-color', '--log-level', 'info']
+const commandOffset = globalArgs.every((value, index) => args[index] === value)
+  ? globalArgs.length
+  : -1
+const command = args[commandOffset + 1]
+const token = process.env.OPENCLAW_GATEWAY_TOKEN || ''
+if (commandOffset < 0 || args[commandOffset] !== 'gateway') process.exit(2)
+if (command === 'health') {
+  fs.writeFileSync(${JSON.stringify(healthProbeFile)}, JSON.stringify({
+    args,
+    configPath: process.env.OPENCLAW_CONFIG_PATH,
+    hasToken: token.length >= 32,
+    tokenInArgs: Boolean(token && args.join(' ').includes(token)),
+  }))
+  process.stdout.write(JSON.stringify({ ok: true }))
+  process.exit(0)
+}
+if (command !== 'run') process.exit(2)
+const attemptsFile = ${JSON.stringify(attemptsFile)}
+const attempts = fs.existsSync(attemptsFile) ? Number(fs.readFileSync(attemptsFile, 'utf8')) : 0
+fs.writeFileSync(attemptsFile, String(attempts + 1))
+if (attempts === 0) {
+  process.stderr.write('listen EADDRINUSE: address already in use\\n')
+  process.exit(1)
+}
+fs.writeFileSync(${JSON.stringify(probeFile)}, JSON.stringify({
+  args,
+  configPath: process.env.OPENCLAW_CONFIG_PATH,
+  hasToken: token.length >= 32,
+  home: process.env.HOME,
+  state: process.env.OPENCLAW_STATE_DIR,
+  temp: process.env.TMPDIR,
+  tokenInArgs: Boolean(token && args.join(' ').includes(token)),
+}))
+process.stdout.write('[gateway] ready\\n')
+process.on('SIGTERM', () => {
+  fs.writeFileSync(${JSON.stringify(stoppedFile)}, 'stopped')
+  process.exit(0)
+})
+setInterval(() => {}, 1000)
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:gateway-lifecycle',
+    provider: provider(),
+  })
+  let callbackPort
+
+  const result = await withOpenClawGateway({
+    executable: cli,
+    workdir,
+    ...runtime,
+  }, async (gatewayOptions) => {
+    callbackPort = gatewayOptions.gatewayPort
+    assert.equal(gatewayOptions.gatewayUrl, `ws://127.0.0.1:${callbackPort}`)
+    assert.equal(validateOpenClawRuntimeGuard(
+      gatewayOptions.openClawRuntimeGuard,
+      gatewayOptions.env,
+    ), true)
+    assert.equal(fs.existsSync(healthProbeFile), true)
+    assert.equal(fs.existsSync(stoppedFile), false)
+    return 'callback-result'
+  })
+
+  assert.equal(result, 'callback-result')
+  assert.equal(await readWhenReady(attemptsFile), '2')
+  assert.equal(await readWhenReady(stoppedFile), 'stopped')
+  const probe = await readJsonWhenReady(probeFile)
+  assert.deepEqual(probe.args, [
+    '--no-color', '--log-level', 'info', 'gateway', 'run',
+    '--bind', 'loopback',
+    '--port', String(callbackPort),
+    '--auth', 'token',
+    '--tailscale', 'off',
+    '--ws-log', 'compact',
+  ])
+  assert.equal(probe.hasToken, true)
+  assert.equal(probe.tokenInArgs, false)
+  assert.equal(probe.configPath, runtime.env.OPENCLAW_CONFIG_PATH)
+  assert.equal(probe.home, runtime.env.OPENCLAW_HOME)
+  assert.equal(probe.state, runtime.env.OPENCLAW_STATE_DIR)
+  assert.ok(probe.temp.startsWith(runtime.env.OPENCLAW_HOME))
+  const healthProbe = await readJsonWhenReady(healthProbeFile)
+  assert.deepEqual(healthProbe.args, [
+    '--no-color', '--log-level', 'info', 'gateway', 'health',
+    '--port', String(callbackPort),
+    '--timeout', '5000',
+    '--json',
+  ])
+  assert.equal(healthProbe.hasToken, true)
+  assert.equal(healthProbe.tokenInArgs, false)
+  assert.equal(healthProbe.configPath, runtime.env.OPENCLAW_CONFIG_PATH)
+})
+
+test('Gateway lifecycle closes the process when the callback fails', async (t) => {
+  const { withOpenClawGateway } = require('../../../src/agents/cli/cli-openclaw-gateway.cjs')
+  const { directory, workdir } = fixture()
+  const stoppedFile = path.join(directory, 'gateway-callback-failed.txt')
+  const cli = executable(directory, 'openclaw-gateway-callback-failed.cjs', `
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+const globalArgs = ['--no-color', '--log-level', 'info']
+const commandOffset = globalArgs.every((value, index) => args[index] === value)
+  ? globalArgs.length
+  : -1
+if (commandOffset < 0) process.exit(2)
+if (args[commandOffset + 1] === 'health') {
+  process.stdout.write(JSON.stringify({ ok: true }))
+  process.exit(0)
+}
+process.stdout.write('[gateway] ready\\n')
+process.on('SIGTERM', () => {
+  fs.writeFileSync(${JSON.stringify(stoppedFile)}, 'stopped')
+  process.exit(0)
+})
+setInterval(() => {}, 1000)
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    sessionRef: 'agent:main:gateway-callback-failed',
+    provider: provider(),
+  })
+
+  await assert.rejects(() => withOpenClawGateway({
+    executable: cli,
+    workdir,
+    ...runtime,
+  }, async () => {
+    throw new Error('CALLBACK_FAILED')
+  }), { message: 'CALLBACK_FAILED' })
+  assert.equal(await readWhenReady(stoppedFile), 'stopped')
+})
+
+test('Gateway lifecycle requires a healthy authenticated process before callback', async (t) => {
+  const { withOpenClawGateway } = require('../../../src/agents/cli/cli-openclaw-gateway.cjs')
+  for (const scenario of [
+    { name: 'nonzero exit', output: JSON.stringify({ ok: true }), exitCode: 1 },
+    { name: 'unhealthy JSON', output: JSON.stringify({ ok: false }), exitCode: 0 },
+    { name: 'gateway exit', output: JSON.stringify({ ok: true }), exitCode: 0, stopGateway: true },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const { directory, workdir } = fixture()
+      const gatewayPidFile = path.join(directory, 'gateway-health-pid.txt')
+      const stoppedFile = path.join(directory, 'gateway-health-stopped.txt')
+      const cli = executable(directory, `openclaw-gateway-health-${scenario.exitCode}.cjs`, `
+const fs = require('node:fs')
+const args = process.argv.slice(2)
+const globalArgs = ['--no-color', '--log-level', 'info']
+const commandOffset = globalArgs.every((value, index) => args[index] === value)
+  ? globalArgs.length
+  : -1
+if (commandOffset < 0) process.exit(2)
+if (args[commandOffset + 1] === 'health') {
+  if (${JSON.stringify(Boolean(scenario.stopGateway))}) {
+    process.kill(Number(fs.readFileSync(${JSON.stringify(gatewayPidFile)}, 'utf8')), 'SIGTERM')
+    setTimeout(() => {
+      process.stdout.write(${JSON.stringify(scenario.output)})
+      process.exit(${scenario.exitCode})
+    }, 50)
+  } else {
+    process.stdout.write(${JSON.stringify(scenario.output)})
+    process.exit(${scenario.exitCode})
+  }
+} else {
+  fs.writeFileSync(${JSON.stringify(gatewayPidFile)}, String(process.pid))
+  process.stdout.write('[gateway] ready\\n')
+  process.on('SIGTERM', () => {
+    fs.writeFileSync(${JSON.stringify(stoppedFile)}, 'stopped')
+    process.exit(0)
+  })
+  setInterval(() => {}, 1000)
+}
+`)
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const runtime = managedOpenClawOptions({
+        storageRoot: directory,
+        workdir,
+        sessionRef: `agent:main:gateway-health-${scenario.name}`,
+        provider: provider(),
+      })
+      let callbackCalled = false
+
+      await assert.rejects(() => withOpenClawGateway({
+        executable: cli,
+        workdir,
+        ...runtime,
+      }, async () => {
+        callbackCalled = true
+      }), { message: 'OPENCLAW_GATEWAY_START_FAILED' })
+      assert.equal(callbackCalled, false)
+      assert.equal(await readWhenReady(stoppedFile), 'stopped')
+    })
+  }
+})
+
+test('OpenClaw ACP keeps deterministic global CLI flags before the subcommand', () => {
+  const sessionRef = 'agent:main:desktop-roundrelay-test-openclaw'
+  const spec = invocation('openclaw', '/tmp/openclaw', '/tmp/workspace', sessionRef, {
+    sandbox: 'read-only',
+  })
+
+  assert.deepEqual(spec.args, [
+    '--no-color', '--log-level', 'info', 'acp',
+    '--session', sessionRef,
+    '--no-prefix-cwd',
+    '--verbose',
+  ])
 })
 
 test('managed runtime defensively normalizes chat completion endpoints to the API root', (t) => {
@@ -430,8 +700,13 @@ test('runtime guard rejects in-place config and credential changes without expos
   const credentialDigest = crypto.createHash('sha256')
     .update(configOptions.env.ROUNDRELAY_OPENCLAW_API_KEY)
     .digest('hex')
+  const gatewayDigest = crypto.createHash('sha256')
+    .update(configOptions.env.OPENCLAW_GATEWAY_TOKEN)
+    .digest('hex')
   assert.equal(serializedGuard.includes(configOptions.env.ROUNDRELAY_OPENCLAW_API_KEY), false)
+  assert.equal(serializedGuard.includes(configOptions.env.OPENCLAW_GATEWAY_TOKEN), false)
   assert.equal(serializedGuard.includes(credentialDigest), false)
+  assert.equal(serializedGuard.includes(gatewayDigest), false)
 
   const configPath = configOptions.env.OPENCLAW_CONFIG_PATH
   const originalIdentity = fs.statSync(configPath).ino
@@ -454,6 +729,13 @@ test('runtime guard rejects in-place config and credential changes without expos
     {
       ...credentialOptions.env,
       ROUNDRELAY_OPENCLAW_API_KEY: 'tampered-openclaw-key',
+    },
+  ), { message: 'OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID' })
+  assert.throws(() => validateOpenClawRuntimeGuard(
+    credentialOptions.openClawRuntimeGuard,
+    {
+      ...credentialOptions.env,
+      OPENCLAW_GATEWAY_TOKEN: 'tampered-gateway-token',
     },
   ), { message: 'OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID' })
 })

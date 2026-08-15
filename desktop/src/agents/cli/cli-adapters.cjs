@@ -7,21 +7,10 @@ const {
   searchPath,
 } = require('./cli-discovery.cjs')
 const {
-  classifyCliOutcome,
-  claudeQwenRuntimeEvents,
-  codexProgressEvent,
-  codexRuntimeEvents,
-  createClaudeQwenRuntimeState,
-  createJsonLineParser,
   createRuntimeEventEmitter,
-  createStructuredOutputAccumulator,
-  hermesSessionRef,
-  jsonCliRuntimeEvents,
-  normalizeOpenClawOutput,
   parseClaudeQwenOutput,
   parseCodexOutput,
   parseGeminiOutput,
-  parseJsonOutputEvents,
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
@@ -31,11 +20,15 @@ const {
   readHermesMessageWatermark,
   redactChildSecrets,
   runtimeCommandSummary,
-  stripAnsi,
   structuredCliError,
 } = require('./cli-runtime-events.cjs')
-const { runAcpAgent } = require('./cli-acp-runner.cjs')
+const { runAcpAgent, shutdownAcpSessionRuntime } = require('./cli-acp-runner.cjs')
+const { withOpenClawGateway } = require('./cli-openclaw-gateway.cjs')
 const { imageAttachmentLimit, invocation } = require('./cli-invocations.cjs')
+const {
+  connectorLimitedRuntimeEvent,
+  resolveConnectorEventProfile,
+} = require('./cli-event-profiles.cjs')
 const {
   normalizeExternalRunRef,
   requireTerminalAgentResult,
@@ -50,7 +43,6 @@ const {
 const { createLegacyOutboundPayload } = require('../../collaboration/outbound-payload.cjs')
 
 const MAX_PROGRESS_STEPS = 8
-const MAX_HERMES_PROGRESS_PENDING_CHARS = 64 * 1024
 const MAX_STDOUT_CAPTURE_BYTES = 10 * 1024 * 1024
 const MAX_STDERR_CAPTURE_BYTES = 1024 * 1024
 const OUTPUT_TRUNCATION_MARKER = Buffer.from('\n[output truncated]\n')
@@ -112,77 +104,6 @@ function createBoundedOutputCapture(maxBytes) {
 }
 
 
-function normalizeOutput(kind, stdout, sessionRef = '') {
-  if (kind === 'codex') {
-    const parsed = parseCodexOutput(stdout)
-    return {
-      text: parsed.text,
-      sessionRef: parsed.sessionRef || sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'openclaw') {
-    return {
-      text: normalizeOpenClawOutput(stdout),
-      sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'hermes') {
-    return {
-      text: stripAnsi(stdout).trim(),
-      sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'workbuddy') {
-    const parsed = parseWorkBuddyOutput(stdout)
-    return {
-      text: parsed.text,
-      sessionRef: parsed.sessionRef || sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'kimi') {
-    const parsed = parseKimiOutput(stdout)
-    return {
-      text: parsed.text,
-      sessionRef: parsed.sessionRef || sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'mimo') {
-    return { ...parseMimoOutput(stdout), ...classifyCliOutcome(kind, stdout) }
-  }
-  if (kind === 'gemini') {
-    const parsed = parseGeminiOutput(stdout)
-    return {
-      text: parsed.text,
-      sessionRef: parsed.sessionRef || sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'opencode') {
-    const parsed = parseOpenCodeOutput(stdout)
-    return {
-      text: parsed.text,
-      sessionRef: parsed.sessionRef || sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (['claude', 'qwen'].includes(kind)) {
-    const parsed = parseClaudeQwenOutput(stdout)
-    return {
-      text: parsed.text,
-      sessionRef: parsed.sessionRef || sessionRef,
-      ...classifyCliOutcome(kind, stdout),
-    }
-  }
-  if (kind === 'opencodereview') return parseOpenCodeReviewOutput(stdout)
-  return { text: String(stdout || '').trim(), sessionRef, outcome: 'partial' }
-}
-
-
 async function runAgent(agent, prompt, workdir, options = {}) {
   if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
   const noteActivity = () => {
@@ -191,6 +112,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   const platform = options.platform || process.platform
   const spawnFn = options.spawnFn || spawn
   let sessionRef = String(options.sessionRef || '')
+  const failureSessionRef = String(options.failureSessionRef || sessionRef)
   const hermesAcpAvailable = typeof options.hermesAcpAvailable === 'boolean'
     ? options.hermesAcpAvailable
     : agent.acpAvailable
@@ -199,19 +121,34 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     provider: options.provider,
     attachments: options.attachments,
     hermesAcpAvailable,
+    invocationTransport: options.invocationTransport,
     sessionTransport: options.sessionTransport,
   })
+  const profile = resolveConnectorEventProfile(agent.kind, {
+    transport: spec.eventTransport,
+  })
+  if (!profile) throw agentExecutionError('LOCAL_AGENT_PROTOCOL_UNSUPPORTED')
   if (agent.kind === 'hermes' && !spec.acpMode && options.sessionTransport === 'acp') {
     sessionRef = ''
   }
-  if (spec.acpMode) {
+  if (spec.eventTransport === 'acp') {
     try {
-      return await runAcpAgent(agent, prompt, workdir, options, spec)
+      const executeAcp = runtimeOptions => runAcpAgent(
+        agent, prompt, workdir, runtimeOptions, spec, profile,
+      )
+      return spec.openClawGateway
+        ? await withOpenClawGateway({
+            ...options,
+            executable: agent.executable,
+            workdir,
+          }, gatewayOptions => executeAcp({ ...options, ...gatewayOptions }))
+        : await executeAcp(options)
     } catch (error) {
-      if (agent.kind !== 'hermes' || error?.acpFallbackAllowed !== true
+      if (!spec.fallbackTransport || error?.acpFallbackAllowed !== true
           || options.signal?.aborted) throw error
       let fallbackPrompt = prompt
-      if (sessionRef && typeof options.onSessionInvalidated === 'function') {
+      if (spec.fallbackSessionPolicy === 'invalidate' && sessionRef
+          && typeof options.onSessionInvalidated === 'function') {
         const recovery = await options.onSessionInvalidated({
           kind: agent.kind,
           sessionRef,
@@ -221,18 +158,21 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         else if (typeof recovery?.prompt === 'string') fallbackPrompt = recovery.prompt
       }
       try {
-        options.onEvent?.({
-          id: 'hermes-acp-fallback',
+        const pending = options.onEvent?.({
+          id: `${agent.kind}-acp-fallback`,
           type: 'warning',
           status: 'waiting',
           title: 'connector_fallback',
         })
+        if (pending && typeof pending.catch === 'function') pending.catch(() => {})
       } catch { /* runtime events are best-effort */ }
+      const fallbackRuntimeOptions = error?.openClawRuntimeOptions || {}
       return runAgent(agent, fallbackPrompt, workdir, {
         ...options,
-        sessionRef: '',
-        sessionTransport: 'legacy',
-        hermesAcpAvailable: false,
+        ...fallbackRuntimeOptions,
+        sessionRef: spec.fallbackSessionPolicy === 'preserve' ? sessionRef : '',
+        failureSessionRef,
+        invocationTransport: spec.fallbackTransport,
         onSessionInvalidated: undefined,
       })
     }
@@ -254,28 +194,9 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   }
   const childEnv = childEnvironment(agent, workdir, options, platform)
   const runtimeEvents = createRuntimeEventEmitter({ ...options, onActivity: noteActivity }, childEnv)
-  if (['hermes', 'openclaw', 'workbuddy', 'opencodereview'].includes(agent.kind)) {
-    runtimeEvents.emit({
-      id: `${agent.kind}-connector`,
-      type: 'warning',
-      status: 'waiting',
-      title: 'connector_limited',
-    })
-  }
-  let hermesMessageWatermark = null
-  if (agent.kind === 'hermes') {
-    const watermarkFn = options.hermesMessageWatermarkFn || readHermesMessageWatermark
-    try {
-      const watermark = watermarkFn({
-        home: options.home,
-        existsFn: options.hermesStateExistsFn,
-        queryFn: options.hermesStateQueryFn,
-      })
-      if (Number.isSafeInteger(watermark) && watermark >= 0) {
-        hermesMessageWatermark = watermark
-      }
-    } catch { /* a missing pre-run watermark makes final lookup ineligible */ }
-  }
+  const capabilityWarning = connectorLimitedRuntimeEvent(agent.kind, profile)
+  if (capabilityWarning) runtimeEvents.emit(capabilityWarning)
+  const profileRunContext = profile.createRunContext(options)
   return await new Promise((resolve, reject) => {
     let child
     try {
@@ -295,7 +216,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     }
     const stdout = createBoundedOutputCapture(MAX_STDOUT_CAPTURE_BYTES)
     const stderr = createBoundedOutputCapture(MAX_STDERR_CAPTURE_BYTES)
-    const structuredOutput = createStructuredOutputAccumulator(agent.kind, sessionRef)
+    const structuredOutput = profile.createFinalOutputAccumulator(sessionRef)
     let settled = false
     let stopRequested = false
     let timeout
@@ -323,36 +244,17 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       }
       try { options.onProgress?.(event) } catch { /* progress is best-effort */ }
     }
-    const hermesProgressBuffers = { stdout: '', stderr: '' }
-    const hermesProgressDecoders = { stdout: new TextDecoder(), stderr: new TextDecoder() }
-    const emitHermesProgress = (source, chunk, flush = false) => {
-      if (agent.kind !== 'hermes') return
-      const decoder = hermesProgressDecoders[source]
-      hermesProgressBuffers[source] += decoder.decode(chunk || undefined, { stream: !flush })
-      const lines = hermesProgressBuffers[source].split(/\r?\n/)
-      hermesProgressBuffers[source] = flush ? '' : (lines.pop() || '')
-      if (hermesProgressBuffers[source].length > MAX_HERMES_PROGRESS_PENDING_CHARS) {
-        hermesProgressBuffers[source] = ''
-      }
-      for (const line of lines) {
-        if (!/^┊\s*review diff$/i.test(stripAnsi(line).trim())) continue
-        emitProgress({ title: 'write_file', status: 'completed' })
-      }
-    }
-    const claudeQwenRuntimeState = createClaudeQwenRuntimeState()
-    const runtimeStreamParser = structuredOutput?.format === 'jsonl'
-      ? createJsonLineParser((event) => {
-          structuredOutput.ingest(event)
-          if (agent.kind === 'codex') {
-            const progressEvent = codexProgressEvent(event)
-            if (progressEvent) emitProgress(progressEvent)
+    const runtimeState = profile.createState()
+    const runtimeStreamParser = profile.source === 'stdout'
+      && ['jsonl', 'jsonrpc-jsonl'].includes(profile.framing)
+      && typeof profile.createDecoder === 'function'
+      ? profile.createDecoder((event) => {
+          structuredOutput.ingest?.(event)
+          const progressEvent = profile.mapProgress(event)
+          if (progressEvent) emitProgress(progressEvent)
+          for (const runtimeEvent of profile.mapEvent(event, runtimeState)) {
+            runtimeEvents.emit(runtimeEvent)
           }
-          const events = agent.kind === 'codex'
-            ? codexRuntimeEvents(event)
-            : ['claude', 'qwen'].includes(agent.kind)
-                ? claudeQwenRuntimeEvents(event, claudeQwenRuntimeState)
-                : jsonCliRuntimeEvents(agent.kind, event)
-          for (const runtimeEvent of events) runtimeEvents.emit(runtimeEvent)
         })
       : null
     const finish = (callback) => {
@@ -410,14 +312,13 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     child.stdout.on('data', (chunk) => {
       stdout.push(chunk)
       noteActivity()
-      if (structuredOutput?.format === 'document') structuredOutput.write(chunk)
+      structuredOutput.capture?.(chunk)
+      if (['document', 'text'].includes(structuredOutput?.format)) structuredOutput.write?.(chunk)
       runtimeStreamParser?.write(chunk)
-      emitHermesProgress('stdout', chunk)
     })
     child.stderr.on('data', (chunk) => {
       stderr.push(chunk)
       noteActivity()
-      emitHermesProgress('stderr', chunk)
     })
     child.on('error', error => finish(() => reject(
       stopRequested
@@ -429,10 +330,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     )))
     child.on('close', (code, signal) => finish(() => {
       void (async () => {
-        emitHermesProgress('stdout', null, true)
-        emitHermesProgress('stderr', null, true)
         runtimeStreamParser?.end()
-        const structuredResult = structuredOutput?.end()
         if (stopRequested || options.signal?.aborted) {
           reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
           return
@@ -445,20 +343,22 @@ async function runAgent(agent, prompt, workdir, options = {}) {
             [rawStderr, structuredDetail].filter(Boolean).join('\n'),
             childEnv,
           )
-          reject(failedAgentProcessError(detail, { sessionRef }))
+          reject(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
           return
         }
         const rawStderr = stderr.text()
-        const nextSessionRef = agent.kind === 'hermes'
-          ? hermesSessionRef(rawStderr) || sessionRef
-          : sessionRef
-        const result = structuredResult || normalizeOutput(
-          agent.kind, stdout.text(), nextSessionRef,
-        )
+        const nextSessionRef = profile.resolveSessionRef({
+          stderr: rawStderr,
+          sessionRef,
+          runContext: profileRunContext,
+        })
+        let result = structuredOutput.end({
+          sessionRef: nextSessionRef,
+        })
         if (result.error) {
           reject(failedAgentProcessError(
             redactChildSecrets(result.error, childEnv),
-            { sessionRef },
+            { sessionRef: failureSessionRef },
           ))
           return
         }
@@ -466,25 +366,12 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         const publicSessionRef = redactedSessionRef.includes('[redacted]')
           ? ''
           : redactedSessionRef
-        if (agent.kind === 'hermes') {
-          if (publicSessionRef && typeof options.onSessionRef === 'function') {
-            await options.onSessionRef(publicSessionRef, { transport: 'legacy' })
-          }
-          const finalResponseFn = options.hermesFinalResponseFn || readHermesFinalResponse
-          let finalResponse = ''
-          if (publicSessionRef && Number.isSafeInteger(hermesMessageWatermark)) {
-            try {
-              finalResponse = finalResponseFn(publicSessionRef, {
-                home: options.home,
-                afterMessageId: hermesMessageWatermark,
-                existsFn: options.hermesStateExistsFn,
-                queryFn: options.hermesStateQueryFn,
-              })
-            } catch { /* fall back to the official --quiet stdout */ }
-          }
-          const storedResponse = typeof finalResponse === 'string' ? finalResponse.trim() : ''
-          if (storedResponse) result.text = storedResponse
-        }
+        result = await profile.finalizeResult({
+          result: { ...result, sessionRef: publicSessionRef },
+          sessionRef: publicSessionRef,
+          runContext: profileRunContext,
+          options,
+        })
         if (progress.length) result.progress = progress
         const redactedText = redactChildSecrets(result.text, childEnv)
         let output
@@ -525,7 +412,6 @@ module.exports = {
   detectAgents,
   imageAttachmentLimit,
   invocation,
-  normalizeOutput,
   parseCodexOutput,
   parseGeminiOutput,
   parseKimiOutput,
@@ -540,4 +426,5 @@ module.exports = {
   runAgent,
   runtimeCommandSummary,
   searchPath,
+  shutdownAcpSessionRuntime,
 }

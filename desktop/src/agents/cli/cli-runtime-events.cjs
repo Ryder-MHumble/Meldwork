@@ -29,7 +29,6 @@ const {
   codexRuntimeEvents,
   createAcpRuntimeState,
   createClaudeQwenRuntimeState,
-  jsonCliRuntimeEvents,
 } = require('./cli-runtime-event-mappers.cjs')
 const { runtimeCommandSummary } = require('./cli-runtime-summaries.cjs')
 
@@ -45,7 +44,6 @@ module.exports = {
   createRuntimeEventEmitter,
   createStructuredOutputAccumulator,
   hermesSessionRef,
-  jsonCliRuntimeEvents,
   normalizeOpenClawOutput,
   parseClaudeQwenOutput,
   parseCodexOutput,

@@ -808,7 +808,7 @@ test('Session rotation restores the previous ref and provenance when saving fail
   assert.equal(calls.length, 0)
 })
 
-test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays prompt-only', async (t) => {
+test('Hermes starts task-scoped persistent ACP while a frozen Skill stays prompt-only', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -820,8 +820,8 @@ test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays pr
   }]
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
-    await runOptions.onSessionRef('hermes-legacy-session', { transport: 'legacy' })
-    return { text: 'Legacy conclusion', sessionRef: 'hermes-legacy-session' }
+    await runOptions.onSessionRef('hermes-acp-session', { transport: 'acp' })
+    return { text: 'ACP conclusion', sessionRef: 'hermes-acp-session' }
   }
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
@@ -848,6 +848,8 @@ test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays pr
 
   assert.equal(calls[0].runOptions.sessionRef, '')
   assert.equal(calls[0].runOptions.sessionTransport, '')
+  assert.equal(calls[0].runOptions.hermesAcpAvailable, true)
+  assert.equal(typeof calls[0].runOptions.acpPersistenceKey, 'string')
   assert.equal(calls[0].runOptions.skills, undefined)
   assert.match(calls[0].prompt, /global\/research: Research/)
   assert.match(calls[0].prompt, /Previous Hermes conclusion/)
@@ -856,8 +858,9 @@ test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays pr
     message.role === 'user' && message.content === 'Continue with the selected skill'
   ))
   const key = workspace.sessionKey(group.id, 'hermes', currentUser.id)
-  assert.equal(workspace.state.sessions[key], 'hermes-legacy-session')
-  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(calls[0].runOptions.acpPersistenceKey, key)
+  assert.equal(workspace.state.sessions[key], 'hermes-acp-session')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)
@@ -865,7 +868,7 @@ test('Hermes rebuilds context when ACP is disabled while a frozen Skill stays pr
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
-test('Hermes migrates a stored ACP session to legacy with rebuilt context before running', async (t) => {
+test('Hermes replaces a stored conversation ACP session with task-scoped persistent ACP', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -877,7 +880,7 @@ test('Hermes migrates a stored ACP session to legacy with rebuilt context before
   }]
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
-    await runOptions.onSessionRef('hermes-recovered-session', { transport: 'legacy' })
+    await runOptions.onSessionRef('hermes-recovered-session', { transport: 'acp' })
     return { text: 'Recovered conclusion', sessionRef: 'hermes-recovered-session' }
   }
   const workspace = new LocalWorkspace(options)
@@ -902,7 +905,7 @@ test('Hermes migrates a stored ACP session to legacy with rebuilt context before
 
   assert.equal(calls[0].runOptions.sessionRef, '')
   assert.equal(calls[0].runOptions.sessionTransport, '')
-  assert.equal(calls[0].runOptions.hermesAcpAvailable, false)
+  assert.equal(calls[0].runOptions.hermesAcpAvailable, true)
   assert.match(calls[0].prompt, /Previous Hermes conclusion/)
   assert.match(calls[0].prompt, /Continue after recovering the session/)
   const snapshot = workspace.snapshot()
@@ -910,8 +913,9 @@ test('Hermes migrates a stored ACP session to legacy with rebuilt context before
     message.role === 'user' && message.content === 'Continue after recovering the session'
   ))
   const key = workspace.sessionKey(group.id, 'hermes', currentUser.id)
+  assert.equal(calls[0].runOptions.acpPersistenceKey, key)
   assert.equal(workspace.state.sessions[key], 'hermes-recovered-session')
-  assert.equal(workspace.state.sessionMeta[key].transport, 'legacy')
+  assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   const trace = snapshot.messages.at(-1).trace
   assert.equal(trace.context.sessionRotated, true)

@@ -410,6 +410,28 @@ test('tracks answer delta sequences even though deltas stay outside the event le
   assert.equal(run.output, 'streamed')
 })
 
+test('replaces streamed output only for an explicit authoritative answer correction', () => {
+  const harness = fixture()
+  harness.beginAgent('hermes', 1)
+  harness.ingest('hermes', 1, {
+    type: 'answer_delta', status: 'running', delta: 'partial',
+  })
+  const correction = harness.ingest('hermes', 1, {
+    type: 'answer_delta', status: 'completed', delta: 'authoritative final', replace: true,
+  })
+
+  const run = harness.snapshot()[0]
+  assert.equal(run.output, 'authoritative final')
+  assert.equal(correction.replace, true)
+  assert.equal(run.events.some(event => event.type === 'answer_delta'), false)
+  assert.equal(normalizeRawEvent({
+    type: 'warning', status: 'running', summary: 'keep streaming', replace: true,
+  }).replace, undefined)
+  assert.equal(normalizeRawEvent({
+    type: 'answer_delta', status: 'completed', delta: 'replacement', replace: 'true',
+  }).replace, undefined)
+})
+
 test('hydrates the durable event cursor so post-restart sequences stay monotonic', () => {
   const harness = fixture()
   harness.beginAgent('codex', 1)
