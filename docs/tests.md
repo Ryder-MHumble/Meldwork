@@ -8,30 +8,31 @@ The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not n
 
 | Check | Evidence | Result |
 | --- | --- | --- |
-| Frontend unit suite | `npm --prefix frontend test` | Current release-candidate tree: 35 files and 299/299 tests passed; rerun required from the exact final commit |
-| Desktop unit suite | `npm --prefix desktop test` | Current release-candidate tree: 1270/1270 tests passed with zero failures or cancellations; rerun required from the exact final commit |
-| Deterministic Eval Harness | `npm --prefix desktop run eval:deterministic` | Current release-candidate tree: 6 cases and 18 results passed; rerun required from the exact final commit |
-| Renderer builds | `npm --prefix frontend run build` and `npm --prefix frontend run build:desktop` | Both builds passed |
-| Packaged application directory | `npm --prefix desktop run pack` | Passed on the release-candidate tree; the exact final commit must be packaged again before live acceptance |
-| Prerelease archives | `npm --prefix desktop run dist` | Passed on a pre-final source state; the final DMG and ZIP have not been generated |
-| DMG digest | `shasum -a 256 desktop/dist/Meldwork-0.1.2-arm64.dmg` | Pending the exact `dist` build from the final committed source; no earlier value is valid for publication |
-| ZIP digest | `shasum -a 256 desktop/dist/Meldwork-0.1.2-arm64.zip` | Pending the exact `dist` build from the final committed source; no earlier value is valid for publication |
-| Ad-hoc signature integrity | `codesign --verify --deep --strict --verbose=2 desktop/dist/mac-arm64/Meldwork.app` | Passed on a pre-final candidate; the exact final app must be verified again |
-| Gatekeeper assessment | `spctl --assess --type execute --verbose=4 desktop/dist/mac-arm64/Meldwork.app` | Pre-final candidate was rejected as expected; repeat against the exact final app |
+| Frontend unit suite | `npm --prefix frontend test` | Latest release-candidate run: 300/300 tests passed; rerun required from the exact final commit |
+| Desktop unit suite | `npm --prefix desktop test` | Latest release-candidate run: 1307/1307 tests passed; rerun required from the exact final commit |
+| Deterministic Eval Harness | `npm --prefix desktop run eval:deterministic` | Release-candidate tree: 6 cases and 18 results passed; rerun required from the exact final commit |
+| Renderer builds | `npm --prefix frontend run build` and `npm --prefix frontend run build:desktop` | Both builds passed on the release-candidate tree; rerun required from the exact final commit |
+| Packaged application directory | `npm --prefix desktop run pack` | Passed on the release-candidate tree; the exact final commit must be packaged before live acceptance |
+| Prerelease archives | `npm --prefix desktop run dist` | Final DMG and ZIP must be generated from the tagged release source before upload |
+| DMG digest | `shasum -a 256 desktop/dist/Meldwork-0.1.2-arm64.dmg` | Pending the exact `dist` build from the final committed source; no earlier candidate value is valid for publication |
+| ZIP digest | `shasum -a 256 desktop/dist/Meldwork-0.1.2-arm64.zip` | Pending the exact `dist` build from the final committed source; no earlier candidate value is valid for publication |
+| Ad-hoc signature integrity | `codesign --verify --deep --strict --verbose=2 desktop/dist/mac-arm64/Meldwork.app` | Required on the exact final app before upload |
+| Gatekeeper assessment | `spctl --assess --type execute --verbose=4 desktop/dist/mac-arm64/Meldwork.app` | Rejection is expected without Developer ID signing and notarization |
 
-## Pre-Final Packaged-App Acceptance
+## Packaged-App Acceptance Pending Exact Final Build
 
-The following guarded live checks used a V1.0.2 packaged candidate and isolated local profiles before the final source was locked. They validate the listed runtime paths but do not certify the final release artifacts.
+The following live checks must use the package built from the exact final commit, an isolated user-data profile, and an isolated workspace. Earlier candidate observations do not certify the final release artifacts.
 
 | Surface | Result | Boundary |
 | --- | --- | --- |
-| Codex direct execution | Streaming answer deltas and tool lifecycle events rendered through the normalized runtime-event contract | Passed |
-| Claude Code direct execution | Streaming answer deltas and tool lifecycle events rendered through the normalized runtime-event contract | Passed |
-| Hermes direct execution | Streaming answer deltas and available tool lifecycle events rendered through the normalized runtime-event contract | Passed |
-| OpenClaw direct execution | Adapter fixtures and managed-runtime tests pass, but exact packaged live streaming/tool acceptance was not completed | Not release-verified |
-| Auto Discussion V4 | Automated orchestration, negotiation, durability, convergence, and UI coverage pass, but exact packaged end-to-end acceptance was not completed | Not release-verified |
+| Hermes direct execution | Streaming answer deltas and a closed tool lifecycle | Pending final packaged-app acceptance |
+| OpenClaw direct execution | Streaming answer deltas and a closed `tool_start` to `tool_result_summary` lifecycle | Pending final packaged-app acceptance |
+| Manual V4 | Selected Agents use one frozen snapshot; results commit in stable member order | Pending final packaged-app acceptance |
+| Auto Discussion V4 | Parallel proposals, cross-Agent negotiation, agreed work packages, synthesis, and independent verification | Pending final packaged-app acceptance |
+| Stop behavior | Stopped execution remains stopped throughout the observation window | Pending final packaged-app acceptance |
+| Narrow-layout return control | Group and direct conversation return-to-latest behavior at 360 x 800 | Pending final packaged-app acceptance |
 
-Do not generalize the three passing live checks to every supported Agent. Connector output formats, installed versions, authentication state, and native tool-event support can still differ.
+These checks do not certify every supported Agent, installer recipe, upstream CLI version, authentication state, or operating system.
 
 ## Concurrent Collaboration V4 Coverage
 
@@ -75,8 +76,7 @@ The workflow file does not prove branch-protection configuration or the status o
 | Priority | Gap | Release boundary |
 | --- | --- | --- |
 | High | No Developer ID signing, Apple notarization, Stapling, or clean-machine Gatekeeper acceptance | V1.0.2 remains an ad-hoc signed prerelease candidate that may require Open Anyway |
-| High | Exact packaged Auto Discussion V4 end-to-end acceptance was not completed | Automated V4 coverage does not establish a live multi-Agent release certification |
-| Medium | Exact packaged OpenClaw streaming and tool-lifecycle acceptance was not completed | Protocol and managed-runtime tests pass, but live OpenClaw behavior is not claimed |
+| High | Exact final packaged-app acceptance is pending for Hermes and OpenClaw live execution, Manual V4, Auto Discussion V4, stop behavior, and 360 x 800 return-to-latest behavior | Earlier candidate observations do not establish final-artifact certification |
 | Medium | No clean-machine live matrix for every listed Agent and installer recipe | Upstream CLI versions, authentication, and output formats can diverge from fixtures |
 | Medium | No production Cloud Agent provider or task-oriented Channel Connector is configured | Mock/framework coverage does not establish a production remote integration |
 | Medium | Windows and Intel Mac packages were not built or accepted | V1.0.2 distribution evidence applies only to Apple silicon macOS |

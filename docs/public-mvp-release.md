@@ -23,11 +23,10 @@ DMG、ZIP 和 `SHA256SUMS.txt` 必须来自最终已验收提交和同一次 `np
 
 ## 验收状态
 
-- 当前发布候选源码的前端测试 `299/299`；桌面测试 `1270/1270`，无失败或取消；确定性 Eval Harness 共 `6` 个案例、`18` 个结果。最终提交仍须重跑这三项验证。
-- Web 和 Electron renderer 两个前端构建与 `pack` 已在发布候选源码上通过；最终提交仍须重新运行 `pack`，对应的 DMG 和 ZIP 仍须通过 `dist` 重新构建。
-- 预最终候选的 ad-hoc 签名通过 `codesign --verify --deep --strict`；最终精确产物仍须重复验证。由于没有 Developer ID 和公证，`spctl` 拒绝是预期结果。
-- 预最终 V1.0.2 打包候选中，Codex、Claude 和 Hermes 完成了真实流式回复与工具生命周期验收；这不等于最终提交产物已经完成重新验收。
-- OpenClaw 的预发布实时流式/工具验收仍未完成；Auto Discussion 的精确打包端到端验收也仍未完成。这两项不得在 Release Notes 中写成已验证。
+- 最新发布候选的前端测试 `300/300`、桌面测试 `1307/1307` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。最终发布提交仍须重跑这些验证。
+- Web 与 Electron renderer 两个构建、Electron `pack` 和 `git diff --check` 已在发布候选源码上通过；最终发布 DMG、ZIP 和校验值仍须由带发布文档的标签提交生成并复核。
+- Hermes 与 OpenClaw 的实时流式/工具生命周期、Manual V4、Auto Discussion V4、停止行为和 `360 x 800` 窄屏回到底部控件，均须在最终精确打包应用上重新验收；不得作为当前候选的已验证发布结论。
+- 以上验证不覆盖所有目录 Agent、安装配方、上游版本或操作系统。该候选仍为 ad-hoc 签名，未使用 Apple Developer ID，也未提交 Apple 公证。
 
 完整的自动化证据、实时 Agent 边界和剩余风险见[Verification And Test Coverage](tests.md)。
 

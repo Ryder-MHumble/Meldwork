@@ -43,14 +43,13 @@
 
 ### Verification
 
-- Release-candidate frontend tests: 299/299 passed; the exact final commit will be rerun before publication.
-- Release-candidate desktop tests: 1270/1270 passed with zero failures or cancellations; the exact final commit will be rerun before publication.
-- Release-candidate deterministic Eval Harness: 6 cases and 18 results passed; the exact final commit will be rerun before publication.
-- Web and Electron renderer builds and `pack` passed on the release-candidate tree; they will be rerun from the exact final commit before publication. `dist` remains pending for that commit.
-- Fresh DMG and ZIP SHA-256 values are intentionally not recorded until the exact final `dist` build completes.
-- `codesign --verify --deep --strict` passed for a pre-final ad-hoc signed app; the exact final app must be verified again, and `spctl` rejection remains expected without Developer ID signing and notarization.
-- A pre-final packaged candidate passed Codex, Claude Code, and Hermes streaming/tool lifecycle acceptance; final-source artifacts still require release verification.
-- Exact packaged OpenClaw streaming/tool lifecycle acceptance and packaged Auto Discussion end-to-end acceptance remain unverified and are not release claims.
+- Latest release-candidate frontend tests: 300/300 passed; the exact release commit must be rerun before publication.
+- Latest release-candidate desktop tests: 1307/1307 passed; the exact final commit must be rerun before publication.
+- Release-candidate deterministic Eval Harness: 6 cases and 18 results passed; the exact final commit must be rerun before publication.
+- Web and Electron renderer builds, Electron `pack`, and `git diff --check` passed on the release-candidate tree; they must be rerun from the exact final commit before publication. `dist` remains pending for that commit.
+- Hermes and OpenClaw live streaming/tool-lifecycle checks, Manual V4, Auto Discussion V4, stopped-run behavior, and the 360 x 800 return-to-latest control all require acceptance on the exact final packaged app; none is a current release claim.
+- Final DMG and ZIP SHA-256 values and remote Release asset verification remain pending until the final publication artifacts are generated.
+- The candidate remains ad-hoc signed, without Apple Developer ID signing or notarization; `spctl` rejection remains expected.
 
 ## 0.1.0 Private Preview 1 - 2026-08-03
 
