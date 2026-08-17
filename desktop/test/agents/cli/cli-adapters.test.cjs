@@ -160,36 +160,20 @@ test('Codex JSONL output returns the reply and session id', () => {
   })
 })
 
-test('runtime command summaries unwrap one shell layer without exposing arguments', () => {
-  assert.equal(
-    runtimeCommandSummary('zsh -lc "ls /Users/private/workspace | head -5"'),
-    'ls (1 hidden argument) | head -5',
-  )
-  assert.equal(
-    runtimeCommandSummary("/bin/bash -c 'git status --short'"),
-    'git status --short',
-  )
-  assert.equal(runtimeCommandSummary('zsh -c pwd'), 'pwd')
-  const secretSummary = runtimeCommandSummary(
+test('runtime command summaries retain no command content', () => {
+  const commands = [
+    'zsh -lc "ls /Users/private/workspace | head -5"',
+    "/bin/bash -c 'git status --short'",
+    'zsh -c pwd',
     "sh -c 'curl --header \"Authorization: Bearer private-token\" https://user:pass@example.test/private'",
-  )
-  assert.equal(secretSummary, 'curl --header (2 hidden arguments)')
-  assert.doesNotMatch(secretSummary, /private-token|user|pass|example|private/i)
-
-  const assignmentSummary = runtimeCommandSummary(
-    'API_KEY="top secret value" TOKEN=unquoted-secret curl https://example.test',
-  )
-  assert.equal(assignmentSummary, 'curl (1 hidden argument)')
-  assert.doesNotMatch(assignmentSummary, /top|secret|value|example/i)
-
-  assert.equal(
-    runtimeCommandSummary('printf one\nrm -rf /tmp/private'),
-    'printf (1 hidden argument) ; rm (2 hidden arguments)',
-  )
-  assert.equal(
-    runtimeCommandSummary('printf one > /tmp/out && curl https://example.test'),
-    'printf (1 hidden argument) && curl (1 hidden argument)',
-  )
+    'API_KEY="top secret value" TOKEN=unquoted-secret rg -n https://example.test',
+    'printf one\nrm -rf /tmp/private',
+  ]
+  for (const command of commands) {
+    const summary = runtimeCommandSummary(command)
+    assert.equal(summary, 'command')
+    assert.doesNotMatch(summary, /pwd|rg|curl|ls|git|rm|-rf|--header|private|secret|Users/i)
+  }
 })
 
 test('runAgent streams sanitized Codex operations and result summaries before the final reply', async (t) => {
@@ -299,7 +283,7 @@ send()
   ])
   assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'in_progress'), true)
   assert.equal(progress.some(step => step.id === 'item-search' && step.status === 'completed'), true)
-  assert.doesNotMatch(JSON.stringify(progress), /Users|workspace|rg -n/)
+  assert.doesNotMatch(JSON.stringify(progress), /Users|workspace|rg|pwd|-pSuperSecret/)
   assert.deepEqual(events.map(event => [event.type, event.status]), [
     ['tool_start', 'running'],
     ['tool_result_summary', 'completed'],
@@ -308,13 +292,16 @@ send()
     ['tool_start', 'running'],
     ['tool_result_summary', 'completed'],
     ['answer_delta', 'running'],
+    ['answer_delta', 'completed'],
   ])
   assert.equal(events.some(event => event.type === 'status' || event.title === 'process'), false)
-  assert.equal(events.find(event => event.type === 'answer_delta')?.delta, 'final reply')
+  const answerEvents = events.filter(event => event.type === 'answer_delta')
+  assert.equal(answerEvents[0]?.delta, 'final reply')
+  assert.equal(answerEvents.at(-1)?.replace, true)
   const commandResult = events.find(event => (
     event.type === 'tool_result_summary' && event.id === 'item-search'
   ))
-  assert.equal(commandResult.summary, 'Bash: operation: rg -n (3 hidden arguments)')
+  assert.equal(commandResult.summary, 'Bash: operation: command')
   assert.match(commandResult.detail, /Exit code: 0/)
   assert.match(commandResult.detail, /Output: 2 lines/)
   assert.doesNotMatch(commandResult.detail, /frontend\/src\/App\.vue/)
@@ -323,16 +310,83 @@ send()
     event.type === 'tool_result_summary' && event.id === 'item-shell'
   ))
   assert.equal(shellResult.title, 'Bash')
-  assert.equal(shellResult.summary, 'Bash: operation: pwd')
+  assert.equal(shellResult.summary, 'Bash: operation: command')
   assert.match(shellResult.detail, /Exit code: 0/)
   assert.doesNotMatch(shellResult.detail, /Users|private|workspace/)
   assert.equal(events.every(event => Object.keys(event).every(key => (
-    ['id', 'type', 'status', 'title', 'summary', 'detail', 'delta'].includes(key)
+    ['id', 'type', 'status', 'title', 'summary', 'detail', 'delta', 'replace'].includes(key)
   ))), true)
   assert.doesNotMatch(
     JSON.stringify(events),
-    /Users|private\/workspace|AKIA1234567890ABCDEF|SuperSecret/,
+    /Users|private\/workspace|AKIA1234567890ABCDEF|SuperSecret|\brg\b|\bpwd\b|-pSuperSecret/,
   )
+})
+
+test('legacy CLI terminal paths close start-only tools with the matching non-success status', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-legacy-open-tool-terminal-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await t.test('failure', async () => {
+    const cli = executable(directory, 'codex-open-tool-failure.cjs', `
+process.stdout.write(JSON.stringify({
+  type: 'item.started',
+  item: { id: 'legacy-failed-tool', type: 'command_execution', command: 'pwd', status: 'in_progress' },
+}) + '\\n')
+process.stderr.write('provider failed')
+process.exit(2)
+`)
+    const events = []
+
+    await assert.rejects(
+      runAgent(
+        { kind: 'codex', executable: cli, name: 'Codex' },
+        'fail after starting a tool', directory, { onEvent: event => events.push(event) },
+      ),
+      error => error.message === 'LOCAL_AGENT_PROCESS_FAILED',
+    )
+
+    assert.deepEqual(events.find(event => event.type === 'tool_result_summary'), {
+      type: 'tool_result_summary',
+      id: 'legacy-failed-tool',
+      status: 'failed',
+      title: 'Bash',
+    })
+  })
+
+  await t.test('cancellation', async () => {
+    const readyFile = path.join(directory, 'cancel-ready')
+    const cli = executable(directory, 'codex-open-tool-cancel.cjs', `
+const fs = require('node:fs')
+process.stdout.write(JSON.stringify({
+  type: 'item.started',
+  item: { id: 'legacy-stopped-tool', type: 'command_execution', command: 'pwd', status: 'in_progress' },
+}) + '\\n')
+fs.writeFileSync(process.env.MELDWORK_TEST_READY_FILE, 'ready')
+setInterval(() => {}, 1000)
+`)
+    const controller = new AbortController()
+    const events = []
+    const result = runAgent(
+      { kind: 'codex', executable: cli, name: 'Codex' },
+      'stop after starting a tool', directory,
+      {
+        signal: controller.signal,
+        env: { MELDWORK_TEST_READY_FILE: readyFile },
+        onEvent: event => events.push(event),
+      },
+    )
+    await readWhenReady(readyFile)
+
+    controller.abort()
+
+    await assert.rejects(result, error => error.message === 'LOCAL_AGENT_EXECUTION_STOPPED')
+    assert.deepEqual(events.find(event => event.type === 'tool_result_summary'), {
+      type: 'tool_result_summary',
+      id: 'legacy-stopped-tool',
+      status: 'stopped',
+      title: 'Bash',
+    })
+  })
 })
 
 test('runAgent never reconstructs a configured credential across any answer-delta split', async (t) => {
@@ -361,7 +415,10 @@ process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n')
         onEvent: event => events.push(event),
       },
     )
-    const delivered = events.filter(event => event.type === 'answer_delta').map(event => event.delta).join('')
+    const delivered = events.filter(event => event.type === 'answer_delta').reduce(
+      (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+      '',
+    )
     assert.doesNotMatch(delivered, new RegExp(secret), `split ${split}`)
     assert.doesNotMatch(JSON.stringify(events), new RegExp(secret), `split ${split}`)
   }
@@ -432,7 +489,10 @@ finish()
   assert.equal(result.text, 'streamed reply')
   assert.equal(result.sessionRef, 'workbuddy-stream-session')
   assert.equal(events.filter(event => event.type === 'answer_delta')
-    .map(event => event.delta).join(''), result.text)
+    .reduce(
+      (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+      '',
+    ), result.text)
 })
 
 test('Gemini profile state retains one real tool lifecycle id and summary', async (t) => {
@@ -992,7 +1052,10 @@ input.on('line', (line) => {
   assert.equal(result.outcome, 'completed')
   assert.equal(fs.readFileSync(modeFile, 'utf8'), 'default')
   assert.equal(events.filter(event => event.type === 'answer_delta')
-    .map(event => event.delta).join(''), 'current answer')
+    .reduce(
+      (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+      '',
+    ), 'current answer')
   assert.deepEqual(events.slice(0, 3).map(event => [event.type, event.status]), [
     ['plan', 'running'],
     ['tool_start', 'running'],
@@ -1100,7 +1163,10 @@ input.on('line', (line) => {
   assert.deepEqual(result, {
     text: 'MiMo ACP reply', sessionRef: 'mimo-acp-session', outcome: 'completed',
   })
-  assert.equal(events.filter(event => event.type === 'answer_delta').length, 1)
+  const answerEvents = events.filter(event => event.type === 'answer_delta')
+  assert.equal(answerEvents.length, 2)
+  assert.equal(answerEvents.at(-1).status, 'completed')
+  assert.equal(answerEvents.at(-1).replace, true)
 })
 
 test('ACP terminal stop reasons preserve exact outcome and failure semantics', async (t) => {
@@ -1119,6 +1185,17 @@ input.on('line', (line) => {
     send({ jsonrpc: '2.0', id: message.id, result: {} })
   } else if (message.method === 'session/prompt') {
     const prompt = message.params.prompt[0].text
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId: message.params.sessionId,
+        update: {
+          sessionUpdate: 'tool_call', toolCallId: 'tool-' + prompt,
+          title: 'read', kind: 'read', status: 'in_progress',
+          rawInput: { path: '/private/input' },
+        },
+      },
+    })
     send({
       jsonrpc: '2.0', method: 'session/update',
       params: {
@@ -1143,11 +1220,15 @@ input.on('line', (line) => {
   const agent = { kind: 'mimo', executable: cli, name: 'MiMo' }
 
   await t.test('refusal', async () => {
+    const events = []
     await assert.rejects(
-      runAgent(agent, 'refusal', directory),
+      runAgent(agent, 'refusal', directory, { onEvent: event => events.push(event) }),
       error => error.message === 'LOCAL_AGENT_REFUSED'
         && error.failure.code === 'LOCAL_AGENT_REFUSED',
     )
+    assert.deepEqual(events.find(event => event.type === 'tool_result_summary'), {
+      type: 'tool_result_summary', id: 'tool-refusal', status: 'failed', title: 'tool',
+    })
   })
   await t.test('unknown stop reason', async () => {
     await assert.rejects(
@@ -1164,11 +1245,15 @@ input.on('line', (line) => {
     })
   })
   await t.test('cancellation', async () => {
+    const events = []
     await assert.rejects(
-      runAgent(agent, 'cancelled', directory),
+      runAgent(agent, 'cancelled', directory, { onEvent: event => events.push(event) }),
       error => error.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
         && error.failure.category === 'cancellation',
     )
+    assert.deepEqual(events.find(event => event.type === 'tool_result_summary'), {
+      type: 'tool_result_summary', id: 'tool-cancelled', status: 'stopped', title: 'tool',
+    })
   })
 })
 
@@ -1841,7 +1926,10 @@ process.stdout.write(JSON.stringify({
     'connector_limited',
   ])
   assert.equal(events.filter(event => event.type === 'answer_delta')
-    .map(event => event.delta).join(''), '[path]')
+    .reduce(
+      (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+      '',
+    ), '[path]')
 })
 
 test('OpenClaw keeps the re-signed runtime guard when ACP setup falls back to legacy', async (t) => {

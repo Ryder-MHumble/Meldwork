@@ -659,6 +659,7 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
   }
   let promptStarted = false
   let abortRequested = false
+  let timeoutRequested = false
   let cancelPromise = Promise.resolve()
   let rejectAbort
   const abortPromise = new Promise((_, reject) => { rejectAbort = reject })
@@ -675,7 +676,10 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
     rejectAbort(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
   }
   const operation = promise => Promise.race([promise, abortPromise, runtime.failurePromise])
-  const timeout = setTimeout(abort, 2 * 60 * 60 * 1000)
+  const timeout = setTimeout(() => {
+    timeoutRequested = true
+    abort()
+  }, 2 * 60 * 60 * 1000)
   if (options.signal?.aborted) abort()
   else options.signal?.addEventListener('abort', abort, { once: true })
 
@@ -739,11 +743,19 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
       ...outcomeForAcpStopReason(promptResult?.stopReason),
     })
     if (!result.text) throw agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE')
-    runtimeEvents.emitFinalAnswer(text)
+    runtimeEvents.finalize({ text, status: result.outcome })
     return result
   } catch (error) {
-    if (turn.outboundPayloadFailed) throw error
+    if (turn.outboundPayloadFailed) {
+      runtimeEvents.finalize({ status: 'failed' })
+      throw error
+    }
     const normalized = acpProtocolError(error, runtime.childEnv, visibleSessionRef)
+    runtimeEvents.finalize({
+      status: timeoutRequested
+        ? 'timeout'
+        : normalized.failure?.category === 'cancellation' ? 'stopped' : 'failed',
+    })
     if (!promptStarted && normalized.message !== 'LOCAL_AGENT_SESSION_INVALID') {
       allowAcpSetupFallback(normalized)
     }

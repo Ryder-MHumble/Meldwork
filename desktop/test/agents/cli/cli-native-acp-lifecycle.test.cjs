@@ -111,8 +111,10 @@ input.on('line', (line) => {
   for (const events of [firstEvents, secondEvents]) {
     assert.deepEqual(events.map(event => event.type), [
       'tool_start', 'tool_update', 'tool_result_summary',
-      'answer_delta', 'answer_delta',
+      'answer_delta', 'answer_delta', 'answer_delta',
     ])
+    assert.equal(events.at(-1).status, 'completed')
+    assert.equal(events.at(-1).replace, true)
   }
 
   assert.equal(typeof adapters.shutdownAcpSessionRuntime, 'function')
@@ -124,6 +126,62 @@ input.on('line', (line) => {
     sessionTransport: 'acp',
     env: { MELDWORK_TEST_SPAWN_COUNT_FILE: spawnCountFile },
   }), { message: 'LOCAL_AGENT_SESSION_INVALID' })
+})
+
+test('ACP closes a start-only tool with the partial terminal outcome', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-start-only-tool-'))
+  const cli = executable(directory, 'acp-start-only-tool.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+const update = (sessionId, value) => send({
+  jsonrpc: '2.0', method: 'session/update', params: { sessionId, update: value },
+})
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'start-only-tool-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    update(sessionId, {
+      sessionUpdate: 'tool_call', toolCallId: 'start-only-tool', title: 'read',
+      kind: 'read', status: 'in_progress', rawInput: { path: '/private/input' },
+    })
+    update(sessionId, {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial answer' },
+    })
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'max_tokens' } })
+  }
+})
+`)
+  t.after(async () => {
+    await adapters.shutdownAcpSessionRuntime?.()
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  const events = []
+  const result = await adapters.runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'Return a bounded answer.', directory, { onEvent: event => events.push(event) },
+  )
+
+  assert.equal(result.outcome, 'partial')
+  assert.equal(events.some(event => event.type === 'answer_delta'), true)
+  assert.equal(events.filter(event => event.type === 'answer_delta').at(-1).status, 'partial')
+  assert.deepEqual(events.filter(event => event.id === 'start-only-tool').map(event => event.type), [
+    'tool_start', 'tool_result_summary',
+  ])
+  assert.equal(events.some(event => event.type === 'tool_update'), false)
+  assert.deepEqual(events.find(event => event.type === 'tool_result_summary'), {
+    type: 'tool_result_summary',
+    id: 'start-only-tool',
+    status: 'partial',
+    title: 'tool',
+  })
 })
 
 test('shutdown waits for SDK preparation and prevents a later persistent ACP spawn', async (t) => {

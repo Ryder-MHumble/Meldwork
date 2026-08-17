@@ -78,7 +78,7 @@ function pathSuffixLength(value) {
   const matches = [
     value.match(/file:\/\/\/[^\s"'`<>|,;)}\]]+$/i),
     value.match(/(?<![A-Za-z0-9:])(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|,;)}\]]+$/),
-    value.match(/(?<![A-Za-z0-9:])\/(?!\/)[^\s"'`<>|,;)}\]]+$/),
+    value.match(/(?<![A-Za-z0-9:/])\/+[^\s"'`<>|,;)}\]]+$/),
   ]
   return Math.max(...matches.map(match => match?.[0]?.length || 0))
 }
@@ -101,7 +101,8 @@ function boundarySensitiveSuffixLength(value, secrets) {
     retain(tokenPrefixSuffixLength(value, name, false))
   }
   const pathLength = pathSuffixLength(value)
-  if (retained && pathLength >= retained) retain(pathLength)
+  if (pathLength) retain(pathLength)
+  retain(value.match(/(?<![A-Za-z0-9:/])\/+$/)?.[0]?.length)
 
   const matches = [
     value.match(/\bAKIA[0-9A-Z]{0,15}$/),
@@ -109,6 +110,7 @@ function boundarySensitiveSuffixLength(value, secrets) {
     value.match(/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|database[_-]?url|connection[_-]?string|dsn|token|secret|password|credential|authorization|private[_-]?key)[A-Za-z0-9_.-]*)\1\s*[:=]\s*(?:"[^"\r\n]*|'[^'\r\n]*'|\[[^\]\r\n]*\]|[^\s,;}\]]*)$/i),
     value.match(/\b[A-Za-z][A-Za-z0-9+.-]*:\/{0,1}$/),
     value.match(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s\/@]*$/),
+    value.match(/\bhttps?$/i),
   ]
   for (const match of matches) retain(match?.[0]?.length)
   retain(value.match(/-----BEGIN [A-Z0-9 ]*$/i)?.[0]?.length)
@@ -181,7 +183,7 @@ function sanitizeRuntimeEventText(value, childEnv, limit, singleLine = false, tr
     .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, '[redacted private key]')
     .replace(/file:\/\/\/[^\s"'`<>|,;)}\]]+/gi, '[path]')
     .replace(/(?<![A-Za-z0-9:])(?:[A-Za-z]:[\\/]|\\\\)[^\s"'`<>|,;)}\]]+/g, '[path]')
-    .replace(/(?<![A-Za-z0-9:])\/(?!\/)[^\s"'`<>|,;)}\]]+/g, '[path]')
+    .replace(/(?<![A-Za-z0-9:/])\/+[^\s"'`<>|,;)}\]]+/g, '[path]')
     .replace(/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|database[_-]?url|connection[_-]?string|dsn|token|secret|password|credential|authorization|private[_-]?key)[A-Za-z0-9_.-]*)\1\s*[:=]\s*(?:"[^"\r\n]*"|'[^'\r\n]*'|\[[^\]\r\n]*\]|[^\s,;}\]]+)/gi, 'credential=[redacted]')
     .replace(/\bAKIA[0-9A-Z]{16}\b/g, '[redacted]')
     .replace(/\bbearer\s+[A-Za-z0-9._~+\/-]+=*/gi, 'Bearer [redacted]')
@@ -196,6 +198,8 @@ function createRuntimeEventEmitter(options, childEnv) {
   const callback = typeof options.onEvent === 'function' ? options.onEvent : null
   const activity = typeof options.onActivity === 'function' ? options.onActivity : null
   let deliveredAnswer = ''
+  let finalized = false
+  const openTools = new Map()
   const answerDeltaRedactor = createAnswerDeltaRedactor(childEnv)
   const deliver = (event) => {
     if (!callback) return
@@ -205,7 +209,7 @@ function createRuntimeEventEmitter(options, childEnv) {
     } catch { /* runtime events are best-effort */ }
   }
   const deliverAnswerDelta = (base, delta) => {
-    if (!delta) return
+    if (!delta) return false
     const replace = base.replace === true
     deliveredAnswer = replace ? delta : deliveredAnswer + delta
     const eventBase = { ...base }
@@ -217,9 +221,10 @@ function createRuntimeEventEmitter(options, childEnv) {
         delta: delta.slice(offset, offset + RUNTIME_EVENT_LIMITS.delta),
       })
     }
+    return true
   }
   const flushAnswerDelta = (base = { type: 'answer_delta', status: 'completed' }) => {
-    deliverAnswerDelta(base, answerDeltaRedactor.flush())
+    return deliverAnswerDelta(base, answerDeltaRedactor.flush())
   }
   const emit = (input) => {
     try { activity?.() } catch { /* activity is best-effort */ }
@@ -238,6 +243,14 @@ function createRuntimeEventEmitter(options, childEnv) {
       )
       if (text) base[field] = text
     }
+    if (base.id && input.type === 'tool_start') {
+      openTools.set(base.id, {
+        id: base.id,
+        ...(base.title ? { title: base.title } : {}),
+      })
+    } else if (base.id && input.type === 'tool_result_summary') {
+      openTools.delete(base.id)
+    }
     if (input.type !== 'answer_delta') {
       deliver(base)
       return
@@ -245,26 +258,50 @@ function createRuntimeEventEmitter(options, childEnv) {
     const delta = answerDeltaRedactor.push(input.delta)
     deliverAnswerDelta(base, terminalAnswerStatus(status) ? delta + answerDeltaRedactor.flush() : delta)
   }
-  return {
-    emit,
-    emitFinalAnswer(text) {
-      flushAnswerDelta()
-      if (!text) return
+  const finalize = ({ text = '', status = 'completed' } = {}) => {
+    if (finalized) return false
+    finalized = true
+    const answerStatus = runtimeEventStatus(status, 'failed')
+    const toolStatus = answerStatus === 'completed' ? 'partial' : answerStatus
+    for (const tool of openTools.values()) {
+      deliver({
+        type: 'tool_result_summary',
+        id: tool.id,
+        status: toolStatus,
+        ...(tool.title ? { title: tool.title } : {}),
+      })
+    }
+    openTools.clear()
+    const flushedAnswerDelta = flushAnswerDelta({ type: 'answer_delta', status: answerStatus })
+    if (text) {
       const finalAnswerRedactor = createAnswerDeltaRedactor(childEnv)
       const finalAnswer = finalAnswerRedactor.push(text) + finalAnswerRedactor.flush()
       if (!deliveredAnswer) {
-        deliverAnswerDelta({ type: 'answer_delta', status: 'completed' }, finalAnswer)
+        deliverAnswerDelta({ type: 'answer_delta', status: answerStatus }, finalAnswer)
+      } else if (!flushedAnswerDelta && finalAnswer === deliveredAnswer) {
+        deliverAnswerDelta(
+          { type: 'answer_delta', status: answerStatus, replace: true },
+          finalAnswer,
+        )
       } else if (finalAnswer.startsWith(deliveredAnswer)) {
         deliverAnswerDelta(
-          { type: 'answer_delta', status: 'completed' },
+          { type: 'answer_delta', status: answerStatus },
           finalAnswer.slice(deliveredAnswer.length),
         )
       } else {
         deliverAnswerDelta(
-          { type: 'answer_delta', status: 'completed', replace: true },
+          { type: 'answer_delta', status: answerStatus, replace: true },
           finalAnswer,
         )
       }
+    }
+    return true
+  }
+  return {
+    emit,
+    finalize,
+    emitFinalAnswer(text, outcome = 'completed') {
+      return finalize({ text, status: outcome })
     },
   }
 }

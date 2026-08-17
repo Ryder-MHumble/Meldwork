@@ -183,9 +183,9 @@ finish()
     type: 'tool_start',
     title: 'search',
     status: 'running',
-    summary: 'Bash: operation: rg (2 hidden arguments)',
+    summary: 'Bash: operation: command',
   })
-  assert.doesNotMatch(JSON.stringify(runtimeEvent), /Users|private|workspace/)
+  assert.doesNotMatch(JSON.stringify(runtimeEvent), /Users|private|workspace|\brg\b|-n/)
   fs.writeFileSync(releaseFile, 'release')
   const result = await resultPromise
   assert.equal(result.text, 'Delegated result')

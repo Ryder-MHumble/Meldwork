@@ -377,7 +377,10 @@ input.on('line', (line) => {
   assert.equal(JSON.stringify(createdOutboundPayloads).includes('kimi-acp-session'), false)
   assert.equal(createdEvents.some(event => event.type === 'answer_delta'), true)
   assert.equal(
-    createdEvents.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
+    createdEvents.filter(event => event.type === 'answer_delta').reduce(
+      (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+      '',
+    ),
     'new|plan|cancelled|first prompt|[path]',
   )
   assert.deepEqual(createdEvents.slice(0, 2).map(event => ({
@@ -1121,7 +1124,10 @@ send()
       outcome: 'completed',
     })
     assert.equal(
-      events.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
+      events.filter(event => event.type === 'answer_delta').reduce(
+        (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+        '',
+      ),
       'first second',
       kind,
     )
@@ -1138,13 +1144,13 @@ send()
     assert.equal(events.find(event => event.type === 'tool_start')?.title, 'Bash', kind)
     assert.equal(
       events.find(event => event.type === 'tool_update')?.summary
-        .includes('operation: ls (1 hidden argument) | head -5'),
+        .includes('operation: command'),
       true,
       kind,
     )
     assert.equal(
       events.find(event => event.type === 'tool_result_summary')?.summary
-        .includes('operation: ls (1 hidden argument) | head -5'),
+        .includes('operation: command'),
       true,
       kind,
     )
@@ -1155,7 +1161,7 @@ send()
     )
     assert.doesNotMatch(
       JSON.stringify(events),
-      /hidden reasoning|hidden final thought|private subagent answer|raw tool output|duplicate command|Users|private\/workspace|OPENAI_API_KEY|provider-secret|executable_path/i,
+      /hidden reasoning|hidden final thought|private subagent answer|raw tool output|duplicate command|Users|private\/workspace|OPENAI_API_KEY|provider-secret|executable_path|\bls\b|head -5/i,
       kind,
     )
   }
@@ -1234,7 +1240,10 @@ send()
   const deltas = events.filter(event => event.type === 'answer_delta')
   assert.equal(result.text, 'first second')
   assert.equal(result.sessionRef, 'gemini-event-session')
-  assert.equal(deltas.map(event => event.delta).join(''), result.text)
+  assert.equal(deltas.reduce(
+    (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+    '',
+  ), result.text)
 })
 
 test('OpenCode uses ACP without attachments and keeps JSON for attachment runs', () => {
@@ -1670,8 +1679,10 @@ process.stdout.write(${JSON.stringify(raw)})
     )
     const answer = events
       .filter(event => event.type === 'answer_delta')
-      .map(event => event.delta)
-      .join('')
+      .reduce(
+        (value, event) => event.replace === true ? event.delta : value + event.delta,
+        '',
+      )
 
     assert.equal(answer, result.text, fixture.kind)
     assert.equal(events.some(event => event.type === 'answer_delta'), true, fixture.kind)

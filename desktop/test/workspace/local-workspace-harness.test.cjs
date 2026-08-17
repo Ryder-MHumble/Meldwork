@@ -121,7 +121,7 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
         type: 'tool_start',
         status: 'running',
         title: 'Bash',
-        summary: 'Bash: operation: rg -n (2 hidden arguments)',
+        summary: 'Bash: operation: command',
         command: 'rg secret /Users/private/work',
       })
       runOptions.onProgress({
@@ -132,7 +132,7 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
         type: 'tool_result_summary',
         status: 'completed',
         title: 'Bash',
-        summary: 'Bash: operation: rg -n (2 hidden arguments)',
+        summary: 'Bash: operation: command',
         detail: 'Exit code: 0\nOutput: 3 lines, 120 bytes',
       })
       runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: 'Codex live ' })
@@ -169,8 +169,9 @@ test('Harness streams per-Agent events, persists a compact trace, and hands evid
   assert.equal(codexTrace.events.some(event => event.type === 'tool_result_summary'), true)
   const codexTool = codexTrace.events.find(event => event.type === 'tool_result_summary')
   assert.equal(codexTool.title, 'Bash')
-  assert.equal(codexTool.summary, 'Bash: operation: rg -n (2 hidden arguments)')
+  assert.equal(codexTool.summary, 'Bash: operation: command')
   assert.equal(codexTool.detail, 'Exit code: 0\nOutput: 3 lines, 120 bytes')
+  assert.doesNotMatch(JSON.stringify(codexTrace.events), /\brg\b|secret|Users|private|workspace|-n/)
   assert.equal(codexTrace.events.some(event => event.title === 'process'), false)
   assert.deepEqual(codexTrace.sourceMessageIds, [workspace.snapshot().messages[0].id])
   assert.equal(codexTrace.context.includedCount, codexTrace.sourceMessageIds.length)

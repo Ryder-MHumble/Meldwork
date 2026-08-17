@@ -198,6 +198,10 @@ async function runAgent(agent, prompt, workdir, options = {}) {
   if (capabilityWarning) runtimeEvents.emit(capabilityWarning)
   const profileRunContext = profile.createRunContext(options)
   return await new Promise((resolve, reject) => {
+    const rejectTerminal = (error, status = 'failed') => {
+      runtimeEvents.finalize({ status })
+      reject(error)
+    }
     let child
     try {
       child = spawnFn(prepared.command, prepared.args, {
@@ -208,7 +212,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         windowsHide: true,
       })
     } catch (error) {
-      reject(agentExecutionError(
+      rejectTerminal(agentExecutionError(
         'LOCAL_AGENT_SPAWN_FAILED',
         redactChildSecrets(error?.message || error, childEnv),
       ))
@@ -219,6 +223,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     const structuredOutput = profile.createFinalOutputAccumulator(sessionRef)
     let settled = false
     let stopRequested = false
+    let timeoutRequested = false
     let timeout
     let forceKillTimeout
     let forceSettleTimeout
@@ -290,7 +295,10 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           child.stdin.destroy()
           child.stdout.destroy()
           child.stderr.destroy()
-          reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+          rejectTerminal(
+            new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
+            timeoutRequested ? 'timeout' : 'stopped',
+          )
         }), KILL_SETTLE_MS)
         return
       }
@@ -302,11 +310,17 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           child.stdin.destroy()
           child.stdout.destroy()
           child.stderr.destroy()
-          reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+          rejectTerminal(
+            new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
+            timeoutRequested ? 'timeout' : 'stopped',
+          )
         }), KILL_SETTLE_MS)
       }, TERMINATE_GRACE_MS)
     }
-    timeout = setTimeout(abort, 2 * 60 * 60 * 1000)
+    timeout = setTimeout(() => {
+      timeoutRequested = true
+      abort()
+    }, 2 * 60 * 60 * 1000)
     if (options.signal?.aborted) abort()
     else options.signal?.addEventListener('abort', abort, { once: true })
     child.stdout.on('data', (chunk) => {
@@ -320,19 +334,23 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       stderr.push(chunk)
       noteActivity()
     })
-    child.on('error', error => finish(() => reject(
+    child.on('error', error => finish(() => rejectTerminal(
       stopRequested
         ? agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
         : agentExecutionError(
             'LOCAL_AGENT_SPAWN_FAILED',
             redactChildSecrets(error?.message || error, childEnv),
           ),
+      stopRequested ? (timeoutRequested ? 'timeout' : 'stopped') : 'failed',
     )))
     child.on('close', (code, signal) => finish(() => {
       void (async () => {
         runtimeStreamParser?.end()
         if (stopRequested || options.signal?.aborted) {
-          reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+          rejectTerminal(
+            new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
+            timeoutRequested ? 'timeout' : 'stopped',
+          )
           return
         }
         if (code !== 0) {
@@ -343,7 +361,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
             [rawStderr, structuredDetail].filter(Boolean).join('\n'),
             childEnv,
           )
-          reject(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
+          rejectTerminal(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
           return
         }
         const rawStderr = stderr.text()
@@ -356,7 +374,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           sessionRef: nextSessionRef,
         })
         if (result.error) {
-          reject(failedAgentProcessError(
+          rejectTerminal(failedAgentProcessError(
             redactChildSecrets(result.error, childEnv),
             { sessionRef: failureSessionRef },
           ))
@@ -386,11 +404,11 @@ async function runAgent(agent, prompt, workdir, options = {}) {
               : {}),
           })
         } catch (error) {
-          reject(error)
+          rejectTerminal(error)
           return
         }
         if (!output.text) {
-          reject(agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE'))
+          rejectTerminal(agentExecutionError('LOCAL_AGENT_EMPTY_RESPONSE'))
           return
         }
         const externalRunRef = normalizeExternalRunRef(
@@ -398,9 +416,9 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         )
         if (externalRunRef) output.externalRunRef = externalRunRef
         if (result.progress?.length) output.progress = result.progress
-        runtimeEvents.emitFinalAnswer(redactedText)
+        runtimeEvents.finalize({ text: redactedText, status: output.outcome })
         resolve(output)
-      })().catch(error => reject(error))
+      })().catch(error => rejectTerminal(error))
     }))
     if (spec.stdin) child.stdin.end(stdin)
     else child.stdin.end()

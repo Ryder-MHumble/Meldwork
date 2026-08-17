@@ -89,7 +89,10 @@ test('Workspace stream bridge redacts split credentials and paths while preservi
   })
 
   const streamed = liveEvents.filter(event => event.type === 'answer_delta')
-    .map(event => event.delta).join('')
+    .reduce(
+      (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+      '',
+    )
   assert.equal(streamed, 'Credential [redacted] stored at [path] ready')
   assert.deepEqual(
     liveEvents.filter(event => event.id === 'workspace-tool').map(event => event.type),

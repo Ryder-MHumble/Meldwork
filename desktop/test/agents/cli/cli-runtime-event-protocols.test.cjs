@@ -151,6 +151,135 @@ test('verified tool lifecycles reuse their wire IDs, ignore terminal answer dupl
   }
 })
 
+test('runtime finalization closes provider-omitted tool results once as unverified partials', () => {
+  const emitted = []
+  const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+
+  runtimeEvents.emit({
+    type: 'tool_start',
+    id: 'tool-open',
+    status: 'running',
+    title: 'read',
+  })
+  assert.equal(runtimeEvents.finalize({ text: 'done', status: 'completed' }), true)
+  assert.equal(runtimeEvents.finalize({ text: 'done', status: 'completed' }), false)
+
+  const toolEvents = emitted.filter(event => event.id === 'tool-open')
+  assert.deepEqual(toolEvents.map(event => event.type), [
+    'tool_start',
+    'tool_result_summary',
+  ])
+  assert.deepEqual(toolEvents.at(-1), {
+    type: 'tool_result_summary',
+    id: 'tool-open',
+    status: 'partial',
+    title: 'read',
+  })
+})
+
+test('runtime finalization preserves non-success terminal tool statuses', () => {
+  for (const status of ['partial', 'failed', 'stopped', 'timeout']) {
+    const emitted = []
+    const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+
+    runtimeEvents.emit({ type: 'tool_start', id: `tool-${status}`, status: 'running', title: 'read' })
+    runtimeEvents.finalize({ status })
+
+    assert.deepEqual(emitted.filter(event => event.id === `tool-${status}`), [
+      { type: 'tool_start', id: `tool-${status}`, status: 'running', title: 'read' },
+      {
+        type: 'tool_result_summary',
+        id: `tool-${status}`,
+        status,
+        title: 'read',
+      },
+    ])
+  }
+})
+
+test('runtime finalization marks every partial terminal answer reconciliation path as partial', () => {
+  const cases = [
+    { streamed: '', final: 'partial answer', replace: false },
+    { streamed: 'partial ', final: 'partial answer', replace: false },
+    { streamed: 'draft ', final: 'partial answer', replace: true },
+  ]
+
+  for (const fixture of cases) {
+    const emitted = []
+    const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+    if (fixture.streamed) {
+      runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: fixture.streamed })
+    }
+    runtimeEvents.emitFinalAnswer(fixture.final, 'partial')
+
+    const terminal = emitted.filter(event => event.type === 'answer_delta').at(-1)
+    assert.equal(terminal.status, 'partial', JSON.stringify(fixture))
+    assert.equal(terminal.replace === true, fixture.replace, JSON.stringify(fixture))
+  }
+})
+
+test('runtime finalization replays an exact streamed answer with its terminal outcome', () => {
+  for (const outcome of ['completed', 'partial']) {
+    const emitted = []
+    const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+
+    runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: 'partial answer.' })
+    runtimeEvents.emitFinalAnswer('partial answer.', outcome)
+
+    assert.deepEqual(emitted.filter(event => event.type === 'answer_delta'), [
+      { type: 'answer_delta', status: 'running', delta: 'partial answer.' },
+      { type: 'answer_delta', status: outcome, replace: true, delta: 'partial answer.' },
+    ], outcome)
+  }
+})
+
+test('runtime finalization emits one terminal answer when its pending flush completes an exact answer', () => {
+  const emitted = []
+  const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+
+  runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: 'safe answer' })
+  runtimeEvents.emitFinalAnswer('safe answer')
+
+  const answerEvents = emitted.filter(event => event.type === 'answer_delta')
+  const answer = answerEvents.reduce(
+    (value, event) => event.replace === true ? event.delta : value + event.delta,
+    '',
+  )
+  assert.equal(answer, 'safe answer')
+  assert.equal(answerEvents.filter(event => event.status === 'completed').length, 1)
+})
+
+test('runtime finalization marks a withheld partial answer flush as partial', () => {
+  const emitted = []
+  const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+
+  runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: 'secret' })
+  runtimeEvents.emitFinalAnswer('', 'partial')
+
+  assert.deepEqual(emitted.filter(event => event.type === 'answer_delta'), [
+    { type: 'answer_delta', status: 'partial', delta: 'secret' },
+  ])
+})
+
+test('runtime finalization does not duplicate an explicit tool result', () => {
+  const emitted = []
+  const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+
+  runtimeEvents.emit({ type: 'tool_start', id: 'tool-complete', status: 'running', title: 'read' })
+  runtimeEvents.emit({
+    type: 'tool_result_summary',
+    id: 'tool-complete',
+    status: 'completed',
+    title: 'read',
+  })
+  runtimeEvents.emitFinalAnswer('done')
+
+  assert.deepEqual(emitted.filter(event => event.id === 'tool-complete').map(event => event.type), [
+    'tool_start',
+    'tool_result_summary',
+  ])
+})
+
 test('runtime answer delivery never reconstructs an environment credential split at any character boundary', () => {
   const secret = 'provider-secret-value'
   for (let split = 1; split < secret.length; split += 1) {
@@ -241,6 +370,82 @@ test('runtime answer delivery keeps a trailing local path atomic across assignme
   runtimeEvents.emitFinalAnswer('')
 
   assert.equal(emitted.map(event => event.delta).join(''), 'saved [path]')
+})
+
+test('runtime answer delivery redacts every leading slash-run absolute path without corrupting HTTPS', () => {
+  const paths = [
+    '//Users/private/workspace',
+    '///Users/private/workspace',
+    '//server/share/private',
+  ]
+  const privateFragments = /Users|server|share|private|workspace/
+  const deliveredText = events => events.reduce(
+    (answer, event) => event.replace === true ? event.delta : answer + event.delta,
+    '',
+  )
+
+  for (const value of paths) {
+    const singleChunkEvents = []
+    const singleChunkRuntimeEvents = createRuntimeEventEmitter(
+      { onEvent: event => singleChunkEvents.push(event) },
+      {},
+    )
+    singleChunkRuntimeEvents.emit({ type: 'answer_delta', status: 'running', delta: `saved ${value}` })
+    singleChunkRuntimeEvents.emitFinalAnswer('')
+    assert.equal(deliveredText(singleChunkEvents), 'saved [path]', `single chunk ${value}`)
+    assert.doesNotMatch(deliveredText(singleChunkEvents), privateFragments, `single chunk ${value}`)
+
+    for (let split = 1; split < value.length; split += 1) {
+      const emitted = []
+      const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+      runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: `saved ${value.slice(0, split)}` })
+      runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: value.slice(split) })
+      runtimeEvents.emitFinalAnswer('')
+      assert.equal(deliveredText(emitted), 'saved [path]', `split ${value} at ${split}`)
+      assert.doesNotMatch(deliveredText(emitted), privateFragments, `split ${value} at ${split}`)
+
+      const replacementEvents = []
+      const replacementRuntimeEvents = createRuntimeEventEmitter(
+        { onEvent: event => replacementEvents.push(event) },
+        {},
+      )
+      replacementRuntimeEvents.emit({
+        type: 'answer_delta', status: 'running', delta: `draft ${value.slice(0, split)}`,
+      })
+      replacementRuntimeEvents.emitFinalAnswer(`saved ${value}`)
+      assert.equal(deliveredText(replacementEvents), 'saved [path]', `replacement ${value} at ${split}`)
+      assert.doesNotMatch(deliveredText(replacementEvents), privateFragments, `replacement ${value} at ${split}`)
+    }
+  }
+})
+
+test('runtime answer delivery preserves HTTPS URLs across every chunk boundary and final replacement', () => {
+  const url = 'https://example.com/docs'
+  for (let split = 1; split < url.length; split += 1) {
+    const emitted = []
+    const runtimeEvents = createRuntimeEventEmitter({ onEvent: event => emitted.push(event) }, {})
+    const answer = `Read ${url} now`
+    const boundary = 'Read '.length + split
+    runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: answer.slice(0, boundary) })
+    runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: answer.slice(boundary) })
+    runtimeEvents.emitFinalAnswer('')
+    assert.equal(emitted.map(event => event.delta).join(''), answer, `chunk ${split}`)
+
+    const replacementEvents = []
+    const replacementRuntimeEvents = createRuntimeEventEmitter(
+      { onEvent: event => replacementEvents.push(event) },
+      {},
+    )
+    replacementRuntimeEvents.emit({
+      type: 'answer_delta', status: 'running', delta: `Draft ${url.slice(0, split)}`,
+    })
+    replacementRuntimeEvents.emitFinalAnswer(`Final ${url}`)
+    const replaced = replacementEvents.reduce(
+      (answerText, event) => event.replace === true ? event.delta : answerText + event.delta,
+      '',
+    )
+    assert.equal(replaced, `Final ${url}`, `replacement ${split}`)
+  }
 })
 
 test('runtime answer delivery fails closed for an unfinished private-key marker', () => {
