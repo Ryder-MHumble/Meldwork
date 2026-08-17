@@ -1,6 +1,6 @@
 # Meldwork V1.0.2 预发布与分发边界
 
-Meldwork-V1.0.2 对应桌面包版本 `0.1.2`，当前验证目标是 Apple silicon macOS。该候选计划作为 GitHub prerelease 分发，使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。它不能被描述为通过 Gatekeeper 的正式 macOS 发行版；首次启动可能需要在“系统设置 → 隐私与安全性”中选择“仍要打开 / Open Anyway”。
+Meldwork-V1.0.2 对应桌面包版本 `0.1.2`，当前验证目标是 Apple silicon macOS。该版本作为 GitHub prerelease 分发，使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。它不能被描述为通过 Gatekeeper 的正式 macOS 发行版；首次启动可能需要在“系统设置 → 隐私与安全性”中选择“仍要打开 / Open Anyway”。
 
 ## 当前产品合同
 
@@ -18,16 +18,17 @@ V1.0.2 是一个本地优先的多 Agent Work Cell，由用户明确选择参与
 
 ## V1.0.2 预发布产物
 
-DMG、ZIP 和 `SHA256SUMS.txt` 必须来自最终已验收提交和同一次 `npm --prefix desktop run dist` 构建。当前 `desktop/dist` 中的产物早于最终源码状态，因此本页不记录或复用它们的校验值。
+DMG、ZIP 和 `SHA256SUMS.txt` 来自最终源码状态和同一次 `npm --prefix desktop run dist` 构建。Release Notes 与远端资产使用该批次的校验值，不复用任何更早候选产物。
 
-最终提交锁定后，必须重新运行 `dist`，对新生成的 DMG 和 ZIP 执行 `shasum -a 256`，生成同批次的 `SHA256SUMS.txt`，再把新值写入 Release Notes。上传后还必须重新下载或读取远端资产，确认远端字节与本地最终构建一致。
+每次发布必须对新生成的 DMG 和 ZIP 执行 `shasum -a 256`，生成同批次的 `SHA256SUMS.txt`。上传后还必须重新下载或读取远端资产，确认远端字节与本地最终构建一致。
 
 ## 验收状态
 
-- 此前发布候选的前端测试 `300/300`、桌面测试 `1331/1331` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。当前权限顺序、Human Gate、ACP 生命周期和 Auto V4 durability 回归 `132/132` 通过。最终发布提交仍须重跑完整验证。
-- Web 与 Electron renderer 两个构建、Electron `pack` 和 `git diff --check` 已在发布候选源码上通过；最终发布 DMG、ZIP 和校验值仍须由带发布文档的标签提交生成并复核。
-- Hermes 与 OpenClaw 的实时流式/工具生命周期、Manual V4、Auto Discussion V4、停止行为和 `360 x 800` 窄屏回到底部控件，均须在最终精确打包应用上重新验收；不得作为当前候选的已验证发布结论。
-- 以上验证不覆盖所有目录 Agent、安装配方、上游版本或操作系统。该候选仍为 ad-hoc 签名，未使用 Apple Developer ID，也未提交 Apple 公证。
+- 前端测试 `302/302`、桌面测试 `1335/1335` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。
+- Web 与 Electron renderer 两个构建、Electron `pack`、`dist`、DMG/ZIP 完整性检查和 `git diff --check` 通过。
+- Hermes 实时流式与工具生命周期通过；Manual V4 已有 Codex、Claude、Hermes 完成证据，Auto Discussion V4 已有 Codex、Claude 完成证据。OpenClaw 最新实时运行以 `LOCAL_AGENT_PROCESS_FAILED` 安全失败，因此只声明协议夹具和托管运行时测试通过，不声明 OpenClaw 实时认证通过。
+- `360 x 800` 群聊与私聊回到底部、Trace、消息操作和停止耐久性验收通过。一次 Codex 私聊运行超过 300 秒观察窗口后才迟到完成，最终 UI 验收使用 Claude 私聊并保留该实时延迟边界。
+- 以上验证不覆盖所有目录 Agent、安装配方、上游版本或操作系统。该版本仍为 ad-hoc 签名，未使用 Apple Developer ID，也未提交 Apple 公证。
 
 完整的自动化证据、实时 Agent 边界和剩余风险见[Verification And Test Coverage](tests.md)。
 

@@ -21,15 +21,14 @@ API Key 或任意 Shell 执行能力。
 - Qwen Code
 
 Agent 管理面板提供经过白名单约束的安装入口。安装命令和下载地址由主进程固定，不会根据页面
-输入执行任意命令。对支持强制权限模式的 Agent，群聊级工作目录写入默认关闭，只有用户明确
-授权后才会切换为写入模式；Hermes 和 OpenClaw 没有等价的强制只读参数，界面会明确标为
-“由 Agent 自身权限控制”。Kimi 在只读对话中通过 Agent Client Protocol 的 `plan` 模式运行；
-用户明确开启写入权限后，才切换到 Kimi 原生的 `stream-json --prompt` 模式。
+输入执行任意命令。内置 Agent 通过各自支持的原生权限模式或 Meldwork 托管工具策略执行；无法
+满足当前权限契约的 Agent 会安全失败。群聊级工作目录写入默认关闭，只有用户明确授权后才会
+切换为写入模式。Kimi 在只读对话中通过 Agent Client Protocol 的 `plan` 模式运行；用户明确
+开启写入权限后，才切换到 Kimi 原生的 `stream-json --prompt` 模式。
 
 ## 首次启动与本地 Agent 检测
 
-计划中的 V1.0.2 GitHub 预发布候选将使用 ad-hoc 临时签名，不使用 Apple Developer ID，
-也不提交 Apple 公证；在远端预发布和最终产物完成发布验证前，不应将其描述为已发布版本。
+V1.0.2 GitHub 预发布使用 ad-hoc 临时签名，不使用 Apple Developer ID，也不提交 Apple 公证。
 如果 macOS 首次启动时拦截候选应用，请打开
 “系统设置 → 隐私与安全性”，找到 Meldwork 的拦截提示，点击“仍要打开 / Open Anyway”，
 再确认启动。

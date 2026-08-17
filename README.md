@@ -21,7 +21,7 @@
 The current preview is a local work cell for supported Agent CLIs. It keeps participants explicit, context scoped, collaboration bounded, run state inspectable, and human review in the loop. Selected Agents can now respond concurrently or move through independent proposals, peer negotiation, responsibility-based work, single-writer integration, and independent verification around one goal.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.2/Meldwork-0.1.2-arm64.dmg"><strong>Download after the V1.0.2 prerelease is published</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.2/Meldwork-0.1.2-arm64.dmg"><strong>Download Meldwork V1.0.2 for Apple silicon macOS</strong></a>
   · <a href="architecture.md">Architecture</a>
   · <a href="LICENSE">License</a>
 </p>
@@ -116,7 +116,7 @@ Availability depends on installation, version, authentication, Provider, and dec
 
 The current release-validated target is Apple silicon macOS.
 
-1. After publication, open the [Meldwork V1.0.2 prerelease target](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.2).
+1. Open the [Meldwork V1.0.2 prerelease](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.2).
 2. Download Meldwork-0.1.2-arm64.dmg.
 3. Drag Meldwork into Applications and try to open it once.
 4. This prerelease is ad-hoc signed, not signed with an Apple Developer ID, and not Apple-notarized. If macOS blocks it, open **System Settings → Privacy & Security**, find the Meldwork warning, choose **Open Anyway**, and confirm.

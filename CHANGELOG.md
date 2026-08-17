@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.2 - 2026-08-18 (Meldwork-V1.0.2 prerelease candidate)
+## 0.1.2 - 2026-08-18 (Meldwork-V1.0.2 prerelease)
 
 ### Collaboration Harness V4
 
@@ -38,20 +38,20 @@
 ### Packaging And Distribution
 
 - Sets the desktop package version to `0.1.2` with permanent Bundle ID `com.rydersun.meldwork`.
-- Produces Apple silicon DMG and ZIP prerelease candidates using ad-hoc signing. This is not Apple Developer ID signing or notarization and may require Open Anyway on first launch.
+- Produces Apple silicon DMG and ZIP prerelease artifacts using ad-hoc signing. This is not Apple Developer ID signing or notarization and may require Open Anyway on first launch.
 - Keeps `dist:public` as the fail-closed future formal-distribution path requiring a Developer ID identity, Hardened Runtime, complete Apple notarization credentials, and post-sign validation.
 - Uses the Meldwork Non-Commercial Source License; commercial use requires prior written permission.
 
 ### Verification
 
-- Earlier release-candidate frontend tests: 300/300 passed; the exact release commit must be rerun before publication.
-- Earlier release-candidate desktop tests: 1331/1331 passed; the exact final commit must be rerun before publication.
-- Permission ordering, Human Gate, ACP lifecycle, and Auto V4 durability regressions: 132/132 passed on the current candidate source; the full desktop suite remains required from the exact final commit.
-- Release-candidate deterministic Eval Harness: 6 cases and 18 results passed; the exact final commit must be rerun before publication.
-- Web and Electron renderer builds, Electron `pack`, and `git diff --check` passed on the release-candidate tree; they must be rerun from the exact final commit before publication. `dist` remains pending for that commit.
-- Hermes and OpenClaw live streaming/tool-lifecycle checks, Manual V4, Auto Discussion V4, stopped-run behavior, and the 360 x 800 return-to-latest control all require acceptance on the exact final packaged app; none is a current release claim.
-- Final DMG and ZIP SHA-256 values and remote Release asset verification remain pending until the final publication artifacts are generated.
-- The candidate remains ad-hoc signed, without Apple Developer ID signing or notarization; `spctl` rejection remains expected.
+- Frontend tests: 302/302 passed. Desktop tests: 1335/1335 passed.
+- Deterministic Eval Harness: 6 cases and 18 results passed.
+- Web and Electron renderer builds, Electron `pack`, and `git diff --check` passed on the final source tree.
+- Packaged Manual V4 completed with Codex, Claude, and Hermes evidence; packaged Auto Discussion V4 completed with Codex and Claude evidence; stopped runs remained stopped.
+- Hermes live streaming and tool lifecycle acceptance passed. The latest OpenClaw live run failed closed with `LOCAL_AGENT_PROCESS_FAILED`; protocol fixtures and managed-runtime tests pass, but OpenClaw live streaming/tool acceptance is not claimed.
+- The final 360 x 800 packaged UI acceptance passed for group and direct return-to-latest behavior, Trace layout, message actions, and stop durability. A separate Codex direct run exceeded the 300-second observation window before completing late, so it is retained as a live timing limitation rather than counted as a UI failure.
+- Release DMG and ZIP digests are published in `SHA256SUMS.txt` and verified against the uploaded assets.
+- The prerelease remains ad-hoc signed, without Apple Developer ID signing or notarization; `spctl` rejection remains expected.
 
 ## 0.1.0 Private Preview 1 - 2026-08-03
 
