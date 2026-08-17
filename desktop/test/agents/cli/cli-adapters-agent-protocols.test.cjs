@@ -644,6 +644,89 @@ input.on('line', (line) => {
   assert.equal(result.error?.message, 'LOCAL_AGENT_PERMISSION_TERMINAL_RACE')
 })
 
+test('ACP rejects a duplicate active permission request id before accepting terminal output', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-permission-duplicate-'))
+  const callbackFile = path.join(directory, 'permission-callback-started.txt')
+  const terminalFile = path.join(directory, 'terminal-sent.txt')
+  const cli = executable(directory, 'kimi-acp-permission-duplicate.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+const permission = title => ({
+  jsonrpc: '2.0', id: 77, method: 'session/request_permission',
+  params: {
+    sessionId: 'permission-duplicate-session',
+    toolCall: { toolCallId: 'tool-1', title, kind: 'read', status: 'pending' },
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ],
+  },
+})
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'permission-duplicate-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send(permission('first request'))
+    const waitForCallback = setInterval(() => {
+      if (!fs.existsSync(process.env.MELDWORK_TEST_CALLBACK_FILE)) return
+      clearInterval(waitForCallback)
+      send(permission('duplicate request'))
+      send({
+        jsonrpc: '2.0', method: 'session/update',
+        params: {
+          sessionId: 'permission-duplicate-session',
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'duplicate terminal must not be accepted' },
+          },
+        },
+      })
+      send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+      fs.writeFileSync(process.env.MELDWORK_TEST_TERMINAL_FILE, 'sent')
+    }, 5)
+  }
+})
+`)
+  let releaseDecision
+  let signalRequested
+  let callbackCalls = 0
+  const requested = new Promise(resolve => { signalRequested = resolve })
+  const decision = new Promise(resolve => { releaseDecision = resolve })
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const outcome = runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'reject duplicate permission ids',
+    directory,
+    {
+      env: {
+        MELDWORK_TEST_CALLBACK_FILE: callbackFile,
+        MELDWORK_TEST_TERMINAL_FILE: terminalFile,
+      },
+      onPermissionRequest: async () => {
+        callbackCalls += 1
+        fs.writeFileSync(callbackFile, 'started')
+        signalRequested()
+        return decision
+      },
+    },
+  ).then(value => ({ value }), error => ({ error }))
+
+  await requested
+  await readWhenReady(terminalFile)
+  releaseDecision({ status: 'approved', optionId: 'allow-once' })
+  const result = await within(outcome)
+  assert.equal(callbackCalls, 1)
+  assert.equal(result.error?.message, 'LOCAL_AGENT_PROCESS_FAILED')
+})
+
 test('Kimi ACP preserves new sessions across failures and keeps diagnostics private', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-session-ref-'))
   const promptFailureCli = executable(directory, 'kimi-acp-prompt-failure.cjs', `

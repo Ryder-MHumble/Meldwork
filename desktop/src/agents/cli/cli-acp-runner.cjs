@@ -166,6 +166,12 @@ function createObservedAcpInput(input, replyState, protocolLabel) {
         let message
         try { message = JSON.parse(line) } catch { continue }
         if (message?.method === 'session/request_permission') {
+          if (replyState.pendingPermissionRequestIds.has(message.id)) {
+            output.destroy(acpTransportError(
+              `${protocolLabel} reused an active permission request identifier.`,
+            ))
+            return
+          }
           replyState.pendingPermissionRequestIds.add(message.id)
         } else if (replyState.collecting && !message?.method
             && replyState.promptRequestId != null && message?.id === replyState.promptRequestId

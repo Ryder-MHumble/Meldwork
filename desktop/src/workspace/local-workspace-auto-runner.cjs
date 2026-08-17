@@ -794,14 +794,12 @@ class LocalWorkspaceAutoRunner {
   checkpointOrchestration(group, controller, updates = {}) {
     const previous = controller.orchestration
     controller.orchestration = { ...previous, ...updates }
-    try {
-      const persisted = this.checkpointRun?.(group.id, controller)
-      if (this.hasRunLedger() && persisted !== true) {
-        throw new Error('LOCAL_RUN_PERSIST_FAILED')
-      }
-    } catch (error) {
+    // A thrown callback has an unknown write outcome; only explicit failure is safe to roll back.
+    const persisted = this.checkpointRun?.(group.id, controller)
+    if (this.hasRunLedger() && persisted !== true) {
       controller.orchestration = previous
-      throw error
+      if (previous?.version === 4) controller.currentRound = previous.round
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
     }
   }
 

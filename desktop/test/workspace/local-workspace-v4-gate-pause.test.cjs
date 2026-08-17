@@ -1322,7 +1322,7 @@ test('Auto V4 rejects a terminal proposal while its live permission Gate is pend
   assert.equal(calls.some(call => call.phase === 'challenge'), false)
 
   const previousOrchestration = { version: 4, phase: 'proposal', round: 1 }
-  const checkpointController = { orchestration: previousOrchestration }
+  const checkpointController = { orchestration: previousOrchestration, currentRound: 2 }
   const checkpointRun = workspace.autoRunner.checkpointRun
   workspace.autoRunner.checkpointRun = () => false
   try {
@@ -1330,6 +1330,7 @@ test('Auto V4 rejects a terminal proposal while its live permission Gate is pend
       group, checkpointController, { phase: 'challenge' },
     ), { message: 'LOCAL_RUN_PERSIST_FAILED' })
     assert.equal(checkpointController.orchestration, previousOrchestration)
+    assert.equal(checkpointController.currentRound, 1)
   } finally {
     workspace.autoRunner.checkpointRun = checkpointRun
   }
