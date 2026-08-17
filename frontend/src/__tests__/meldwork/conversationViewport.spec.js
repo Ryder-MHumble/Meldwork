@@ -64,4 +64,87 @@ describe('Conversation viewport', () => {
     expect(scroller.scrollTop).toBe(1200)
     expect(viewport.showScrollToLatest.value).toBe(false)
   })
+
+  it('keeps following live output after an explicit jump from a smooth-scrolling timeline', async () => {
+    const liveOutputSignature = ref('chunk-one')
+    const viewport = useConversationViewport({
+      activeMessages: ref([{ id: 'message-one' }]),
+      liveOutputSignature,
+      selectedGroupId: ref('group-one'),
+    })
+    const scroller = document.createElement('div')
+    let scrollHeight = 1200
+    let scrollTop = 400
+    scroller.style.scrollBehavior = 'smooth'
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { value: 400 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => {
+          scrollTop = scroller.style.scrollBehavior === 'auto'
+            ? value
+            : Math.min(value, scrollTop + 120)
+        },
+      },
+    })
+    viewport.messageScroller.value = scroller
+
+    viewport.handleMessageScroll()
+    expect(viewport.showScrollToLatest.value).toBe(true)
+
+    await viewport.scrollToLatest({ force: true })
+    viewport.handleMessageScroll()
+    scrollHeight = 1400
+    liveOutputSignature.value = 'chunk-two'
+    await nextTick()
+    await nextTick()
+
+    expect(scrollTop).toBe(1400)
+    expect(viewport.showScrollToLatest.value).toBe(false)
+  })
+
+  it('preserves an upward reading position while provisional output becomes durable', async () => {
+    const activeMessages = ref([{ id: 'message-one' }])
+    const viewport = useConversationViewport({
+      activeMessages,
+      liveOutputSignature: ref('chunk-one'),
+      selectedGroupId: ref('group-one'),
+    })
+    const scroller = document.createElement('div')
+    const clientHeight = 400
+    let scrollHeight = 2000
+    let scrollTop = 1000
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, get: () => scrollHeight },
+      clientHeight: { value: clientHeight },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => {
+          scrollTop = Math.max(0, Math.min(value, scrollHeight - clientHeight))
+        },
+      },
+    })
+    viewport.messageScroller.value = scroller
+
+    viewport.handleMessageScroll()
+    expect(viewport.showScrollToLatest.value).toBe(true)
+
+    scrollHeight = 1200
+    scrollTop = 800
+    viewport.handleMessageScroll()
+    activeMessages.value = [...activeMessages.value, { id: 'message-two' }]
+    scrollHeight = 2200
+    await nextTick()
+    await nextTick()
+
+    expect(scrollTop).toBe(800)
+    expect(viewport.showScrollToLatest.value).toBe(true)
+
+    scrollTop = 1800
+    viewport.handleMessageScroll()
+    expect(viewport.showScrollToLatest.value).toBe(false)
+  })
 })

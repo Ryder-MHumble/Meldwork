@@ -1,33 +1,43 @@
 import { nextTick, ref, watch } from 'vue'
 
 export function useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId }) {
-  const messageNearBottom = ref(true)
+  const messageFollowLatest = ref(true)
   const messageScroller = ref(null)
+  const previousMessageScrollTop = ref(0)
   const showScrollToLatest = ref(false)
 
   function handleMessageScroll() {
     const scroller = messageScroller.value
     if (!scroller) return
     const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
-    messageNearBottom.value = remaining <= 96
-    showScrollToLatest.value = !messageNearBottom.value
+    const atLatest = remaining <= 96
+    const movedTowardLatest = scroller.scrollTop > previousMessageScrollTop.value
+    if (!atLatest) messageFollowLatest.value = false
+    else if (messageFollowLatest.value || movedTowardLatest) messageFollowLatest.value = true
+    previousMessageScrollTop.value = scroller.scrollTop
+    showScrollToLatest.value = !messageFollowLatest.value
   }
 
   async function scrollToLatest({ force = false } = {}) {
     await nextTick()
     const scroller = messageScroller.value
-    if (!scroller || (!force && !messageNearBottom.value)) return
+    if (!scroller || (!force && !messageFollowLatest.value)) return
     if (force) {
       const container = scroller.closest?.('.conversation-pane, .workspace-pane')
       container?.scrollIntoView?.({ block: 'end', inline: 'nearest' })
     }
+    const previousScrollBehavior = scroller.style.scrollBehavior
+    scroller.style.scrollBehavior = 'auto'
     scroller.scrollTop = scroller.scrollHeight
-    messageNearBottom.value = true
+    scroller.style.scrollBehavior = previousScrollBehavior
+    previousMessageScrollTop.value = scroller.scrollTop
+    messageFollowLatest.value = true
     showScrollToLatest.value = false
   }
 
   function resetMessageViewport() {
-    messageNearBottom.value = true
+    messageFollowLatest.value = true
+    previousMessageScrollTop.value = 0
     void scrollToLatest({ force: true })
   }
 
