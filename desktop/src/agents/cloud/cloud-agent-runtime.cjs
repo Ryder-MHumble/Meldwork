@@ -187,6 +187,7 @@ class CloudAgentRuntime {
     this.listeners = new Set()
     this.started = false
     this.stopping = false
+    this.preserveWaitingRun = () => false
     this.ledgerFacade = null
     for (const connector of connectorEntries(options.connectors)) this.registerConnector(connector)
   }
@@ -230,6 +231,7 @@ class CloudAgentRuntime {
               ),
             })
             for (const record of preserved.values()) target.checkpoint(record)
+            runtime.preserveWaitingRun = callerPreserve
             return changed.filter(record => !preserved.has(record.runId))
           }
         }
@@ -764,6 +766,7 @@ class CloudAgentRuntime {
       this.runLedger.recoverInterrupted({
         remoteConnectorIds: this.connectorIds(),
         recoveryOwnerId: this.recoveryOwnerId,
+        preserveWaitingRun: this.preserveWaitingRun,
       })
       const recoveries = this.runLedger.remoteRecoveries(this.recoveryOwnerId)
       for (const claim of recoveries) {

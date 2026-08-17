@@ -800,6 +800,83 @@ test('local-only recovery remains available with no configured Cloud Connector',
   assert.equal(runtime.connectorIds().length, 0)
 })
 
+test('Cloud startup preserves a local Human Gate validated by workspace recovery', async (t) => {
+  const value = fixture(t)
+  const ledger = new RunLedger({ storagePath: value.ledgerPath })
+  ledger.checkpoint({
+    runId: 'run-local-gate',
+    taskId: 'task-local-gate',
+    contextPackId: `context-pack-${'b'.repeat(64)}`,
+    contextPackState: 'captured',
+    groupId: 'group-local-gate',
+    threadRootId: 'task-local-gate',
+    mode: 'manual',
+    targetKinds: ['codex'],
+    status: 'waiting',
+    reason: 'human_gate_pending',
+    permissionMode: 'read-only',
+    agentRuns: [{
+      agentRunId: 'agent-local-gate', kind: 'codex', round: 0, status: 'interrupted',
+    }],
+    continuation: {
+      gateId: `human-gate-${'c'.repeat(64)}`,
+      gateType: 'permission',
+      resumeKind: 'agent_slot',
+      state: 'pending',
+      agentRunId: 'agent-local-gate',
+      agentKind: 'codex',
+      round: 0,
+      createdAt: 1000,
+      updatedAt: 1000,
+    },
+  })
+  ledger.checkpoint({
+    runId: 'run-forged-local-gate',
+    taskId: 'task-forged-local-gate',
+    contextPackId: `context-pack-${'d'.repeat(64)}`,
+    contextPackState: 'captured',
+    groupId: 'group-forged-local-gate',
+    threadRootId: 'task-forged-local-gate',
+    mode: 'manual',
+    targetKinds: ['codex'],
+    status: 'waiting',
+    reason: 'human_gate_pending',
+    permissionMode: 'read-only',
+    agentRuns: [{
+      agentRunId: 'agent-forged-local-gate',
+      kind: 'codex',
+      round: 0,
+      status: 'interrupted',
+    }],
+    continuation: {
+      gateId: `human-gate-${'e'.repeat(64)}`,
+      gateType: 'permission',
+      resumeKind: 'agent_slot',
+      state: 'pending',
+      agentRunId: 'agent-forged-local-gate',
+      agentKind: 'codex',
+      round: 0,
+      createdAt: 1000,
+      updatedAt: 1000,
+    },
+  })
+  const runtime = runtimeFor(value, ledger, null)
+
+  runtime.workspaceLedger().recoverInterrupted({
+    preserveWaitingRun: record => record.runId === 'run-local-gate',
+  })
+  assert.equal(ledger.get('run-local-gate').status, 'waiting')
+  assert.equal(ledger.get('run-forged-local-gate').status, 'interrupted')
+
+  assert.deepEqual(await runtime.start(), [])
+  const recovered = ledger.get('run-local-gate')
+  assert.equal(recovered.status, 'waiting')
+  assert.equal(recovered.reason, 'human_gate_pending')
+  assert.equal(recovered.continuation.state, 'pending')
+  assert.equal(recovered.agentRuns[0].status, 'interrupted')
+  await runtime.shutdown()
+})
+
 test('Cloud runtime startup retry is capped, deduplicated, identity-bound, and cancellable', async () => {
   const scheduled = []
   let attempts = 0
