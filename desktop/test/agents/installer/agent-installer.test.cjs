@@ -1016,8 +1016,8 @@ test('process cancellation escalates from SIGTERM to SIGKILL', {
   const script = path.join(directory, 'ignore-term.sh')
   const source = `
 const fs = require('node:fs')
-fs.writeFileSync(${JSON.stringify(readyFile)}, String(process.pid))
 process.on('SIGTERM', () => fs.writeFileSync(${JSON.stringify(termFile)}, 'SIGTERM'))
+fs.writeFileSync(${JSON.stringify(readyFile)}, String(process.pid))
 setInterval(() => {}, 1000)
 `
   fs.writeFileSync(script, `#!/bin/bash\nexec ${shellLiteral(process.execPath)} -e ${shellLiteral(source)}\n`, {
