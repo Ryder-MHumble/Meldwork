@@ -773,7 +773,7 @@ input.on('line', (line) => {
   })
 
   await within(readWhenReady(readyFile))
-  await adapters.shutdownAcpSessionRuntime()
+  await within(adapters.shutdownAcpSessionRuntime())
 
   await assert.rejects(
     () => within(resultPromise),
@@ -866,7 +866,7 @@ input.on('line', (line) => {
   })
 
   await within(readWhenReady(gatewayStartedFile))
-  await adapters.shutdownAcpSessionRuntime()
+  await within(adapters.shutdownAcpSessionRuntime())
 
   assert.equal(fs.existsSync(gatewayStoppedFile), true)
   await assert.rejects(
@@ -966,7 +966,7 @@ input.on('line', (line) => {
   })
 
   await within(readWhenReady(healthStartedFile))
-  await adapters.shutdownAcpSessionRuntime()
+  await within(adapters.shutdownAcpSessionRuntime())
 
   assert.equal(fs.existsSync(healthStoppedFile), true)
   assert.equal(fs.existsSync(gatewayStoppedFile), true)
