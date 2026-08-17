@@ -615,7 +615,6 @@
 }
 
 .message-row.agent-reply-collapsed .message-footer-actions > .message-regenerate-button,
-.message-row.agent-reply-collapsed .message-footer-actions > .message-copy-button,
 .message-row.agent-reply-collapsed .message-footer-actions > .message-delete-button {
   display: none;
 }

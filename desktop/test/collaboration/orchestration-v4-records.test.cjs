@@ -732,12 +732,122 @@ test('round-trips exact work receipts bound to the active plan, snapshot, operat
     ['work item', { taskId: 'stale-work' }],
     ['owner', { ownerKind: 'hermes' }],
     ['slot', { slotId: hermesSlot.slotId }],
-    ['operation', { operationId: 'operation-stale-work' }],
   ]) {
     assert.throws(() => parseOrchestrationV4(canonicalStaleRecord(overrides), { targetKinds }), {
       code: 'ORCHESTRATION_V4_WORK_RECEIPT_INVALID',
     }, `stale ${name} binding must fail closed`)
   }
+})
+
+test('round-trips historical same-slot work receipts after the latest watermark replaces them', () => {
+  const targetKinds = ['codex', 'hermes', 'workbuddy']
+  const base = completedChallengeOrchestration(targetKinds)
+  const coordinationPlan = createCoordinationPlan({
+    snapshotHash: base.snapshotHash,
+    targetKinds,
+    assignments: [
+      { taskId: 'codex-analyze', ownerKind: 'codex', role: 'worker', objective: 'Analyze the task.', expectedOutput: 'Analysis Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
+      { taskId: 'codex-implement', ownerKind: 'codex', role: 'worker', objective: 'Implement the task.', expectedOutput: 'Implementation Artifact.', inputRefs: [], artifactIds: [], dependsOn: ['codex-analyze'] },
+      { taskId: 'hermes-review', ownerKind: 'hermes', role: 'verifier', objective: 'Review the implementation.', expectedOutput: 'Review Artifact.', inputRefs: [], artifactIds: [], dependsOn: ['codex-implement'] },
+      { taskId: 'integrate-work', ownerKind: 'workbuddy', role: 'integrator', objective: 'Integrate the work.', expectedOutput: 'Integrated Artifact.', inputRefs: [], artifactIds: [], dependsOn: ['hermes-review'] },
+    ],
+    finalizerKind: 'workbuddy',
+    verifierKinds: ['codex', 'hermes'],
+    agreedBy: targetKinds,
+  })
+  const slot = base.slots.find(candidate => candidate.agentKind === 'codex')
+  const operations = ['operation-codex-analyze', 'operation-codex-implement']
+  const tasks = ['codex-analyze', 'codex-implement']
+  const receipts = operations.map((operationId, index) => {
+    const artifactId = `artifact-${String(index + 1).repeat(64)}`
+    return createCollaborationReceipt({
+      phase: 'work',
+      agentKind: 'codex',
+      slotId: slot.slotId,
+      operationId,
+      status: 'completed',
+      summary: `Codex completed ${tasks[index]}.`,
+      artifactIds: [artifactId],
+      workItemId: tasks[index],
+      snapshotHash: base.snapshotHash,
+      deliveryWatermark: index + 3,
+    })
+  })
+  const workReceipts = receipts.map((receipt, index) => {
+    const contentHash = String(index + 3).repeat(64)
+    return createWorkReceipt({
+      snapshotHash: base.snapshotHash,
+      snapshotBodyHash: base.snapshot.bodyHash,
+      snapshotContentRef: base.snapshot.contentRef,
+      planHash: coordinationPlan.planHash,
+      taskId: tasks[index],
+      ownerKind: 'codex',
+      slotId: slot.slotId,
+      operationId: operations[index],
+      collaborationReceipt: receipt,
+      artifacts: [{
+        artifactId: receipt.artifactIds[0],
+        contentHash,
+        contentRef: contentRef(contentHash, 42),
+      }],
+    })
+  })
+  const latestReceipt = receipts.at(-1)
+  const record = {
+    ...base,
+    phase: 'work',
+    coordinationPlan,
+    workReceipts,
+    commitState: { ...base.commitState, writerKind: coordinationPlan.finalizerKind },
+    plan: {
+      ...base.plan,
+      assignments: base.plan.assignments.map(assignment => (
+        assignment.agentKind === 'codex'
+          ? { ...assignment, operationId: latestReceipt.operationId }
+          : assignment
+      )),
+    },
+    deliveryWatermarks: [{
+      agentKind: 'codex',
+      phase: 'work',
+      watermark: latestReceipt.deliveryWatermark,
+      operationId: latestReceipt.operationId,
+      snapshotHash: base.snapshotHash,
+      updatedAt: 1003,
+    }],
+    slots: base.slots.map(candidate => candidate.slotId === slot.slotId ? {
+      ...candidate,
+      phase: 'work',
+      status: 'completed',
+      operationId: latestReceipt.operationId,
+      deliveryWatermark: latestReceipt.deliveryWatermark,
+      receiptId: latestReceipt.receiptId,
+      resultHash: hashValue(latestReceipt),
+      finishedAt: 1003,
+      resultRefs: {
+        ...(candidate.resultRefs || {}),
+        artifactIds: workReceipts.flatMap(receipt => (
+          receipt.artifacts.map(artifact => artifact.artifactId)
+        )),
+        workflowOutcomeRefs: [
+          ...(candidate.resultRefs?.workflowOutcomeRefs || []),
+          ...receipts.map(receipt => ({ receipt })),
+        ],
+      },
+    } : candidate),
+  }
+
+  assert.deepEqual(parseOrchestrationV4(record, { targetKinds }), record)
+
+  const tampered = structuredClone(record)
+  const historical = tampered.slots.find(candidate => candidate.slotId === slot.slotId)
+    .resultRefs.workflowOutcomeRefs.find(item => (
+      item.receipt?.receiptId === receipts[0].receiptId
+    ))
+  historical.receipt.summary = 'Tampered historical result.'
+  assert.throws(() => parseOrchestrationV4(tampered, { targetKinds }), {
+    code: 'ORCHESTRATION_V4_WORK_RECEIPT_INVALID',
+  })
 })
 
 test('accepts a targeted synthesis revision after verification without stale challenge bindings', () => {
@@ -1949,7 +2059,7 @@ test('requires every Agent to support the same responsibility graph instead of s
   assert.deepEqual(unanimous.plan.agreedBy, ['codex', 'hermes', 'workbuddy'])
 })
 
-test('binds unanimous coordination to each Agent latest support receipt and rejects contradictory agreement', () => {
+test('binds unanimous coordination to latest support receipts and keeps contradiction unresolved', () => {
   const targetKinds = ['codex', 'hermes', 'workbuddy']
   const snapshotHash = 'c'.repeat(64)
   const assignments = targetKinds.map((ownerKind, index) => ({
@@ -2002,7 +2112,7 @@ test('binds unanimous coordination to each Agent latest support receipt and reje
 
   assert.deepEqual(unanimous.plan.supportReceiptIds, supportReceipts
     .map(record => record.receipt.receiptId).sort())
-  assert.throws(() => resolveCoordinationConsensus({
+  const contradicted = resolveCoordinationConsensus({
     targetKinds,
     snapshotHash,
     candidateReceipts: [{
@@ -2013,7 +2123,11 @@ test('binds unanimous coordination to each Agent latest support receipt and reje
       verifierKinds: ['codex', 'hermes'],
     }],
     supportReceipts: [supportRecord('codex', 'contradict'), ...supportReceipts.slice(1)],
-  }), { code: 'ORCHESTRATION_V4_COORDINATION_PLAN_INVALID' })
+  })
+  assert.equal(contradicted.plan, null)
+  assert.deepEqual(contradicted.supportPlanHashes, [
+    '', candidate.planHash, candidate.planHash,
+  ])
 })
 
 test('ignores an invalid responsibility candidate so the next challenge round can repair it', () => {
@@ -2198,6 +2312,36 @@ test('returns the complete index without receipts when Agent prefixes exceed the
   assert.equal(packageRecord.totalChars, indexText.length)
   assert.deepEqual(packageRecord.receipts, [])
   assert.deepEqual(packageRecord.deliveryWatermarks, [])
+})
+
+test('keeps valid receipts valid when the rendered package has only index space', () => {
+  const targetKinds = ['codex', 'hermes']
+  const receipt = createCollaborationReceipt({
+    phase: 'challenge',
+    agentKind: 'hermes',
+    slotId: 'slot-hermes',
+    operationId: 'operation-hermes',
+    status: 'completed',
+    summary: 's'.repeat(700),
+    capabilities: ['c'.repeat(700)],
+    intendedWork: ['i'.repeat(700)],
+    deliverables: ['d'.repeat(700)],
+    snapshotHash: 'a'.repeat(64),
+    deliveryWatermark: 2,
+  })
+  const indexText = [
+    'MELDWORK_V4_COLLABORATION_PACKAGE_V1',
+    '[index] codex',
+    '[index] hermes',
+  ].join('\n')
+
+  const packageRecord = buildCollaborationPackage([receipt], {
+    targetKinds,
+    totalLimit: indexText.length,
+  })
+
+  assert.equal(packageRecord.text, indexText)
+  assert.deepEqual(packageRecord.receipts, [])
 })
 
 test('reserves every selected Agent latest conclusion before optional package references', () => {

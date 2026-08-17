@@ -39,8 +39,9 @@ const EVENT_STATUSES = new Set([
   'completed', 'succeeded', 'failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted',
 ])
 const ORCHESTRATION_PHASES = new Set([
-  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification', 'committed',
-  'human-gate', 'stopped',
+  'prepare', 'dispatch', 'running', 'reconcile',
+  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
+  'commit', 'committed', 'failed', 'stopped', 'human-gate',
 ])
 const ORCHESTRATION_SLOT_STATUSES = new Set([
   'planned', 'prepared', 'queued', 'running', 'waiting', 'settled', 'completed', 'committed',

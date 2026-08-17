@@ -24,7 +24,7 @@
 - Shows real collaboration phases for parallel divergence, cross-Agent challenge and negotiation, responsibility-based work, convergence, and independent verification.
 - Adds group-scoped unlimited-mode confirmation and state-driven motion with keyboard, Escape, `aria-live`, narrow-layout, and reduced-motion support.
 - Adds an animated return-to-bottom control to group and direct conversation timelines.
-- Moves Agent message copy actions into the compact footer action row and hardens long-name, timestamp, and narrow-screen layout behavior.
+- Keeps Agent message copy actions in the metadata row, aligns version switching, regenerate, and delete controls in the compact footer row, and hardens long-name, timestamp, and narrow-screen layout behavior.
 - Keeps legacy round-zero trace labels neutral instead of relabeling historical responses as concurrent work.
 
 ### Durability And Safety

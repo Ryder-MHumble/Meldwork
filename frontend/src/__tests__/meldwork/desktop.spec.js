@@ -468,6 +468,17 @@ describe('run event normalization', () => {
       .toEqual({ version: 4, phase: 'committed', currentKinds: ['codex'] })
   })
 
+  it('retains every supported V4 orchestration phase for renderer feedback', () => {
+    for (const phase of [
+      'prepare', 'dispatch', 'running', 'reconcile', 'proposal', 'challenge', 'coordination',
+      'work', 'synthesis', 'verification', 'commit', 'committed', 'failed', 'stopped', 'human-gate',
+    ]) {
+      expect(normalizeOrchestration({ version: 4, phase })).toEqual({ version: 4, phase })
+    }
+    expect(normalizeOrchestration({ version: 4, phase: 'completed' }))
+      .toEqual({ version: 4, phase: 'committed' })
+  })
+
   it('keeps a version-only V4 run shell strict under hostile renderer input', () => {
     const snapshot = normalizeSnapshot({
       agents: [],

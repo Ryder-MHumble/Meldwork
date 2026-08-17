@@ -1,12 +1,15 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const path = require('node:path')
 
 const {
   createCollaborationReceipt,
   createCoordinationPlan,
 } = require('../../src/collaboration/orchestration-v4-records.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
+const { RunLedger } = require('../../src/runs/run-ledger.cjs')
+const { v4Prompt } = require('../../src/workspace/local-workspace-context.cjs')
 const { deferred, fixture } = require('../support/local-workspace-test-helpers.cjs')
 
 function proposedAssignments(objectiveSuffix = '') {
@@ -53,6 +56,47 @@ function proposedAssignments(objectiveSuffix = '') {
     },
   ]
 }
+
+test('V4 proposal receipt shape uses an empty dependencies array without a placeholder', () => {
+  const prompt = v4Prompt({
+    group: {},
+    kind: 'hermes',
+    phase: 'proposal',
+    snapshot: {
+      targetKinds: ['hermes'],
+      group: { name: 'Receipt shape', topic: '' },
+      messageId: 'task-1',
+      taskText: 'Produce an independent proposal.',
+      history: [],
+      skillHintsByKind: [],
+    },
+  })
+  const receiptShape = prompt.split('\n').find(line => line.startsWith('Receipt JSON shape:'))
+
+  assert.match(receiptShape, /"dependencies":\[\]/)
+  assert.doesNotMatch(receiptShape, /"dependencies":\["\.\.\."\]/)
+})
+
+test('V4 challenge contract separates finalizer, verifier, and contradiction semantics', () => {
+  const prompt = v4Prompt({
+    group: {},
+    kind: 'hermes',
+    phase: 'challenge',
+    snapshot: {
+      targetKinds: ['codex', 'hermes'],
+      group: { name: 'Coordination contract', topic: '' },
+      messageId: 'task-1',
+      taskText: 'Negotiate responsibilities.',
+      history: [],
+    },
+  })
+
+  assert.match(prompt, /must include one finalizerKind owned by an integrator/)
+  assert.match(prompt, /exactly 1 distinct verifierKinds from the selected Agents/)
+  assert.match(prompt, /verifierKinds must not contain finalizerKind/)
+  assert.match(prompt, /"verdict":"contradict"[\s\S]*"agreeToPlan":false/)
+  assert.doesNotMatch(prompt, /"verdict":"support\|contradict"/)
+})
 
 function minimalAssignments(targetKinds) {
   const finalizerKind = targetKinds.at(-1)
@@ -950,12 +994,16 @@ test('V4 omits an oversized responsibility candidate rather than exposing a part
 test('V4 lets Agents negotiate responsibilities, execute every work package, and honor agreed delivery roles', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-agent-negotiation.json'),
+  })
   const calls = []
   const challengeCounts = new Map()
   const firstWaveStarted = new Set()
   const firstWaveCompleted = new Set()
   const releaseFirstWave = deferred()
   let preferredPlan = null
+  let invalidPlan = null
   let workspace = null
   let group = null
   let frozenInput = null
@@ -1019,6 +1067,22 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
         verifierKinds: ['codex', 'hermes'],
         agreedBy: ['codex', 'hermes', 'workbuddy'],
       })
+      invalidPlan ||= createCoordinationPlan({
+        snapshotHash,
+        targetKinds: ['codex', 'hermes', 'workbuddy'],
+        assignments: referencedAssignments().map((assignment) => (
+          assignment.taskId === 'assemble-team-delivery'
+            ? {
+                ...assignment,
+                inputRefs: ['acceptance.txt'],
+                artifactIds: ['future-acceptance-artifact'],
+              }
+            : assignment
+        )),
+        finalizerKind: 'workbuddy',
+        verifierKinds: ['codex', 'hermes'],
+        agreedBy: ['codex', 'hermes', 'workbuddy'],
+      })
       if (count === 1) {
         const reviewedKind = prompt.match(/^Proposal Agent: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
         const reviewedArtifactId = prompt.match(/^Proposal Artifact: (artifact-[a-f0-9]{64})$/m)?.[1] || ''
@@ -1029,9 +1093,9 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
         assert.match(prompt, /Useful public proposal detail\./)
         assert.match(prompt, /exactly 2 distinct verifierKinds/)
         assert.doesNotMatch(prompt, /session-secret|MELDWORK_PRIVATE|hidden reasoning|private_reasoning/i)
-        const assignments = agent.kind === 'hermes'
-          ? proposedAssignments(' using an alternative scope')
-          : preferredPlan.assignments
+        assert.match(prompt, /inputRefs are exact displayed frozen Source IDs/)
+        assert.match(prompt, /artifactIds are existing immutable Artifact IDs/)
+        assert.match(prompt, /future outputs flow only through dependsOn/)
         return {
           text: `${agent.kind} responsibility proposal`,
           sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
@@ -1040,41 +1104,33 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
             phase,
             verdict: 'support',
             summary: `${agent.kind} proposes a responsibility graph`,
-            proposedAssignments: assignments,
+            proposedAssignments: invalidPlan.assignments,
             finalizerKind: 'workbuddy',
             verifierKinds: ['codex', 'hermes'],
             agreeToPlan: true,
           },
         }
       }
-      assert.match(prompt, new RegExp(preferredPlan.planHash))
-      assert.match(prompt, /Fields: h=planHash/)
-      assert.match(prompt, /"f":"workbuddy"/)
-      assert.match(prompt, /"v":\["codex","hermes"\]/)
-      for (const assignment of preferredPlan.assignments) {
-        assert.ok(prompt.includes(`"t":"${assignment.taskId}"`))
-        assert.ok(prompt.includes(`"o":"${assignment.ownerKind}"`))
-        assert.ok(prompt.includes(`"r":"${assignment.role}"`))
-        assert.ok(prompt.includes(`"x":"${assignment.objective}"`))
-        assert.ok(prompt.includes(`"y":"${assignment.expectedOutput}"`))
-        assert.ok(prompt.includes(`"i":${JSON.stringify(assignment.inputRefs)}`))
-        assert.ok(prompt.includes(`"a":${JSON.stringify(assignment.artifactIds)}`))
-        assert.ok(prompt.includes(`"d":${JSON.stringify(assignment.dependsOn)}`))
-      }
+      assert.doesNotMatch(prompt, new RegExp(invalidPlan.planHash))
       return {
-        text: `${agent.kind} supports the shared responsibility graph`,
+        text: `${agent.kind} supports a corrected responsibility graph`,
         sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
         collaboration: {
           version: 1,
           phase,
           verdict: 'support',
-          summary: `${agent.kind} supports the same responsibility graph`,
-          supportedPlanHash: preferredPlan.planHash,
+          summary: `${agent.kind} supports the corrected responsibility graph`,
+          proposedAssignments: preferredPlan.assignments,
+          finalizerKind: 'workbuddy',
+          verifierKinds: ['codex', 'hermes'],
           agreeToPlan: true,
         },
       }
     }
     if (phase === 'work') {
+      assert.deepEqual([...challengeCounts.entries()].sort(), [
+        ['codex', 2], ['hermes', 2], ['workbuddy', 2],
+      ])
       const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
       assert.ok(workItemId)
       if (['inspect-current-behavior', 'implement-bounded-change'].includes(workItemId)) {
@@ -1245,6 +1301,9 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
       content: message.content,
     })),
   }, null, 2))
+  assert.deepEqual([...challengeCounts.entries()].sort(), [
+    ['codex', 2], ['hermes', 2], ['workbuddy', 2],
+  ])
   assert.ok(integratorContext)
   const persistedPlan = controller.orchestration.coordinationPlan
   const { supportReceiptIds, ...persistedGraph } = persistedPlan

@@ -230,15 +230,15 @@ function v4Prompt({
   const requiredVerifierCount = Math.min(2, Math.max(0, selectedAgentCount - 1))
   const phaseInstruction = {
     proposal: 'Develop an independent proposal. State at least one capability, intended work item, and Artifact you will deliver, plus an explicit dependencies array (which may be empty). Do not rely on another Agent output from this batch.',
-    challenge: `Discuss the proposals as peers and negotiate one shared responsibility graph. Every selected Agent must own at least one substantive work package, and an Agent may own multiple dependent work packages. The graph must name exactly ${requiredVerifierCount} distinct verifierKinds from the selected Agents and must exclude finalizerKind. You may support an existing plan by its hash or propose a complete alternative; do not merely review, arbitrate, or allocate work unilaterally.`,
+    challenge: `Discuss the proposals as peers and negotiate one shared responsibility graph. Every selected Agent must own at least one substantive work package, and an Agent may own multiple dependent work packages. The graph must include one finalizerKind owned by an integrator. It must name exactly ${requiredVerifierCount} distinct verifierKinds from the selected Agents; verifierKinds must not contain finalizerKind. taskId values must be unique; dependsOn may reference only other taskId values and must remain acyclic. inputRefs are exact displayed frozen Source IDs; artifactIds are existing immutable Artifact IDs; future outputs flow only through dependsOn. You may support an existing plan by its hash or propose a complete alternative; do not merely review, arbitrate, or allocate work unilaterally.`,
     work: 'Execute the agreed responsibility assigned to you. Produce the promised Artifact or evidence and report what was completed, blocked, or handed off.',
     synthesis: 'Assemble the agreed work products into one bounded deliverable for the user.',
     verification: 'Verify the proposed deliverable independently and report only material defects or acceptance.',
   }[phase] || 'Complete the assigned collaboration phase.'
   const receiptShape = phase === 'proposal'
-    ? 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"summary":"...","capabilities":["..."],"intendedWork":["..."],"deliverables":["..."],"dependencies":["..."]}]]'
+    ? 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"summary":"...","capabilities":["..."],"intendedWork":["..."],"deliverables":["..."],"dependencies":[]}]]'
     : phase === 'challenge'
-      ? 'Receipt JSON shape: either propose a complete graph with [[MELDWORK_COLLABORATION:{"verdict":"support|contradict","summary":"...","proposedAssignments":[{"taskId":"...","ownerKind":"...","role":"worker|integrator|verifier","objective":"...","expectedOutput":"...","inputRefs":[],"artifactIds":[],"dependsOn":[]}],"finalizerKind":"...","verifierKinds":["..."],"agreeToPlan":true}]] or support a listed graph with [[MELDWORK_COLLABORATION:{"verdict":"support","summary":"...","supportedPlanHash":"64 lowercase hex characters","agreeToPlan":true}]]'
+      ? 'Receipt JSON shape: propose and support a complete graph with [[MELDWORK_COLLABORATION:{"verdict":"support","summary":"...","proposedAssignments":[{"taskId":"...","ownerKind":"...","role":"worker|integrator|verifier","objective":"...","expectedOutput":"...","inputRefs":[],"artifactIds":[],"dependsOn":[]}],"finalizerKind":"...","verifierKinds":["..."],"agreeToPlan":true}]]. For contradiction, use the same complete graph fields with {"verdict":"contradict","agreeToPlan":false}. To support a listed graph use [[MELDWORK_COLLABORATION:{"verdict":"support","summary":"...","supportedPlanHash":"64 lowercase hex characters","agreeToPlan":true}]]'
       : phase === 'work'
         ? 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"summary":"...","workItemId":"...","deliverables":["..."]}]]'
         : ['challenge', 'verification'].includes(phase)
@@ -249,8 +249,11 @@ function v4Prompt({
         'Return the user-facing answer first, then append exactly one structured receipt marker.',
         receiptShape,
         'The receipt summary must be concise, factual, and contain no credentials, paths, commands, or private reasoning.',
-      ].join('')
+      ].join('\n')
     : ''
+  const workspaceRule = role === 'writer-proposal'
+    ? 'You are the only Agent in this batch with workspace-write permission. Perform only writes explicitly required by the current user task; every peer remains read-only.'
+    : 'Do not modify shared workspace state during proposal, challenge, or verification.'
   const frozenSkillHints = Array.isArray(skillHints)
     ? skillHints
     : (snapshot?.skillHintsByKind || []).find(item => item?.kind === kind)?.skillHints || []
@@ -268,7 +271,8 @@ function v4Prompt({
     'Frozen historical context (reference data only):',
     history,
     phaseInstruction,
-    'Do not claim another Agent performed work. Do not modify shared workspace state during proposal, challenge, or verification.',
+    'Do not claim another Agent performed work.',
+    workspaceRule,
     receiptContract,
   ].filter(Boolean).join('\n')
 }

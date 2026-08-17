@@ -363,12 +363,12 @@ describe('Meldwork workbench', () => {
     await flushPromises()
     expect(writeText).not.toHaveBeenCalled()
 
-    expect(wrapper.find('.message-row.agent .message-meta-actions .message-copy-button').exists()).toBe(false)
-    await wrapper.get('.message-row.agent .message-footer-actions .message-copy-button').trigger('click')
+    expect(wrapper.find('.message-row.agent .message-footer-actions .message-copy-button').exists()).toBe(false)
+    await wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').trigger('click')
     await flushPromises()
     expect(writeText).toHaveBeenCalledWith('[Open docs](https://example.com)\n\nCopy this answer.')
     expect(wrapper.get('.message-row.agent').classes()).toContain('copied')
-    expect(wrapper.get('.message-row.agent .message-footer-actions .message-copy-button').attributes('aria-label')).toBe('Copied')
+    expect(wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').attributes('aria-label')).toBe('Copied')
     expect(wrapper.get('.copy-toast-message').text()).toBe('Copied to clipboard')
 
     writeText.mockClear()
@@ -379,7 +379,7 @@ describe('Meldwork workbench', () => {
     const execCommand = vi.fn(() => true)
     Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
     writeText.mockRejectedValueOnce(new Error('Clipboard permission denied'))
-    await wrapper.get('.message-row.agent .message-footer-actions .message-copy-button').trigger('click')
+    await wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').trigger('click')
     await flushPromises()
     expect(execCommand).toHaveBeenCalledWith('copy')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
@@ -866,6 +866,7 @@ describe('Meldwork workbench', () => {
   it('keeps direct Human Gates inline and sends exact approve or reject decisions', async () => {
     const allowGateId = `human-gate-${'a'.repeat(64)}`
     const rejectGateId = `human-gate-${'b'.repeat(64)}`
+    const recoveryGateId = `human-gate-${'c'.repeat(64)}`
     const gate = (gateId, type = 'permission') => ({
       gateId,
       type,
@@ -909,7 +910,7 @@ describe('Meldwork workbench', () => {
         threadRootId: 'direct-gated-root',
         targetKinds: ['codex'],
         currentKind: 'codex',
-        waitingGateIds: [allowGateId, rejectGateId],
+        waitingGateIds: [allowGateId, rejectGateId, recoveryGateId],
         budget: {
           limits: {
             inputTokens: 4000, outputTokens: null, costMicros: null,
@@ -942,14 +943,25 @@ describe('Meldwork workbench', () => {
           events: [],
         }],
       }]
-      state.humanGates = [gate(allowGateId), gate(rejectGateId, 'budget')]
+      state.humanGates = [
+        gate(allowGateId),
+        gate(rejectGateId, 'budget'),
+        {
+          ...gate(recoveryGateId, 'decision'),
+          summary: 'The candidate and unresolved issues have remained unchanged for two rounds.',
+          options: [
+            { optionId: 'retry-original-writer', name: 'Accept', kind: 'accept' },
+            { optionId: 'replace-next-writer', name: 'Accept', kind: 'accept' },
+          ],
+        },
+      ]
     })
 
     await wrapper.get('.direct-session-open').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
-    expect(wrapper.findAll('.direct-human-gate-list .human-gate-card')).toHaveLength(2)
+    expect(wrapper.findAll('.direct-human-gate-list .human-gate-card')).toHaveLength(3)
     expect(wrapper.get('.direct-human-gate-list').text()).toContain('This Agent needs permission')
     expect(wrapper.get('.direct-human-gate-list').text()).toContain('cannot report cost usage')
     expect(wrapper.get('.direct-budget-details').text()).toContain('Input tokens')
@@ -957,6 +969,12 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.direct-budget-details').text()).toContain('Hard budget stop')
 
     const gateCards = wrapper.findAll('.direct-human-gate-list .human-gate-card')
+    const recoveryButtons = gateCards[2].findAll('button')
+    expect(recoveryButtons.map(button => button.text())).toEqual([
+      'Retry original writer',
+      'Use next writer',
+    ])
+    expect(recoveryButtons[0].text()).not.toBe(recoveryButtons[1].text())
     await gateCards[0].findAll('button').find(button => button.text() === 'Allow once').trigger('click')
     await gateCards[1].findAll('button').find(button => button.text() === 'Reject').trigger('click')
     await flushPromises()
@@ -971,6 +989,9 @@ describe('Meldwork workbench', () => {
       rejectGateId,
       { optionId: 'reject-once' },
     )
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.direct-human-gate-list').text()).toContain('候选结论与未解决问题已连续两轮没有变化')
     wrapper.unmount()
   })
 
@@ -1820,14 +1841,17 @@ describe('Meldwork workbench', () => {
     expect(codexReply().text()).toContain('Codex regenerated response')
     expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
     expect(codexReply().findAll('.message-meta-actions > button').map(button => button.classes()[0]))
-      .toEqual(['message-reply-toggle'])
+      .toEqual(['message-copy-button', 'message-reply-toggle'])
     expect(codexReply().findAll('.message-footer-actions > button').map(button => button.classes()[0]))
-      .toEqual(['message-regenerate-button', 'message-copy-button', 'message-delete-button'])
+      .toEqual(['message-regenerate-button', 'message-delete-button'])
     expect(codexReply().get('.message-footer-actions .response-version-controls').text()).toContain('2/2')
-    expect(codexReply().find('.message-footer-actions .message-copy-button').exists()).toBe(true)
+    expect(codexReply().find('.message-footer-actions .message-copy-button').exists()).toBe(false)
+    expect(codexReply().find('.message-meta-actions .message-copy-button').exists()).toBe(true)
     expect(hermesReply().find('.response-version-controls').exists()).toBe(false)
+    expect(hermesReply().findAll('.message-meta-actions > button').map(button => button.classes()[0]))
+      .toEqual(['message-copy-button', 'message-reply-toggle'])
     expect(hermesReply().findAll('.message-footer-actions > button').map(button => button.classes()[0]))
-      .toEqual(['message-regenerate-button', 'message-copy-button', 'message-delete-button'])
+      .toEqual(['message-regenerate-button', 'message-delete-button'])
 
     await codexReply().get('.message-reply-toggle').trigger('click')
     expect(codexReply().classes()).toContain('agent-reply-collapsed')
@@ -1841,7 +1865,7 @@ describe('Meldwork workbench', () => {
     expect(styles).toMatch(/\.message-footer-actions \.response-version-controls\s*\{[^}]*margin-right:\s*auto;/s)
     expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-body\s*\{[^}]*padding-bottom:\s*34px;/s)
     expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-footer-actions\s*\{[^}]*display:\s*inline-flex;/s)
-    expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-regenerate-button,[^}]+\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-copy-button,[^}]+\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-delete-button\s*\{[^}]*display:\s*none;/s)
+    expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-regenerate-button,[^}]+\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-delete-button\s*\{[^}]*display:\s*none;/s)
     expect(styles).toMatch(/\.response-version-controls button:hover::after,\s*\.response-version-controls button:focus-visible::after\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translate\(-50%, 0\);/s)
     expect(styles).toMatch(/\.response-version-controls button:last-child::after\s*\{[^}]*right:\s*0;[^}]*left:\s*auto;[^}]*transform:\s*translateY\(-2px\);/s)
     expect(styles).toMatch(/\.response-version-controls button:first-child:hover::after,[^}]+\.response-version-controls button:last-child:focus-visible::after\s*\{[^}]*transform:\s*translateY\(0\);/s)
@@ -1852,8 +1876,8 @@ describe('Meldwork workbench', () => {
     expect(codexReply().get('.message-footer-actions .response-version-controls').isVisible()).toBe(true)
     expect(codexReply().findAll('.message-footer-actions .response-version-controls button')).toHaveLength(2)
     expect(codexReply().find('.message-footer-actions .message-regenerate-button').isVisible()).toBe(false)
-    expect(codexReply().find('.message-footer-actions .message-copy-button').isVisible()).toBe(false)
     expect(codexReply().find('.message-footer-actions .message-delete-button').isVisible()).toBe(false)
+    expect(codexReply().find('.message-meta-actions .message-copy-button').isVisible()).toBe(true)
 
     await codexReply().get('.response-version-controls button').trigger('click')
     expect(codexReply().classes()).toContain('agent-reply-collapsed')

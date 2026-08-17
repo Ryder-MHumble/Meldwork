@@ -450,11 +450,12 @@ test('Manual V4 recovery safely invokes a queued writer that never acquired a le
     storagePath: recoveryStoragePath,
     runLedger: recoveryLedger,
     runScheduler: new RunScheduler({ taskLimit: 1, workspaceLimit: 1, globalLimit: 1 }),
-    runAgent: async (agent, _prompt, _workdir, runOptions) => {
+    runAgent: async (agent, prompt, _workdir, runOptions) => {
       recoveryCalls.push({
         kind: agent.kind,
         operationId: runOptions.operationId,
         sandbox: runOptions.sandbox,
+        prompt,
       })
       return {
         text: `${agent.kind} recovered queued proposal`,
@@ -485,6 +486,13 @@ test('Manual V4 recovery safely invokes a queued writer that never acquired a le
     const slot = crashRecord.orchestration.slots.find(item => item.agentKind === call.kind)
     assert.equal(call.operationId, slot.operationId)
     assert.equal(call.sandbox, call.kind === writerKind ? 'workspace-write' : 'read-only')
+    assert.match(call.prompt, /structured receipt marker\.\nReceipt JSON shape:/)
+    if (call.kind === writerKind) {
+      assert.match(call.prompt, /only Agent in this batch with workspace-write permission/)
+      assert.doesNotMatch(call.prompt, /Do not modify shared workspace state during proposal/)
+    } else {
+      assert.match(call.prompt, /Do not modify shared workspace state during proposal/)
+    }
   }
   assert.deepEqual(final.orchestration.commitState.committedKinds, [
     'codex', 'workbuddy', 'hermes',

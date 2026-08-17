@@ -122,7 +122,11 @@
   .onboarding-dots { justify-content: center; }
   .onboarding-primary { width: 100%; min-width: 0; }
   .app-shell,
-  .app-shell.sidebar-collapsed { grid-template-columns: 1fr; }
+  .app-shell.sidebar-collapsed {
+    grid-template-columns: 1fr;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
   .app-shell.trace-panel-open,
   .app-shell.sidebar-collapsed.trace-panel-open { grid-template-columns: 1fr; }
   .sidebar { height: auto; min-height: 48dvh; border-right: 0; border-bottom: 0; }

@@ -17,6 +17,10 @@ export function useConversationViewport({ activeMessages, liveOutputSignature, s
     await nextTick()
     const scroller = messageScroller.value
     if (!scroller || (!force && !messageNearBottom.value)) return
+    if (force) {
+      const container = scroller.closest?.('.conversation-pane, .workspace-pane')
+      container?.scrollIntoView?.({ block: 'end', inline: 'nearest' })
+    }
     scroller.scrollTop = scroller.scrollHeight
     messageNearBottom.value = true
     showScrollToLatest.value = false

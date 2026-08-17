@@ -843,6 +843,7 @@ describe('Meldwork workbench', () => {
 
     expect(mobileRules).toMatch(/\.sidebar\.collapsed\s*\{[^}]*min-height:\s*0;/)
     expect(mobileRules).toMatch(/\.sidebar\.collapsed\s*>\s*:not\(\.brand-row\)\s*\{[^}]*display:\s*none;/)
+    expect(mobileRules).toMatch(/\.app-shell,\s*\.app-shell\.sidebar-collapsed\s*\{[^}]*overflow-x:\s*hidden;[^}]*overflow-y:\s*auto;/s)
   })
 
   it('lets the conversation and composer grow with wide desktop windows', () => {

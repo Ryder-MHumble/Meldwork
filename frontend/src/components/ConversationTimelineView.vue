@@ -189,6 +189,19 @@
                     <TrashOutline v-else />
                   </button>
                   <button
+                    v-if="message.role === 'agent' && message.content"
+                    class="message-copy-button"
+                    type="button"
+                    :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
+                    @click.stop="copyMessageContent(message, $event, true)"
+                    @keydown.enter.prevent="copyMessageContent(message, $event, true)"
+                    @keydown.space.prevent="copyMessageContent(message, $event, true)"
+                  >
+                    <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
+                    <CopyOutline v-else />
+                  </button>
+                  <button
                     v-if="message.role === 'agent'"
                     class="message-reply-toggle"
                     type="button"
@@ -476,19 +489,6 @@
                   @click.stop="regenerateMessage(message)"
                 >
                   <RefreshOutline :class="{ spinning: isMessageRegenerating(message) }" />
-                </button>
-                <button
-                  v-if="message.content"
-                  class="message-copy-button"
-                  type="button"
-                  :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                  :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                  @click.stop="copyMessageContent(message, $event, true)"
-                  @keydown.enter.prevent="copyMessageContent(message, $event, true)"
-                  @keydown.space.prevent="copyMessageContent(message, $event, true)"
-                >
-                  <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
-                  <CopyOutline v-else />
                 </button>
                 <button
                   v-if="!message.provisional"
@@ -1059,14 +1059,20 @@ function humanGateSummary(gate) {
     'Cost usage is unavailable for this Agent attempt.': 'humanGate.summary.budget',
     'This run requires a human decision.': 'humanGate.summary.decision',
     'The previous write-capable Agent attempt may already have changed the workspace.': 'humanGate.summary.retry',
+    'The candidate and unresolved issues have remained unchanged for two rounds.': 'humanGate.summary.stalledCandidate',
+    'The workspace-write synthesis attempt may have produced side effects, but its result is unknown.': 'humanGate.summary.unknownWriteSynthesis',
   }[gate?.summary]
   return key ? t(key) : gate?.summary || ''
 }
 
 function humanGateOptionLabel(option) {
   const optionIdKey = {
+    'continue-discussion': 'humanGate.option.continueDiscussion',
+    'stop-discussion': 'humanGate.option.stopDiscussion',
     'retry-once': 'humanGate.option.retryOnce',
     'cancel-retry': 'humanGate.option.cancelRetry',
+    'retry-original-writer': 'humanGate.option.retryOriginalWriter',
+    'replace-next-writer': 'humanGate.option.replaceNextWriter',
   }[option?.optionId]
   if (optionIdKey) return t(optionIdKey)
   const key = {

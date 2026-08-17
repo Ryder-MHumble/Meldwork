@@ -618,8 +618,7 @@ function resolveCoordinationConsensus(input = {}) {
     const agentKind = cleanId(receipt?.agentKind)
     if (!agentKind || !targetKinds.includes(agentKind) || supportsByKind.has(agentKind)
         || receipt?.phase !== 'challenge'
-        || !['support', 'contradict'].includes(verdict)
-        || (receipt?.agreeToPlan === true && verdict !== 'support')) {
+        || !['support', 'contradict'].includes(verdict)) {
       fail('ORCHESTRATION_V4_COORDINATION_PLAN_INVALID')
     }
     let candidate = null
@@ -1532,6 +1531,7 @@ function validateV4Relations(orchestration, targetKinds) {
         item?.receipt?.receiptId === workReceipt.collaborationReceipt.receiptId
       ))?.receipt
       const operationBound = slot?.operationId === workReceipt.operationId
+        || historicalReceipt?.operationId === workReceipt.operationId
         || orchestration.deliveryWatermarks.some(watermark => (
           watermark.agentKind === workReceipt.ownerKind
           && watermark.phase === 'work'
@@ -2361,7 +2361,7 @@ function buildCollaborationPackage(receipts, options = {}) {
   if (!Array.isArray(receipts) || receipts.length > MAX_V4_SLOTS * 8) {
     fail('COLLABORATION_PACKAGE_INVALID')
   }
-  const parsed = receipts.map(receipt => parseCollaborationControlBlock(receipt, options))
+  const parsed = receipts.map(receipt => parseCollaborationControlBlock(receipt))
     .filter(Boolean)
   const latest = new Map()
   for (const receipt of parsed) {

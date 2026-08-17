@@ -1629,7 +1629,8 @@ class LocalWorkspaceAutoRunner {
   }
 
   v4CoordinationResult({
-    receiptRecords, targetKinds, snapshotHash, challengeBindings = [], requireSupport = true,
+    receiptRecords, targetKinds, snapshotHash, snapshot = null,
+    challengeBindings = [], requireSupport = true,
   }) {
     const candidateReceipts = receiptRecords
       .filter(record => record?.receipt?.phase === 'challenge')
@@ -1644,13 +1645,35 @@ class LocalWorkspaceAutoRunner {
         })
       : []
     if (supportReceipts.some(receipt => !receipt)) {
-      return resolveCoordinationConsensus({
+      const result = resolveCoordinationConsensus({
         targetKinds, snapshotHash, candidateReceipts, supportReceipts: [],
       })
+      return this.v4SemanticCoordinationResult(result, snapshot)
     }
-    return resolveCoordinationConsensus({
+    const result = resolveCoordinationConsensus({
       targetKinds, snapshotHash, candidateReceipts, supportReceipts,
     })
+    return this.v4SemanticCoordinationResult(result, snapshot)
+  }
+
+  v4SemanticCoordinationResult(result, snapshot) {
+    const candidates = result.candidates.filter((candidate) => {
+      try {
+        for (const assignment of candidate.assignments) {
+          this.v4DirectAssignmentReferences(assignment, snapshot)
+        }
+        return true
+      } catch (error) {
+        if (error?.message === 'LOCAL_RUN_V4_ASSIGNMENT_REFERENCE_INVALID') return false
+        throw error
+      }
+    })
+    const candidateHashes = new Set(candidates.map(candidate => candidate.planHash))
+    return {
+      ...result,
+      plan: result.plan && candidateHashes.has(result.plan.planHash) ? result.plan : null,
+      candidates,
+    }
   }
 
   v4SanitizeDeliveryText(value, limit = 6000) {
@@ -1812,11 +1835,7 @@ class LocalWorkspaceAutoRunner {
     return owned[0] || null
   }
 
-  v4WorkAssignmentText(
-    coordinationPlan, kind, taskId, snapshot = null, limit = 6000, receiptRecords = [],
-  ) {
-    const assignment = this.v4CoordinationAssignment(coordinationPlan, kind, { taskId })
-    if (!assignment) throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+  v4DirectAssignmentReferences(assignment, snapshot) {
     const snapshotSources = new Map([
       [snapshot?.messageId, snapshot?.taskText],
       ...(Array.isArray(snapshot?.history) ? snapshot.history : []).map(item => [item?.id, item?.text]),
@@ -1851,6 +1870,17 @@ class LocalWorkspaceAutoRunner {
         body: safeReferenceText(identity.content),
       }
     })
+    return { inputReferences, directArtifacts }
+  }
+
+  v4WorkAssignmentText(
+    coordinationPlan, kind, taskId, snapshot = null, limit = 6000, receiptRecords = [],
+  ) {
+    const assignment = this.v4CoordinationAssignment(coordinationPlan, kind, { taskId })
+    if (!assignment) throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+    const { inputReferences, directArtifacts } = this.v4DirectAssignmentReferences(
+      assignment, snapshot,
+    )
     const directReferences = [...inputReferences, ...directArtifacts]
     const dependencies = new Set(assignment.dependsOn)
     const latestDependencies = new Map()
@@ -4906,6 +4936,7 @@ class LocalWorkspaceAutoRunner {
           receiptRecords,
           targetKinds,
           snapshotHash,
+          snapshot,
           requireSupport: false,
         })
         const challenge = await runPhase('challenge', targetKinds, challengeBindings, {
@@ -4918,6 +4949,7 @@ class LocalWorkspaceAutoRunner {
           receiptRecords,
           targetKinds,
           snapshotHash,
+          snapshot,
           challengeBindings,
         })
         if (!coordination.plan) {
@@ -5526,6 +5558,7 @@ class LocalWorkspaceAutoRunner {
       }
     })()
     controller.promise = promise
+    promise.catch(() => {})
     return controller
   }
 

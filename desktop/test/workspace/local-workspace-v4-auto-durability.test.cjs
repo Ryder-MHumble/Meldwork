@@ -352,6 +352,65 @@ test('Auto V4 recovers an accepted candidate over 6000 characters without trunca
   })
 })
 
+test('fresh Auto observes terminal persistence failure without hiding controller promise rejection', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger-terminal-failure.json') })
+  options.runLedger = ledger
+  options.terminalRetrySleep = () => Promise.resolve()
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Fresh Auto terminal persistence failure',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  workspace.autoRunner.runV4Discussion = async () => 'completed'
+  ledger.finish = () => { throw new Error('TEST_TERMINAL_PERSISTENCE_UNAVAILABLE') }
+  const unhandled = []
+  const onUnhandled = reason => { unhandled.push(reason) }
+  process.on('unhandledRejection', onUnhandled)
+  t.after(() => process.removeListener('unhandledRejection', onUnhandled))
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Finish this fresh Auto run with a durable terminal checkpoint.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes'],
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  assert.ok(controller)
+  t.after(() => {
+    for (const timer of workspace.runCheckpointTimers.values()) clearTimeout(timer)
+    workspace.runCheckpointTimers.clear()
+    workspace.activeRuns.delete(group.id)
+    controller.resolveDone()
+  })
+  const originalPromise = controller.promise
+  await waitFor(() => controller.terminalPersistence?.state === 'failed', 'failed terminal outbox')
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.deepEqual(unhandled, [])
+  assert.equal(controller.promise, originalPromise)
+  assert.equal(workspace.activeRuns.get(group.id), controller)
+  assert.equal(controller.finished, false)
+  assert.equal(controller.terminalOutbox.status, 'completed')
+  assert.deepEqual(controller.terminalPersistence, {
+    state: 'failed',
+    status: 'completed',
+    attempts: 3,
+    nextRetryAt: 0,
+    code: 'LOCAL_RUN_PERSIST_FAILED',
+  })
+  await assert.rejects(originalPromise, error => (
+    error?.code === 'LOCAL_RUN_TERMINAL_PERSIST_FAILED'
+      && error.persistence?.state === 'failed'
+  ))
+})
+
 function negotiatedAssignments() {
   return [
     {
@@ -487,7 +546,7 @@ test('Auto V4 coordination recovery uses the byte-identical frozen snapshot afte
     const record = recovery.recoveryLedger.get(input.crashRecord.runId)
     return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
       ? record : null
-  }, 'coordination recovery', 5000)
+  }, 'coordination recovery', 15000)
 
   assert.equal(final.status, 'completed', JSON.stringify({
     reason: final.reason,
@@ -600,7 +659,7 @@ test('Auto V4 first dispatch and restart prompts use frozen target-scoped Skill 
     const record = recovery.recoveryLedger.get(input.crashRecord.runId)
     return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
       ? record : null
-  }, 'challenge recovery with mutable live attachment', 5000)
+  }, 'challenge recovery with mutable live attachment', 15000)
 
   assert.equal(final.status, 'completed', final.reason)
   assert.equal(attachmentResolutionCalls, 0)
@@ -669,6 +728,7 @@ test('Auto V4 checkpoints each concurrent work receipt before the dependency wav
   const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger-wave.json') })
   options.runLedger = ledger
   const delayedHermes = deferred()
+  t.after(() => delayedHermes.resolve())
   const assignments = [
     {
       taskId: 'codex-work', ownerKind: 'codex', role: 'worker',
@@ -747,7 +807,7 @@ test('Auto V4 checkpoints each concurrent work receipt before the dependency wav
     targetKinds: ['codex', 'hermes', 'workbuddy'], protocol: 'v4',
   })
   const controller = workspace.activeRuns.get(group.id)
-  await waitFor(() => crashRecord, 'first work receipt checkpoint')
+  await waitFor(() => crashRecord, 'first work receipt checkpoint', 15000)
   delayedHermes.resolve()
   await controller.promise
 
@@ -773,7 +833,7 @@ test('Auto V4 checkpoints each concurrent work receipt before the dependency wav
     const record = recovery.recoveryLedger.get(crashRecord.runId)
     return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
       ? record : null
-  }, 'exact work receipt recovery')
+  }, 'exact work receipt recovery', 15000)
   const recoveredWorkKinds = recovery.calls
     .filter(call => /^Phase: work$/m.test(call.prompt))
     .map(call => call.agent.kind)

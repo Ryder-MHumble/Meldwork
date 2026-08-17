@@ -287,11 +287,12 @@ describe('Meldwork workbench', () => {
         runId: 'run-runtime-controls',
         agentRunId: 'agent-runtime-codex',
         agentKind: 'codex',
-        summary: 'This run requires a human decision.',
+        summary: 'The workspace-write synthesis attempt may have produced side effects, but its result is unknown.',
         options: [
-          { optionId: 'accept-artifact', name: 'Accept Artifact', kind: 'accept' },
-          { optionId: 'reject-artifact', name: 'Reject Artifact', kind: 'reject' },
-          { optionId: 'reopen-task', name: 'Reopen Task', kind: 'reopen' },
+          { optionId: 'continue-discussion', name: 'Accept', kind: 'accept' },
+          { optionId: 'stop-discussion', name: 'Reject', kind: 'reject' },
+          { optionId: 'retry-original-writer', name: 'Accept', kind: 'accept' },
+          { optionId: 'replace-next-writer', name: 'Accept', kind: 'accept' },
         ],
         status: 'pending',
         createdAt: '2026-08-04T08:00:00.000Z',
@@ -304,22 +305,29 @@ describe('Meldwork workbench', () => {
 
     expect(wrapper.get('.trace-waiting-state').text()).toBe('Waiting for your decision')
     expect(wrapper.get('.trace-human-gate-section').text())
-      .toContain('This run requires your decision')
+      .toContain('workspace-write synthesis attempt may have produced side effects')
     expect(wrapper.find('.trace-budget-section').exists()).toBe(false)
     expect(wrapper.find('.trace-agent-control-section').exists()).toBe(false)
     const gateButtons = wrapper.findAll('.trace-human-gate-options button')
-    expect(gateButtons.find(button => button.text() === 'Accept Artifact').classes())
+    expect(gateButtons.find(button => button.text() === 'Retry original writer').classes())
       .toContain('primary-button')
-    expect(gateButtons.find(button => button.text() === 'Reopen Task').classes())
+    expect(gateButtons.find(button => button.text() === 'Use next writer').classes())
+      .toContain('primary-button')
+    expect(gateButtons.find(button => button.text() === 'Retry original writer').text())
+      .not.toBe(gateButtons.find(button => button.text() === 'Use next writer').text())
+    expect(gateButtons.find(button => button.text() === 'Stop discussion').classes())
       .toContain('secondary-button')
-    await gateButtons.find(button => button.text() === 'Reopen Task').trigger('click')
+    await gateButtons.find(button => button.text() === 'Use next writer').trigger('click')
     await flushPromises()
 
     expect(bridge.localWorkspace.controlAgent).not.toHaveBeenCalled()
     expect(bridge.localWorkspace.decideHumanGate).toHaveBeenCalledWith(
       gateId,
-      { optionId: 'reopen-task' },
+      { optionId: 'replace-next-writer' },
     )
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.trace-human-gate-section').text()).toContain('工作区写入综合尝试可能已产生副作用，但结果未知')
     wrapper.unmount()
   })
 
