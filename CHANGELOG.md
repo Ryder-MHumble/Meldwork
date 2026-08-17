@@ -16,7 +16,7 @@
 
 - Normalizes supported CLI output into streaming answer deltas, plans, status, tool lifecycle events, warnings, and terminal results without exposing raw commands, local paths, secrets, or chain-of-thought.
 - Improves Hermes streaming and tool-event capture while preserving its read-only SQLite final-result watermark and sanitized stdout fallback.
-- Improves OpenClaw stream and tool-event normalization in the Connector protocol and keeps its managed runtime state, Provider secret handling, and permission policy isolated.
+- Improves OpenClaw stream and tool-event normalization in the Connector protocol, keeps its managed runtime state, Provider secret handling, and permission policy isolated, and closes disposable ACP sessions plus the authenticated loopback Gateway and in-flight health probes during shutdown.
 - Strips collaboration control blocks from user-visible messages, live deltas, durable traces, and later Agent context; invalid or missing required receipts fail the current phase.
 
 ### Interface
@@ -30,7 +30,7 @@
 ### Durability And Safety
 
 - Records V4 phases, batches, slots, attempts, frozen snapshots, dynamic roles, result references, delivery watermarks, commit state, and typed Gate state in the Run Ledger.
-- Allows safe read-only recovery, requires a Human Gate before retrying an ambiguous writable slot, rejects late results after stop, and resumes batch commits idempotently.
+- Binds pending V4 Human Gates and continuations to the exact leased Agent attempt, allows safe read-only recovery, requires a Human Gate before retrying an ambiguous writable slot, rejects late results after stop, and resumes batch commits idempotently.
 - Keeps workspace writes opt-in. Concurrent replies, proposals, challenges, negotiated work, and verification remain read-only; only the synthesis writer receives write authority when enabled.
 - Restricts renderer snapshots to validated phase, participant, role, progress, and Gate fields. Prompts, executable paths, native Session references, internal snapshot IDs, and unrestricted tool payloads remain main-process only.
 
@@ -44,7 +44,7 @@
 ### Verification
 
 - Latest release-candidate frontend tests: 300/300 passed; the exact release commit must be rerun before publication.
-- Latest release-candidate desktop tests: 1307/1307 passed; the exact final commit must be rerun before publication.
+- Latest release-candidate desktop tests: 1331/1331 passed; the exact final commit must be rerun before publication.
 - Release-candidate deterministic Eval Harness: 6 cases and 18 results passed; the exact final commit must be rerun before publication.
 - Web and Electron renderer builds, Electron `pack`, and `git diff --check` passed on the release-candidate tree; they must be rerun from the exact final commit before publication. `dist` remains pending for that commit.
 - Hermes and OpenClaw live streaming/tool-lifecycle checks, Manual V4, Auto Discussion V4, stopped-run behavior, and the 360 x 800 return-to-latest control all require acceptance on the exact final packaged app; none is a current release claim.
