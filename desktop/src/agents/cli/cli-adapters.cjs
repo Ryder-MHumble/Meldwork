@@ -22,7 +22,11 @@ const {
   runtimeCommandSummary,
   structuredCliError,
 } = require('./cli-runtime-events.cjs')
-const { runAcpAgent, shutdownAcpSessionRuntime } = require('./cli-acp-runner.cjs')
+const {
+  registerAcpShutdownBarrier,
+  runAcpAgent,
+  shutdownAcpSessionRuntime,
+} = require('./cli-acp-runner.cjs')
 const { withOpenClawGateway } = require('./cli-openclaw-gateway.cjs')
 const { imageAttachmentLimit, invocation } = require('./cli-invocations.cjs')
 const {
@@ -136,13 +140,26 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       const executeAcp = runtimeOptions => runAcpAgent(
         agent, prompt, workdir, runtimeOptions, spec, profile,
       )
-      return spec.openClawGateway
-        ? await withOpenClawGateway({
-            ...options,
-            executable: agent.executable,
-            workdir,
-          }, gatewayOptions => executeAcp({ ...options, ...gatewayOptions }))
-        : await executeAcp(options)
+      if (!spec.openClawGateway) return await executeAcp(options)
+      const shutdownBarrier = registerAcpShutdownBarrier(options.signal)
+      try {
+        if (!shutdownBarrier.isCurrent()) {
+          throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+        }
+        return await withOpenClawGateway({
+          ...options,
+          executable: agent.executable,
+          signal: shutdownBarrier.signal,
+          workdir,
+        }, gatewayOptions => executeAcp({
+          ...options,
+          ...gatewayOptions,
+          acpShutdownGeneration: shutdownBarrier.shutdownGeneration,
+          signal: shutdownBarrier.signal,
+        }))
+      } finally {
+        shutdownBarrier.complete()
+      }
     } catch (error) {
       if (!spec.fallbackTransport || error?.acpFallbackAllowed !== true
           || options.signal?.aborted) throw error

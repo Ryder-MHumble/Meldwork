@@ -494,6 +494,30 @@ test('terminal answers preserve safe text ending in a one-character secret prefi
   )
 })
 
+test('terminal reconciliation never reconstructs an exact 8-byte child secret', () => {
+  for (const secret of ['abcdefgh', '\u5bc6\u5bc6ab']) {
+    assert.equal(Buffer.byteLength(secret, 'utf8'), 8)
+    for (let split = 1; split < secret.length; split += 1) {
+      const emitted = []
+      const runtimeEvents = createRuntimeEventEmitter(
+        { onEvent: event => emitted.push(event) },
+        { OPENCLAW_GATEWAY_TOKEN: secret },
+      )
+
+      runtimeEvents.emit({
+        type: 'answer_delta', status: 'running', delta: secret.slice(0, split),
+      })
+      runtimeEvents.emitFinalAnswer(secret.slice(split))
+
+      const raw = JSON.stringify(emitted)
+      const joined = emitted.filter(event => event.type === 'answer_delta')
+        .map(event => event.delta).join('')
+      assert.doesNotMatch(raw, new RegExp(secret), `${secret} raw split ${split}`)
+      assert.doesNotMatch(joined, new RegExp(secret), `${secret} joined split ${split}`)
+    }
+  }
+})
+
 test('runtime answer delivery reconciles empty and incomplete deltas with the terminal answer', () => {
   for (const deltas of [[], [''], ['authoritative ']]) {
     const emitted = []

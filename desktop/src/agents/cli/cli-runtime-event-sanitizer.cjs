@@ -22,11 +22,15 @@ const RUNTIME_EVENT_LIMITS = Object.freeze({
   delta: 4000,
 })
 
+function utf8ByteLength(value) {
+  return Buffer.byteLength(String(value || ''), 'utf8')
+}
+
 function redactChildSecrets(value, env) {
   let result = String(value || '')
   for (const [name, secret] of Object.entries(env)) {
     if (!/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
-        || typeof secret !== 'string' || secret.length < 8) continue
+        || typeof secret !== 'string' || utf8ByteLength(secret) < 8) continue
     result = result.split(secret).join('[redacted]')
   }
   return result
@@ -36,7 +40,7 @@ function childSecrets(env) {
   return Object.entries(env || {})
     .filter(([name, secret]) => (
       /(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
-      && typeof secret === 'string' && secret.length >= 8
+      && typeof secret === 'string' && utf8ByteLength(secret) >= 8
     ))
     .map(([, secret]) => secret)
 }
@@ -122,7 +126,7 @@ function boundarySensitiveSuffixLength(value, secrets) {
 }
 
 function pendingAnswerDeltaIsSensitive(value, secrets) {
-  if (value.length >= 8 && secrets.some(secret => secret.startsWith(value))) return true
+  if (utf8ByteLength(value) >= 8 && secrets.some(secret => secret.startsWith(value))) return true
   if (/\bAKIA[0-9A-Z]*$/.test(value)) return true
   if (/\bbearer\s+[A-Za-z0-9._~+\/-]+$/i.test(value)) return true
   if (/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|database[_-]?url|connection[_-]?string|dsn|token|secret|password|credential|authorization|private[_-]?key)[A-Za-z0-9_.-]*)\1\s*[:=]\s*[^\s,;}\]]*$/i.test(value)) return true
@@ -148,10 +152,12 @@ function createAnswerDeltaRedactor(env) {
         false,
       )
     },
-    flush() {
+    flush(terminalText = '') {
       if (!pending) return ''
       const value = pending
       pending = ''
+      const combined = value + String(terminalText || '')
+      if (redactChildSecrets(combined, env) !== combined) return ''
       if (pendingAnswerDeltaIsSensitive(value, secrets)) return '[redacted]'
       if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s\/@:]+(?:\/[^\s]*)?$/.test(value)) return value
       return sanitizeRuntimeEventText(value, env, Number.MAX_SAFE_INTEGER, false, false)
@@ -223,8 +229,10 @@ function createRuntimeEventEmitter(options, childEnv) {
     }
     return true
   }
-  const flushAnswerDelta = (base = { type: 'answer_delta', status: 'completed' }) => {
-    return deliverAnswerDelta(base, answerDeltaRedactor.flush())
+  const flushAnswerDelta = (
+    base = { type: 'answer_delta', status: 'completed' }, terminalText = '',
+  ) => {
+    return deliverAnswerDelta(base, answerDeltaRedactor.flush(terminalText))
   }
   const emit = (input) => {
     try { activity?.() } catch { /* activity is best-effort */ }
@@ -272,7 +280,10 @@ function createRuntimeEventEmitter(options, childEnv) {
       })
     }
     openTools.clear()
-    const flushedAnswerDelta = flushAnswerDelta({ type: 'answer_delta', status: answerStatus })
+    const flushedAnswerDelta = flushAnswerDelta(
+      { type: 'answer_delta', status: answerStatus },
+      text,
+    )
     if (text) {
       const finalAnswerRedactor = createAnswerDeltaRedactor(childEnv)
       const finalAnswer = finalAnswerRedactor.push(text) + finalAnswerRedactor.flush()

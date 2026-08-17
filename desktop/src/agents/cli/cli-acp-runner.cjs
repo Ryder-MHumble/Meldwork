@@ -43,6 +43,7 @@ const acpRuntimeLocks = new Map()
 const acpRuntimePreparations = new Set()
 const acpInitializingRuntimes = new Set()
 const acpDisposableRuntimes = new Set()
+const acpShutdownBarriers = new Set()
 let acpShutdownGeneration = 0
 
 function loadAcpSdk() {
@@ -51,6 +52,35 @@ function loadAcpSdk() {
     import('@agentclientprotocol/sdk/dist/schema/zod.gen.js'),
   ]).then(([sdk, validators]) => ({ ...sdk, validators }))
   return acpSdkPromise
+}
+
+function registerAcpShutdownBarrier(signal) {
+  const controller = new AbortController()
+  const shutdownGeneration = acpShutdownGeneration
+  const abort = () => controller.abort()
+  if (signal?.aborted) abort()
+  else signal?.addEventListener('abort', abort, { once: true })
+  let resolveCompletion
+  let completed = false
+  const barrier = {
+    controller,
+    completion: new Promise(resolve => { resolveCompletion = resolve }),
+  }
+  acpShutdownBarriers.add(barrier)
+  return {
+    shutdownGeneration,
+    signal: controller.signal,
+    isCurrent() {
+      return shutdownGeneration === acpShutdownGeneration && !controller.signal.aborted
+    },
+    complete() {
+      if (completed) return
+      completed = true
+      signal?.removeEventListener('abort', abort)
+      acpShutdownBarriers.delete(barrier)
+      resolveCompletion()
+    },
+  }
 }
 
 function acpTransportError(diagnostic) {
@@ -878,7 +908,11 @@ async function runDisposableAcpAgent(agent, prompt, workdir, options, spec, prof
 }
 
 async function runAcpAgent(agent, prompt, workdir, options, spec, profile) {
-  if (options.signal?.aborted) throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  if (options.signal?.aborted
+      || options.acpShutdownGeneration != null
+        && options.acpShutdownGeneration !== acpShutdownGeneration) {
+    throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  }
   const key = persistenceKey(agent, options)
   return key
     ? runPersistentAcpAgent(agent, prompt, workdir, options, spec, profile, key)
@@ -888,6 +922,8 @@ async function runAcpAgent(agent, prompt, workdir, options, spec, profile) {
 async function shutdownAcpSessionRuntime() {
   acpShutdownGeneration += 1
   const preparations = [...acpRuntimePreparations]
+  const barriers = [...acpShutdownBarriers]
+  for (const barrier of barriers) barrier.controller.abort()
   const runtimes = [...new Set([
     ...acpSessionRuntimes.values(),
     ...acpInitializingRuntimes,
@@ -897,7 +933,8 @@ async function shutdownAcpSessionRuntime() {
   await Promise.allSettled([
     ...preparations,
     ...runtimes.map(closeAcpRuntime),
+    ...barriers.map(barrier => barrier.completion),
   ])
 }
 
-module.exports = { runAcpAgent, shutdownAcpSessionRuntime }
+module.exports = { registerAcpShutdownBarrier, runAcpAgent, shutdownAcpSessionRuntime }

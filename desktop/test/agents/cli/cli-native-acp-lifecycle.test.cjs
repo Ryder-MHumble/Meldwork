@@ -760,9 +760,13 @@ input.on('line', (line) => {
     error => { settled = true; throw error },
   )
   t.after(async () => {
-    if (!settled) fs.writeFileSync(releaseFile, 'release')
     await adapters.shutdownAcpSessionRuntime?.()
-    await resultPromise.catch(() => {})
+    try {
+      await within(resultPromise.catch(() => {}))
+    } catch {
+      if (!settled) fs.writeFileSync(releaseFile, 'release')
+      await within(resultPromise.catch(() => {}))
+    }
     fs.rmSync(directory, { recursive: true, force: true })
   })
 
@@ -775,5 +779,96 @@ input.on('line', (line) => {
   )
   assert.equal(fs.existsSync(releaseFile), false)
   assert.equal(await within(readWhenReady(acpStoppedFile)), 'stopped')
+  assert.equal(await within(readWhenReady(gatewayStoppedFile)), 'stopped')
+})
+
+test('shutdown closes a Gateway held before readiness without spawning ACP', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-gateway-shutdown-'))
+  const workdir = path.join(directory, 'workspace')
+  const gatewayStartedFile = path.join(directory, 'gateway-started')
+  const gatewayStoppedFile = path.join(directory, 'gateway-stopped')
+  const acpSpawnedFile = path.join(directory, 'acp-spawned')
+  const releaseFile = path.join(directory, 'release')
+  fs.mkdirSync(workdir)
+  const cli = executable(directory, 'openclaw-gateway-shutdown.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const args = process.argv.slice(2)
+const commandOffset = args[0] === '--no-color'
+  && args[1] === '--log-level'
+  && args[2] === 'info' ? 3 : 0
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'health') {
+  process.stdout.write(JSON.stringify({ ok: true }))
+  process.exit(0)
+}
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'run') {
+  fs.writeFileSync(${JSON.stringify(gatewayStartedFile)}, 'started')
+  process.on('SIGTERM', () => {
+    fs.writeFileSync(${JSON.stringify(gatewayStoppedFile)}, 'stopped')
+    process.exit(0)
+  })
+  const ready = () => {
+    if (!fs.existsSync(${JSON.stringify(releaseFile)})) return setTimeout(ready, 10)
+    process.stdout.write('[gateway] ready\\n')
+  }
+  ready()
+  return
+}
+fs.writeFileSync(${JSON.stringify(acpSpawnedFile)}, 'spawned')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'gateway-shutdown-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+  }
+})
+`)
+  let settled = false
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    provider: {
+      OPENAI_API_KEY: 'adapter-openclaw-key',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      OPENAI_MODEL: 'adapter-model',
+    },
+  })
+  const resultPromise = adapters.runAgent(
+    { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
+    'stop during Gateway readiness',
+    workdir,
+    runtime,
+  ).then(
+    value => { settled = true; return value },
+    error => { settled = true; throw error },
+  )
+  t.after(async () => {
+    await adapters.shutdownAcpSessionRuntime?.()
+    try {
+      await within(resultPromise.catch(() => {}))
+    } catch {
+      if (!settled) fs.writeFileSync(releaseFile, 'release')
+      await within(resultPromise.catch(() => {}))
+    }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  await within(readWhenReady(gatewayStartedFile))
+  await adapters.shutdownAcpSessionRuntime()
+
+  assert.equal(fs.existsSync(gatewayStoppedFile), true)
+  await assert.rejects(
+    () => within(resultPromise),
+    error => error?.message === 'LOCAL_AGENT_EXECUTION_STOPPED',
+  )
+  assert.equal(fs.existsSync(acpSpawnedFile), false)
   assert.equal(await within(readWhenReady(gatewayStoppedFile)), 'stopped')
 })
