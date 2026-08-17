@@ -662,7 +662,14 @@ async function createAcpRuntime(input) {
 
   const client = {
     async requestPermission(params) {
-      return permissionOutcome(params, runtime.activeTurn?.options || {}, childEnv)
+      const turn = runtime.activeTurn
+      const pending = permissionOutcome(params, turn?.options || {}, childEnv)
+      turn?.pendingPermissionCallbacks.add(pending)
+      pending.then(
+        () => turn?.pendingPermissionCallbacks.delete(pending),
+        () => turn?.pendingPermissionCallbacks.delete(pending),
+      )
+      return pending
     },
     async sessionUpdate(params) {
       const turn = runtime.activeTurn
@@ -759,6 +766,7 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
     ),
     noteActivity,
     outboundPayloadFailed: false,
+    pendingPermissionCallbacks: new Set(),
   }
   runtime.activeTurn = turn
   runtime.replyState.bytes = 0
@@ -850,6 +858,9 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
     } finally {
       runtime.replyState.collecting = false
     }
+    if (turn.pendingPermissionCallbacks.size) {
+      await operation(Promise.allSettled([...turn.pendingPermissionCallbacks]))
+    }
     if (runtime.replyState.permissionPendingAtPromptTerminal) {
       throw agentExecutionError('LOCAL_AGENT_PERMISSION_TERMINAL_RACE')
     }
@@ -890,6 +901,7 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
     runtime.replyState.promptTerminalSequence = null
     runtime.replyState.pendingPermissionRequestIds.clear()
     runtime.replyState.permissionPendingAtPromptTerminal = false
+    turn.pendingPermissionCallbacks.clear()
     runtime.activeTurn = null
     runtime.lastUsedAt = Date.now()
     if (abortRequested) await settleWithin(cancelPromise, ACP_CANCEL_GRACE_MS)
