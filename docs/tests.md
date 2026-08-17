@@ -1,6 +1,6 @@
 # Verification And Test Coverage
 
-This page records the V1.0.2 release-candidate evidence available on 2026-08-17 for Apple silicon macOS. Repository tooling and CI require Node.js 22.12 or newer; the packaged desktop uses Electron's bundled runtime.
+This page records the V1.0.2 release-candidate evidence available on 2026-08-18 for Apple silicon macOS. Repository tooling and CI require Node.js 22.12 or newer; the packaged desktop uses Electron's bundled runtime.
 
 The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not notarized. Passing `codesign` proves bundle integrity only. Gatekeeper acceptance is not claimed, and `spctl` rejection is expected for this candidate.
 
@@ -8,8 +8,9 @@ The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not n
 
 | Check | Evidence | Result |
 | --- | --- | --- |
-| Frontend unit suite | `npm --prefix frontend test` | Latest release-candidate run: 300/300 tests passed; rerun required from the exact final commit |
-| Desktop unit suite | `npm --prefix desktop test` | Latest release-candidate run: 1331/1331 tests passed; rerun required from the exact final commit |
+| Frontend unit suite | `npm --prefix frontend test` | Earlier release-candidate run: 300/300 tests passed; rerun required from the exact final commit |
+| Desktop unit suite | `npm --prefix desktop test` | Earlier release-candidate run: 1331/1331 tests passed; rerun required from the exact final commit |
+| Permission and recovery regressions | `node --test --test-concurrency=1` over ACP protocols, ACP lifecycle, V4 Gate pause, Human Gate recovery, and Auto V4 durability | Current candidate source: 132/132 tests passed; this does not replace the exact-final full desktop suite |
 | Deterministic Eval Harness | `npm --prefix desktop run eval:deterministic` | Release-candidate tree: 6 cases and 18 results passed; rerun required from the exact final commit |
 | Renderer builds | `npm --prefix frontend run build` and `npm --prefix frontend run build:desktop` | Both builds passed on the release-candidate tree; rerun required from the exact final commit |
 | Packaged application directory | `npm --prefix desktop run pack` | Passed on the release-candidate tree; the exact final commit must be packaged before live acceptance |
@@ -45,7 +46,7 @@ These checks do not certify every supported Agent, installer recipe, upstream CL
 | Structured receipts and context budget | Validates proposal, challenge, work, synthesis, and verification receipts; strips control blocks from visible output; rejects malformed receipts; keeps bounded collaboration delivery and incremental watermarks | `desktop/test/workspace/local-workspace-v4-receipt.test.cjs`; `desktop/test/workspace/local-workspace-context-packs.test.cjs` |
 | Synthesis, findings, and convergence | Gives workspace write authority to one synthesis Agent, binds verification to the current Artifact, tracks contradictory `ReviewerFinding` records as unresolved issues, and completes only after independent support | `desktop/test/workspace/local-workspace-v4-convergence.test.cjs`; `desktop/test/collaboration/collaboration-records.test.cjs` |
 | Crash recovery, exact-attempt Gate binding, and idempotent commit | Binds pending V4 Gates and continuations to exactly one leased Agent attempt, recovers safe read-only slots, prevents ambiguous writable retries without a Human Gate, rejects late results after stop, and resumes batch commit idempotently | `desktop/test/workspace/local-workspace-v4-auto-durability.test.cjs`; `desktop/test/workspace/local-workspace-v4-manual-durability.test.cjs`; `desktop/test/workspace/local-workspace-human-gate-recovery.test.cjs`; `desktop/test/workspace/local-workspace-v4-gate-renderer-bridge.test.cjs` |
-| Gate serialization | Stops dispatching new slots after the first parallel Gate, lets already-running read-only work settle, and serializes continuation decisions | `desktop/test/workspace/local-workspace-v4-gate-pause.test.cjs`; `desktop/test/gates/human-gate-coordinator.test.cjs` |
+| Gate serialization and terminal ordering | Stops dispatching new slots after the first parallel Gate, lets already-running read-only work settle, rejects terminal results while permission callbacks remain unresolved, rejects duplicate active ACP permission IDs, and preserves monotonic recovery across known failures and unknown post-write outcomes | `desktop/test/workspace/local-workspace-v4-gate-pause.test.cjs`; `desktop/test/workspace/local-workspace-v4-auto-durability.test.cjs`; `desktop/test/workspace/local-workspace-human-gate-recovery.test.cjs`; `desktop/test/agents/cli/cli-adapters-agent-protocols.test.cjs`; `desktop/test/gates/human-gate-coordinator.test.cjs` |
 | Unlimited-mode and trace UI | Shows validated phase, participant, role, slot, and Gate state; scopes unlimited confirmation to one group; supports reduced motion; preserves neutral labels for legacy round-zero traces | `frontend/src/__tests__/meldwork/App.unlimited-review.spec.js`; `frontend/src/__tests__/meldwork/App.run-trace.spec.js`; `frontend/src/__tests__/meldwork/App.conversation-trace.spec.js` |
 
 ## Runtime And Product Coverage

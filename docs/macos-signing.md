@@ -1,6 +1,6 @@
 # macOS 预发布签名与正式发行
 
-Meldwork-V1.0.2 的 Apple silicon 预发布候选使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。预最终候选曾通过 `codesign --verify --deep --strict` 完整性检查；最终提交对应的精确应用仍须重新构建和验证。`spctl` 拒绝是这一分发方式的预期结果，不代表已经通过 Gatekeeper。计划通过 GitHub prerelease 获取该候选的用户，首次启动时可能需要在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
+Meldwork-V1.0.2 的 Apple silicon 预发布候选使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。预最终候选曾通过 `codesign --verify --deep --strict` 完整性检查；它早于 2026-08-18 的最终权限顺序与 durability 修复，最终提交对应的精确应用仍须重新构建和验证。`spctl` 拒绝是这一分发方式的预期结果，不代表已经通过 Gatekeeper。计划通过 GitHub prerelease 获取该候选的用户，首次启动时可能需要在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
 
 未来面向公众的正式发行必须改用 `Developer ID Application` 证书签名并提交 Apple 公证，使应用能够在全新 Mac 上通过 Gatekeeper。仓库中的 `dist:public` 是这条正式发行路径，缺少签名或公证凭据时会安全失败，不会降级生成 ad-hoc 公共产物。
 
@@ -113,7 +113,7 @@ codesign -dv --verbose=4 \
 
 `codesign -dv` 应显示 `Signature=adhoc` 且没有 Team ID。此候选执行 `spctl --assess` 时应被拒绝；不要把这一结果描述为正式签名失败或 Gatekeeper 验收通过。
 
-当前 `desktop/dist` 中的候选早于最终源码状态，其校验值不得写入 Release 或文档。最终提交锁定后必须重新构建并生成新值：
+当前 `desktop/dist` 中的候选早于最终源码状态和最新权限顺序修复，其校验值不得写入 Release 或文档。最终提交锁定后必须重新构建并生成新值：
 
 ```bash
 npm --prefix desktop run dist
@@ -173,7 +173,7 @@ shasum -a 256 \
 
 - Bundle ID 已固定为 `com.rydersun.meldwork`。
 - `dist:public` 已配置为缺少正式签名或公证凭据时安全失败。
-- 预最终 Meldwork-V1.0.2 候选已通过本地构建和 ad-hoc `codesign` 验证，但它早于最终源码状态，不能作为发布产物或校验值来源。
+- 预最终 Meldwork-V1.0.2 候选已通过本地构建和 ad-hoc `codesign` 验证，但它早于最终权限顺序与 durability 修复，不能作为发布产物或校验值来源。
 - 最终提交对应的 DMG、ZIP、应用、SHA-256、ad-hoc `codesign` 和远端资产一致性仍待重新生成并验证。
 - V1.0.2 不包含 Developer ID、Apple 公证或 Gatekeeper 验收；最终 ad-hoc 候选执行 `spctl` 时仍应被拒绝，安装时可能需要用户明确选择 Open Anyway。
 - 在完成 Apple Developer Program 申请、证书安装和公证凭据配置之前，不能把任何 Meldwork 产物描述为正式签名或公证发行版。

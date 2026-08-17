@@ -11,6 +11,7 @@ V1.0.2 是一个本地优先的多 Agent Work Cell，由用户明确选择参与
 - Auto Discussion 从全员独立并行提案开始。已选 Agent 交叉质询并自主协商一份职责图；只有全员同意同一 `planHash` 后，Harness 才按该图调度各自的工作包。
 - 提案、质询、分工工作和复核默认只读。开启工作区写入时，只有协商确定的整合者在合成阶段拥有写权，不同的复核 Agent 独立验证当前候选 Artifact。
 - Harness 持久化冻结快照、阶段、槽位、结构化回执、Artifact/Evidence 引用、交付水位、Human Gate 和幂等提交状态，并把待处理 Gate 与恢复状态绑定到产生它的精确 Agent 执行尝试。它验证协作协议，不在 Agent 之外私下分配职责。
+- 未决权限 Gate 完成前，Harness 不接受 Agent 终态结果，也不推进 V4 阶段。明确失败的 checkpoint 会回滚到此前持久状态；结果未知的 post-write 异常保持单调状态并交由 Ledger 恢复，避免倒退覆盖已落盘进展。
 - 用户可停止 Run 或指定 Agent，检查阶段、异议、候选产物和恢复选项，并保留最终采用决定。
 
 当前不承诺从大规模候选池自动选人组队、生产级 Cloud/Channel Agent、跨用户远程协作、企业 RBAC/治理、Outcome Network，也不承诺目录中每个 Agent 都已通过实时发布认证。
@@ -23,7 +24,7 @@ DMG、ZIP 和 `SHA256SUMS.txt` 必须来自最终已验收提交和同一次 `np
 
 ## 验收状态
 
-- 最新发布候选的前端测试 `300/300`、桌面测试 `1331/1331` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。最终发布提交仍须重跑这些验证。
+- 此前发布候选的前端测试 `300/300`、桌面测试 `1331/1331` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。当前权限顺序、Human Gate、ACP 生命周期和 Auto V4 durability 回归 `132/132` 通过。最终发布提交仍须重跑完整验证。
 - Web 与 Electron renderer 两个构建、Electron `pack` 和 `git diff --check` 已在发布候选源码上通过；最终发布 DMG、ZIP 和校验值仍须由带发布文档的标签提交生成并复核。
 - Hermes 与 OpenClaw 的实时流式/工具生命周期、Manual V4、Auto Discussion V4、停止行为和 `360 x 800` 窄屏回到底部控件，均须在最终精确打包应用上重新验收；不得作为当前候选的已验证发布结论。
 - 以上验证不覆盖所有目录 Agent、安装配方、上游版本或操作系统。该候选仍为 ad-hoc 签名，未使用 Apple Developer ID，也未提交 Apple 公证。

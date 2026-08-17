@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.2 - 2026-08-17 (Meldwork-V1.0.2 prerelease candidate)
+## 0.1.2 - 2026-08-18 (Meldwork-V1.0.2 prerelease candidate)
 
 ### Collaboration Harness V4
 
@@ -31,6 +31,7 @@
 
 - Records V4 phases, batches, slots, attempts, frozen snapshots, dynamic roles, result references, delivery watermarks, commit state, and typed Gate state in the Run Ledger.
 - Binds pending V4 Human Gates and continuations to the exact leased Agent attempt, allows safe read-only recovery, requires a Human Gate before retrying an ambiguous writable slot, rejects late results after stop, and resumes batch commits idempotently.
+- Rejects terminal Agent results and V4 phase advancement while an exact permission Gate is unresolved, rejects duplicate active ACP permission request IDs, and distinguishes known checkpoint failure from unknown post-write outcomes so live recovery state cannot regress behind the durable Ledger.
 - Keeps workspace writes opt-in. Concurrent replies, proposals, challenges, negotiated work, and verification remain read-only; only the synthesis writer receives write authority when enabled.
 - Restricts renderer snapshots to validated phase, participant, role, progress, and Gate fields. Prompts, executable paths, native Session references, internal snapshot IDs, and unrestricted tool payloads remain main-process only.
 
@@ -43,8 +44,9 @@
 
 ### Verification
 
-- Latest release-candidate frontend tests: 300/300 passed; the exact release commit must be rerun before publication.
-- Latest release-candidate desktop tests: 1331/1331 passed; the exact final commit must be rerun before publication.
+- Earlier release-candidate frontend tests: 300/300 passed; the exact release commit must be rerun before publication.
+- Earlier release-candidate desktop tests: 1331/1331 passed; the exact final commit must be rerun before publication.
+- Permission ordering, Human Gate, ACP lifecycle, and Auto V4 durability regressions: 132/132 passed on the current candidate source; the full desktop suite remains required from the exact final commit.
 - Release-candidate deterministic Eval Harness: 6 cases and 18 results passed; the exact final commit must be rerun before publication.
 - Web and Electron renderer builds, Electron `pack`, and `git diff --check` passed on the release-candidate tree; they must be rerun from the exact final commit before publication. `dist` remains pending for that commit.
 - Hermes and OpenClaw live streaming/tool-lifecycle checks, Manual V4, Auto Discussion V4, stopped-run behavior, and the 360 x 800 return-to-latest control all require acceptance on the exact final packaged app; none is a current release claim.
