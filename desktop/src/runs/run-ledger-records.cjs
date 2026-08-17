@@ -57,6 +57,11 @@ const CONTINUATION_FIELDS = new Set([
   'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
   'round', 'createdAt', 'updatedAt', 'requestId', 'requestHash',
   'sessionRefHash', 'sessionProvenanceHash', 'stateEpoch',
+  'phase', 'slotId', 'operationId', 'snapshotHash',
+])
+const CONTINUATION_INVOCATION_FIELDS = ['phase', 'slotId', 'operationId', 'snapshotHash']
+const CONTINUATION_V4_PHASES = new Set([
+  'proposal', 'challenge', 'work', 'synthesis', 'verification',
 ])
 const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry', 'input'])
 const CONTINUATION_RESUME_KINDS = new Set([
@@ -380,6 +385,13 @@ function normalizeContinuation(input) {
   const sessionProvenanceHash = String(input.sessionProvenanceHash || '')
   const hasStateEpoch = hasOwn(input, 'stateEpoch')
   const stateEpoch = boundedNumber(input.stateEpoch, 0, 1000000)
+  const invocationFieldCount = CONTINUATION_INVOCATION_FIELDS
+    .filter(field => hasOwn(input, field)).length
+  const hasInvocationBinding = invocationFieldCount === CONTINUATION_INVOCATION_FIELDS.length
+  const phase = String(input.phase || '')
+  const slotId = cleanId(input.slotId)
+  const operationId = cleanId(input.operationId)
+  const snapshotHash = String(input.snapshotHash || '')
   const hasRequestBinding = requestId && SHA256.test(requestHash)
     && SHA256.test(sessionRefHash) && SHA256.test(sessionProvenanceHash)
   if (!HUMAN_GATE_ID.test(gateId) || !CONTINUATION_GATE_TYPES.has(gateType)
@@ -391,6 +403,10 @@ function normalizeContinuation(input) {
       || (resumeKind === 'v4_synthesis_recovery'
         && (gateType !== 'decision' || !hasStateEpoch))
       || (!['v4_human_gate', 'v4_synthesis_recovery'].includes(resumeKind) && hasStateEpoch)
+      || (invocationFieldCount > 0 && !hasInvocationBinding)
+      || (hasInvocationBinding && (resumeKind !== 'agent_slot'
+        || !CONTINUATION_V4_PHASES.has(phase) || !slotId || !operationId
+        || !SHA256.test(snapshotHash)))
       || (gateType === 'input' && !hasRequestBinding)
       || (!hasRequestBinding && [requestId, requestHash, sessionRefHash, sessionProvenanceHash]
         .some(Boolean))) return undefined
@@ -398,10 +414,30 @@ function normalizeContinuation(input) {
     gateId, gateType, resumeKind, state, agentRunId, agentKind,
     round, createdAt, updatedAt,
     ...(hasStateEpoch ? { stateEpoch } : {}),
+    ...(hasInvocationBinding ? { phase, slotId, operationId, snapshotHash } : {}),
     ...(hasRequestBinding ? {
       requestId, requestHash, sessionRefHash, sessionProvenanceHash,
     } : {}),
   }
+}
+
+function continuationBindingMatchesOrchestration(continuation, orchestration) {
+  const hasBinding = CONTINUATION_INVOCATION_FIELDS.every(field => hasOwn(continuation || {}, field))
+  if (!hasBinding) return true
+  if (continuation.resumeKind !== 'agent_slot' || orchestration?.version !== 4) return false
+  if (!['pending', 'ready', 'resuming'].includes(continuation.state)) return true
+  const slots = orchestration.slots.filter(slot => slot.slotId === continuation.slotId)
+  const orchestrationRound = orchestration.workflow === 'manual'
+    ? (orchestration.snapshot?.round || 0)
+    : orchestration.round
+  return orchestration.phase === continuation.phase
+    && orchestrationRound === continuation.round
+    && orchestration.snapshotHash === continuation.snapshotHash
+    && slots.length === 1
+    && slots[0].agentKind === continuation.agentKind
+    && slots[0].phase === continuation.phase
+    && slots[0].operationId === continuation.operationId
+    && slots[0].snapshotHash === continuation.snapshotHash
 }
 
 function normalizeOrchestration(input) {
@@ -528,16 +564,21 @@ function hasValidStoredRecordShape(input) {
   if (hasOwn(input, 'budget') && !hasValidStoredBudgetSnapshot(input.budget)) return false
   if (hasOwn(input, 'attemptHistory')
       && !hasValidStoredAttemptHistory(input.attemptHistory)) return false
+  const continuation = hasOwn(input, 'continuation')
+    ? normalizeContinuation(input.continuation)
+    : null
   if (hasOwn(input, 'continuation')) {
-    const continuation = normalizeContinuation(input.continuation)
     if (continuation === undefined
         || canonicalJson(continuation) !== canonicalJson(input.continuation)) return false
   }
+  const storedOrchestration = hasOwn(input, 'orchestration')
+    ? normalizeOrchestration(input.orchestration)
+    : null
   if (hasOwn(input, 'orchestration')) {
-    const orchestration = normalizeOrchestration(input.orchestration)
-    if (orchestration === undefined
-        || canonicalJson(orchestration) !== canonicalJson(input.orchestration)) return false
+    if (storedOrchestration === undefined
+        || canonicalJson(storedOrchestration) !== canonicalJson(input.orchestration)) return false
   }
+  if (!continuationBindingMatchesOrchestration(continuation, storedOrchestration)) return false
   if (hasOwn(input, 'remoteJob')) {
     if (!isRecord(input.remoteJob)
         || Object.keys(input.remoteJob).some(field => !REMOTE_JOB_FIELDS.has(field))
@@ -822,6 +863,7 @@ function normalizeRecord(input, options = {}) {
   const rawOrchestration = selectedValue(input, existing, 'orchestration')
   const orchestration = normalizeOrchestration(rawOrchestration)
   if (orchestration === undefined) return null
+  if (!continuationBindingMatchesOrchestration(continuation, orchestration)) return null
   if (orchestration && orchestration.version < 4 && orchestration.workflow !== mode) return null
   if (orchestration && orchestration.version === 4) {
     const expectedWorkflow = orchestration.template === 'discussion' ? 'auto' : 'manual'

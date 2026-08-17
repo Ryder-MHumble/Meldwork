@@ -464,7 +464,7 @@ class LocalWorkspace extends EventEmitter {
           || !groupIds.has(record.groupId) || retainedGroups.has(record.groupId)
           || orchestration?.version !== 4 || orchestration.workflow !== 'auto'
           || orchestration.template !== 'discussion'
-          || (record.continuation && !terminalRecovery)
+          || (record.continuation && record.continuation.state !== 'completed' && !terminalRecovery)
           || (!resumablePhase && !resumableCommit
             && !resumableCandidateCommit && !resumableSynthesisGate && !terminalRecovery)) {
         return false
@@ -738,6 +738,13 @@ class LocalWorkspace extends EventEmitter {
       throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
     }
     const [groupId, controller] = match
+    const invocationFields = ['phase', 'slotId', 'operationId', 'snapshotHash']
+    const invocationFieldCount = invocationFields.filter(field => Object.hasOwn(input, field)).length
+    if (invocationFieldCount > 0
+        && (input.resumeKind !== 'agent_slot'
+          || invocationFieldCount !== invocationFields.length)) {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
     const previousWaitingGateIds = new Set(controller.waitingGateIds)
     const previousContinuation = controller.continuation
     const timestamp = this.continuationTimestamp()
@@ -753,6 +760,12 @@ class LocalWorkspace extends EventEmitter {
         ...(['v4_human_gate', 'v4_synthesis_recovery'].includes(input.resumeKind)
           ? { stateEpoch: input.stateEpoch }
           : {}),
+        ...(invocationFieldCount === invocationFields.length ? {
+          phase: input.phase,
+          slotId: input.slotId,
+          operationId: input.operationId,
+          snapshotHash: input.snapshotHash,
+        } : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
         ...(input.requestId ? {
@@ -1100,6 +1113,34 @@ class LocalWorkspace extends EventEmitter {
         || continuation.sessionRefHash !== request.sessionRefHash
         || continuation.sessionProvenanceHash !== request.sessionProvenanceHash
       )) return false
+      const nativePermission = gate.type === 'permission' && request?.source !== 'connector'
+      if (nativePermission) {
+        const group = this.state.groups.find(candidate => candidate.id === runRecord.groupId)
+        if (!group) return false
+        const resolved = this.sessionState(
+          group, continuation.agentKind, runRecord.threadRootId, runRecord.taskId,
+        )
+        const provenance = {
+          scope: String(resolved.provenance?.scope || 'none'),
+          originTaskId: String(resolved.provenance?.originTaskId || ''),
+          inheritedTaskIds: Array.isArray(resolved.provenance?.inheritedTaskIds)
+            ? [...resolved.provenance.inheritedTaskIds]
+            : [],
+          completeness: String(resolved.provenance?.completeness || 'complete'),
+        }
+        const sessionRefHash = createHash('sha256')
+          .update(String(resolved.sessionRef || '')).digest('hex')
+        const sessionProvenanceHash = hashValue(provenance)
+        const requestId = hashValue({
+          requestHash: gate.requestHash,
+          sessionRefHash: continuation.sessionRefHash,
+          sessionProvenanceHash: continuation.sessionProvenanceHash,
+        })
+        if (continuation.requestId !== requestId
+            || continuation.requestHash !== gate.requestHash
+            || continuation.sessionProvenanceHash !== sessionProvenanceHash
+            || (resolved.sessionRef && continuation.sessionRefHash !== sessionRefHash)) return false
+      }
       const pack = this.contextPackStore.get(runRecord.contextPackId)
       return pack.taskId === runRecord.taskId
         && this.state.groups.some(group => group.id === runRecord.groupId)
@@ -1216,24 +1257,36 @@ class LocalWorkspace extends EventEmitter {
   canResumeV4ManualAgentSlot(durable, gate) {
     const cursor = durable?.orchestration
     const continuation = durable?.continuation
+    const phase = cursor?.phase
     if (durable?.mode !== 'manual' || continuation?.resumeKind !== 'agent_slot'
         || cursor?.version !== 4 || cursor.workflow !== 'manual'
         || cursor.template !== 'concurrent-batch'
+        || phase !== 'proposal' || continuation.phase !== phase
         || !['budget', 'permission', 'retry', 'input'].includes(gate?.type)
         || gate.runId !== durable.runId || gate.agentRunId !== continuation.agentRunId
         || gate.agentKind !== continuation.agentKind
+        || continuation.snapshotHash !== cursor.snapshotHash
         || continuation.round !== (cursor.snapshot?.round || 0)) {
       return false
     }
+    const expectedBatchId = `batch-${createHash('sha256').update(JSON.stringify([
+      durable.runId,
+      durable.taskId,
+      phase,
+      continuation.round,
+    ])).digest('hex').slice(0, 32)}`
     const matches = cursor.slots.filter(slot => slot.agentKind === continuation.agentKind)
-    if (matches.length !== 1) return false
+    if (matches.length !== 1 || cursor.batchId !== expectedBatchId
+        || !cursor.snapshot || hashValue(cursor.snapshot) !== cursor.snapshotHash
+        || cursor.plan?.snapshotHash !== cursor.snapshotHash) return false
     const slot = matches[0]
     const slotIndex = durable.targetKinds.indexOf(continuation.agentKind)
     const expectedSlotId = `slot-${slotIndex + 1}-${continuation.agentKind}`
     const expectedOperationId = `agent-operation-${createHash('sha256').update(
       `${durable.runId}:${cursor.batchId}:${continuation.agentKind}`,
     ).digest('hex')}`
-    const assignment = cursor.plan?.assignments?.find(item => item.slotId === slot.slotId)
+    const assignments = cursor.plan?.assignments?.filter(item => item.slotId === slot.slotId) || []
+    const assignment = assignments[0]
     const manualRecovery = gate.type === 'retry'
       ? this.v4ManualRecoveryGateMatch(durable, gate, null, true)
       : null
@@ -1244,16 +1297,108 @@ class LocalWorkspace extends EventEmitter {
     ))
     return Boolean(
       assignment
+      && assignments.length === 1
       && (agentRun || manualRecovery?.slot === slot)
       && slotIndex >= 0
       && slot.slotId === expectedSlotId
+      && slot.slotId === continuation.slotId
       && slot.queuePosition === slotIndex
       && slot.operationId === expectedOperationId
+      && slot.operationId === continuation.operationId
+      && slot.snapshotHash === continuation.snapshotHash
       && assignment.agentKind === slot.agentKind
       && assignment.operationId === slot.operationId
       && JSON.stringify(cursor.snapshot?.targetKinds) === JSON.stringify(durable.targetKinds)
       && cursor.snapshot?.targetKinds?.includes(slot.agentKind)
-      && durable.targetKinds?.includes(slot.agentKind),
+      && durable.targetKinds?.includes(slot.agentKind)
+      && !(slot.resultRefs?.workflowOutcomeRefs || []).some(item => (
+        item?.receipt?.phase === phase
+          && item.receipt.operationId === continuation.operationId
+          && ['completed', 'accepted'].includes(item.receipt.status)
+      )),
+    )
+  }
+
+  canResumeV4AutoAgentSlot(durable, gate, controller) {
+    const cursor = durable?.orchestration
+    const continuation = durable?.continuation
+    const phase = cursor?.phase
+    if (durable?.mode !== 'auto' || continuation?.resumeKind !== 'agent_slot'
+        || cursor?.version !== 4 || cursor.workflow !== 'auto'
+        || cursor.template !== 'discussion'
+        || !['proposal', 'challenge', 'work', 'synthesis', 'verification'].includes(phase)
+        || !['budget', 'permission', 'retry', 'input'].includes(gate?.type)
+        || gate.runId !== durable.runId || gate.agentRunId !== continuation.agentRunId
+        || gate.agentKind !== continuation.agentKind
+        || continuation.phase !== phase
+        || continuation.snapshotHash !== cursor.snapshotHash
+        || continuation.round !== cursor.round
+        || continuation.round !== durable.currentRound
+        || !controller) return false
+    const targetKinds = Array.isArray(durable.targetKinds) ? durable.targetKinds : []
+    const matches = cursor.slots.filter(slot => slot.agentKind === continuation.agentKind)
+    if (matches.length !== 1 || !cursor.snapshotHash || !cursor.snapshot
+        || cursor.slots.length !== targetKinds.length
+        || hashValue(cursor.snapshot) !== cursor.snapshotHash
+        || JSON.stringify(cursor.snapshot.targetKinds) !== JSON.stringify(targetKinds)) return false
+    const slot = matches[0]
+    const slotIndex = targetKinds.indexOf(slot.agentKind)
+    const agentRun = durable.agentRuns?.find(item => (
+      item.agentRunId === continuation.agentRunId
+        && item.kind === slot.agentKind && item.round === continuation.round
+    ))
+    if (slotIndex < 0 || !agentRun || slot.slotId !== continuation.slotId
+        || slot.operationId !== continuation.operationId
+        || slot.slotId !== `slot-${slotIndex + 1}-${slot.agentKind}`
+        || slot.queuePosition !== slotIndex || slot.phase !== phase
+        || slot.snapshotHash !== continuation.snapshotHash
+        || !['planned', 'queued', 'running', 'waiting', 'stopped', 'failed'].includes(slot.status)) {
+      return false
+    }
+    const assignments = cursor.plan?.assignments?.filter(item => item.slotId === slot.slotId) || []
+    if (assignments.length !== 1 || assignments[0].agentKind !== slot.agentKind
+        || assignments[0].operationId !== slot.operationId
+        || (slot.resultRefs?.workflowOutcomeRefs || []).some(item => (
+          item?.receipt?.phase === phase && item.receipt.operationId === slot.operationId
+        ))) return false
+    let operationPhase = phase
+    if (phase === 'work') {
+      const matchingAssignments = cursor.coordinationPlan?.assignments?.filter(item => (
+        item.ownerKind === slot.agentKind && item.taskId
+          && this.autoRunner.v4OperationId(
+            controller, slot.agentKind, `work:${item.taskId}`, slot.slotId,
+          ) === slot.operationId
+      )) || []
+      if (matchingAssignments.length !== 1) return false
+      const assignment = matchingAssignments[0]
+      let workState
+      try {
+        workState = this.autoRunner.v4WorkState(
+          cursor.workReceipts || [], cursor.coordinationPlan,
+        )
+      } catch {
+        return false
+      }
+      const pending = workState.pending.filter(item => (
+        item.taskId === assignment.taskId && item.ownerKind === assignment.ownerKind
+      ))
+      const ready = workState.ready.filter(item => (
+        item.taskId === assignment.taskId && item.ownerKind === assignment.ownerKind
+      ))
+      if (pending.length !== 1 || ready.length !== 1) return false
+      operationPhase = `work:${assignment.taskId}`
+    }
+    if (phase === 'synthesis') {
+      const attempt = cursor.synthesisRecovery?.attempts?.find(item => (
+        ['intent', 'leased', 'unknown_outcome'].includes(item.status)
+      ))
+      return Boolean(
+        attempt && attempt.writerKind === slot.agentKind && attempt.slotId === slot.slotId
+          && attempt.operationId === slot.operationId,
+      )
+    }
+    return slot.operationId === this.autoRunner.v4OperationId(
+      controller, slot.agentKind, operationPhase, slot.slotId,
     )
   }
 
@@ -1302,6 +1447,9 @@ class LocalWorkspace extends EventEmitter {
           ...(['permission', 'input'].includes(gate.type) ? {
             request,
             requestHash: gate.requestHash,
+            requestId: durable.continuation.requestId,
+            sessionRefHash: durable.continuation.sessionRefHash,
+            sessionProvenanceHash: durable.continuation.sessionProvenanceHash,
           } : {}),
           ...(gate.type === 'input' ? { response: decision.response } : {}),
           used: false,
@@ -1472,6 +1620,7 @@ class LocalWorkspace extends EventEmitter {
       const resumableManual = this.canResumeManualOrchestration(durable)
       const resumableAuto = this.canResumeAutoOrchestration(durable)
       const resumableV4ManualSlot = this.canResumeV4ManualAgentSlot(durable, gate)
+      const resumableV4AutoSlot = this.canResumeV4AutoAgentSlot(durable, gate, controller)
       const resumableTaskGraphDecision = durable.continuation.resumeKind === 'role_review_decision'
         && durable.mode === 'auto'
         && durable.orchestration?.version === 3
@@ -1481,7 +1630,8 @@ class LocalWorkspace extends EventEmitter {
           && !this.canFinalizeReplayedAgentSlot(durable)
           && !resumableManual
           && !resumableAuto
-          && !resumableV4ManualSlot) {
+          && !resumableV4ManualSlot
+          && !resumableV4AutoSlot) {
         throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
       }
       if (durable.continuation.resumeKind === 'role_review_decision'
@@ -1628,7 +1778,8 @@ class LocalWorkspace extends EventEmitter {
             workReceipts: durable.orchestration.workReceipts,
           })
         }
-        if (!this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+        if (controller.continuation?.gateId === gate.gateId
+            && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
           throw new Error('LOCAL_RUN_PERSIST_FAILED')
         }
         const finalStatus = await this.autoRunner.resume(group, durable, controller)
@@ -1753,14 +1904,54 @@ class LocalWorkspace extends EventEmitter {
             optionId: decision.optionId,
             request,
             requestHash: gate.requestHash,
+            requestId: durable.continuation.requestId,
+            sessionRefHash: durable.continuation.sessionRefHash,
+            sessionProvenanceHash: durable.continuation.sessionProvenanceHash,
             ...(gate.type === 'input' ? { response: decision.response } : {}),
             used: false,
           },
         })
-        if (!this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+        if (controller.continuation?.gateId === gate.gateId
+            && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
           throw new Error('LOCAL_RUN_PERSIST_FAILED')
         }
         await this.finishRun(durable.groupId, controller, result.status)
+        return
+      }
+      if (resumableV4AutoSlot) {
+        if (decision.status !== 'approved') {
+          this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
+          await this.finishRun(durable.groupId, controller, 'stopped')
+          return
+        }
+        const resumedGate = {
+          gateId: gate.gateId,
+          type: gate.type,
+          agentRunId: gate.agentRunId,
+          agentKind: gate.agentKind,
+          status: decision.status,
+          optionId: decision.optionId,
+          request: this.humanGateStore.request(gate.gateId),
+          requestHash: gate.requestHash,
+          requestId: durable.continuation.requestId,
+          sessionRefHash: durable.continuation.sessionRefHash,
+          sessionProvenanceHash: durable.continuation.sessionProvenanceHash,
+          phase: durable.continuation.phase,
+          slotId: durable.continuation.slotId,
+          operationId: durable.continuation.operationId,
+          snapshotHash: durable.continuation.snapshotHash,
+          round: durable.continuation.round,
+          ...(gate.type === 'input' ? { response: decision.response } : {}),
+          used: false,
+        }
+        const finalStatus = await this.autoRunner.resume(
+          group, durable, controller, null, resumedGate,
+        )
+        if (controller.continuation?.gateId === gate.gateId
+            && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
+        await this.finishRun(durable.groupId, controller, finalStatus)
         return
       }
       const request = this.humanGateStore.request(gate.gateId)

@@ -49,6 +49,524 @@ function proposalReceipt(agentKind, summary) {
   }
 }
 
+function autoV4Receipt(agentKind, phase, workItemId = '') {
+  const assignments = [
+    {
+      taskId: 'codex-work', ownerKind: 'codex', role: 'worker',
+      objective: 'Complete the Codex work package.', expectedOutput: 'Codex Artifact.',
+      inputRefs: [], artifactIds: [], dependsOn: [],
+    },
+    {
+      taskId: 'hermes-work', ownerKind: 'hermes', role: 'worker',
+      objective: 'Complete the Hermes work package.', expectedOutput: 'Hermes Artifact.',
+      inputRefs: [], artifactIds: [], dependsOn: [],
+    },
+    {
+      taskId: 'workbuddy-integration', ownerKind: 'workbuddy', role: 'integrator',
+      objective: 'Integrate the work packages.', expectedOutput: 'Integrated Artifact.',
+      inputRefs: [], artifactIds: [], dependsOn: ['codex-work', 'hermes-work'],
+    },
+  ]
+  if (phase === 'proposal') return proposalReceipt(agentKind, `${agentKind} proposal`)
+  if (phase === 'challenge') {
+    return {
+      version: 1, phase, verdict: 'support', summary: `${agentKind} supports the plan`,
+      proposedAssignments: assignments,
+      finalizerKind: 'workbuddy', verifierKinds: ['codex', 'hermes'], agreeToPlan: true,
+    }
+  }
+  if (phase === 'work') {
+    return {
+      version: 1, phase, summary: `${agentKind} completed ${workItemId}`,
+      workItemId, deliverables: [`${agentKind} Artifact`],
+    }
+  }
+  if (phase === 'synthesis') {
+    return { version: 1, phase, summary: 'Integrated candidate.', resolvedIssueIds: [] }
+  }
+  return { version: 1, phase, verdict: 'support', summary: `${agentKind} accepts` }
+}
+
+function sequentialAutoV4Receipt(agentKind, phase, workItemId = '') {
+  const assignments = [
+    {
+      taskId: 'codex-work-1', ownerKind: 'codex', role: 'worker',
+      objective: 'Complete the first Codex work package.', expectedOutput: 'Codex Artifact 1.',
+      inputRefs: [], artifactIds: [], dependsOn: [],
+    },
+    {
+      taskId: 'codex-work-2', ownerKind: 'codex', role: 'worker',
+      objective: 'Continue from the first Codex work package.', expectedOutput: 'Codex Artifact 2.',
+      inputRefs: [], artifactIds: [], dependsOn: ['codex-work-1'],
+    },
+    {
+      taskId: 'hermes-work', ownerKind: 'hermes', role: 'worker',
+      objective: 'Complete the Hermes work package.', expectedOutput: 'Hermes Artifact.',
+      inputRefs: [], artifactIds: [], dependsOn: [],
+    },
+    {
+      taskId: 'workbuddy-integration', ownerKind: 'workbuddy', role: 'integrator',
+      objective: 'Integrate the completed work packages.', expectedOutput: 'Integrated Artifact.',
+      inputRefs: [], artifactIds: [], dependsOn: ['codex-work-2', 'hermes-work'],
+    },
+  ]
+  if (phase === 'proposal') return proposalReceipt(agentKind, `${agentKind} proposal`)
+  if (phase === 'challenge') {
+    return {
+      version: 1, phase, verdict: 'support', summary: `${agentKind} supports the plan`,
+      proposedAssignments: assignments,
+      finalizerKind: 'workbuddy', verifierKinds: ['codex', 'hermes'], agreeToPlan: true,
+    }
+  }
+  if (phase === 'work') {
+    return {
+      version: 1, phase, summary: `${agentKind} completed ${workItemId}`,
+      workItemId, deliverables: [`${workItemId} Artifact`],
+    }
+  }
+  if (phase === 'synthesis') {
+    return { version: 1, phase, summary: 'Integrated candidate.', resolvedIssueIds: [] }
+  }
+  return { version: 1, phase, verdict: 'support', summary: `${agentKind} accepts` }
+}
+
+async function restartAutoV4ProposalGate(t, tamper = '') {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => Date.now() })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 3, workspaceLimit: 3, globalLimit: 3 })
+  const invocations = []
+  const permissionRequest = {
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ],
+    operation: { kind: 'read', path: 'proposal-evidence.txt' },
+  }
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+    invocations.push({ kind: agent.kind, phase, operationId: runOptions.operationId })
+    if (agent.kind === 'codex' && phase === 'proposal') {
+      await runOptions.onSessionRef('codex-auto-v4-gate-session', { transport: 'acp' })
+      const decision = await runOptions.onPermissionRequest(permissionRequest, {
+        signal: runOptions.signal,
+      })
+      assert.equal(decision.optionId, 'allow-once')
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}-session`,
+      collaboration: autoV4Receipt(agent.kind, phase, workItemId),
+    }
+  }
+
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Auto V4 proposal Gate restart',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  const gatePromise = pendingGate(workspace)
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Resume only the exact gated Auto proposal slot.',
+    mode: 'auto',
+    maxRounds: 3,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const gate = await gatePromise
+  const waiting = await waitFor(() => {
+    const record = ledger.get(gate.runId)
+    const peers = record?.orchestration?.slots.filter(slot => (
+      slot.agentKind !== gate.agentKind && slot.status === 'completed'
+    ))
+    return peers?.length === 2 ? record : null
+  }, 'completed Auto V4 proposal peers')
+  const gatedSlot = waiting.orchestration.slots.find(slot => slot.agentKind === gate.agentKind)
+  assert.equal(waiting.orchestration.phase, 'proposal')
+  assert.equal(gatedSlot.phase, 'proposal')
+  assert.equal(gatedSlot.snapshotHash, waiting.orchestration.snapshotHash)
+  assert.equal(gate.agentKind, gatedSlot.agentKind)
+  assert.equal(waiting.continuation.agentRunId, gate.agentRunId)
+  assert.equal(invocations.find(call => (
+    call.kind === gate.agentKind && call.phase === 'proposal'
+  )).operationId, gatedSlot.operationId)
+  assert.equal(waiting.continuation.round, waiting.orchestration.round)
+  const controller = workspace.activeRuns.get(group.id)
+  assert.equal(workspace.canResumeV4AutoAgentSlot(waiting, gate, controller), true)
+  for (const tamperBinding of [
+    durable => {
+      durable.orchestration.slots.find(slot => slot.agentKind === gate.agentKind).operationId =
+        `operation-${'a'.repeat(64)}`
+    },
+    durable => { durable.orchestration.phase = 'challenge' },
+    durable => {
+      durable.orchestration.slots.find(slot => slot.agentKind === gate.agentKind).slotId =
+        `slot-tampered-${gate.agentKind}`
+    },
+    durable => {
+      durable.orchestration.slots.find(slot => slot.agentKind === gate.agentKind).snapshotHash =
+        'tampered-snapshot'
+    },
+    durable => { durable.continuation.agentKind = 'hermes' },
+    durable => {
+      durable.orchestration.plan.assignments.find(item => item.agentKind === gate.agentKind)
+        .operationId = `operation-${'b'.repeat(64)}`
+    },
+    durable => {
+      const slot = durable.orchestration.slots.find(item => item.agentKind === gate.agentKind)
+      slot.resultRefs.workflowOutcomeRefs.push({
+        receipt: { phase: 'proposal', operationId: slot.operationId },
+      })
+    },
+  ]) {
+    const tampered = structuredClone(waiting)
+    tamperBinding(tampered)
+    assert.equal(workspace.canResumeV4AutoAgentSlot(tampered, gate, controller), false)
+  }
+
+  await workspace.stopAll()
+  await send
+  assert.equal(ledger.get(gate.runId).status, 'waiting')
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath, now: () => Date.now() })
+  const beforeApprovalCalls = invocations.length
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  let resumedProposalRecord = null
+  if (!tamper) {
+    const checkpointRun = restarted.checkpointRun.bind(restarted)
+    restarted.checkpointRun = (groupId, activeController, status = '') => {
+      const persisted = checkpointRun(groupId, activeController, status)
+      const record = restartedLedger.get(activeController.runId)
+      if (!resumedProposalRecord && record?.continuation?.state === 'completed'
+          && record.orchestration?.phase === 'proposal'
+          && record.orchestration.slots.every(slot => slot.status === 'completed')) {
+        resumedProposalRecord = structuredClone(record)
+      }
+      return persisted
+    }
+  }
+  if (tamper === 'round') {
+    const markResumed = restarted.markHumanGateResumed.bind(restarted)
+    restarted.humanGateCoordinator.onResumed = record => {
+      markResumed(record)
+      restartedLedger.runs.find(item => item.runId === record.runId).continuation.round += 1
+    }
+  }
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(gate.gateId, {
+    status: tamper === 'rejected' ? 'rejected' : 'approved',
+    optionId: tamper === 'rejected' ? 'reject-once' : 'allow-once',
+    actorId: 'local-user',
+  })
+
+  if (tamper === 'rejected') {
+    const stopped = await waitFor(() => {
+      const record = restartedLedger.get(gate.runId)
+      return record?.status === 'stopped' ? record : null
+    }, 'rejected Auto V4 Gate')
+    assert.equal(invocations.length, beforeApprovalCalls)
+    assert.equal(stopped.continuation.state, 'cancelled')
+    return
+  }
+  if (tamper) {
+    const failed = await waitFor(() => {
+      const record = restartedLedger.get(gate.runId)
+      return record?.status === 'failed' ? record : null
+    }, `rejected Auto V4 ${tamper} binding`)
+    assert.equal(invocations.length, beforeApprovalCalls)
+    assert.equal(failed.reason, 'human_gate_continuation_invalid')
+    assert.equal(failed.continuation.state, 'failed')
+    return
+  }
+
+  const completed = await waitFor(() => {
+    const record = restartedLedger.get(gate.runId)
+    return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
+      ? record
+      : null
+  }, 'completed Auto V4 proposal Gate restart')
+  assert.equal(completed.status, 'completed', JSON.stringify({
+    reason: completed.reason,
+    phase: completed.orchestration?.phase,
+    continuation: completed.continuation,
+  }))
+  assert.deepEqual(
+    invocations.filter(call => call.phase === 'proposal' && call.kind === 'codex')
+      .map(call => call.operationId),
+    [gatedSlot.operationId, gatedSlot.operationId],
+  )
+  for (const kind of ['hermes', 'workbuddy']) {
+    assert.equal(invocations.filter(call => call.phase === 'proposal' && call.kind === kind).length, 1)
+  }
+  assert.equal(completed.continuation.state, 'completed')
+  assert.deepEqual(
+    new Set(completed.orchestration.slots.flatMap(slot => (
+      slot.resultRefs.workflowOutcomeRefs.map(record => record.receipt.phase)
+    ))),
+    new Set(['proposal', 'challenge', 'work', 'synthesis', 'verification']),
+  )
+  assert.ok(resumedProposalRecord)
+  const recoveryLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-post-proposal-recovery.json'),
+  })
+  const crashRecord = structuredClone(resumedProposalRecord)
+  crashRecord.status = 'running'
+  delete crashRecord.finishedAt
+  recoveryLedger.checkpoint(crashRecord)
+  const recoveryCalls = []
+  const recoveryStoragePath = path.join(directory, 'workspace-post-proposal-recovery.json')
+  fs.copyFileSync(options.storagePath, recoveryStoragePath)
+  const recovered = new LocalWorkspace({
+    ...options,
+    storagePath: recoveryStoragePath,
+    runLedger: recoveryLedger,
+    runAgent: async (agent, prompt, _workdir, runOptions) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+      recoveryCalls.push({ kind: agent.kind, phase, operationId: runOptions.operationId })
+      return {
+        text: `${agent.kind} ${phase}`,
+        sessionRef: `${agent.kind}-${phase}-recovery-session`,
+        outcome: 'completed',
+        collaboration: autoV4Receipt(agent.kind, phase, workItemId),
+      }
+    },
+  })
+  await recovered.refreshAgents()
+  const recoveredFinal = await waitFor(() => {
+    const record = recoveryLedger.get(gate.runId)
+    return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
+      ? record : null
+  }, 'post-proposal Auto V4 recovery')
+  assert.equal(recoveryCalls.some(call => call.phase === 'proposal'), false)
+  assert.equal(recoveredFinal.status, 'completed', JSON.stringify({
+    reason: recoveredFinal.reason,
+    phase: recoveredFinal.orchestration?.phase,
+    continuation: recoveredFinal.continuation,
+  }))
+  assert.equal(recoveredFinal.continuation.state, 'completed')
+}
+
+async function restartAutoV4SecondWorkGate(t, rejected = false) {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath, now: () => Date.now() })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 3, workspaceLimit: 3, globalLimit: 3 })
+  const invocations = []
+  const permissionRequest = {
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ],
+    operation: { kind: 'read', path: 'codex-work-2.txt' },
+  }
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+    invocations.push({ kind: agent.kind, phase, workItemId, operationId: runOptions.operationId })
+    if (agent.kind === 'codex' && phase === 'work' && workItemId === 'codex-work-2') {
+      await runOptions.onSessionRef('codex-auto-v4-work-session', { transport: 'acp' })
+      const decision = await runOptions.onPermissionRequest(permissionRequest, {
+        signal: runOptions.signal,
+      })
+      assert.equal(decision.optionId, 'allow-once')
+    }
+    return {
+      text: `${agent.kind} ${phase} ${workItemId}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}-${workItemId || 'phase'}-session`,
+      collaboration: sequentialAutoV4Receipt(agent.kind, phase, workItemId),
+    }
+  }
+
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Auto V4 second work Gate restart',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  const gatePromise = pendingGate(workspace)
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Resume only the second dependency-ordered Codex work package.',
+    mode: 'auto',
+    maxRounds: 3,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const gate = await gatePromise
+  const waiting = await waitFor(() => {
+    const record = ledger.get(gate.runId)
+    const completedTasks = new Set(
+      (record?.orchestration?.workReceipts || []).map(receipt => receipt.taskId),
+    )
+    return record?.orchestration?.phase === 'work'
+      && completedTasks.has('codex-work-1')
+      && !completedTasks.has('codex-work-2')
+      ? record
+      : null
+  }, 'second Auto V4 work package Gate')
+  const gatedSlot = waiting.orchestration.slots.find(slot => slot.agentKind === 'codex')
+  const secondCall = invocations.find(call => (
+    call.kind === 'codex' && call.phase === 'work' && call.workItemId === 'codex-work-2'
+  ))
+  assert.equal(gate.agentKind, 'codex')
+  assert.equal(secondCall.operationId, gatedSlot.operationId)
+  assert.equal(invocations.filter(call => call.workItemId === 'codex-work-1').length, 1)
+  assert.equal(invocations.filter(call => call.workItemId === 'codex-work-2').length, 1)
+  const controller = workspace.activeRuns.get(group.id)
+  assert.equal(workspace.canResumeV4AutoAgentSlot(waiting, gate, controller), true)
+  assert.deepEqual({
+    phase: waiting.continuation.phase,
+    slotId: waiting.continuation.slotId,
+    operationId: waiting.continuation.operationId,
+    snapshotHash: waiting.continuation.snapshotHash,
+  }, {
+    phase: 'work',
+    slotId: gatedSlot.slotId,
+    operationId: gatedSlot.operationId,
+    snapshotHash: waiting.orchestration.snapshotHash,
+  })
+
+  await workspace.stopAll()
+  await send
+  assert.equal(ledger.get(gate.runId).status, 'waiting')
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath, now: () => Date.now() })
+  const beforeDecisionCalls = invocations.length
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  let resumedWorkRecord = null
+  if (!rejected) {
+    const checkpointRun = restarted.checkpointRun.bind(restarted)
+    restarted.checkpointRun = (groupId, activeController, status = '') => {
+      const persisted = checkpointRun(groupId, activeController, status)
+      const record = restartedLedger.get(activeController.runId)
+      if (!resumedWorkRecord && record?.continuation?.state === 'completed'
+          && record.orchestration?.phase === 'work'
+          && record.orchestration.workReceipts?.some(receipt => (
+            receipt.taskId === 'codex-work-2'
+          ))) {
+        resumedWorkRecord = structuredClone(record)
+      }
+      return persisted
+    }
+  }
+  await restarted.refreshAgents()
+  restarted.decideHumanGate(gate.gateId, {
+    status: rejected ? 'rejected' : 'approved',
+    optionId: rejected ? 'reject-once' : 'allow-once',
+    actorId: 'local-user',
+  })
+
+  if (rejected) {
+    const stopped = await waitFor(() => {
+      const record = restartedLedger.get(gate.runId)
+      return record?.status === 'stopped' ? record : null
+    }, 'rejected second Auto V4 work Gate')
+    assert.equal(invocations.length, beforeDecisionCalls)
+    assert.equal(stopped.continuation.state, 'cancelled')
+    return
+  }
+
+  const completed = await waitFor(() => {
+    const record = restartedLedger.get(gate.runId)
+    return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
+      ? record
+      : null
+  }, 'completed second Auto V4 work Gate restart', 20000)
+  assert.equal(completed.status, 'completed', JSON.stringify({
+    reason: completed.reason,
+    phase: completed.orchestration?.phase,
+    continuation: completed.continuation,
+  }))
+  assert.equal(invocations.filter(call => call.workItemId === 'codex-work-1').length, 1)
+  assert.deepEqual(
+    invocations.filter(call => call.workItemId === 'codex-work-2').map(call => call.operationId),
+    [gatedSlot.operationId, gatedSlot.operationId],
+  )
+  assert.equal(
+    completed.orchestration.workReceipts.filter(receipt => receipt.taskId === 'codex-work-2').length,
+    1,
+  )
+  assert.equal(completed.continuation.state, 'completed')
+  assert.ok(resumedWorkRecord)
+
+  const recoveryLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-post-work-recovery.json'),
+  })
+  const crashRecord = structuredClone(resumedWorkRecord)
+  crashRecord.status = 'running'
+  delete crashRecord.finishedAt
+  recoveryLedger.checkpoint(crashRecord)
+  const recoveryCalls = []
+  const recoveryStoragePath = path.join(directory, 'workspace-post-work-recovery.json')
+  fs.copyFileSync(options.storagePath, recoveryStoragePath)
+  const recovered = new LocalWorkspace({
+    ...options,
+    storagePath: recoveryStoragePath,
+    runLedger: recoveryLedger,
+    runAgent: async (agent, prompt, _workdir, runOptions) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+      recoveryCalls.push({ kind: agent.kind, phase, workItemId, operationId: runOptions.operationId })
+      return {
+        text: `${agent.kind} ${phase} ${workItemId}`,
+        sessionRef: `${agent.kind}-${phase}-recovery-session`,
+        outcome: 'completed',
+        collaboration: sequentialAutoV4Receipt(agent.kind, phase, workItemId),
+      }
+    },
+  })
+  await recovered.refreshAgents()
+  const recoveredFinal = await waitFor(() => {
+    const record = recoveryLedger.get(gate.runId)
+    return ['completed', 'failed', 'partial', 'stopped', 'interrupted'].includes(record?.status)
+      ? record
+      : null
+  }, 'post-work Auto V4 recovery')
+  assert.equal(
+    recoveryCalls.some(call => ['codex-work-1', 'codex-work-2'].includes(call.workItemId)),
+    false,
+  )
+  assert.equal(recoveredFinal.status, 'completed')
+  assert.equal(
+    recoveredFinal.orchestration.workReceipts
+      .filter(receipt => receipt.taskId === 'codex-work-2').length,
+    1,
+  )
+  assert.equal(recoveredFinal.continuation.state, 'completed')
+}
+
+test('Auto V4 proposal Gate restart resumes the exact slot and completes receipts', async (t) => {
+  await restartAutoV4ProposalGate(t)
+})
+
+test('Auto V4 proposal Gate restart rejects a tampered round before replay', async (t) => {
+  for (const tamper of ['round']) {
+    await t.test(tamper, async (subtest) => restartAutoV4ProposalGate(subtest, tamper))
+  }
+})
+
+test('Auto V4 proposal Gate rejection stops without replay', async (t) => {
+  await restartAutoV4ProposalGate(t, 'rejected')
+})
+
+test('Auto V4 work Gate restart replays only the second sequential package', async (t) => {
+  await restartAutoV4SecondWorkGate(t)
+})
+
+test('Auto V4 work Gate rejection stops without replay', async (t) => {
+  await restartAutoV4SecondWorkGate(t, true)
+})
+
 test('V4 parallel permission Gate pauses queued same-task Agents until approval', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -193,9 +711,14 @@ test('Manual V4 restart approval resumes only the bound gated slot with its oper
   })
   const completed = await waitFor(() => {
     const record = restartedLedger.get(gate.runId)
-    return record?.status === 'completed' ? record : null
+    return ['completed', 'failed', 'partial', 'stopped'].includes(record?.status) ? record : null
   }, 'completed Manual V4 Gate restart')
 
+  assert.equal(completed.status, 'completed', JSON.stringify({
+    reason: completed.reason,
+    continuation: completed.continuation,
+    phase: completed.orchestration?.phase,
+  }))
   const counts = new Map(['codex', 'hermes', 'workbuddy'].map(kind => [
     kind, invocations.filter(call => call.kind === kind).length,
   ]))
@@ -476,11 +999,12 @@ test('Manual V4 rejects approved Gate continuations with mismatched slot binding
       await send
 
       const durable = ledger.get(gate.runId)
-      const update = { runId: durable.runId }
+      const restartedLedger = new RunLedger({ storagePath: ledgerPath, now: () => Date.now() })
+      const tamperedRecord = restartedLedger.runs.find(record => record.runId === durable.runId)
       if (tamper === 'round') {
-        update.continuation = { ...durable.continuation, round: durable.continuation.round + 1 }
+        tamperedRecord.continuation.round += 1
       } else {
-        const orchestration = structuredClone(durable.orchestration)
+        const orchestration = tamperedRecord.orchestration
         const slot = orchestration.slots.find(item => item.agentKind === gate.agentKind)
         const assignment = orchestration.plan.assignments.find(item => (
           item.agentKind === gate.agentKind
@@ -497,25 +1021,16 @@ test('Manual V4 rejects approved Gate continuations with mismatched slot binding
           slot.slotId = slotId
           assignment.slotId = slotId
         }
-        update.orchestration = orchestration
       }
-      ledger.checkpoint(update)
       const beforeDecisionCalls = invocations.length
 
-      const restartedLedger = new RunLedger({ storagePath: ledgerPath, now: () => Date.now() })
       const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
       await restarted.refreshAgents()
-      restarted.decideHumanGate(gate.gateId, {
+      assert.throws(() => restarted.decideHumanGate(gate.gateId, {
         status: 'approved', optionId: 'allow-once', actorId: 'local-user',
-      })
-      const failed = await waitFor(() => {
-        const record = restartedLedger.get(gate.runId)
-        return record?.status === 'failed' ? record : null
-      }, `rejected ${tamper} binding`)
-
+      }), { message: 'RUN_LEDGER_RECORD_INVALID' })
       assert.equal(invocations.length, beforeDecisionCalls)
-      assert.equal(failed.reason, 'LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
-      assert.equal(failed.continuation.state, 'failed')
+      assert.equal(restarted.humanGateStore.get(gate.gateId).status, 'pending')
     })
   }
 })
@@ -592,4 +1107,142 @@ test('Manual V4 requires a Gate before retrying an unknown writable outcome', as
   assert.deepEqual(ledger.get(gate.runId).orchestration.commitState.committedKinds, [
     'codex', 'hermes', 'workbuddy',
   ])
+})
+
+test('Auto V4 atomically checkpoints a resumed receipt with its completed continuation', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger.json'), now: () => Date.now(),
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 3, workspaceLimit: 3, globalLimit: 3 })
+  const calls = []
+  let holdWorkbuddy = true
+  const permissionRequest = {
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ],
+    operation: { kind: 'read', path: 'resumed-proposal.txt' },
+  }
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase, operationId: runOptions.operationId })
+    if (agent.kind === 'workbuddy' && phase === 'proposal' && holdWorkbuddy) {
+      const pending = deferred()
+      const abort = () => pending.reject(Object.assign(
+        new Error('LOCAL_AGENT_STOPPED'), { code: 'ABORT_ERR' },
+      ))
+      runOptions.signal.addEventListener('abort', abort, { once: true })
+      try { await pending.promise } finally { runOptions.signal.removeEventListener('abort', abort) }
+    }
+    if (agent.kind === 'codex' && phase === 'proposal') {
+      await runOptions.onSessionRef('codex-resumed-proposal-session', { transport: 'acp' })
+      await runOptions.onPermissionRequest(permissionRequest, { signal: runOptions.signal })
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}-session`,
+      collaboration: autoV4Receipt(agent.kind, phase, workItemId),
+    }
+  }
+
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Auto V4 resumed receipt crash window',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Retire the resumed Gate before the pending peer finishes.',
+    mode: 'auto',
+    maxRounds: 3,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const gate = await pendingGate(workspace)
+  const waiting = await waitFor(() => {
+    const record = ledger.get(gate.runId)
+    const hermes = record?.orchestration?.slots.find(slot => slot.agentKind === 'hermes')
+    const workbuddy = record?.orchestration?.slots.find(slot => slot.agentKind === 'workbuddy')
+    return hermes?.status === 'completed' && workbuddy?.status === 'running' ? record : null
+  }, 'initial pending Auto proposal peer')
+  const workspaceBytes = fs.readFileSync(options.storagePath)
+  const gateStorePath = path.join(directory, 'meldwork-private', 'human-gates.json')
+  const gateBytes = fs.readFileSync(gateStorePath)
+  await workspace.stopAll()
+  await send
+  fs.writeFileSync(options.storagePath, workspaceBytes)
+  fs.writeFileSync(gateStorePath, gateBytes)
+
+  const resumedLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-resumed-peer.json'), now: () => Date.now(),
+  })
+  resumedLedger.checkpoint(waiting)
+  const resumed = new LocalWorkspace({
+    ...options,
+    runLedger: resumedLedger,
+    runScheduler: new RunScheduler({ taskLimit: 3, workspaceLimit: 3, globalLimit: 3 }),
+  })
+  const checkpointRun = resumed.checkpointRun.bind(resumed)
+  const crashCheckpoint = deferred()
+  let crashRecord = null
+  let crashWorkspaceBytes = null
+  let crashGateBytes = null
+  resumed.checkpointRun = (groupId, activeController, status = '') => {
+    const persisted = checkpointRun(groupId, activeController, status)
+    const record = resumedLedger.get(activeController.runId)
+    const codex = record?.orchestration?.slots.find(slot => slot.agentKind === 'codex')
+    const workbuddy = record?.orchestration?.slots.find(slot => slot.agentKind === 'workbuddy')
+    if (!crashRecord && codex?.status === 'completed' && workbuddy?.status === 'running'
+        && codex.resultRefs.workflowOutcomeRefs.some(item => (
+          item.receipt?.phase === 'proposal' && item.receipt.operationId === codex.operationId
+        ))) {
+      crashRecord = structuredClone(record)
+      crashWorkspaceBytes = fs.readFileSync(options.storagePath)
+      crashGateBytes = fs.readFileSync(gateStorePath)
+      crashCheckpoint.resolve()
+      throw new Error('TEST_CRASH:after_atomic_resumed_receipt_checkpoint')
+    }
+    return persisted
+  }
+  await resumed.refreshAgents()
+  resumed.decideHumanGate(gate.gateId, {
+    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
+  })
+  await crashCheckpoint.promise
+  const proposalCallsBeforeRecovery = calls.filter(call => call.phase === 'proposal')
+
+  await resumed.stopAll()
+  assert.equal(crashRecord.continuation.state, 'completed')
+  fs.writeFileSync(options.storagePath, crashWorkspaceBytes)
+  fs.writeFileSync(gateStorePath, crashGateBytes)
+  holdWorkbuddy = false
+  const recoveryLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-remaining-peer.json'), now: () => Date.now(),
+  })
+  recoveryLedger.checkpoint(crashRecord)
+  const recovered = new LocalWorkspace({
+    ...options,
+    runLedger: recoveryLedger,
+    runScheduler: new RunScheduler({ taskLimit: 3, workspaceLimit: 3, globalLimit: 3 }),
+  })
+  await recovered.refreshAgents()
+  const terminal = await waitFor(() => {
+    const record = recoveryLedger.get(gate.runId)
+    return ['completed', 'failed', 'partial', 'stopped'].includes(record?.status) ? record : null
+  }, 'remaining Auto proposal peer recovery', 15000)
+
+  assert.equal(terminal.status, 'completed', terminal.reason)
+  assert.equal(calls.filter(call => call.phase === 'proposal' && call.kind === 'codex').length,
+    proposalCallsBeforeRecovery.filter(call => call.kind === 'codex').length)
+  assert.equal(calls.filter(call => call.phase === 'proposal' && call.kind === 'hermes').length,
+    proposalCallsBeforeRecovery.filter(call => call.kind === 'hermes').length)
+  assert.equal(calls.filter(call => call.phase === 'proposal' && call.kind === 'workbuddy').length,
+    proposalCallsBeforeRecovery.filter(call => call.kind === 'workbuddy').length + 1)
 })

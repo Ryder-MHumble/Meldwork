@@ -86,6 +86,12 @@ function v4ManualRecoveryGateInput(runId, batchId, slot) {
   }
 }
 
+function stalePermissionResumeFailure(error, resumedGate) {
+  const code = String(error?.code || error?.message || '')
+  return resumedGate?.type === 'permission'
+    && ['LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE', 'LOCAL_AGENT_SESSION_INVALID'].includes(code)
+}
+
 class LocalWorkspaceMessageSubmission {
   constructor(options) {
     this.state = options.state
@@ -915,7 +921,7 @@ class LocalWorkspaceMessageSubmission {
               if (leaseAcquired) return
               leaseAcquired = true
               slot.status = 'running'
-              slot.attempt += 1
+              if (resumedGate?.type !== 'permission') slot.attempt += 1
               slot.startedAt = Date.now()
               slot.finishedAt = null
               if (resumedGate?.gateId
@@ -1002,12 +1008,65 @@ class LocalWorkspaceMessageSubmission {
           commitState: controller.orchestration.commitState,
         })
         this.checkpointV4Manual(group, controller)
+        if (resumedGate?.agentKind === kind
+            && controller.continuation?.gateId === resumedGate.gateId
+            && this.completeHumanGateContinuation?.(
+              controller.runId, resumedGate.gateId, 'completed',
+            ) !== true && this.hasRunLedger()) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
         return { kind, index, invocation }
       } catch (error) {
+        if (stalePermissionResumeFailure(error, resumedGate)
+            && resumedGate.agentKind === kind) {
+          this.resetAgentSession(group, kind, true, controller.taskId)
+          if (slot.permission === 'workspace-write') {
+            slot.status = 'running'
+            slot.commitStatus = 'pending'
+            slot.finishedAt = null
+            controller.orchestration = this.v4Orchestration({
+              controller,
+              workflow: 'manual',
+              template: 'concurrent-batch',
+              phase: 'proposal',
+              batchId,
+              snapshotRecord,
+              slots,
+              writerKind,
+              targetKinds,
+              collaboration: controller.orchestration.collaboration,
+              commitState: controller.orchestration.commitState,
+            })
+            this.checkpointV4Manual(group, controller)
+            return { kind, index, permissionRestartRecovery: true }
+          }
+          slot.status = 'queued'
+          slot.commitStatus = 'pending'
+          slot.finishedAt = null
+          controller.orchestration = this.v4Orchestration({
+            controller,
+            workflow: 'manual',
+            template: 'concurrent-batch',
+            phase: 'proposal',
+            batchId,
+            snapshotRecord,
+            slots,
+            writerKind,
+            targetKinds,
+            collaboration: controller.orchestration.collaboration,
+            commitState: controller.orchestration.commitState,
+          })
+          this.checkpointV4Manual(group, controller)
+          return { kind, index, permissionRestartReadOnly: true }
+        }
         const preserveQueuedForRecovery = controller.signal.aborted
           && controller.stopReason === 'shutdown'
           && !leaseAcquired
           && slot.status === 'queued'
+        const preserveGateCursor = controller.signal.aborted
+          && controller.stopReason === 'shutdown'
+          && controller.continuation?.resumeKind === 'agent_slot'
+          && ['pending', 'ready', 'resuming'].includes(controller.continuation.state)
         slot.status = preserveQueuedForRecovery
           ? 'queued'
           : (controller.signal.aborted ? 'stopped' : 'failed')
@@ -1019,7 +1078,7 @@ class LocalWorkspaceMessageSubmission {
           controller,
           workflow: 'manual',
           template: 'concurrent-batch',
-          phase: controller.signal.aborted ? 'stopped' : 'proposal',
+          phase: controller.signal.aborted && !preserveGateCursor ? 'stopped' : 'proposal',
           batchId,
           snapshotRecord,
           slots,
@@ -1033,8 +1092,18 @@ class LocalWorkspaceMessageSubmission {
       }
     }))
 
+    const readOnlyRestarts = pending.filter(item => item.permissionRestartReadOnly)
+    if (readOnlyRestarts.length) {
+      return this.executeV4ManualSlots({
+        group, targetKinds, prepared, controller, threadRootId,
+        snapshot, snapshotRecord, batchId, slots, writerKind,
+        activeKinds: readOnlyRestarts.map(item => item.kind), skillHintsByKind,
+      })
+    }
+
     const failures = []
     for (const item of pending.sort((left, right) => left.index - right.index)) {
+      if (item.permissionRestartRecovery) continue
       const slot = slots[item.index]
       if (!controller.signal.aborted && slot.status === 'completed') continue
       const error = item.error || item.invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
@@ -1191,6 +1260,10 @@ class LocalWorkspaceMessageSubmission {
               agentRunId: unknownWriter.operationId,
               agentKind: unknownWriter.agentKind,
               round: orchestration.snapshot?.round || 0,
+              phase: orchestration.phase,
+              slotId: unknownWriter.slotId,
+              operationId: unknownWriter.operationId,
+              snapshotHash: orchestration.snapshotHash,
             },
           },
         )
@@ -1277,6 +1350,13 @@ class LocalWorkspaceMessageSubmission {
           resumedGate: effectiveResumedGate,
         })
       : { failures: [] }
+    if (slots.some(isV4ManualUnknownWriter)) {
+      return this.resumeV4Manual({
+        group,
+        durable: { ...durable, orchestration: controller.orchestration },
+        controller,
+      })
+    }
     if (effectiveOnlyKind && !controller.signal.aborted) {
       const peerCandidates = slots.filter(slot => (
         slot.agentKind !== effectiveOnlyKind && retryable(slot)

@@ -138,6 +138,12 @@ function abortableDelay(delayMs, signal) {
   })
 }
 
+function stalePermissionResumeFailure(error, resumedGate) {
+  const code = String(error?.code || error?.message || '')
+  return resumedGate?.type === 'permission'
+    && ['LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE', 'LOCAL_AGENT_SESSION_INVALID'].includes(code)
+}
+
 class LocalWorkspaceAutoRunner {
   constructor(options) {
     this.state = options.state
@@ -369,6 +375,7 @@ class LocalWorkspaceAutoRunner {
               agentRunId: error.runTrace.agentRunId,
               agentKind: options.agentKind || kind,
               round: controller.currentRound || 0,
+              ...(options.v4AgentSlotBinding || {}),
             },
           })
           if (gate.status !== 'approved') {
@@ -507,7 +514,14 @@ class LocalWorkspaceAutoRunner {
             attempt: phaseAttempt,
             operationId,
             idempotencyMode,
-            deferFailurePolicy: context.v4SynthesisRecovery === true,
+            deferFailurePolicy: context.v4SynthesisRecovery === true
+              || (context.v4 === true && context.resumedGate?.type === 'permission'),
+            v4AgentSlotBinding: mode === 'auto' && context.v4 === true ? {
+              phase: context.phase,
+              slotId: context.slotId,
+              operationId,
+              snapshotHash: context.snapshotHash,
+            } : null,
           }),
           removed: false,
         }
@@ -2789,10 +2803,40 @@ class LocalWorkspaceAutoRunner {
     return record
   }
 
+  completeV4ResumedAgentSlotContinuation(controller, resumedGate) {
+    if (!resumedGate?.gateId) return true
+    const current = controller.continuation
+    const exactBinding = current?.resumeKind === 'agent_slot'
+      && current.agentKind === resumedGate.agentKind
+      && current.round === resumedGate.round
+      && current.phase === resumedGate.phase
+      && current.slotId === resumedGate.slotId
+      && current.operationId === resumedGate.operationId
+      && current.snapshotHash === resumedGate.snapshotHash
+    if (current?.gateId === resumedGate.gateId) {
+      if (!exactBinding || current.gateType !== resumedGate.type) return false
+      if (current.state === 'completed') return true
+      if (!['pending', 'ready', 'resuming'].includes(current.state)) return false
+      controller.waitingGateIds.delete(resumedGate.gateId)
+      controller.continuation = {
+        ...current,
+        state: 'completed',
+        updatedAt: Math.max(Number(current.updatedAt) || 0, Date.now()),
+      }
+      return true
+    }
+    return Boolean(
+      resumedGate.type === 'permission'
+      && current?.gateType === 'permission'
+      && current.state === 'completed'
+      && exactBinding,
+    ) || !this.hasRunLedger()
+  }
+
   async runV4ProposalBatch(group, controller, threadRootId, phaseInput) {
     const {
       targetKinds, writerKind, batchId, snapshotRecord, snapshotHash,
-      phaseSlots, receiptRecords, dispatches,
+      phaseSlots, receiptRecords, dispatches, resumedGate = null,
     } = phaseInput
     const phaseReceipts = []
     const failures = []
@@ -2904,6 +2948,10 @@ class LocalWorkspaceAutoRunner {
           )),
           watermark,
         ]
+        if (resumedGate?.agentKind === slot.agentKind
+            && !this.completeV4ResumedAgentSlotContinuation(controller, resumedGate)) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
         checkpoint()
       } catch (error) {
         failSlot(slot, kind, error)
@@ -3037,6 +3085,10 @@ class LocalWorkspaceAutoRunner {
       const pendingKinds = phaseSlots.filter(candidate => (
         ['planned', 'queued', 'running', 'waiting'].includes(candidate.status)
       )).map(candidate => candidate.agentKind)
+      if (input.resumedGate
+          && !this.completeV4ResumedAgentSlotContinuation(controller, input.resumedGate)) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
       this.v4CheckpointPhase(group, controller, {
         targetKinds,
         phase: 'work',
@@ -3132,6 +3184,17 @@ class LocalWorkspaceAutoRunner {
       operationIds,
       allowWrite: group.allowWrite === true,
     })
+    const resumedGate = phaseInput.resumedGate
+    const resumedGateFor = slot => (
+      resumedGate?.phase === phase
+        && resumedGate.agentKind === slot.agentKind
+        && resumedGate.slotId === slot.slotId
+        && resumedGate.operationId === slot.operationId
+        && resumedGate.snapshotHash === snapshotHash
+        && resumedGate.round === controller.currentRound
+        ? resumedGate
+        : null
+    )
     const activeSet = new Set(activeKinds)
     const phaseReceipts = []
     const snapshotSourceMessageIds = [snapshot.messageId, ...snapshot.history.map(item => item.id)]
@@ -3188,6 +3251,7 @@ class LocalWorkspaceAutoRunner {
             parallelGraph: true,
             deferMessage: true,
             operationId: slot.operationId,
+            ...(resumedGateFor(slot) ? { resumedGate: resumedGateFor(slot) } : {}),
             skillHints: context.rootSkillsByKind.get(kind) || [],
             knowledgeBaseHints: context.rootKnowledgeBasesByKind.get(kind) || [],
           },
@@ -3202,6 +3266,7 @@ class LocalWorkspaceAutoRunner {
         phaseSlots,
         receiptRecords,
         dispatches,
+        resumedGate,
       })
     }
 
@@ -3226,6 +3291,9 @@ class LocalWorkspaceAutoRunner {
             workReceipts,
             phaseReceipts,
             workAssignments,
+            resumedGate: resumedGateFor(phaseSlots.find(candidate => (
+              candidate.agentKind === item.kind
+            ))),
           },
         )
         workReceipts = admitted.workReceipts
@@ -3267,6 +3335,7 @@ class LocalWorkspaceAutoRunner {
       )
       let preparedDelivery = null
       let item
+      const resumedSlotGate = resumedGateFor(slot)
       try {
         const invocation = await this.invokeWithUnauthorizedRecovery({
           group,
@@ -3293,6 +3362,7 @@ class LocalWorkspaceAutoRunner {
             parallelGraph: true,
             deferMessage: true,
             operationId: slot.operationId,
+            ...(resumedSlotGate ? { resumedGate: resumedSlotGate } : {}),
             v4SynthesisRecovery: phase === 'synthesis',
             onLeaseAcquired: phase === 'synthesis'
               ? (leaseState) => {
@@ -3368,7 +3438,12 @@ class LocalWorkspaceAutoRunner {
         item = { kind, invocation }
       } catch (error) {
         if (preparedDelivery) this.v4SetDeliveryStatus(group, controller, preparedDelivery, 'uncertain')
-        item = { kind, error }
+        if (stalePermissionResumeFailure(error, resumedSlotGate)) {
+          this.resetAgentSession(group, kind, true, controller.taskId)
+          item = { kind, error, permissionRestartRecovery: true }
+        } else {
+          item = { kind, error }
+        }
       }
       return phase === 'work' ? admitWork(item) : item
     }))
@@ -3398,8 +3473,9 @@ class LocalWorkspaceAutoRunner {
             const failure = error?.invocationFailure || {}
             const unknownWrite = activeAttempt.permission === 'workspace-write'
               && activeAttempt.leaseAcquired
-              && failure.outcomeCertainty !== 'not_started'
-              && failure.outcomeCertainty !== 'known_failed'
+              && (item.permissionRestartRecovery === true
+                || (failure.outcomeCertainty !== 'not_started'
+                  && failure.outcomeCertainty !== 'known_failed'))
             synthesisRecovery = this.v4UpdateSynthesisAttempt(
               synthesisRecovery,
               activeAttempt.operationId,
@@ -3553,6 +3629,13 @@ class LocalWorkspaceAutoRunner {
           pendingGate: this.v4SynthesisRecoveryGate(controller, synthesisRecovery),
         }
       }
+    }
+    const resumedSlot = phaseSlots.find(slot => (
+      slot.status === 'completed' && resumedGateFor(slot)
+    ))
+    if (resumedSlot
+        && !this.completeV4ResumedAgentSlotContinuation(controller, resumedGate)) {
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
     }
     this.v4CheckpointPhase(group, controller, {
       targetKinds,
@@ -4422,7 +4505,7 @@ class LocalWorkspaceAutoRunner {
     return 'completed'
   }
 
-  async runV4Discussion(group, controller, threadRootId, context, resume = false) {
+  async runV4Discussion(group, controller, threadRootId, context, resume = false, resumedGate = null) {
     const targetKinds = [...controller.targetKinds]
     const existing = controller.orchestration?.version === 4
       ? controller.orchestration
@@ -4661,6 +4744,7 @@ class LocalWorkspaceAutoRunner {
         deliveryReceiptRecords: options.deliveryReceiptRecords,
         coordinationText: options.coordinationText || '',
         workAssignments,
+        resumedGate,
       })
       slots = result.slots
       if (result.synthesisRecovery) synthesisRecovery = result.synthesisRecovery
@@ -4740,6 +4824,17 @@ class LocalWorkspaceAutoRunner {
     const requestSynthesisRecoveryGate = async () => {
       const binding = synthesisRecovery?.pendingGate
       if (!binding || !this.requestHumanGate) return 'failed'
+      const permissionContinuation = controller.continuation
+      if (permissionContinuation?.gateType === 'permission'
+          && permissionContinuation.resumeKind === 'agent_slot'
+          && permissionContinuation.phase === 'synthesis'
+          && permissionContinuation.agentKind === binding.writerKind
+          && permissionContinuation.slotId === binding.slotId
+          && permissionContinuation.operationId === binding.operationId) {
+        if (this.completeHumanGateContinuation?.(
+          controller.runId, permissionContinuation.gateId, 'completed',
+        ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
       slots = slots.map(slot => slot.status === 'running'
         ? { ...slot, status: 'waiting' }
         : slot)
@@ -5562,7 +5657,7 @@ class LocalWorkspaceAutoRunner {
     return controller
   }
 
-  async resume(group, durable, controller, replayedResult = null) {
+  async resume(group, durable, controller, replayedResult = null, resumedGate = null) {
     if (controller.orchestration?.version === 4 || controller.v4 === true) {
       controller.v4 = true
       const context = {
@@ -5572,7 +5667,7 @@ class LocalWorkspaceAutoRunner {
         rootMediaRequest: null,
       }
       return this.runV4Discussion(
-        group, controller, durable.threadRootId, context, true,
+        group, controller, durable.threadRootId, context, true, resumedGate,
       )
     }
     if (controller.orchestration?.version === 3) {

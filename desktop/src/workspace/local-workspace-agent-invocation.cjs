@@ -333,6 +333,14 @@ function sha256(value) {
   return createHash('sha256').update(String(value || '')).digest('hex')
 }
 
+function permissionContinuationRequestId(requestHash, binding) {
+  return sha256(canonicalJson({
+    requestHash,
+    sessionRefHash: binding.sessionRefHash,
+    sessionProvenanceHash: binding.sessionProvenanceHash,
+  }))
+}
+
 function deliveredPackedContext(packedContext, promptMode) {
   if (promptMode !== 'continuation') return packedContext
   return {
@@ -554,6 +562,17 @@ class LocalWorkspaceAgentInvocation {
           mode,
           round,
         })).digest('hex')}`
+    const v4AgentSlotBinding = context.v4 === true
+      && V4_PHASES.has(context.phase)
+      && OPERATION_ID.test(String(context.slotId || ''))
+      && SHA256.test(String(context.snapshotHash || ''))
+      ? {
+          phase: context.phase,
+          slotId: context.slotId,
+          operationId,
+          snapshotHash: context.snapshotHash,
+        }
+      : null
     const idempotencyMode = agent.idempotencyMode === 'durable' ? 'durable' : 'none'
     const resolvedSession = reviewOnly || isolated
       ? {
@@ -575,13 +594,29 @@ class LocalWorkspaceAgentInvocation {
       && context.resumedGate?.request?.source === 'connector'
       ? context.resumedGate
       : null
-    const resumedPermission = context.resumedGate?.type === 'permission'
+    let resumedPermission = context.resumedGate?.type === 'permission'
       && !resumedConnectorGate
       ? context.resumedGate
       : null
     const sessionNeedsRotation = sessionRef && shouldRotateSession(sessionMeta)
+    if (resumedPermission) {
+      const requestHash = sha256(canonicalJson(resumedPermission.request))
+      const persistedBinding = {
+        sessionRefHash: resumedPermission.sessionRefHash,
+        sessionProvenanceHash: resumedPermission.sessionProvenanceHash,
+      }
+      const binding = connectorSessionBinding(sessionRef, sessionProvenance)
+      if (resumedPermission.requestId !== permissionContinuationRequestId(
+        requestHash, persistedBinding,
+      ) || resumedPermission.requestHash !== requestHash
+          || resumedPermission.sessionProvenanceHash !== binding.sessionProvenanceHash
+          || (sessionRef && resumedPermission.sessionRefHash !== binding.sessionRefHash)) {
+        throw new Error('LOCAL_RUN_PERMISSION_REQUEST_MISMATCH')
+      }
+    }
     if (resumedPermission && (!sessionRef || sessionNeedsRotation)) {
-      throw new Error('LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE')
+      if (context.v4 === true && !allowWrite && sessionRef) resumedPermission = null
+      else throw new Error('LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE')
     }
     if (sessionNeedsRotation) {
       sessionMeta = {}
@@ -1227,7 +1262,8 @@ class LocalWorkspaceAgentInvocation {
             ? metadata.transport
             : ''
           if (transport) sessionTransport = transport
-          this.persistSessionState(key, nextSessionRef, normalizeSessionMeta({
+          sessionRef = String(nextSessionRef || '')
+          this.persistSessionState(key, sessionRef, normalizeSessionMeta({
             ...sessionMeta,
             ...provenanceMeta(sessionProvenance),
             ...(sessionTransport ? { transport: sessionTransport } : {}),
@@ -1256,6 +1292,8 @@ class LocalWorkspaceAgentInvocation {
               optionId: resumedPermission.optionId,
             }
           }
+          const requestHash = sha256(canonicalJson(request))
+          const binding = connectorSessionBinding(sessionRef, sessionProvenance)
           const decision = await waitForHumanGate(() => this.requestHumanGate({
             type: 'permission',
             runId: activeRun.runId,
@@ -1272,6 +1310,10 @@ class LocalWorkspaceAgentInvocation {
               agentRunId: harnessRun.agentRunId,
               agentKind: kind,
               round,
+              ...(v4AgentSlotBinding || {}),
+              requestId: permissionContinuationRequestId(requestHash, binding),
+              requestHash,
+              ...binding,
             },
           }))
           if (decision.gateId) resolvedGateIds.push(decision.gateId)
@@ -1345,6 +1387,7 @@ class LocalWorkspaceAgentInvocation {
               agentRunId: harnessRun.agentRunId,
               agentKind: kind,
               round,
+              ...(v4AgentSlotBinding || {}),
             },
           }))
         if (decision.gateId && resumed?.type !== 'budget') resolvedGateIds.push(decision.gateId)
@@ -1361,8 +1404,12 @@ class LocalWorkspaceAgentInvocation {
           return await runCurrentSession()
         } catch (error) {
           if (agentController.signal.aborted || !reusedSessionRef
-              || resumedPermission || resumedConnectorGate
+              || resumedConnectorGate
               || error?.message !== 'LOCAL_AGENT_SESSION_INVALID') throw error
+          if (resumedPermission) {
+            if (context.v4 !== true || allowWrite) throw error
+            resumedPermission = null
+          }
           rebuildFreshSession()
           operationStarted = true
           if (allowWrite) sideEffectsStarted = true
@@ -1436,6 +1483,7 @@ class LocalWorkspaceAgentInvocation {
             agentRunId: harnessRun.agentRunId,
             agentKind: kind,
             round,
+            ...(v4AgentSlotBinding || {}),
             requestId: request.requestId,
             requestHash,
             ...binding,

@@ -437,6 +437,120 @@ test('restart retains same-Run delivery acknowledgements without sharing a concu
   assert.equal(restarted.get(runB.runId).orchestration.deliveryState, undefined)
 })
 
+test('roundtrips V4 agent-slot invocation bindings and rejects legacy or tampered bindings', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex']
+  const orchestration = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'proposal', round: 1,
+    snapshot: discussionSnapshot(targetKinds, 1),
+  }, { targetKinds, now: 1000 })
+  const slot = orchestration.slots[0]
+  const continuation = {
+    gateId: `human-gate-${'b'.repeat(64)}`,
+    gateType: 'permission',
+    resumeKind: 'agent_slot',
+    state: 'pending',
+    agentRunId: 'agent-run-v4-bound',
+    agentKind: 'codex',
+    round: 1,
+    phase: 'proposal',
+    slotId: slot.slotId,
+    operationId: slot.operationId,
+    snapshotHash: orchestration.snapshotHash,
+    createdAt: 1000,
+    updatedAt: 1000,
+  }
+  const saved = ledger.checkpoint({
+    ...runRecord('run-v4-bound-continuation', 'group-v4-bound-continuation'),
+    mode: 'auto',
+    targetKinds,
+    status: 'waiting',
+    currentRound: 1,
+    maxRounds: 3,
+    orchestration,
+    continuation,
+  })
+
+  assert.deepEqual(saved.continuation, continuation)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).continuation,
+    continuation,
+  )
+  for (const patch of [
+    { phase: 'challenge' },
+    { slotId: 'slot-tampered-codex' },
+    { operationId: 'operation-tampered-codex' },
+    { snapshotHash: 'f'.repeat(64) },
+    { round: 2 },
+  ]) {
+    assert.throws(() => ledger.checkpoint({
+      runId: saved.runId,
+      continuation: { ...continuation, ...patch },
+    }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+    assert.deepEqual(ledger.get(saved.runId).continuation, continuation)
+  }
+  assert.throws(() => ledger.checkpoint({
+    ...runRecord('run-legacy-bound-continuation', 'group-legacy-bound-continuation'),
+    status: 'waiting',
+    continuation,
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+})
+
+test('roundtrips Manual V4 invocation bindings and rejects a coherently rewritten cursor', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex']
+  const snapshot = { ...discussionSnapshot(targetKinds, 0), round: 0 }
+  const orchestration = createOrchestrationV4({
+    workflow: 'manual', template: 'concurrent-batch', targetKinds, phase: 'proposal',
+    snapshot,
+  }, { targetKinds, now: 1000 })
+  const slot = orchestration.slots[0]
+  const continuation = {
+    gateId: `human-gate-${'c'.repeat(64)}`,
+    gateType: 'permission',
+    resumeKind: 'agent_slot',
+    state: 'pending',
+    agentRunId: 'agent-run-manual-v4-bound',
+    agentKind: 'codex',
+    round: 0,
+    phase: 'proposal',
+    slotId: slot.slotId,
+    operationId: slot.operationId,
+    snapshotHash: orchestration.snapshotHash,
+    createdAt: 1000,
+    updatedAt: 1000,
+  }
+  const saved = ledger.checkpoint({
+    ...runRecord('run-manual-v4-bound', 'group-manual-v4-bound'),
+    mode: 'manual',
+    targetKinds,
+    status: 'waiting',
+    orchestration,
+    continuation,
+  })
+
+  assert.deepEqual(saved.continuation, continuation)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).continuation,
+    continuation,
+  )
+  const rewritten = structuredClone(orchestration)
+  rewritten.batchId = `batch-${'a'.repeat(32)}`
+  const operationId = `agent-operation-${'b'.repeat(64)}`
+  rewritten.slots[0].operationId = operationId
+  rewritten.plan.assignments[0].operationId = operationId
+  if (rewritten.deliveryWatermarks[0]) {
+    rewritten.deliveryWatermarks[0].operationId = operationId
+  }
+  assert.throws(() => ledger.checkpoint({
+    runId: saved.runId,
+    orchestration: rewritten,
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+  assert.deepEqual(ledger.get(saved.runId), saved)
+})
+
 test('preserves validated V4 challenge bindings through the Run Ledger allowlist', (t) => {
   const { storagePath } = fixture(t)
   const ledger = new RunLedger({ storagePath, now: () => 1000 })
