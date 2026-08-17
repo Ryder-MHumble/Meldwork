@@ -10,7 +10,7 @@ function testFiles(directory) {
   })
 }
 
-const result = spawnSync(process.execPath, ['--test', ...testFiles('test').sort()], {
+const result = spawnSync(process.execPath, ['--test', '--test-concurrency=2', ...testFiles('test').sort()], {
   stdio: 'inherit',
 })
 
