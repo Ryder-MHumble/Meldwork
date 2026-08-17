@@ -760,11 +760,13 @@ input.on('line', (line) => {
     error => { settled = true; throw error },
   )
   t.after(async () => {
-    await adapters.shutdownAcpSessionRuntime?.()
+    const shutdown = adapters.shutdownAcpSessionRuntime?.()
     try {
+      await within(shutdown)
       await within(resultPromise.catch(() => {}))
     } catch {
       if (!settled) fs.writeFileSync(releaseFile, 'release')
+      await within(shutdown.catch(() => {}))
       await within(resultPromise.catch(() => {}))
     }
     fs.rmSync(directory, { recursive: true, force: true })
@@ -851,11 +853,13 @@ input.on('line', (line) => {
     error => { settled = true; throw error },
   )
   t.after(async () => {
-    await adapters.shutdownAcpSessionRuntime?.()
+    const shutdown = adapters.shutdownAcpSessionRuntime?.()
     try {
+      await within(shutdown)
       await within(resultPromise.catch(() => {}))
     } catch {
       if (!settled) fs.writeFileSync(releaseFile, 'release')
+      await within(shutdown.catch(() => {}))
       await within(resultPromise.catch(() => {}))
     }
     fs.rmSync(directory, { recursive: true, force: true })
@@ -871,4 +875,104 @@ input.on('line', (line) => {
   )
   assert.equal(fs.existsSync(acpSpawnedFile), false)
   assert.equal(await within(readWhenReady(gatewayStoppedFile)), 'stopped')
+})
+
+test('shutdown closes a Gateway and held health child without spawning ACP', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-gateway-health-shutdown-'))
+  const workdir = path.join(directory, 'workspace')
+  const healthStartedFile = path.join(directory, 'health-started')
+  const healthStoppedFile = path.join(directory, 'health-stopped')
+  const gatewayStoppedFile = path.join(directory, 'gateway-stopped')
+  const acpSpawnedFile = path.join(directory, 'acp-spawned')
+  const releaseFile = path.join(directory, 'release')
+  fs.mkdirSync(workdir)
+  const cli = executable(directory, 'openclaw-gateway-health-shutdown.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const args = process.argv.slice(2)
+const commandOffset = args[0] === '--no-color'
+  && args[1] === '--log-level'
+  && args[2] === 'info' ? 3 : 0
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'health') {
+  fs.writeFileSync(${JSON.stringify(healthStartedFile)}, 'started')
+  process.on('SIGTERM', () => {
+    fs.writeFileSync(${JSON.stringify(healthStoppedFile)}, 'stopped')
+    process.exit(0)
+  })
+  const finish = () => {
+    if (!fs.existsSync(${JSON.stringify(releaseFile)})) return setTimeout(finish, 10)
+    process.stdout.write(JSON.stringify({ ok: true }))
+    process.exit(0)
+  }
+  finish()
+  return
+}
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'run') {
+  process.stdout.write('[gateway] ready\\n')
+  process.on('SIGTERM', () => {
+    fs.writeFileSync(${JSON.stringify(gatewayStoppedFile)}, 'stopped')
+    process.exit(0)
+  })
+  setInterval(() => {}, 1000)
+  return
+}
+fs.writeFileSync(${JSON.stringify(acpSpawnedFile)}, 'spawned')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'gateway-health-shutdown-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+  }
+})
+`)
+  let settled = false
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    provider: {
+      OPENAI_API_KEY: 'adapter-openclaw-key',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      OPENAI_MODEL: 'adapter-model',
+    },
+  })
+  const resultPromise = adapters.runAgent(
+    { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
+    'stop during Gateway health',
+    workdir,
+    runtime,
+  ).then(
+    value => { settled = true; return value },
+    error => { settled = true; throw error },
+  )
+  t.after(async () => {
+    const shutdown = adapters.shutdownAcpSessionRuntime?.()
+    try {
+      await within(shutdown)
+      await within(resultPromise.catch(() => {}))
+    } catch {
+      if (!settled) fs.writeFileSync(releaseFile, 'release')
+      await within(shutdown.catch(() => {}))
+      await within(resultPromise.catch(() => {}))
+    }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  await within(readWhenReady(healthStartedFile))
+  await adapters.shutdownAcpSessionRuntime()
+
+  assert.equal(fs.existsSync(healthStoppedFile), true)
+  assert.equal(fs.existsSync(gatewayStoppedFile), true)
+  assert.equal(fs.existsSync(acpSpawnedFile), false)
+  await assert.rejects(
+    () => within(resultPromise),
+    error => error?.message === 'LOCAL_AGENT_EXECUTION_STOPPED',
+  )
 })
