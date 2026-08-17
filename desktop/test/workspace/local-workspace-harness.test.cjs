@@ -7,10 +7,12 @@ const { createAgentConnectorManifest } = require('../../src/agents/connectors/ag
 const { AgentConnectorRegistry } = require('../../src/agents/connectors/agent-connector-registry.cjs')
 const { AgentConnectorRuntime } = require('../../src/agents/connectors/agent-connector-runtime.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
+const { runAgent } = require('../../src/agents/cli/cli-adapters.cjs')
 const { createLegacyOutboundPayload } = require('../../src/collaboration/outbound-payload.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const { RunScheduler } = require('../../src/runs/run-scheduler.cjs')
 const { deferred, fixture } = require('../support/local-workspace-test-helpers.cjs')
+const { executable } = require('../support/cli-adapters-test-helpers.cjs')
 
 function inputConnectorRuntime(handler) {
   const manifest = createAgentConnectorManifest({
@@ -67,6 +69,39 @@ async function waitForPendingGate(workspace, timeoutMs = 3000) {
   }
   throw new Error('TEST_HUMAN_GATE_TIMEOUT')
 }
+
+test('workspace onRunEvent never publishes a credential reconstructed from sanitized answer deltas', async (t) => {
+  const { directory, options } = fixture()
+  const secret = 'provider-secret-value'
+  const cli = executable(directory, 'credential-stream.cjs', `
+process.stdout.write(JSON.stringify({
+  type: 'item.completed', item: { type: 'agent_message', text: 'provider-' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'item.completed', item: { type: 'agent_message', text: 'secret-value' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n')
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = (_agent, prompt, workdir, runOptions) => runAgent(
+    { kind: 'codex', executable: cli, name: 'Codex' },
+    prompt,
+    workdir,
+    { ...runOptions, env: { CONNECTOR_TEST_API_KEY: secret } },
+  )
+  const workspace = new LocalWorkspace(options)
+  const events = []
+  workspace.on('run-event', event => events.push(event))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({ name: 'Credential bridge', agentKinds: ['codex'], workdir: directory })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Reply', targetKinds: ['codex'] })
+
+  const publicEvents = events.filter(event => event.type === 'answer_delta')
+  assert.doesNotMatch(JSON.stringify(publicEvents), new RegExp(secret))
+  assert.doesNotMatch(publicEvents.map(event => event.delta).join(''), new RegExp(secret))
+})
+
 test('Harness streams per-Agent events, persists a compact trace, and hands evidence to the next Agent', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -572,6 +607,383 @@ test('isolated invocations use only the approved prompt and retain workflow Outc
   assert.deepEqual(restarted.get(result.message.trace.runId).agentRuns[0].context, storedContext)
 })
 
+test('V4 invocations preserve every reported Outcome ref separately from inherited audit refs', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const exactPrompt = 'Produce one typed V4 proposal.'
+  const inherited = {
+    artifactIds: [`artifact-${'1'.repeat(64)}`],
+    evidenceIds: [`evidence-${'2'.repeat(64)}`],
+    reviewerFindingIds: [`reviewer-finding-${'3'.repeat(64)}`],
+    adoptionIds: [`adoption-${'4'.repeat(64)}`],
+    workflowOutcomeRefs: [{
+      algorithm: 'sha256', hash: '5'.repeat(64), size: 5, mediaType: 'application/json',
+    }],
+  }
+  const reported = {
+    artifactIds: [`artifact-${'a'.repeat(64)}`],
+    evidenceIds: [`evidence-${'b'.repeat(64)}`],
+    findingIds: [`reviewer-finding-${'c'.repeat(64)}`],
+    reviewerFindingIds: [`reviewer-finding-${'d'.repeat(64)}`],
+    adoptionIds: [`adoption-${'e'.repeat(64)}`],
+    workflowOutcomeRefs: [{
+      algorithm: 'sha256', hash: 'f'.repeat(64), size: 7, mediaType: 'application/json',
+    }],
+  }
+  options.runAgent = async (_agent, prompt) => {
+    assert.equal(prompt, exactPrompt)
+    return {
+      text: 'Typed proposal result.',
+      sessionRef: 'codex-v4-outcome-session',
+      outcomeRefs: reported,
+      collaboration: {
+        version: 1,
+        phase: 'proposal',
+        summary: 'Proposes one bounded work package.',
+        capabilities: ['Inspect current behavior.'],
+        intendedWork: ['Produce the requested result.'],
+        deliverables: ['A typed proposal Artifact.'],
+        dependencies: [],
+      },
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 Outcome refs', agentKinds: ['codex'], workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Produce a V4 proposal.')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'manual', ['codex'], task.id)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['codex'], task.id, reservation,
+  )
+  controller.currentKind = 'codex'
+
+  const result = await workspace.invokeAgent(
+    group,
+    'codex',
+    'manual',
+    controller.signal,
+    task.id,
+    {
+      v4: true,
+      phase: 'proposal',
+      taskId: task.id,
+      sessionPolicy: 'frozen',
+      promptOverride: exactPrompt,
+      contextPackId: contextPack.contextPackId,
+      outcomeRefs: inherited,
+    },
+  )
+  await workspace.finishRun(group.id, controller, 'completed')
+
+  assert.deepEqual(result.producedOutcomeRefs, result.outcomeRefs)
+  for (const field of [
+    'findingIds', 'reviewerFindingIds', 'adoptionIds', 'workflowOutcomeRefs',
+  ]) {
+    assert.deepEqual(result.outcomeRefs[field], reported[field])
+  }
+  assert.ok(result.outcomeRefs.artifactIds.includes(reported.artifactIds[0]))
+  assert.ok(result.outcomeRefs.evidenceIds.includes(reported.evidenceIds[0]))
+  assert.ok(!result.outcomeRefs.artifactIds.includes(inherited.artifactIds[0]))
+  assert.ok(!result.outcomeRefs.evidenceIds.includes(inherited.evidenceIds[0]))
+
+  const auditRefs = result.message.trace.context.outcomeRefs
+  for (const artifactId of [...result.outcomeRefs.artifactIds, ...inherited.artifactIds]) {
+    assert.ok(auditRefs.artifactIds.includes(artifactId))
+  }
+  for (const evidenceId of [...result.outcomeRefs.evidenceIds, ...inherited.evidenceIds]) {
+    assert.ok(auditRefs.evidenceIds.includes(evidenceId))
+  }
+  assert.deepEqual(auditRefs.reviewerFindingIds, [
+    ...reported.reviewerFindingIds,
+    ...inherited.reviewerFindingIds,
+  ])
+  assert.deepEqual(auditRefs.adoptionIds, [
+    ...reported.adoptionIds,
+    ...inherited.adoptionIds,
+  ])
+  assert.deepEqual(auditRefs.workflowOutcomeRefs, [
+    ...reported.workflowOutcomeRefs,
+    ...inherited.workflowOutcomeRefs,
+  ])
+})
+
+test('V4 invocation deduplicates captured refs before enforcing the 64-ref output boundary', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const conclusion = 'Boundary result with one already captured Artifact.'
+  let workspace
+  let group
+  options.runAgent = async (agent) => {
+    const activeRun = workspace.activeRuns.get(group.id)
+    const harnessRun = activeRun?.harness?.current(agent.kind, 0)
+    assert.ok(harnessRun)
+    const captured = workspace.recordAgentOutcomes({
+      groupId: group.id,
+      runId: activeRun.runId,
+      agentRunId: harnessRun.agentRunId,
+      agentKind: agent.kind,
+      round: 0,
+      conclusion,
+    })
+    assert.equal(captured.artifactIds.length, 1)
+    const otherArtifactIds = []
+    for (let index = 1; otherArtifactIds.length < 63; index += 1) {
+      const artifactId = `artifact-${index.toString(16).padStart(64, '0')}`
+      if (artifactId !== captured.artifactIds[0]) otherArtifactIds.push(artifactId)
+    }
+    return {
+      text: conclusion,
+      sessionRef: 'codex-v4-boundary-session',
+      outcomeRefs: {
+        artifactIds: [captured.artifactIds[0], ...otherArtifactIds],
+      },
+      collaboration: {
+        version: 1,
+        phase: 'proposal',
+        summary: 'Proposes work at the supported Outcome-ref boundary.',
+        capabilities: ['Inspect current behavior.'],
+        intendedWork: ['Produce the requested result.'],
+        deliverables: ['A typed proposal Artifact.'],
+        dependencies: [],
+      },
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 Outcome boundary', agentKinds: ['codex'], workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Produce a bounded V4 proposal.')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'manual', ['codex'], task.id)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['codex'], task.id, reservation,
+  )
+  controller.currentKind = 'codex'
+
+  const result = await workspace.invokeAgent(
+    group,
+    'codex',
+    'manual',
+    controller.signal,
+    task.id,
+    {
+      v4: true,
+      phase: 'proposal',
+      taskId: task.id,
+      sessionPolicy: 'frozen',
+      promptOverride: 'Produce one boundary proposal.',
+      contextPackId: contextPack.contextPackId,
+    },
+  )
+  await workspace.finishRun(group.id, controller, 'completed')
+
+  assert.equal(result.producedOutcomeRefs.artifactIds.length, 64)
+  assert.equal(new Set(result.producedOutcomeRefs.artifactIds).size, 64)
+  assert.equal(result.producedOutcomeRefs.evidenceIds.length, 1)
+})
+
+test('V4 invocation preserves 64 reported Evidence refs through review receipt creation', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const conclusion = 'Challenge result at the reported Evidence boundary.'
+  let evidenceIds = []
+  options.runAgent = async () => ({
+    text: conclusion,
+    sessionRef: 'codex-v4-review-boundary-session',
+    outcomeRefs: { evidenceIds },
+    collaboration: {
+      version: 1,
+      phase: 'challenge',
+      verdict: 'support',
+      summary: 'Supports the reviewed Artifact at the Evidence boundary.',
+    },
+  })
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const reviewedContentRef = workspace.contentBlobStore.put(
+    'REVIEWED_ARTIFACT_AT_INVOCATION_BOUNDARY',
+    { mediaType: 'text/plain' },
+  )
+  const reviewedArtifact = workspace.outcomeStore.putArtifact({
+    type: 'document',
+    name: 'Reviewed invocation boundary Artifact',
+    producedBy: {
+      runId: 'run-reviewed-boundary',
+      agentRunId: 'agent-run-reviewed-boundary',
+      agentKind: 'hermes',
+    },
+    contentRef: reviewedContentRef,
+    contentHash: reviewedContentRef.hash,
+  })
+  evidenceIds = Array.from({ length: 64 }, (_value, index) => (
+    workspace.outcomeStore.putEvidence({
+      kind: 'observation',
+      level: 'observed',
+      subject: { type: 'artifact', artifactId: reviewedArtifact.artifactId },
+      summary: `Reported invocation Evidence ${index + 1}.`,
+      recordedBy: { kind: 'system', actorId: 'meldwork-main' },
+      refs: [
+        { type: 'artifact', artifactId: reviewedArtifact.artifactId },
+        {
+          type: 'blob',
+          contentRef: reviewedArtifact.contentRef,
+          contentHash: reviewedArtifact.contentHash,
+        },
+      ],
+    }).evidenceId
+  ))
+  const group = workspace.createGroup({
+    name: 'V4 review boundary', agentKinds: ['codex'], workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Review the candidate Artifact.')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'manual', ['codex'], task.id)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['codex'], task.id, reservation,
+  )
+  controller.currentKind = 'codex'
+
+  const result = await workspace.invokeAgent(
+    group,
+    'codex',
+    'manual',
+    controller.signal,
+    task.id,
+    {
+      v4: true,
+      phase: 'challenge',
+      taskId: task.id,
+      sessionPolicy: 'frozen',
+      promptOverride: 'Review one candidate at the Evidence boundary.',
+      contextPackId: contextPack.contextPackId,
+    },
+  )
+  const record = workspace.autoRunner.v4ReceiptForResult(
+    result,
+    'challenge',
+    'codex',
+    { slotId: 'slot-review-boundary', operationId: result.operationId, deliveryWatermark: 0 },
+    'a'.repeat(64),
+    { controller, reviewedArtifactId: reviewedArtifact.artifactId },
+  )
+  await workspace.finishRun(group.id, controller, 'completed')
+
+  assert.deepEqual(result.outcomeRefs.evidenceIds, evidenceIds)
+  assert.equal(result.outcomeRefs.artifactIds.length, 1)
+  assert.deepEqual(record.receipt.evidenceIds, evidenceIds)
+  assert.equal(record.receipt.findingIds.length, 1)
+  assert.equal(workspace.autoRunner.v4ReviewFindings(
+    { record, reviewedArtifactId: reviewedArtifact.artifactId },
+    { runId: controller.runId },
+  ).length, 1)
+})
+
+test('V4 writable prompt allocation failures remain not-started before Agent execution', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let runAgentCalls = 0
+  let leaseState = null
+  options.runAgent = async () => {
+    runAgentCalls += 1
+    return { text: 'This Agent must not start.', sessionRef: 'unexpected-session' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 prompt allocation',
+    agentKinds: ['codex'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Assemble the final delivery.')
+  const contextPack = workspace.createContextPack({
+    group,
+    taskId: task.id,
+    mode: 'manual',
+    targetKinds: ['codex'],
+    message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'manual', ['codex'], task.id)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'manual', ['codex'], task.id, reservation,
+  )
+  controller.currentKind = 'codex'
+  const operationId = 'operation-v4-prompt-allocation'
+
+  await assert.rejects(
+    workspace.invokeAgent(
+      group,
+      'codex',
+      'manual',
+      controller.signal,
+      task.id,
+      {
+        v4: true,
+        phase: 'synthesis',
+        taskId: task.id,
+        sessionPolicy: 'frozen',
+        promptOverride: 'Build the bounded synthesis prompt.',
+        contextPackId: contextPack.contextPackId,
+        permissionMode: 'workspace-write',
+        singleWriterKind: 'codex',
+        operationId,
+        onLeaseAcquired: value => { leaseState = value },
+        v4PromptBuilder: () => {
+          throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+        },
+      },
+    ),
+    (error) => {
+      assert.equal(error.message, 'LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+      assert.deepEqual(error.invocationFailure, {
+        outcomeCertainty: 'not_started',
+        sideEffectsPossible: false,
+        operationId,
+        idempotencyMode: 'none',
+      })
+      return true
+    },
+  )
+  await workspace.finishRun(group.id, controller, 'failed')
+
+  assert.equal(leaseState, null)
+  assert.equal(runAgentCalls, 0)
+})
+
 test('terminal conclusions and explicit outputs become durable observed Outcomes', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -868,7 +1280,7 @@ test('Hermes starts task-scoped persistent ACP while a frozen Skill stays prompt
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
-test('Hermes replaces a stored conversation ACP session with task-scoped persistent ACP', async (t) => {
+test('Hermes replaces an unavailable stored ACP runtime with rebuilt context', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -906,6 +1318,7 @@ test('Hermes replaces a stored conversation ACP session with task-scoped persist
   assert.equal(calls[0].runOptions.sessionRef, '')
   assert.equal(calls[0].runOptions.sessionTransport, '')
   assert.equal(calls[0].runOptions.hermesAcpAvailable, true)
+  assert.equal(typeof calls[0].runOptions.acpPersistenceKey, 'string')
   assert.match(calls[0].prompt, /Previous Hermes conclusion/)
   assert.match(calls[0].prompt, /Continue after recovering the session/)
   const snapshot = workspace.snapshot()
@@ -1219,7 +1632,7 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
       })
     }
     return {
-      text: 'Hermes continued\n[[ROUNDRELAY_CONSENSUS:continue]]',
+      text: 'Hermes continued\n[[MELDWORK_CONSENSUS:continue]]',
       sessionRef: 'hermes-session',
     }
   }
@@ -1509,10 +1922,10 @@ test('Automatic Harness conclusions stream without exposing the consensus contro
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     runOptions.onEvent({ type: 'reasoning_summary', summary: agent.kind + ' compared the proposals' })
-    runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: agent.kind + ' conclusion\n[[ROUNDRELAY_CONSENSUS:' })
+    runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: agent.kind + ' conclusion\n[[MELDWORK_CONSENSUS:' })
     runOptions.onEvent({ type: 'answer_delta', status: 'running', delta: 'agree]]' })
     return {
-      text: agent.kind + ' conclusion\n[[ROUNDRELAY_CONSENSUS:agree]]',
+      text: agent.kind + ' conclusion\n[[MELDWORK_CONSENSUS:agree]]',
       sessionRef: runOptions.sessionRef || agent.kind + '-session',
     }
   }
@@ -1536,7 +1949,7 @@ test('Automatic Harness conclusions stream without exposing the consensus contro
   const answerText = events.filter(event => event.type === 'answer_delta')
     .map(event => event.delta)
     .join('')
-  assert.doesNotMatch(answerText, /ROUNDRELAY_CONSENSUS/)
+  assert.doesNotMatch(answerText, /MELDWORK_CONSENSUS/)
   assert.equal(events.some(event => event.type === 'reasoning_summary'), true)
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent')
@@ -1740,7 +2153,7 @@ test('resuming automatic discussion checkpoints its existing Task before executi
     assert.equal(durable.status, 'running')
     assert.equal(durable.taskId, active.threadRootId)
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -2764,12 +3177,12 @@ test('session references stay opaque and OpenClaw group scopes do not collide', 
   const first = workspace.openClawSessionRef({ id: 'group-abcdefghijkl-1' })
   const second = workspace.openClawSessionRef({ id: 'group-abcdefghijkl-2' })
   assert.notEqual(first, second)
-  assert.match(first, /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
-  assert.match(second, /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
+  assert.match(first, /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/)
+  assert.match(second, /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/)
 
   const legacyGroup = { id: 'group-abcdefghijkl-1' }
   const legacyKey = workspace.sessionKey(legacyGroup.id, 'openclaw')
-  workspace.state.sessions[legacyKey] = 'agent:main:desktop-roundrelay-groupabcdefg-openclaw'
+  workspace.state.sessions[legacyKey] = 'agent:main:desktop-meldwork-groupabcdefg-openclaw'
   workspace.state.sessionMeta[legacyKey] = { turns: 4, estimatedChars: 1200 }
   assert.equal(workspace.sessionRef(legacyGroup, 'openclaw'), first)
   assert.deepEqual(workspace.state.sessionMeta[legacyKey], {

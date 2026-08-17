@@ -3,12 +3,14 @@ import { nextTick, ref, watch } from 'vue'
 export function useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId }) {
   const messageNearBottom = ref(true)
   const messageScroller = ref(null)
+  const showScrollToLatest = ref(false)
 
   function handleMessageScroll() {
     const scroller = messageScroller.value
     if (!scroller) return
     const remaining = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight
     messageNearBottom.value = remaining <= 96
+    showScrollToLatest.value = !messageNearBottom.value
   }
 
   async function scrollToLatest({ force = false } = {}) {
@@ -17,6 +19,7 @@ export function useConversationViewport({ activeMessages, liveOutputSignature, s
     if (!scroller || (!force && !messageNearBottom.value)) return
     scroller.scrollTop = scroller.scrollHeight
     messageNearBottom.value = true
+    showScrollToLatest.value = false
   }
 
   function resetMessageViewport() {
@@ -33,5 +36,6 @@ export function useConversationViewport({ activeMessages, liveOutputSignature, s
     messageScroller,
     resetMessageViewport,
     scrollToLatest,
+    showScrollToLatest,
   }
 }

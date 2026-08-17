@@ -106,6 +106,169 @@ test('workspace snapshots surface only the typed terminal persistence state', (t
   })
 })
 
+test('workspace snapshots preserve completed V4 orchestration and terminal slot statuses', (t) => {
+  const { directory, options } = workspaceFixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const controller = workspace.createRunController('manual', ['codex', 'hermes'], 'task-v4')
+  controller.groupId = 'group-v4'
+  controller.taskBound = true
+  controller.contextPackId = CONTEXT_PACK_ID
+  controller.orchestration = {
+    version: 4,
+    template: 'concurrent-batch',
+    phase: 'completed',
+    round: 4,
+    currentKinds: [],
+    plan: {
+      assignments: [
+        { agentKind: 'codex', role: 'writer' },
+        { agentKind: 'hermes', role: 'verifier' },
+      ],
+    },
+    slots: [
+      { agentKind: 'codex', phase: 'completed', status: 'completed', attempt: 1 },
+      { agentKind: 'hermes', phase: 'completed', status: 'partial', attempt: 2 },
+    ],
+    commitState: { status: 'committed' },
+  }
+  controller.terminalPersistence = {
+    state: 'failed',
+    status: 'completed',
+    attempts: 3,
+    nextRetryAt: 100,
+    code: 'LOCAL_RUN_PERSIST_FAILED',
+    privateDiagnostic: '/private/run-ledger.json',
+  }
+  workspace.activeRuns.set('group-v4', controller)
+
+  const publicRun = workspace.snapshot().runs[0]
+  assert.deepEqual(publicRun.orchestration, {
+    version: 4,
+    phase: 'completed',
+    currentKinds: [],
+    slots: [
+      { agentKind: 'codex', phase: 'completed', status: 'completed', role: 'writer', round: 4 },
+      { agentKind: 'hermes', phase: 'completed', status: 'partial', role: 'verifier', round: 4 },
+    ],
+  })
+  assert.equal(publicRun.taskId, undefined)
+  assert.equal(publicRun.contextPackId, undefined)
+  assert.equal(publicRun.contextPackState, undefined)
+  assert.equal(publicRun.terminalPersistence, undefined)
+})
+
+test('workspace snapshots expose coordination and work V4 phases through the safe projection', (t) => {
+  const { directory, options } = workspaceFixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const controller = workspace.createRunController('manual', ['codex'], 'task-v4-phases')
+  controller.groupId = 'group-v4-phases'
+  controller.taskBound = true
+  controller.orchestration = {
+    version: 4,
+    template: 'discussion',
+    phase: 'coordination',
+    currentKinds: ['codex', '../private'],
+    plan: { assignments: [{ agentKind: 'codex', role: '../private' }] },
+    slots: [{
+      agentKind: 'codex',
+      phase: 'coordination',
+      status: 'running',
+      attempt: 1,
+      executable: '/private/codex',
+      prompt: 'must not cross the bridge',
+    }],
+    coordinationPlan: { privatePrompt: 'must not cross the bridge' },
+    commitState: { status: 'pending' },
+  }
+  workspace.activeRuns.set('group-v4-phases', controller)
+
+  const coordination = workspace.snapshot().runs[0].orchestration
+  assert.equal(coordination.phase, 'coordination')
+  assert.deepEqual(coordination.currentKinds, ['codex'])
+  assert.equal(coordination.slots[0].phase, 'coordination')
+  assert.equal(coordination.slots[0].role, undefined)
+  assert.equal(coordination.slots[0].executable, undefined)
+  assert.equal(coordination.coordinationPlan, undefined)
+
+  controller.orchestration.phase = 'work'
+  controller.orchestration.slots[0].phase = 'work'
+  const work = workspace.snapshot().runs[0].orchestration
+  assert.equal(work.phase, 'work')
+  assert.equal(work.slots[0].phase, 'work')
+})
+
+test('workspace snapshots keep a safe controllable run shell for an unknown V4 orchestration phase', (t) => {
+  const { directory, options } = workspaceFixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const controller = workspace.createRunController('manual', ['codex'], 'task-v4-invalid-phase')
+  controller.groupId = 'group-v4-invalid-phase'
+  controller.taskBound = true
+  controller.orchestration = {
+    version: 4,
+    phase: 'private-phase',
+    currentKinds: ['codex'],
+    slots: [{ agentKind: 'codex', phase: 'proposal', status: 'running' }],
+    privatePrompt: 'must not cross the bridge',
+  }
+  controller.terminalPersistence = {
+    state: 'failed',
+    status: 'completed',
+    attempts: 2,
+    nextRetryAt: 100,
+    code: 'LOCAL_RUN_PERSIST_FAILED',
+  }
+  workspace.activeRuns.set(controller.groupId, controller)
+
+  const snapshot = workspace.snapshot()
+  assert.deepEqual(snapshot.runningGroupIds, ['group-v4-invalid-phase'])
+  assert.equal(snapshot.runs.length, 1)
+  const publicRun = snapshot.runs[0]
+  assert.equal(publicRun.groupId, 'group-v4-invalid-phase')
+  assert.equal(publicRun.runId, controller.runId)
+  assert.equal(publicRun.phase, 'running')
+  assert.equal(publicRun.mode, 'manual')
+  assert.deepEqual(publicRun.targetKinds, ['codex'])
+  assert.deepEqual(publicRun.orchestration, { version: 4 })
+  assert.equal(publicRun.taskId, undefined)
+  assert.equal(publicRun.contextPackId, undefined)
+  assert.equal(publicRun.contextPackState, undefined)
+  assert.equal(publicRun.terminalPersistence, undefined)
+  assert.deepEqual(Object.keys(publicRun).sort(), [
+    'agentRuns', 'budget', 'completedKinds', 'currentKind', 'currentRound', 'failedKinds',
+    'groupId', 'maxRounds', 'mode', 'orchestration', 'phase', 'progress',
+    'responseVersionRootId', 'runId', 'startedAt', 'targetKinds', 'threadRootId',
+    'unlimitedRounds', 'waitingGateIds',
+  ])
+})
+
+test('workspace snapshots drop V4 slots with unknown phase or status values', (t) => {
+  const { directory, options } = workspaceFixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const controller = workspace.createRunController('manual', ['codex', 'hermes'], 'task-v4-invalid-slots')
+  controller.groupId = 'group-v4-invalid-slots'
+  controller.taskBound = true
+  controller.orchestration = {
+    version: 4,
+    phase: 'proposal',
+    round: 2,
+    currentKinds: ['codex', 'hermes'],
+    slots: [
+      { agentKind: 'codex', phase: 'private-phase', status: 'running' },
+      { agentKind: 'hermes', phase: 'proposal', status: 'private-status' },
+      { agentKind: 'codex', phase: 'proposal', status: 'completed' },
+    ],
+  }
+  workspace.activeRuns.set(controller.groupId, controller)
+
+  assert.deepEqual(workspace.snapshot().runs[0].orchestration.slots, [
+    { agentKind: 'codex', phase: 'proposal', status: 'completed', round: 2 },
+  ])
+})
+
 test('controller construction copies targets and keeps its completion state idempotent', async () => {
   const { coordinator } = fixture()
   const targets = ['codex', 'hermes']

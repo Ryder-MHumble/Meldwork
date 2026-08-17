@@ -21,8 +21,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -32,7 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -43,10 +43,10 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
   it('enables onboarding completion as soon as Agent detection finishes on any slide', async () => {
     vi.useFakeTimers()
-    localStorage.removeItem('roundrelay-onboarding-seen-v1')
+    localStorage.removeItem('meldwork-onboarding-seen-v1')
     let finishDetection
     const pendingDetection = new Promise(resolve => { finishDetection = resolve })
     const { wrapper, state } = await mountApp(({ bridge }) => {
@@ -81,13 +81,13 @@ describe('RoundRelay workbench', () => {
 
     await wrapper.get('.onboarding-primary').trigger('click')
     expect(wrapper.find('.onboarding-dialog').exists()).toBe(false)
-    expect(localStorage.getItem('roundrelay-onboarding-seen-v1')).toBe('1')
+    expect(localStorage.getItem('meldwork-onboarding-seen-v1')).toBe('1')
     expect(wrapper.get('.sidebar').attributes()).not.toHaveProperty('inert')
     wrapper.unmount()
   })
 
   it('wraps keyboard focus within the onboarding dialog in both directions', async () => {
-    localStorage.removeItem('roundrelay-onboarding-seen-v1')
+    localStorage.removeItem('meldwork-onboarding-seen-v1')
     const { wrapper } = await mountApp()
     const dialog = wrapper.get('.onboarding-dialog')
     const focusable = dialog.findAll('button:not([disabled])')
@@ -140,7 +140,7 @@ describe('RoundRelay workbench', () => {
   })
 
   it('dismisses first-run onboarding with Escape and releases the body scroll lock', async () => {
-    localStorage.removeItem('roundrelay-onboarding-seen-v1')
+    localStorage.removeItem('meldwork-onboarding-seen-v1')
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const { wrapper } = await mountApp()
 
@@ -150,13 +150,13 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.find('.onboarding-dialog').exists()).toBe(false)
     expect(document.body.classList.contains('modal-open')).toBe(false)
-    expect(localStorage.getItem('roundrelay-onboarding-seen-v1')).toBe('1')
+    expect(localStorage.getItem('meldwork-onboarding-seen-v1')).toBe('1')
     expect(historyBack).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
 
   it('dismisses first-run onboarding with browser back without navigating twice', async () => {
-    localStorage.removeItem('roundrelay-onboarding-seen-v1')
+    localStorage.removeItem('meldwork-onboarding-seen-v1')
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => {})
     const { wrapper } = await mountApp()
 
@@ -166,20 +166,20 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.find('.onboarding-dialog').exists()).toBe(false)
     expect(document.body.classList.contains('modal-open')).toBe(false)
-    expect(localStorage.getItem('roundrelay-onboarding-seen-v1')).toBe('1')
+    expect(localStorage.getItem('meldwork-onboarding-seen-v1')).toBe('1')
     expect(historyBack).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 
   it('does not cover an existing workspace when the onboarding marker is missing', async () => {
-    localStorage.removeItem('roundrelay-onboarding-seen-v1')
+    localStorage.removeItem('meldwork-onboarding-seen-v1')
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'existing-group',
         name: 'Existing workspace',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -187,7 +187,7 @@ describe('RoundRelay workbench', () => {
     })
 
     expect(wrapper.find('.onboarding-dialog').exists()).toBe(false)
-    expect(localStorage.getItem('roundrelay-onboarding-seen-v1')).toBe('1')
+    expect(localStorage.getItem('meldwork-onboarding-seen-v1')).toBe('1')
     expect(bridge.localWorkspace.refreshAgents).toHaveBeenCalledTimes(1)
     wrapper.unmount()
   })
@@ -679,7 +679,7 @@ describe('RoundRelay workbench', () => {
           ? {
               provider: 'Local gateway',
               baseUrl: 'https://gateway.example/v1',
-              model: 'roundrelay-model',
+              model: 'meldwork-model',
               configured: true,
               encryptionAvailable: true,
             }

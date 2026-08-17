@@ -145,6 +145,26 @@ describe('App window interactions', () => {
     expect(deps.openNewGroup).toHaveBeenCalledOnce()
   })
 
+  it('blocks adjacent-conversation shortcuts while a modal is open', () => {
+    const { deps } = mountInteractions()
+    deps.snapshot.value.groups = [
+      { id: 'older', updatedAt: '2026-08-01T00:00:00.000Z' },
+      { id: 'newer', updatedAt: '2026-08-02T00:00:00.000Z' },
+    ]
+    deps.selectedGroupId.value = 'newer'
+    deps.modal.value = 'unlimited-confirm'
+
+    const nextEvent = keyboardEvent(']', { metaKey: true })
+    const previousEvent = keyboardEvent('[', { metaKey: true })
+    window.dispatchEvent(nextEvent)
+    window.dispatchEvent(previousEvent)
+
+    expect(nextEvent.defaultPrevented).toBe(true)
+    expect(previousEvent.defaultPrevented).toBe(true)
+    expect(deps.selectGroup).not.toHaveBeenCalled()
+    expect(deps.selectedGroupId.value).toBe('newer')
+  })
+
   it('keeps inside pointer targets open and dismisses them on an outside pointerdown', () => {
     const inside = document.createElement('button')
     inside.className = 'message-delete-button sidebar-delete-popover'

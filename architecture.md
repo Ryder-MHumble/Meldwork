@@ -11,26 +11,37 @@ The supported product surface is the packaged Electron application. The frontend
 | Component | Responsibility | Primary evidence |
 | --- | --- | --- |
 | Vue renderer | Agent-first multi-session UI, direct-session rename/delete, live direct-chat conclusions and inline execution summaries, group-chat result streaming with an expandable per-Agent/right-side trace panel, per-round navigation, background completion markers, first-run carousel, conversation/Skill/image/knowledge composer UI, bounded attachment-preview cache, theme/i18n, user confirmation and input collection | `frontend/src/App.vue`, `frontend/src/components/RunTracePanel.vue`, `frontend/src/composables/useAttachmentPreviews.js`, `frontend/src/desktop.js`, `frontend/src/knowledgeBaseCatalog.js` |
-| Electron preload | Exposes narrow workspace, Human Gate, Cloud control, installer/Skill, attachment, Provider, and knowledge-source methods through `window.roundrelayDesktop` only to a local `file:` document; Channel ingress has no renderer API | `desktop/src/preload.cjs` |
+| Electron preload | Exposes narrow workspace, Human Gate, Cloud control, installer/Skill, attachment, Provider, and knowledge-source methods through `window.meldworkDesktop` only to a local `file:` document; Channel ingress has no renderer API | `desktop/src/preload.cjs` |
 | Electron main | Trust boundary for IPC authorization and shutdown gating, persistence, attachment import/preview, Connector registration, Skill and knowledge-source validation, local/Cloud execution, Channel receivers, navigation, sanitized run events, operating-system notifications, Provider storage, and installer control | `desktop/src/main.cjs` |
-| Local workspace | Persists Meldwork conversations, final replies, compact evidence capsules, safe message metadata, task-scoped group Sessions, conversation-scoped direct Sessions, legacy Session migration, Agent-specific transcript deltas, Agent preferences/runtime evidence, and active run coordination | `desktop/src/local-workspace.cjs` |
-| Run Ledger | Atomically checkpoints bounded, sanitized per-run and per-Agent state for stop/crash recovery, marks nonterminal runs and Agent attempts interrupted after restart, supports idempotent reconciliation of missing terminal Agent messages, and purges records with their conversation | `desktop/src/run-ledger.cjs` |
-| Context Pack and delivery stores | Capture immutable, content-addressed Task inputs, attempt-specific approved prompts, exact outbound fingerprints, source hashes, target scope, and native Session provenance | `desktop/src/context-pack-store.cjs`, `desktop/src/local-workspace-context-packs.cjs` |
-| Outcome store | Persists typed Artifacts, Evidence, Findings, and Adoption records separately from diagnostic reasoning and tool summaries | `desktop/src/outcome-store.cjs`, `desktop/src/outcome-records.cjs` |
-| Human Gate store | Persists permission, budget, and decision requests and their terminal user/system decisions without exposing raw request payloads to the renderer | `desktop/src/human-gate-store.cjs`, `desktop/src/human-gate-coordinator.cjs` |
-| Scheduling and failure policy | Enforces run budgets, retry policy, per-Agent controls, and global/workspace scheduling | `desktop/src/run-scheduler.cjs`, `desktop/src/failure-policy.cjs` |
-| Agent Connector registry/runtime | Validates approved manifests and instances, separates CredentialRefs, records Connector/upstream versions, and reduces versioned idempotent Run Events | `desktop/src/agent-connector-manifest.cjs`, `desktop/src/agent-connector-registry.cjs`, `desktop/src/agent-connector-runtime.cjs` |
-| Attachment store | Imports validated local images, media, documents, code/configuration files, Office files, and archives into private app-owned storage, verifies metadata/checksums on read, and removes unreferenced entries | `desktop/src/attachment-store.cjs`, `desktop/src/image-dimensions.cjs` |
-| Local Skill catalog | Scans bounded known roots per Agent and returns sanitized Skill coordinates without exposing paths or contents | `desktop/src/local-skill-catalog.cjs` |
-| Local knowledge-source catalog | Detects and probes code-defined Feishu, DingTalk, and Obsidian access modes, returns sanitized readiness, validates task selections, and exposes reference-only future sources | `desktop/src/local-knowledge-base.cjs` |
-| Knowledge Connector runtime | Executes main-owned bounded search/fetch/snapshot/citation operations for explicit source selections; the renderer receives only sanitized discovery and selection records | `desktop/src/local-knowledge-connectors.cjs`, `desktop/src/knowledge-connector-filesystem.cjs` |
-| Cloud Agent runtime | Persists remote job/cursor state and idempotent input, permission, cancel, callback, polling, reconciliation, and Artifact operations without requiring a server | `desktop/src/cloud-agent-runtime.cjs`, `desktop/src/cloud-agent-operation-store.cjs` |
-| Channel ingress runtime | Verifies main-owned Connector events, rejects replay/expired delivery, maps external actors and subscriptions to local Tasks, queues a durable Inbox, and audits outbound replies | `desktop/src/channel-ingress-runtime.cjs`, `desktop/src/channel-inbox-store.cjs` |
-| Knowledge-source store | Persists only the user-selected Obsidian Vault path; Feishu and DingTalk credentials remain owned by their local CLIs | `desktop/src/knowledge-base-store.cjs` |
-| CLI adapters | Detect and invoke supported local Agent executables with per-Agent arguments and constrained child environments | `desktop/src/cli-adapters.cjs` |
-| Agent installer | Detects Agents and runs allowlisted npm packages or official installer scripts after user confirmation | `desktop/src/agent-installer.cjs` |
-| Provider store | Validates Provider metadata and encrypts the API key with Electron `safeStorage` | `desktop/src/provider-store.cjs` |
-| Managed OpenClaw runtime | Creates isolated local configuration and a restricted tool policy for OpenClaw | `desktop/src/openclaw-runtime.cjs` |
+| Local workspace | Persists Meldwork conversations, final replies, compact evidence capsules, safe message metadata, task-scoped group Sessions, conversation-scoped direct Sessions, legacy Session migration, Agent-specific transcript deltas, Agent preferences/runtime evidence, and active run coordination | `desktop/src/workspace/local-workspace.cjs` |
+| V4 orchestration | Validates frozen snapshots, phase-aware slots, typed collaboration receipts, negotiated responsibility graphs, work receipts, synthesis recovery, verification, and idempotent commits | `desktop/src/collaboration/orchestration-v4-records.cjs`, `desktop/src/workspace/local-workspace-message-submission.cjs`, `desktop/src/workspace/local-workspace-auto-runner.cjs` |
+| Run Ledger | Atomically checkpoints bounded, sanitized per-run and per-Agent state for stop/crash recovery, marks nonterminal runs and Agent attempts interrupted after restart, supports idempotent reconciliation of missing terminal Agent messages, and purges records with their conversation | `desktop/src/runs/run-ledger.cjs` |
+| Context Pack and delivery stores | Capture immutable, content-addressed Task inputs, attempt-specific approved prompts, exact outbound fingerprints, source hashes, target scope, and native Session provenance | `desktop/src/collaboration/context-pack-store.cjs`, `desktop/src/workspace/local-workspace-context-packs.cjs` |
+| Outcome store | Persists typed Artifacts, Evidence, Findings, and Adoption records separately from diagnostic reasoning and tool summaries | `desktop/src/collaboration/outcome-store.cjs`, `desktop/src/collaboration/outcome-records.cjs` |
+| Human Gate store | Persists permission, budget, and decision requests and their terminal user/system decisions without exposing raw request payloads to the renderer | `desktop/src/gates/human-gate-store.cjs`, `desktop/src/gates/human-gate-coordinator.cjs` |
+| Scheduling and failure policy | Enforces run budgets, retry policy, per-Agent controls, and global/workspace scheduling | `desktop/src/runs/run-scheduler.cjs`, `desktop/src/runs/failure-policy.cjs` |
+| Agent Connector registry/runtime | Validates approved manifests and instances, separates CredentialRefs, records Connector/upstream versions, and reduces versioned idempotent Run Events | `desktop/src/agents/connectors/agent-connector-manifest.cjs`, `desktop/src/agents/connectors/agent-connector-registry.cjs`, `desktop/src/agents/connectors/agent-connector-runtime.cjs` |
+| Attachment store | Imports validated local images, media, documents, code/configuration files, Office files, and archives into private app-owned storage, verifies metadata/checksums on read, and removes unreferenced entries | `desktop/src/attachments/attachment-store.cjs`, `desktop/src/attachments/image-dimensions.cjs` |
+| Local Skill catalog | Scans bounded known roots per Agent and returns sanitized Skill coordinates without exposing paths or contents | `desktop/src/skills/local-skill-catalog.cjs` |
+| Local knowledge-source catalog | Detects and probes code-defined Feishu, DingTalk, and Obsidian access modes, returns sanitized readiness, validates task selections, and exposes reference-only future sources | `desktop/src/knowledge/local-knowledge-base.cjs` |
+| Knowledge Connector runtime | Executes main-owned bounded search/fetch/snapshot/citation operations for explicit source selections; the renderer receives only sanitized discovery and selection records | `desktop/src/knowledge/local-knowledge-connectors.cjs`, `desktop/src/knowledge/knowledge-connector-filesystem.cjs` |
+| Cloud Agent runtime | Persists remote job/cursor state and idempotent input, permission, cancel, callback, polling, reconciliation, and Artifact operations without requiring a server | `desktop/src/agents/cloud/cloud-agent-runtime.cjs`, `desktop/src/agents/cloud/cloud-agent-operation-store.cjs` |
+| Channel ingress runtime | Verifies main-owned Connector events, rejects replay/expired delivery, maps external actors and subscriptions to local Tasks, queues a durable Inbox, and audits outbound replies | `desktop/src/channels/channel-ingress-runtime.cjs`, `desktop/src/channels/channel-inbox-store.cjs` |
+| Knowledge-source store | Persists only the user-selected Obsidian Vault path; Feishu and DingTalk credentials remain owned by their local CLIs | `desktop/src/knowledge/knowledge-base-store.cjs` |
+| CLI adapters | Detect and invoke supported local Agent executables with per-Agent arguments and constrained child environments | `desktop/src/agents/cli/cli-adapters.cjs` |
+| Agent installer | Detects Agents and runs allowlisted npm packages or official installer scripts after user confirmation | `desktop/src/agents/installer/agent-installer.cjs` |
+| Provider store | Validates Provider metadata and encrypts the API key with Electron `safeStorage` | `desktop/src/providers/provider-store.cjs` |
+| Managed OpenClaw runtime | Creates isolated local configuration and a restricted tool policy for OpenClaw | `desktop/src/agents/cli/openclaw-runtime.cjs` |
+
+## Concurrent Collaboration V4
+
+- A group with multiple selected Agents in `manual` mode runs as one concurrent batch. Harness freezes every selected Agent's task snapshot and delivery plan before any Scheduler lease, preserves all selected members, and publishes the batch in stable member order after the barrier. Direct conversations, one-Agent targets, and regeneration keep their existing execution paths.
+- Auto Discussion begins with independent parallel proposals. The selected Agents then challenge the proposal set and negotiate one responsibility graph; every participant must agree to the same normalized plan before work begins. Harness validates and schedules that graph but does not privately assign the responsibilities.
+- The agreed work packages run according to their declared dependencies and produce typed Artifact/Evidence references. Proposal, challenge, work, and verification remain read-only; when workspace writes are enabled, the agreed finalizer is the only synthesis writer. Different Agents independently verify the current candidate.
+- V4 checkpoints phase, slots, attempts, receipts, delivery watermarks, negotiated roles, candidate state, and commit progress. Read-only work can recover automatically at supported boundaries; an unknown writable outcome requires a Human Gate before retry. Stop and cancellation reject late results.
+- V1 manual, V2 Auto Discussion, and V3 Task Graph records remain on their legacy parsers and executors. Renderer snapshots expose only validated public phase, participant, role, progress, and Gate state, never prompts, executable paths, native Session references, or internal snapshot contents.
+
+Automatic participant selection from a larger roster, production remote Agents, enterprise governance, and an Outcome Network are outside the V1.0.2 release boundary.
 
 ## Trust Boundaries
 
@@ -45,13 +56,13 @@ The supported product surface is the packaged Electron application. The frontend
 
 | Data | Location | Protection |
 | --- | --- | --- |
-| Meldwork conversations, messages, native session-reference mappings, Agent preferences/runtime evidence | Electron user data: `roundrelay-workspace.json` | Local JSON written through main; group native references are keyed by Task and Agent, direct references by conversation and Agent, all remain main-only, and snapshots remove executable paths |
-| Bounded run checkpoints | Electron user data: `roundrelay-run-ledger.json` | Atomic private writes; `0600` file, with new parent directories created as `0700`; at most 64 sanitized runs with bounded Agent output/events/source IDs; no raw commands, paths, credentials, or native session references |
-| Immutable Context Packs, delivery records, content blobs, typed outcomes, and Human Gates | Electron user data under `roundrelay-private/` | Content-addressed or atomically written main-only records; renderer snapshots expose only bounded IDs, provenance summaries, budgets, and pending Gate choices |
-| Cloud operations and Channel Inbox | Electron user data under `roundrelay-private/` | Private `0600` stores keep opaque remote references, idempotency state, signed-event-derived Task data, delivery cursors, Task mappings, and outbound audit records; raw signatures, headers, credentials, and complete IM history are not exposed to the renderer |
+| Meldwork conversations, messages, native session-reference mappings, Agent preferences/runtime evidence | Electron user data: `meldwork-workspace.json` | Local JSON written through main; group native references are keyed by Task and Agent, direct references by conversation and Agent, all remain main-only, and snapshots remove executable paths |
+| Bounded run checkpoints | Electron user data: `meldwork-run-ledger.json` | Atomic private writes; `0600` file, with new parent directories created as `0700`; at most 64 sanitized runs with bounded Agent output/events/source IDs; no raw commands, paths, credentials, or native session references |
+| Immutable Context Packs, delivery records, content blobs, typed outcomes, and Human Gates | Electron user data under `meldwork-private/` | Content-addressed or atomically written main-only records; renderer snapshots expose only bounded IDs, provenance summaries, budgets, and pending Gate choices |
+| Cloud operations and Channel Inbox | Electron user data under `meldwork-private/` | Private `0600` stores keep opaque remote references, idempotency state, signed-event-derived Task data, delivery cursors, Task mappings, and outbound audit records; raw signatures, headers, credentials, and complete IM history are not exposed to the renderer |
 | Imported attachments | Electron user data under `attachments/` | App-owned copy; `0700` directories, `0600` files, type/MIME/size validation, image-dimension checks where applicable, metadata checksum, ID-only renderer access |
-| Provider metadata and encrypted key | Electron user data: `roundrelay-provider.json` | API key encrypted with `safeStorage`; file written atomically with mode `0600` |
-| Knowledge-source preference | Electron user data: `roundrelay-knowledge-base.json` | Stores the selected absolute Obsidian Vault path only; written atomically as a private file |
+| Provider metadata and encrypted key | Electron user data: `meldwork-provider.json` | API key encrypted with `safeStorage`; file written atomically with mode `0600` |
+| Knowledge-source preference | Electron user data: `meldwork-knowledge-base.json` | Stores the selected absolute Obsidian Vault path only; written atomically as a private file |
 | Managed OpenClaw state/config | Electron user data under `openclaw-managed/` | Per-scope directories, mode `0700`; config mode `0600`; API key passed by child environment |
 | Theme, locale, and onboarding completion | Renderer `localStorage` | Non-secret UI preferences |
 
@@ -75,15 +86,15 @@ There is no Meldwork-hosted remote data store or application account namespace. 
 
 ## Known Risks And Assumptions
 
-- Installer recipes use mutable upstream packages or scripts and currently do not verify a pinned digest or signature (`desktop/src/agent-installer.cjs`).
-- Conversation history is local but not application-encrypted (`desktop/src/local-workspace.cjs`).
-- Sanitized Run Ledger checkpoints are local and private but not application-encrypted. The store assumes one Electron main-process writer and recovers only the last persisted bounded checkpoint, not every in-memory event (`desktop/src/run-ledger.cjs`).
+- Installer recipes use mutable upstream packages or scripts and currently do not verify a pinned digest or signature (`desktop/src/agents/installer/agent-installer.cjs`).
+- Conversation history is local but not application-encrypted (`desktop/src/workspace/local-workspace.cjs`).
+- Sanitized Run Ledger checkpoints are local and private but not application-encrypted. The store assumes one Electron main-process writer and recovers only the last persisted bounded checkpoint, not every in-memory event (`desktop/src/runs/run-ledger.cjs`).
 - Conversation deletion is privacy-first across two local JSON stores rather than transactional: Ledger records are removed first; if the workspace write then fails, in-memory conversation state is rolled back and remains retryable, but the deleted trace checkpoints are not recreated.
-- Imported attachment copies are private and integrity-checked but not application-encrypted (`desktop/src/attachment-store.cjs`).
-- Local Skill files are untrusted prompt input. Main prevents renderer-supplied paths and cross-Agent selection, but a selected Skill can still influence Agent behavior (`desktop/src/local-skill-catalog.cjs`, `desktop/src/local-workspace.cjs`).
+- Imported attachment copies are private and integrity-checked but not application-encrypted (`desktop/src/attachments/attachment-store.cjs`).
+- Local Skill files are untrusted prompt input. Main prevents renderer-supplied paths and cross-Agent selection, but a selected Skill can still influence Agent behavior (`desktop/src/skills/local-skill-catalog.cjs`, `desktop/src/workspace/local-workspace.cjs`).
 - Obsidian selections use a main-owned read-only Connector with bounded retrieval, immutable snapshots, and citation hash verification. Generic Feishu and DingTalk access remains CLI-owned and prompt-mediated; their authentication and document permissions are not controlled by Meldwork. Notion, Confluence, Google Drive, and SharePoint are reference-only planned sources and are not active Connectors.
-- Native image support is currently limited to Codex, Hermes, and OpenCode, with different per-run limits; mixed groups fail before execution when they cannot receive equal image context (`desktop/src/cli-adapters.cjs`).
-- Read-only enforcement is owned by the Obsidian Connector for captured selections. Agent workspace and CLI-mediated remote access still depends partly on each upstream CLI honoring its permission flags; Meldwork adds per-CLI hardening where available (`desktop/src/cli-adapters.cjs`).
+- Native image support is currently limited to Codex, Hermes, and OpenCode, with different per-run limits; mixed groups fail before execution when they cannot receive equal image context (`desktop/src/agents/cli/cli-adapters.cjs`).
+- Read-only enforcement is owned by the Obsidian Connector for captured selections. Agent workspace and CLI-mediated remote access still depends partly on each upstream CLI honoring its permission flags; Meldwork adds per-CLI hardening where available (`desktop/src/agents/cli/cli-adapters.cjs`).
 - Provider requests and native Agent authentication are external dependencies; Meldwork cannot guarantee their availability or data handling.
 - Agent/Cloud/Channel Connector contracts validate provenance, scope, and idempotency, but the external implementation must honor its CredentialRef, outbound destination, cancellation, and signature-verification obligations. The production build registers no Cloud or Channel Connector by default.
 - macOS packaging uses ad-hoc signing for local validation, not a notarized public release (`desktop/scripts/after-pack.cjs`).
@@ -96,10 +107,10 @@ There is no Meldwork-hosted remote data store or application account namespace. 
 
 ## Related Documents
 
-- [Flows](flows.md)
-- [Permissions](permissions.md)
-- [Variables And Secrets](variables.md)
-- [Test Coverage](tests.md)
-- [Automation](automation.md)
-- [Public MVP Release Checklist](public-mvp-release.md)
-- [macOS Signing And Notarization](macos-signing.md)
+- [Flows](docs/flows.md)
+- [Permissions](docs/permissions.md)
+- [Variables And Secrets](docs/variables.md)
+- [Test Coverage](docs/tests.md)
+- [Automation](docs/automation.md)
+- [Public MVP Release Checklist](docs/public-mvp-release.md)
+- [macOS Signing And Notarization](docs/macos-signing.md)

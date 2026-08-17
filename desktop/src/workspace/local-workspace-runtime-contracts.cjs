@@ -7,8 +7,8 @@ const {
   isSupportedAgentKind,
 } = require('./local-workspace-contracts.cjs')
 
-const AUTO_CONSENSUS_MARKER = /\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\]/gi
-const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[ROUNDRELAY_CONSENSUS:(agree|continue)\]\][ \t]*$/i
+const AUTO_CONSENSUS_MARKER = /\[\[MELDWORK_CONSENSUS:(agree|continue)\]\]/gi
+const AUTO_FINAL_CONSENSUS_MARKER = /(?:^|\r?\n)[ \t]*\[\[MELDWORK_CONSENSUS:(agree|continue)\]\][ \t]*$/i
 const DEFAULT_RUN_SILENCE_WARNING_MS = 20 * 1000
 const DEFAULT_RUN_AGENT_TIMEOUT_MS = 15 * 60 * 1000
 const DEFAULT_RUN_ABORT_GRACE_MS = 2500

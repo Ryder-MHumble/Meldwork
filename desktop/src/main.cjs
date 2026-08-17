@@ -70,6 +70,7 @@ const {
 } = require('./knowledge/local-knowledge-base.cjs')
 const { LocalKnowledgeConnectors } = require('./knowledge/local-knowledge-connectors.cjs')
 const { ProviderStore } = require('./providers/provider-store.cjs')
+const { migrateLegacyProductData } = require('./product-data-migration.cjs')
 const {
   EXTERNAL_PROVIDER_KINDS,
   providerAgentKind,
@@ -282,7 +283,7 @@ function mediaFallbackProviders(env = process.env) {
 }
 
 function workspaceStoragePath(userData = app.getPath('userData')) {
-  return path.join(userData, 'roundrelay-workspace.json')
+  return path.join(userData, 'meldwork-workspace.json')
 }
 
 function notifyWorkspaceChanged(snapshot) {
@@ -471,7 +472,7 @@ async function requestLocalSkillTrust({ binding, coordinates, manifest }) {
 
 function createWorkspace() {
   cloudAgentStartRetry?.cancel()
-  const privateRoot = path.join(app.getPath('userData'), 'roundrelay-private')
+  const privateRoot = path.join(app.getPath('userData'), 'meldwork-private')
   const contentBlobStore = new ContentBlobStore({
     rootPath: path.join(privateRoot, 'content-blobs'),
   })
@@ -511,7 +512,7 @@ function createWorkspace() {
     contentBlobStore,
   })
   const runLedger = new RunLedger({
-    storagePath: path.join(app.getPath('userData'), 'roundrelay-run-ledger.json'),
+    storagePath: path.join(app.getPath('userData'), 'meldwork-run-ledger.json'),
   })
   const runtime = new CloudAgentRuntime({
     runLedger,
@@ -782,17 +783,27 @@ if (!hasSingleInstanceLock) {
   app.on('second-instance', activateMainWindow)
 
   app.whenReady().then(async () => {
+    try {
+      migrateLegacyProductData(app.getPath('userData'))
+    } catch (error) {
+      console.error(
+        'MELDWORK_PRODUCT_DATA_MIGRATION_ABORTED',
+        error?.diagnostic || { status: 'failed', code: String(error?.code || '') },
+      )
+      app.quit()
+      return
+    }
     const attachmentReferences = persistedAttachmentReferences(workspaceStoragePath())
     customAgentStore = new CustomAgentStore({
-      storagePath: path.join(app.getPath('userData'), 'roundrelay-custom-agents.json'),
+      storagePath: path.join(app.getPath('userData'), 'meldwork-custom-agents.json'),
     })
     providerStore = new ProviderStore({
-      storagePath: path.join(app.getPath('userData'), 'roundrelay-provider.json'),
+      storagePath: path.join(app.getPath('userData'), 'meldwork-provider.json'),
       safeStorage: lazySafeStorage,
       allowedKinds: [...LOCAL_AGENT_KINDS],
     })
     knowledgeBaseStore = new KnowledgeBaseStore({
-      storagePath: path.join(app.getPath('userData'), 'roundrelay-knowledge-base.json'),
+      storagePath: path.join(app.getPath('userData'), 'meldwork-knowledge-base.json'),
     })
     try {
       attachmentStore = new AttachmentStore({

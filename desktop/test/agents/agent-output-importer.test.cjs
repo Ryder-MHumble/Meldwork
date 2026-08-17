@@ -27,7 +27,7 @@ const MP4 = Buffer.concat([Buffer.alloc(4), Buffer.from('ftypisom'), Buffer.allo
 const READ_SIZE = 128 * 1024
 
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-output-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-output-'))
   const workdir = path.join(directory, 'workspace')
   const output = path.join(workdir, '.meldwork-output')
   fs.mkdirSync(output, { recursive: true })

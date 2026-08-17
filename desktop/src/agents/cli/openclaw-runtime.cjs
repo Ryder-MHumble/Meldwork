@@ -4,7 +4,7 @@ const path = require('node:path')
 
 const { atomicWritePrivateFile } = require('../../security/private-file.cjs')
 
-const MANAGED_OPENCLAW_PROVIDER_ID = 'roundrelay-desktop'
+const MANAGED_OPENCLAW_PROVIDER_ID = 'meldwork-desktop'
 const READ_ONLY_TOOLS = [
   'read', 'web_search', 'web_fetch', 'memory_search', 'memory_get', 'session_status',
 ]
@@ -36,8 +36,8 @@ const OPENCLAW_RUNTIME_PATH_ENV_KEYS = Object.freeze([
   'OPENCLAW_WORKSPACE_DIR',
 ])
 const OPENCLAW_RUNTIME_CREDENTIAL_KEYS = new Set([
-  'ROUNDRELAY_OPENCLAW_API_KEY',
-  'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
+  'MELDWORK_OPENCLAW_API_KEY',
+  'MELDWORK_OPENCLAW_NATIVE_API_KEY',
   'OPENCLAW_GATEWAY_TOKEN',
 ])
 const issuedOpenClawRuntimeGuards = new WeakSet()
@@ -424,7 +424,7 @@ function managedOpenClawOptions({
         [MANAGED_OPENCLAW_PROVIDER_ID]: {
           baseUrl: normalized.baseUrl,
           apiKey: {
-            source: 'env', provider: 'default', id: 'ROUNDRELAY_OPENCLAW_API_KEY',
+            source: 'env', provider: 'default', id: 'MELDWORK_OPENCLAW_API_KEY',
           },
           api: 'openai-completions',
           models: [{ id: normalized.model, name: normalized.model, input: ['text'] }],
@@ -442,7 +442,7 @@ function managedOpenClawOptions({
       controlUi: { enabled: false },
     },
   }
-  const credentialKey = 'ROUNDRELAY_OPENCLAW_API_KEY'
+  const credentialKey = 'MELDWORK_OPENCLAW_API_KEY'
   const openClawRuntimeGuard = writeRuntimeConfig(runtime, config, {
     [credentialKey]: normalized.apiKey,
     [gatewayCredentialKey]: gatewayToken,
@@ -514,7 +514,7 @@ function nativeOpenClawOptions({
         [providerId]: {
           baseUrl: baseUrl.replace(/\/+$/, ''),
           apiKey: {
-            source: 'env', provider: 'default', id: 'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
+            source: 'env', provider: 'default', id: 'MELDWORK_OPENCLAW_NATIVE_API_KEY',
           },
           api,
           models: [model],
@@ -532,7 +532,7 @@ function nativeOpenClawOptions({
       controlUi: { enabled: false },
     },
   }
-  const credentialKey = 'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY'
+  const credentialKey = 'MELDWORK_OPENCLAW_NATIVE_API_KEY'
   const openClawRuntimeGuard = writeRuntimeConfig(
     runtimePathsResult,
     config,

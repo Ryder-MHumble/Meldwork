@@ -1,10 +1,11 @@
 import { computed, ref, watch } from 'vue'
 import { publicAsset } from '../catalog.js'
 import { locale, setLocale } from '../i18n.js'
+import { readProductPreference, writeProductPreference } from '../product-preferences.js'
 
 function initialTheme() {
   try {
-    const saved = localStorage.getItem('roundrelay-theme')
+    const saved = readProductPreference('theme')
     if (saved === 'light' || saved === 'dark') return saved
   } catch { /* noop */ }
   return typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
@@ -24,7 +25,7 @@ export function useAppPreferences() {
     document.documentElement.dataset.theme = value
     document.documentElement.style.colorScheme = value
     document.querySelector('meta[name="theme-color"]')?.setAttribute('content', value === 'dark' ? '#0e171d' : '#f3f6f8')
-    try { localStorage.setItem('roundrelay-theme', value) } catch { /* noop */ }
+    try { writeProductPreference('theme', value) } catch { /* noop */ }
   }
 
   function toggleTheme() {

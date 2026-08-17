@@ -531,12 +531,12 @@ test('group Tasks reuse native Sessions only within the same automatic Task', as
     await runOptions.onOutboundPayload(outboundPayload(prompt))
     const sessionRef = runOptions.sessionRef || `${agent.kind}-task-session`
     await runOptions.onSessionRef(sessionRef, { transport: 'legacy' })
-    const automatic = prompt.includes('ROUNDRELAY_CONSENSUS')
+    const automatic = prompt.includes('MELDWORK_CONSENSUS')
     const kindAttempts = calls.filter(call => call.agent.kind === agent.kind).length
     const consensus = kindAttempts === 1 ? 'continue' : 'agree'
     return {
       text: automatic
-        ? `Automatic result ${calls.length}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`
+        ? `Automatic result ${calls.length}\n[[MELDWORK_CONSENSUS:${consensus}]]`
         : 'Fresh Task result',
       sessionRef,
     }

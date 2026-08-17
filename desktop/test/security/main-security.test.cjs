@@ -23,7 +23,7 @@ const {
 } = require('../support/main-security-test-harness.cjs')
 
 test('local desktop authorization requires the current main frame and exact frontend file', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-main-security-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-main-security-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { main } = loadMain(directory)
   const frontend = path.join(directory, 'frontend', 'index.html')
@@ -44,7 +44,7 @@ test('local desktop authorization requires the current main frame and exact fron
 })
 
 test('a second desktop process exits before ready initialization', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-single-instance-denied-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-single-instance-denied-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, { singleInstanceLock: false })
 
@@ -55,8 +55,41 @@ test('a second desktop process exits before ready initialization', (t) => {
   assert.equal(harness.windows.length, 0)
 })
 
+test('product data migration failure stops ready initialization before stores or windows', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-migration-startup-stop-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const diagnostic = { status: 'recovery-required', failedStep: 3, rollbackFailures: [{}] }
+  const reported = []
+  const originalError = console.error
+  console.error = (...args) => { reported.push(args) }
+  t.after(() => { console.error = originalError })
+  const { harness } = loadMain(directory, {
+    moduleMocks: {
+      './product-data-migration.cjs': {
+        migrateLegacyProductData: () => {
+          throw Object.assign(new Error('MELDWORK_PRODUCT_DATA_MIGRATION_RECOVERY_REQUIRED'), {
+            code: 'MELDWORK_PRODUCT_DATA_MIGRATION_RECOVERY_REQUIRED',
+            diagnostic,
+          })
+        },
+      },
+    },
+  })
+
+  await harness.ready()
+
+  assert.equal(harness.quitCount, 1)
+  assert.equal(harness.workspaceInstances.length, 0)
+  assert.equal(harness.providerInstances.length, 0)
+  assert.equal(harness.knowledgeBaseStoreInstances.length, 0)
+  assert.equal(harness.windows.length, 0)
+  assert.deepEqual(reported, [[
+    'MELDWORK_PRODUCT_DATA_MIGRATION_ABORTED', diagnostic,
+  ]])
+})
+
 test('controlled media protocol serves attachment bytes with range support and rejects invalid ids', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-protocol-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-media-protocol-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const mediaBytes = Buffer.from('ID3-audio-payload')
   const { harness } = loadMain(directory, {
@@ -91,7 +124,7 @@ test('controlled media protocol serves attachment bytes with range support and r
 })
 
 test('every local IPC handler rejects an untrusted renderer before dispatch', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ipc-security-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-ipc-security-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -115,7 +148,7 @@ test('every local IPC handler rejects an untrusted renderer before dispatch', as
 })
 
 test('ready activates one fixed local workspace and loads the bundled frontend', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ready-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-ready-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
 
@@ -124,11 +157,11 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.equal(harness.workspaceInstances.length, 1)
   assert.equal(
     harness.workspaceInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-workspace.json'),
+    path.join(directory, 'meldwork-workspace.json'),
   )
   assert.equal(
     harness.workspaceInstances[0].input.runLedger.storagePath,
-    path.join(directory, 'roundrelay-run-ledger.json'),
+    path.join(directory, 'meldwork-run-ledger.json'),
   )
   assert.match(
     harness.workspaceInstances[0].input.agentFitMatrix.matrixId,
@@ -136,15 +169,15 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   )
   assert.equal(harness.workspaceInstances[0].refreshCount, 0)
   assert.equal(harness.providerInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-provider.json'))
+    path.join(directory, 'meldwork-provider.json'))
   assert.equal(harness.customAgentStoreInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-custom-agents.json'))
+    path.join(directory, 'meldwork-custom-agents.json'))
   assert.deepEqual(
     [...harness.providerInstances[0].input.allowedKinds].sort(),
     [...PROVIDER_AGENT_KINDS].sort(),
   )
   assert.equal(harness.knowledgeBaseStoreInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-knowledge-base.json'))
+    path.join(directory, 'meldwork-knowledge-base.json'))
   assert.equal(harness.attachmentInstances[0].input.rootPath,
     path.join(directory, 'attachments'))
   assert.equal(harness.skillCatalogInstances[0].input.home,
@@ -171,7 +204,7 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   )
   assert.equal(
     harness.skillTrustStoreInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-private', 'skill-trust-audit.jsonl'),
+    path.join(directory, 'meldwork-private', 'skill-trust-audit.jsonl'),
   )
   assert.equal(typeof harness.skillSnapshotSelectionInstances[0].input.requestTrust, 'function')
   const selectedSkills = [{
@@ -202,7 +235,7 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.deepEqual(harness.cloudAgentRuntimeInstances[0].input.connectors, [])
   assert.equal(harness.cloudAgentRuntimeInstances[0].startCount, 1)
   assert.equal(harness.cloudAgentOperationStoreInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-private', 'cloud-agent-operations.json'))
+    path.join(directory, 'meldwork-private', 'cloud-agent-operations.json'))
   assert.equal(harness.channelIngressRuntimeInstances.length, 1)
   assert.equal(
     harness.channelIngressRuntimeInstances[0].input.store,
@@ -212,7 +245,7 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
   assert.equal(harness.channelIngressRuntimeInstances[0].startCount, 1)
   assert.equal(harness.channelIngressRuntimeInstances[0].status().receiverCount, 0)
   assert.equal(harness.channelInboxStoreInstances[0].input.storagePath,
-    path.join(directory, 'roundrelay-private', 'channel-inbox.json'))
+    path.join(directory, 'meldwork-private', 'channel-inbox.json'))
   assert.deepEqual(harness.attachmentInstances[0].cleanupCalls, [[]])
   assert.equal(harness.windows.length, 1)
   assert.equal(harness.windows[0].input.icon?.isEmpty?.(), false)
@@ -250,7 +283,7 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
 })
 
 test('an explicitly installed Agent Connector is available through generic catalog metadata and main runtime', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-main-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-connector-main-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const manifestDirectory = path.join(directory, 'agent-connectors', 'manifests')
   fs.mkdirSync(manifestDirectory, { recursive: true })
@@ -312,7 +345,7 @@ test('an explicitly installed Agent Connector is available through generic catal
 })
 
 test('Agent Connector IPC persists isolated accounts without returning CredentialRefs or secrets', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-accounts-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-connector-accounts-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const manifestDirectory = path.join(directory, 'agent-connectors', 'manifests')
   fs.mkdirSync(manifestDirectory, { recursive: true })
@@ -380,7 +413,7 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
     'utf8',
   )
   const credentialFile = fs.readFileSync(
-    path.join(directory, 'roundrelay-private', 'agent-connector-credentials.json'),
+    path.join(directory, 'meldwork-private', 'agent-connector-credentials.json'),
     'utf8',
   )
   assert.match(instanceFile, /credential-ref:/)
@@ -419,7 +452,7 @@ test('Agent Connector IPC persists isolated accounts without returning Credentia
 })
 
 test('Agent Connector package IPC keeps paths private and requires native approval', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-connector-package-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-connector-package-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const packagePath = path.join(directory, 'local-echo.connector.json')
   fs.writeFileSync(
@@ -471,7 +504,7 @@ test('Agent Connector package IPC keeps paths private and requires native approv
 })
 
 test('unsigned Skill trust uses native approval and exposes only review and revocation', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-skill-trust-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-skill-trust-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const bindingId = `skill-trust-binding-${'a'.repeat(64)}`
   const record = {
@@ -529,7 +562,7 @@ test('unsigned Skill trust uses native approval and exposes only review and revo
 })
 
 test('Custom Agent IPC keeps executable paths private and refreshes the local catalog', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-custom-agent-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-custom-agent-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const selectedExecutable = '/private/tools/review-agent'
   const { harness } = loadMain(directory, {
@@ -609,7 +642,7 @@ test('Custom Agent IPC keeps executable paths private and refreshes the local ca
 })
 
 test('Custom Agent deletion is blocked while a local conversation references it', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-custom-agent-delete-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-custom-agent-delete-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kind = 'custom-0123456789abcdef'
   const { harness } = loadMain(directory, {
@@ -646,7 +679,7 @@ test('Custom Agent deletion is blocked while a local conversation references it'
 })
 
 test('a second desktop launch restores and focuses the existing window', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-single-instance-focus-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-single-instance-focus-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     windowFocused: false,
@@ -663,7 +696,7 @@ test('a second desktop launch restores and focuses the existing window', async (
 })
 
 test('application activation cannot recreate a window after shutdown starts', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-shutdown-activate-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-shutdown-activate-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -679,7 +712,7 @@ test('application activation cannot recreate a window after shutdown starts', as
 })
 
 test('quit cleanup has a strict deadline when a runtime does not settle', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-quit-timeout-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-quit-timeout-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { main } = loadMain(directory)
 
@@ -692,7 +725,7 @@ test('quit cleanup has a strict deadline when a runtime does not settle', async 
 })
 
 test('closing the app window does not stop an active main-process Channel receiver', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-channel-background-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-channel-background-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, { channelReceiverCount: 1 })
   await harness.ready()
@@ -706,7 +739,7 @@ test('closing the app window does not stop an active main-process Channel receiv
 })
 
 test('run completion uses sanitized renderer events and a localized background notification', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-notification-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-notification-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, { locale: 'zh-CN', windowFocused: false })
   await harness.ready()
@@ -769,7 +802,7 @@ test('run completion uses sanitized renderer events and a localized background n
 })
 
 test('runtime trace IPC forwards only sanitized allowlisted fields', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-run-event-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-run-event-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -825,7 +858,7 @@ test('runtime trace IPC forwards only sanitized allowlisted fields', async (t) =
 })
 
 test('a completion notification restores a closed window and opens its local group', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-notification-restore-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-notification-restore-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, { deferRestoredWindowLoad: true })
   await harness.ready()
@@ -864,7 +897,7 @@ test('a completion notification restores a closed window and opens its local gro
 })
 
 test('attachment storage initialization failure does not block text chat startup', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachment-fallback-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-attachment-fallback-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     attachmentInitError: new Error('sensitive local storage path'),
@@ -896,7 +929,7 @@ test('attachment storage initialization failure does not block text chat startup
 })
 
 test('workspace run IPC requires an explicit non-empty Agent target contract', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-target-contract-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-target-contract-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -917,8 +950,45 @@ test('workspace run IPC requires an explicit non-empty Agent target contract', a
   ))
 })
 
+test('workspace run IPC normalizes one strict collaboration protocol', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-protocol-contract-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const send = harness.ipcHandlers.get('local-workspace:send')
+  const workspace = harness.workspaceInstances[0]
+  const request = { groupId: 'group-1', text: 'Do the work', targetKinds: ['codex', 'hermes'] }
+
+  for (const selectors of [
+    { protocol: 'v4 ' },
+    { protocol: 'unknown', harnessVersion: 4 },
+    { protocol: 'legacy', harnessVersion: 4 },
+    { harnessVersion: 5 },
+    { collaborationVersion: 2 },
+    { v4: 'true' },
+  ]) {
+    await assert.rejects(
+      async () => send(harness.event(), { ...request, ...selectors }),
+      { message: 'LOCAL_MESSAGE_PROTOCOL_INVALID' },
+    )
+  }
+  assert.deepEqual(workspace.sendMessageCalls, [])
+
+  for (const [selectors, protocol] of [
+    [{}, 'legacy'],
+    [{ protocol: 'legacy' }, 'legacy'],
+    [{ protocol: 'v4' }, 'v4'],
+    [{ harnessVersion: 4 }, 'v4'],
+    [{ collaborationVersion: 4, v4: true }, 'v4'],
+    [{ harnessVersion: 3, collaborationVersion: 3, v4: false }, 'legacy'],
+  ]) {
+    await send(harness.event(), { ...request, ...selectors })
+    assert.deepEqual(workspace.sendMessageCalls.at(-1), { ...request, protocol })
+  }
+})
+
 test('workspace stop IPC forwards only a validated group and run pair', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-stop-contract-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-stop-contract-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -939,7 +1009,7 @@ test('workspace stop IPC forwards only a validated group and run pair', async (t
 })
 
 test('workspace Agent control IPC accepts only a bound active Agent request', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-control-contract-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-control-contract-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -973,7 +1043,7 @@ test('workspace Agent control IPC accepts only a bound active Agent request', as
 })
 
 test('workspace Human Gate IPC derives decisions from the persisted option', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-human-gate-contract-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-human-gate-contract-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -1037,7 +1107,7 @@ test('workspace Human Gate IPC derives decisions from the persisted option', asy
 })
 
 test('Cloud Agent IPC exposes only validated continuation and cancel actions', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cloud-agent-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cloud-agent-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -1138,7 +1208,7 @@ test('Cloud Agent IPC exposes only validated continuation and cancel actions', a
 })
 
 test('Outcome IPC persists every Adoption action with a main-owned human actor', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-outcome-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-outcome-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -1224,9 +1294,9 @@ test('Outcome IPC persists every Adoption action with a main-owned human actor',
 })
 
 test('startup attachment cleanup receives every persisted message reference once', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachment-cleanup-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-attachment-cleanup-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  fs.writeFileSync(path.join(directory, 'roundrelay-workspace.json'), JSON.stringify({
+  fs.writeFileSync(path.join(directory, 'meldwork-workspace.json'), JSON.stringify({
     version: 2,
     groups: [{ id: 'one' }, { id: 'two' }],
     messages: [
@@ -1253,7 +1323,7 @@ test('startup attachment cleanup receives every persisted message reference once
 })
 
 test('startup attachment cleanup failure keeps the validated store available', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachment-cleanup-fallback-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-attachment-cleanup-fallback-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     attachmentCleanupError: new Error('temporary cleanup failure'),
@@ -1268,9 +1338,9 @@ test('startup attachment cleanup failure keeps the validated store available', a
 })
 
 test('startup skips destructive attachment cleanup when the workspace file is malformed', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachment-corrupt-workspace-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-attachment-corrupt-workspace-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  fs.writeFileSync(path.join(directory, 'roundrelay-workspace.json'), '{not-json')
+  fs.writeFileSync(path.join(directory, 'meldwork-workspace.json'), '{not-json')
   const { harness } = loadMain(directory)
 
   await harness.ready()
@@ -1280,7 +1350,7 @@ test('startup skips destructive attachment cleanup when the workspace file is ma
 })
 
 test('ready creates the desktop window without eagerly duplicating renderer Agent detection', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ready-window-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-ready-window-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
 
@@ -1290,7 +1360,7 @@ test('ready creates the desktop window without eagerly duplicating renderer Agen
 })
 
 test('Electron safeStorage stays lazy until after the desktop window exists', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ready-safe-storage-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-ready-safe-storage-'))
   const safeStorageAccesses = []
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
@@ -1305,7 +1375,7 @@ test('Electron safeStorage stays lazy until after the desktop window exists', as
 })
 
 test('window navigation permits only local app pages and credential-free HTTPS links', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-navigation-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-navigation-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -1341,7 +1411,7 @@ test('window navigation permits only local app pages and credential-free HTTPS l
 })
 
 test('Provider IPC accepts the complete user payload and supports local deletion', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-provider-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-provider-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -1399,7 +1469,7 @@ test('Provider IPC accepts the complete user payload and supports local deletion
 })
 
 test('Knowledge base IPC exposes status, safe guides, and a local Obsidian directory picker', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-knowledge-base-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const vaultPath = path.join(directory, 'Obsidian Vault')
   fs.mkdirSync(vaultPath)
@@ -1440,7 +1510,7 @@ test('Knowledge base IPC exposes status, safe guides, and a local Obsidian direc
 })
 
 test('Knowledge Connector IPC exposes a sanitized complete lifecycle with main-owned source grants', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-connector-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-knowledge-connector-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const vaultPath = path.join(directory, 'Private Obsidian Vault')
   const notePath = path.join(vaultPath, 'notes', 'decision.md')
@@ -1547,7 +1617,7 @@ test('Knowledge Connector IPC exposes a sanitized complete lifecycle with main-o
 })
 
 test('Knowledge base status IPC shares concurrent source probes', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-single-flight-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-knowledge-base-single-flight-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const result = deferred()
   const expected = [{ kind: 'feishu', installed: true, ready: true }]
@@ -1570,7 +1640,7 @@ test('Knowledge base status IPC shares concurrent source probes', async (t) => {
 })
 
 test('Knowledge base selections derive safe access from main-process source status', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-knowledge-base-selection-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-knowledge-base-selection-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const source = {
     kind: 'dingtalk',
@@ -1615,7 +1685,7 @@ test('Knowledge base selections derive safe access from main-process source stat
 })
 
 test('directory picker uses the operating system localized title', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-directory-dialog-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-directory-dialog-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory)
   await harness.ready()
@@ -1630,7 +1700,7 @@ test('directory picker uses the operating system localized title', async (t) => 
 })
 
 test('Skills IPC uses the installed-Agent gate and the shared local catalog', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-skills-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-skills-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const skillsResult = {
     supported: true,
@@ -1652,7 +1722,7 @@ test('Skills IPC uses the installed-Agent gate and the shared local catalog', as
 })
 
 test('attachment IPC returns bounded metadata, opens private files, and never exposes paths', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-image-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-image-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const first = path.join(directory, 'diagram.png')
   const second = path.join(directory, 'flow.png')
@@ -1718,7 +1788,7 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
 })
 
 test('image picker does not import files after application shutdown starts', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-image-shutdown-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-image-shutdown-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const dialogResult = deferred()
   const selected = path.join(directory, 'late-selection.png')
@@ -1735,8 +1805,8 @@ test('image picker does not import files after application shutdown starts', asy
 })
 
 test('image dimensions are bounded before nativeImage decoding and checked again afterward', async (t) => {
-  const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-image-pixels-before-'))
-  const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-image-pixels-after-'))
+  const firstDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-image-pixels-before-'))
+  const secondDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-image-pixels-after-'))
   t.after(() => fs.rmSync(firstDirectory, { recursive: true, force: true }))
   t.after(() => fs.rmSync(secondDirectory, { recursive: true, force: true }))
   const oversizedBeforeDecode = loadMain(firstDirectory, {
@@ -1771,7 +1841,7 @@ test('image dimensions are bounded before nativeImage decoding and checked again
 })
 
 test('discard IPC is idempotent and refuses to delete attachments referenced by messages', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-discard-ipc-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-discard-ipc-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     workspaceSnapshot: {
@@ -1804,7 +1874,7 @@ test('discard IPC is idempotent and refuses to delete attachments referenced by 
 })
 
 test('deleting a conversation removes only attachments no longer referenced elsewhere', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-delete-attachments-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-delete-attachments-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     workspaceSnapshot: {
@@ -1834,7 +1904,7 @@ test('deleting a conversation removes only attachments no longer referenced else
 })
 
 test('deleting a message normalizes identifiers and discards only newly unreferenced attachments', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-delete-message-attachments-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-delete-message-attachments-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     workspaceSnapshot: {
@@ -1867,7 +1937,7 @@ test('deleting a message normalizes identifiers and discards only newly unrefere
 })
 
 test('configured Provider is injected only through local Agent execution options', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-provider-routing-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-provider-routing-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const { harness } = loadMain(directory, {
     providerConfigured: true,
@@ -1899,7 +1969,7 @@ test('configured Provider is injected only through local Agent execution options
 })
 
 test('OpenClaw native auth is routed through the app-owned isolated runtime', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-native-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-native-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const credentialChecks = []
   const { harness } = loadMain(directory, {
@@ -1980,7 +2050,7 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
 })
 
 test('manual Agent refreshes remain serialized', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-refresh-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-refresh-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const firstGate = deferred()
   const secondGate = deferred()
@@ -2009,7 +2079,7 @@ test('manual Agent refreshes remain serialized', async (t) => {
 })
 
 test('before-quit waits for local workspace and installer cleanup', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-quit-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-quit-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspaceStopGate = deferred()
   const installerIdleGate = deferred()

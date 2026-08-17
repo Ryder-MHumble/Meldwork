@@ -207,4 +207,4 @@ if (isLocalDocument) Object.assign(desktopApi, {
   }),
 })
 
-contextBridge.exposeInMainWorld('roundrelayDesktop', Object.freeze(desktopApi))
+contextBridge.exposeInMainWorld('meldworkDesktop', Object.freeze(desktopApi))

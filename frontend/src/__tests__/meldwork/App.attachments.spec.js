@@ -21,8 +21,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -32,7 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -43,7 +43,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
   it('imports a pasted image and sends safe attachment metadata without text', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
@@ -52,7 +52,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -108,7 +108,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -189,7 +189,7 @@ describe('RoundRelay workbench', () => {
         name: 'Image review',
         topic: '',
         agentKinds: ['codex', 'workbuddy'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -230,7 +230,7 @@ describe('RoundRelay workbench', () => {
         name: 'Offline member group',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -281,7 +281,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -343,7 +343,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -406,7 +406,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -437,7 +437,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -469,7 +469,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'hermes',
         name: 'Hermes',
         agentKinds: ['hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -528,7 +528,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'opencodereview',
         name: 'OpenCodeReview',
         agentKinds: ['opencodereview'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -555,7 +555,7 @@ describe('RoundRelay workbench', () => {
           name: 'Alpha review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:02:00Z',
@@ -566,7 +566,7 @@ describe('RoundRelay workbench', () => {
           name: 'Beta review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:01:00Z',
@@ -599,7 +599,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -631,7 +631,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -673,7 +673,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -734,7 +734,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -770,7 +770,7 @@ describe('RoundRelay workbench', () => {
         name: 'Media studio',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -810,7 +810,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -843,7 +843,7 @@ describe('RoundRelay workbench', () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'direct-codex', conversationType: 'direct', directAgentKind: 'codex', name: 'Codex',
-        agentKinds: ['codex'], workdir: '/tmp/roundrelay-workspace', allowWrite: true,
+        agentKinds: ['codex'], workdir: '/tmp/meldwork-workspace', allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z', updatedAt: '2026-07-29T08:00:00Z',
       })
       state.messages.push({
@@ -878,7 +878,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -938,7 +938,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -998,7 +998,7 @@ describe('RoundRelay workbench', () => {
           name: 'Alpha review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:02:00Z',
@@ -1009,7 +1009,7 @@ describe('RoundRelay workbench', () => {
           name: 'Beta review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:01:00Z',
@@ -1072,7 +1072,7 @@ describe('RoundRelay workbench', () => {
           name: 'Alpha review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:02:00Z',
@@ -1083,7 +1083,7 @@ describe('RoundRelay workbench', () => {
           name: 'Beta review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:01:00Z',

@@ -53,6 +53,36 @@
 .run-status-meta .run-summary-status[data-status="partial"] { color: var(--accent-hover); }
 :root[data-theme="dark"] .run-status-meta .run-summary-status[data-status="completed"] { color: #79c9af; }
 
+.run-phase-feedback {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 7px;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.run-phase-feedback-label {
+  color: var(--faint);
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.run-phase-feedback strong {
+  color: var(--accent-hover);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.run-phase-feedback small {
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
 .run-details-button {
   margin-left: auto;
   color: var(--muted);
@@ -876,6 +906,15 @@
 
 @keyframes typing-bar {
   to { transform: scaleY(2); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .run-agent-bars i,
+  .run-agent-dots i,
+  .typing-bars span {
+    animation: none;
+    transform: none;
+  }
 }
 
 @media (max-width: 620px) {

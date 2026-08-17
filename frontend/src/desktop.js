@@ -8,7 +8,7 @@ export { mergeRunEvent } from './desktop-run-events.js'
 export { emptySnapshot, normalizeSnapshot } from './desktop-snapshot.js'
 
 export function desktopApi() {
-  return typeof window !== 'undefined' ? window.roundrelayDesktop || null : null
+  return typeof window !== 'undefined' ? window.meldworkDesktop || null : null
 }
 
 export function errorCode(error) {

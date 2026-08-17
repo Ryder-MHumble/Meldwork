@@ -41,7 +41,7 @@ function liveSnapshot() {
 
 afterEach(() => setLocale('en'))
 
-describe('runtime event bridge', () => {
+describe('Meldwork runtime event bridge', () => {
   it('creates a scoped live Agent run and merges one tool lifecycle before terminal status', () => {
     const started = mergeRunEvent(liveSnapshot(), runtimeEvent({
       summary: 'Starting sanitized research',

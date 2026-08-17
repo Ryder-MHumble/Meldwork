@@ -4,7 +4,7 @@ Meldwork 是完全本地运行的 Electron 客户端。它直接加载仓库中�
 主进程中检测和调用本机 Agent CLI，不需要登录、JWT、远端平台、Docker 或云端服务。
 
 本地群聊、消息、群组配置和 CLI 会话引用保存在 Electron 用户数据目录。渲染进程只通过
-`window.roundrelayDesktop` 调用经过约束的 preload API，不会获得可执行文件路径、Provider
+`window.meldworkDesktop` 调用经过约束的 preload API，不会获得可执行文件路径、Provider
 API Key 或任意 Shell 执行能力。
 
 支持检测和调用以下本机 Agent CLI：
@@ -28,7 +28,9 @@ Agent 管理面板提供经过白名单约束的安装入口。安装命令和�
 
 ## 首次启动与本地 Agent 检测
 
-当前预览版未使用 Apple Developer ID 签名和公证。如果 macOS 首次启动时拦截应用，请打开
+计划中的 V1.0.2 GitHub 预发布候选将使用 ad-hoc 临时签名，不使用 Apple Developer ID，
+也不提交 Apple 公证；在远端预发布和最终产物完成发布验证前，不应将其描述为已发布版本。
+如果 macOS 首次启动时拦截候选应用，请打开
 “系统设置 → 隐私与安全性”，找到 Meldwork 的拦截提示，点击“仍要打开 / Open Anyway”，
 再确认启动。
 
@@ -36,6 +38,12 @@ Agent 管理面板提供经过白名单约束的安装入口。安装命令和�
 客户端在引导打开时执行唯一一次启动刷新；检测任务真正结束前“开始使用”按钮保持禁用，不会
 用固定计时器伪装完成。检测成功或失败后才释放按钮。完成或关闭引导后会在渲染层本地记录状态，
 后续启动直接进入工作台；Agent 仍可在管理面板中重新检测。
+
+## 并发协作 Harness V4
+
+群聊中选择多个 Agent 后，“并发回复”会在任何 Agent 获取调度资源前冻结同一份任务快照，让全部已选 Agent 独立生成，并在批次屏障后按稳定顺序提交。
+
+Auto Discussion 会依次进入独立提案、交叉质询与职责协商、分工执行、单写者整合和独立复核。职责图由 Agent 协商产生，Harness 只负责验证全员同意的同一份计划、依赖、权限、回执、恢复和提交边界，不在模型之外私下分配工作。参与者仍由用户选定；从更大候选池自动选人组队不属于当前版本。
 
 ## `@` Skill 引用
 
@@ -118,7 +126,7 @@ npm run dev
 
 可选环境变量：
 
-- `ROUNDRELAY_CODEX_SANDBOX`：Codex 默认沙箱模式，支持 `read-only` 和
+- `MELDWORK_CODEX_SANDBOX`：Codex 默认沙箱模式，支持 `read-only` 和
   `workspace-write`；未设置或值不受支持时使用 `read-only`。
 
 ## 测试与打包
@@ -130,7 +138,9 @@ npm run dist
 npm run dist:public
 ```
 
-`pack` 和 `dist` 用于本地验证，会先构建桌面前端。`dist:public` 是公开发布专用命令：它要求
+`pack` 用于生成未打包应用并验证 Electron 产物；`dist` 生成 V1.0.2 GitHub 预发布候选使用的 ad-hoc 签名 DMG 和 ZIP。这些产物不具备 Developer ID 信任链且未公证，不能声称通过 Gatekeeper。
+
+`dist:public` 是未来正式签名公开发行的专用命令：它要求
 Developer ID 证书和完整公证凭据，强制代码签名，在签名后校验永久 Bundle ID、Team ID 与
 hardened runtime，并调用 Apple 公证；任一条件不满足都会失败。产物输出到 `desktop/dist/`，
 其中包含本地前端，不依赖服务器或容器。

@@ -4,6 +4,7 @@ const {
   cleanText,
   credentialFailure,
   normalizeKnowledgeBaseHint,
+  normalizeSkillHint,
   terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
 const {
@@ -17,14 +18,41 @@ const {
 const { mediaGenerationRequest } = require('../media/media-generation-request.cjs')
 const {
   appendBlackboardEntry,
+  collaborationPackageIndexText,
   appendHandoff,
   collaborationPackageText,
+  createBlackboardEntryRecord,
   emptyCollaborationState,
   publicCollaborationText,
   roleForIndex,
   visibleBlackboardEntries,
 } = require('../collaboration/collaboration-records.cjs')
-const { unlimitedReviewContract } = require('./local-workspace-context.cjs')
+const {
+  appendWorkReceipt,
+  buildCollaborationPackage,
+  candidateCommitBlackboardStatement,
+  candidateCommitSinkId,
+  commitDeliveryObservable,
+  coordinationRecoveryKinds,
+  createCollaborationReceipt,
+  createSynthesisBinding,
+  createWorkReceipt,
+  hashValue,
+  parseCollaborationControlBlock,
+  rankedSynthesisKinds,
+  resolveCoordinationConsensus,
+} = require('../collaboration/orchestration-v4-records.cjs')
+const { createReviewerFindingRecord } = require('../collaboration/outcome-records.cjs')
+const { canonicalJson } = require('../collaboration/context-pack-records.cjs')
+const {
+  restoreV4SnapshotSkills,
+  unlimitedReviewContract,
+  v4Prompt,
+  v4Snapshot,
+  v4SnapshotBodyHash,
+  v4SnapshotSkillHints,
+  validateV4SnapshotBody,
+} = require('./local-workspace-context.cjs')
 const {
   createTaskGraphCursor,
   parseTaskGraphCursor,
@@ -126,8 +154,13 @@ class LocalWorkspaceAutoRunner {
     this.recordAgentFailure = options.recordAgentFailure
     this.recordAgentInterruption = options.recordAgentInterruption
     this.addMessage = options.addMessage
+    this.commitV4AgentMessage = typeof options.commitV4AgentMessage === 'function'
+      ? options.commitV4AgentMessage
+      : null
     this.emitChanged = options.emitChanged
     this.finishRun = options.finishRun
+    this.outcomeStore = options.outcomeStore || null
+    this.contentBlobStore = options.contentBlobStore || null
     this.checkpointRun = options.checkpointRun
     this.hasRunLedger = typeof options.hasRunLedger === 'function'
       ? options.hasRunLedger
@@ -273,6 +306,20 @@ class LocalWorkspaceAutoRunner {
           idempotencyMode,
         })
         if (failure.category === 'cancellation') throw error
+        if (options.deferFailurePolicy === true) {
+          this.recordAttempt(group, controller, {
+            agentKind: options.agentKind || kind,
+            phase,
+            attempt: phaseAttempt,
+            failureCategory: failure.category,
+            policyAction: 'fail',
+            backoffMs: 0,
+            recoveryAgentKind: '',
+            finalOutcome: 'failed',
+            ...safety,
+          })
+          throw error
+        }
         // Session recovery is owned by LocalWorkspaceAgentInvocation so a stale
         // native Session gets exactly one fresh attempt across every run mode.
         const decision = retryDecision(failure, {
@@ -436,7 +483,10 @@ class LocalWorkspaceAutoRunner {
     context,
     mode = 'auto',
   }) {
-    const operationId = this.operationIdFor(controller, kind, mode)
+    const requestedOperationId = String(context?.operationId || '')
+    const operationId = /^[A-Za-z0-9._:-]{1,120}$/.test(requestedOperationId)
+      ? requestedOperationId
+      : this.operationIdFor(controller, kind, mode)
     const contract = this.retryContract(kind) || {}
     const idempotencyMode = contract.idempotencyMode === 'durable' ? 'durable' : 'none'
     const invokeSource = async () => {
@@ -457,6 +507,7 @@ class LocalWorkspaceAutoRunner {
             attempt: phaseAttempt,
             operationId,
             idempotencyMode,
+            deferFailurePolicy: context.v4SynthesisRecovery === true,
           }),
           removed: false,
         }
@@ -772,7 +823,7 @@ class LocalWorkspaceAutoRunner {
 
   taskGraphPrompt(node, objective, collaborationPackage, unlimitedRounds = false) {
     return [
-      'ROUNDRELAY_TASK_GRAPH_V1',
+      'MELDWORK_TASK_GRAPH_V1',
       `Node: ${node.nodeId}`,
       `Role: ${node.role}`,
       `Objective: ${objective}`,
@@ -1183,6 +1234,3951 @@ class LocalWorkspaceAutoRunner {
     }
   }
 
+  v4Enabled(controller) {
+    return controller?.v4 === true || controller?.orchestration?.version === 4
+  }
+
+  v4BatchId(controller, phase = 'proposal') {
+    const digest = createHash('sha256').update(JSON.stringify([
+      controller.runId,
+      controller.taskId,
+      phase,
+      controller.currentRound || 0,
+    ])).digest('hex').slice(0, 32)
+    return `batch-${digest}`
+  }
+
+  v4SynthesisBinding({ targetKinds, snapshotRecord, routingDecision }) {
+    const selected = new Set(targetKinds)
+    const candidates = (Array.isArray(routingDecision?.candidates)
+      ? routingDecision.candidates : [])
+      .filter(candidate => selected.has(candidate?.kind))
+      .map(candidate => ({
+        kind: candidate.kind,
+        score: candidate.score,
+        ...(candidate.evidence ? { evidence: { ...candidate.evidence } } : {}),
+      }))
+    return createSynthesisBinding({
+      snapshotContentHash: snapshotRecord?.bodyHash,
+      targetKinds,
+      candidates,
+    })
+  }
+
+  v4SynthesisRankedKinds(roleBinding) {
+    return roleBinding?.planHash
+      ? coordinationRecoveryKinds(roleBinding)
+      : rankedSynthesisKinds(roleBinding)
+  }
+
+  v4SynthesisVerificationKinds(roleBinding, writerKind) {
+    if (roleBinding?.planHash) {
+      const rankedKinds = coordinationRecoveryKinds(roleBinding)
+      const verificationKinds = roleBinding.verifierKinds.filter(kind => kind !== writerKind)
+      if (!rankedKinds.includes(writerKind) || verificationKinds.length < 1) {
+        throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+      }
+      return verificationKinds
+    }
+    return rankedSynthesisKinds(roleBinding)
+      .filter(kind => kind !== writerKind)
+      .slice(0, Math.min(2, roleBinding.candidates.length - 1))
+  }
+
+  v4SynthesisAttemptOperationId(controller, kind, slotId, attempt) {
+    const digest = createHash('sha256').update(JSON.stringify([
+      controller.runId,
+      controller.taskId,
+      kind,
+      slotId,
+      'synthesis',
+      controller.currentRound || 0,
+      attempt,
+    ])).digest('hex')
+    return `operation-${digest}`
+  }
+
+  v4CreateSynthesisRecovery(controller, roleBinding, slots, options = {}) {
+    const rankedKinds = this.v4SynthesisRankedKinds(roleBinding)
+    const originalWriterKind = roleBinding?.planHash
+      ? roleBinding.finalizerKind : roleBinding.writerKind
+    const writerKind = String(options.writerKind || originalWriterKind)
+    const writerSlot = slots.find(slot => slot.agentKind === writerKind)
+    if (!writerSlot || !rankedKinds.includes(writerKind)) {
+      throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+    }
+    const attempt = Math.max(1, Number(options.attempt) || 1)
+    const operationId = this.v4SynthesisAttemptOperationId(
+      controller, writerKind, writerSlot.slotId, attempt,
+    )
+    return {
+      revision: Math.max(1, Number(options.revision) || 1),
+      originalWriterKind,
+      activeWriterKind: writerKind,
+      verificationKinds: this.v4SynthesisVerificationKinds(roleBinding, writerKind),
+      rankedKinds,
+      rankingFingerprint: roleBinding?.planHash
+        ? hashValue({ planHash: roleBinding.planHash, rankedKinds })
+        : hashValue({ selectionInputHash: roleBinding.selectionInputHash, rankedKinds }),
+      stateEpoch: Math.max(0, Number(options.stateEpoch) || 0),
+      triedWriters: rankedKinds.slice(0, rankedKinds.indexOf(writerKind) + 1),
+      attempts: [{
+        attemptId: `synthesis-attempt-${hashValue({ operationId, attempt }).slice(0, 64)}`,
+        writerKind,
+        slotId: writerSlot.slotId,
+        operationId,
+        attempt,
+        status: 'intent',
+        permission: 'read-only',
+        leaseAcquired: false,
+        sideEffectsPossible: false,
+        outcomeCertainty: 'not_started',
+        updatedAt: Date.now(),
+      }],
+    }
+  }
+
+  v4ActiveSynthesisAttempt(recovery) {
+    return [...(recovery?.attempts || [])].reverse().find(attempt => (
+      ['intent', 'leased', 'unknown_outcome'].includes(attempt.status)
+    )) || null
+  }
+
+  v4UpdateSynthesisAttempt(recovery, operationId, updates) {
+    let matched = false
+    const attempts = recovery.attempts.map(attempt => {
+      if (attempt.operationId !== operationId) return attempt
+      matched = true
+      return { ...attempt, ...updates, updatedAt: Date.now() }
+    })
+    if (!matched) throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+    return { ...recovery, attempts }
+  }
+
+  v4SynthesisRecoveryGate(controller, recovery) {
+    const attempt = this.v4ActiveSynthesisAttempt(recovery)
+    if (!attempt || attempt.status !== 'unknown_outcome') {
+      throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+    }
+    const currentIndex = recovery.rankedKinds.indexOf(recovery.activeWriterKind)
+    const fields = {
+      writerKind: attempt.writerKind,
+      slotId: attempt.slotId,
+      operationId: attempt.operationId,
+      attempt: attempt.attempt,
+      proposedReplacementKind: recovery.rankedKinds[currentIndex + 1] || '',
+      round: controller.currentRound,
+      stateEpoch: recovery.stateEpoch,
+      rankingFingerprint: recovery.rankingFingerprint,
+    }
+    return { bindingHash: hashValue(fields), ...fields }
+  }
+
+  v4CancelSynthesisRecovery(recovery) {
+    const binding = recovery?.pendingGate
+    const boundAttempt = recovery?.attempts?.find(attempt => (
+      attempt.operationId === binding?.operationId
+    ))
+    if (binding && boundAttempt?.status === 'cancelled'
+        && boundAttempt.sideEffectsPossible === true
+        && boundAttempt.outcomeCertainty === 'unknown_outcome') {
+      return recovery
+    }
+    const attempt = this.v4ActiveSynthesisAttempt(recovery)
+    if (!binding || !attempt || attempt.status !== 'unknown_outcome'
+        || attempt.writerKind !== binding.writerKind
+        || attempt.slotId !== binding.slotId
+        || attempt.operationId !== binding.operationId
+        || attempt.attempt !== binding.attempt) {
+      throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+    }
+    return this.v4UpdateSynthesisAttempt(recovery, attempt.operationId, {
+      status: 'cancelled',
+      sideEffectsPossible: true,
+      outcomeCertainty: 'unknown_outcome',
+    })
+  }
+
+  v4AppendSynthesisAttempt(controller, roleBinding, recovery, slots, writerKind) {
+    let nextRecovery = recovery
+    const activeAttempt = this.v4ActiveSynthesisAttempt(nextRecovery)
+    if (activeAttempt?.status === 'unknown_outcome') {
+      nextRecovery = this.v4UpdateSynthesisAttempt(
+        nextRecovery,
+        activeAttempt.operationId,
+        {
+          status: 'superseded',
+          sideEffectsPossible: true,
+          outcomeCertainty: 'unknown_outcome',
+        },
+      )
+    } else if (activeAttempt) {
+      throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+    }
+    const { pendingGate: _pendingGate, ...withoutGate } = nextRecovery
+    const writerSlot = slots.find(slot => slot.agentKind === writerKind)
+    const writerIndex = withoutGate.rankedKinds.indexOf(writerKind)
+    if (!writerSlot || writerIndex < 0) {
+      throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+    }
+    const attempt = withoutGate.attempts.filter(item => item.writerKind === writerKind).length + 1
+    const operationId = this.v4SynthesisAttemptOperationId(
+      controller, writerKind, writerSlot.slotId, attempt,
+    )
+    return {
+      ...withoutGate,
+      revision: withoutGate.revision + 1,
+      activeWriterKind: writerKind,
+      verificationKinds: this.v4SynthesisVerificationKinds(roleBinding, writerKind),
+      triedWriters: withoutGate.rankedKinds.slice(0, writerIndex + 1),
+      attempts: [...withoutGate.attempts, {
+        attemptId: `synthesis-attempt-${hashValue({ operationId, attempt }).slice(0, 64)}`,
+        writerKind,
+        slotId: writerSlot.slotId,
+        operationId,
+        attempt,
+        status: 'intent',
+        permission: 'read-only',
+        leaseAcquired: false,
+        sideEffectsPossible: false,
+        outcomeCertainty: 'not_started',
+        updatedAt: Date.now(),
+      }],
+    }
+  }
+
+  v4ReplaceSynthesisWriter(controller, roleBinding, recovery, slots) {
+    const currentIndex = recovery.rankedKinds.indexOf(recovery.activeWriterKind)
+    const writerKind = recovery.rankedKinds[currentIndex + 1] || ''
+    if (!writerKind) return null
+    return this.v4AppendSynthesisAttempt(
+      controller, roleBinding, recovery, slots, writerKind,
+    )
+  }
+
+  v4OperationId(controller, kind, phase, slotId = '') {
+    const digest = createHash('sha256').update(JSON.stringify([
+      controller.runId,
+      controller.taskId,
+      kind,
+      slotId,
+      phase,
+      controller.currentRound || 0,
+    ])).digest('hex')
+    return `operation-${digest}`
+  }
+
+  v4SnapshotRecord(controller, snapshot, targetKinds) {
+    if (!this.contentBlobStore) throw new Error('LOCAL_RUN_SNAPSHOT_STORE_UNAVAILABLE')
+    const serialized = canonicalJson(snapshot)
+    const contentRef = this.contentBlobStore.put(serialized, { mediaType: 'application/json' })
+    const sourceIds = [snapshot?.messageId, ...(snapshot?.history || []).map(item => item.id)]
+      .filter(Boolean).slice(-64)
+    const taskId = snapshot?.taskId || controller.taskId || null
+    const record = {
+      contextPackId: controller.contextPackId || null,
+      taskId,
+      messageId: snapshot?.messageId || controller.threadRootId || null,
+      groupId: snapshot?.group?.id || controller.groupId || null,
+      round: Math.max(0, Number(controller.currentRound) || 0),
+      targetKinds: [...targetKinds],
+      sourceIds,
+      capturedAt: Date.now(),
+      charCount: Buffer.byteLength(serialized),
+      contentHash: contentRef.hash,
+      bodyHash: v4SnapshotBodyHash(snapshot),
+      contentRef,
+    }
+    return { record, snapshotHash: hashValue(record) }
+  }
+
+  v4SnapshotSkillHints(snapshot, targetKinds) {
+    return v4SnapshotSkillHints(snapshot, targetKinds)
+  }
+
+  async v4RestoreSnapshotSkills(snapshot, targetKinds, persisted = null) {
+    return restoreV4SnapshotSkills({
+      snapshot,
+      targetKinds,
+      validateSkillSelections: this.validateSkillSelections,
+      persisted,
+    })
+  }
+
+  v4LoadSnapshot(orchestration, { taskId, messageId, groupId, targetKinds }) {
+    const record = orchestration?.snapshot
+    if (!record?.contentRef || !this.contentBlobStore) {
+      throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    }
+    let bytes
+    try { bytes = this.contentBlobStore.read(record.contentRef) } catch {
+      throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    }
+    const serialized = bytes.toString('utf8')
+    let body
+    try { body = JSON.parse(serialized) } catch {
+      throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    }
+    return validateV4SnapshotBody({
+      body,
+      serialized,
+      byteLength: bytes.length,
+      record,
+      orchestrationSnapshotHash: orchestration.snapshotHash,
+      taskId,
+      messageId,
+      groupId,
+      targetKinds,
+    })
+  }
+
+  v4RestoreReceipts(controller) {
+    if (Array.isArray(controller.v4ReceiptRecords)) {
+      return controller.v4ReceiptRecords.map(item => ({
+        receipt: item.receipt,
+        verdict: item.verdict || '',
+        resolvedIssueIds: Array.isArray(item.resolvedIssueIds)
+          ? [...item.resolvedIssueIds]
+          : [],
+      }))
+    }
+    const restored = []
+    const slots = Array.isArray(controller.orchestration?.slots)
+      ? controller.orchestration.slots
+      : []
+    for (const slot of slots) {
+      const records = slot?.resultRefs?.workflowOutcomeRefs
+      if (!Array.isArray(records)) continue
+      for (const record of records) {
+        if (!record?.receipt) continue
+        try {
+          const receipt = parseCollaborationControlBlock(record.receipt)
+          restored.push({
+            receipt,
+            verdict: typeof record.verdict === 'string' ? record.verdict : '',
+            resolvedIssueIds: Array.isArray(record.resolvedIssueIds)
+              ? record.resolvedIssueIds.filter(value => typeof value === 'string')
+              : [],
+          })
+        } catch { /* malformed historical receipts are ignored and re-run */ }
+      }
+    }
+    controller.v4ReceiptRecords = restored
+    return restored
+  }
+
+  v4Package(receiptRecords, options = {}) {
+    const recipientKind = String(options.recipientKind || '')
+    const binding = options.sessionBinding || {}
+    const deliveryState = Array.isArray(options.deliveryState) ? options.deliveryState : []
+    const latest = new Map()
+    for (const item of receiptRecords) {
+      const receipt = item?.receipt
+      if (!receipt) continue
+      const key = receipt.agentKind || `${receipt.phase}\u0000${receipt.summary}`
+      const previous = latest.get(key)
+      if (!previous || (Number(receipt.deliveryWatermark) || 0)
+          > (Number(previous.receipt.deliveryWatermark) || 0)
+          || ((Number(receipt.deliveryWatermark) || 0)
+            === (Number(previous.receipt.deliveryWatermark) || 0)
+            && receipt.phase.localeCompare(previous.receipt.phase) > 0)) {
+        latest.set(key, item)
+      }
+    }
+    let selectedItems = [...latest.values()]
+    const snapshotHash = typeof options.snapshotHash === 'string' ? options.snapshotHash : ''
+    const targetKinds = new Set(Array.isArray(options.targetKinds) ? options.targetKinds : [])
+    const resolvedIssueIds = []
+    const resolved = new Set()
+    for (const item of receiptRecords) {
+      const receipt = item?.receipt
+      if (!snapshotHash || receipt?.snapshotHash !== snapshotHash
+          || (targetKinds.size && !targetKinds.has(receipt.agentKind))) continue
+      for (const value of Array.isArray(item.resolvedIssueIds) ? item.resolvedIssueIds : []) {
+        if (typeof value !== 'string' || !value || value.length > 120 || resolved.has(value)) continue
+        resolved.add(value)
+        resolvedIssueIds.push(value)
+        if (resolvedIssueIds.length >= 256) break
+      }
+      if (resolvedIssueIds.length >= 256) break
+    }
+    if (recipientKind && binding.sessionRefHash && !options.forceFull) {
+      const acknowledged = new Map(deliveryState
+        .filter(item => item.recipientKind === recipientKind
+          && item.sessionRefHash === binding.sessionRefHash
+          && item.sessionProvenanceHash === binding.sessionProvenanceHash
+          && item.status === 'acknowledged')
+        .map(item => [`${item.sourceAgentKind}\u0000${item.sourcePhase}`, item.watermark]))
+      selectedItems = selectedItems.filter(item => {
+        const receipt = item.receipt
+        const previous = acknowledged.get(`${receipt.agentKind}\u0000${receipt.phase}`) || 0
+        return (Number(receipt.deliveryWatermark) || 0) > previous
+      })
+    }
+    const selectedReceipts = selectedItems.map(item => item.receipt)
+    const totalLimit = Number.isSafeInteger(options.totalLimit) ? options.totalLimit : 6000
+    const packageRecord = buildCollaborationPackage(selectedReceipts, {
+      targetKinds: options.targetKinds || [],
+      totalLimit,
+      resolvedIssueIds,
+    })
+    const text = this.v4SanitizeDeliveryText(packageRecord.text, packageRecord.text.length)
+    return text === packageRecord.text
+      ? packageRecord
+      : { ...packageRecord, text, totalChars: text.length, packageHash: hashValue(text) }
+  }
+
+  v4CoordinationResult({
+    receiptRecords, targetKinds, snapshotHash, challengeBindings = [], requireSupport = true,
+  }) {
+    const candidateReceipts = receiptRecords
+      .filter(record => record?.receipt?.phase === 'challenge')
+    const supportReceipts = requireSupport
+      ? targetKinds.map((kind) => {
+          const operationId = challengeBindings.find(binding => (
+            binding.reviewerKind === kind
+          ))?.reviewerOperationId || ''
+          return this.v4ReceiptForOperation(
+            receiptRecords, 'challenge', kind, operationId,
+          ) || null
+        })
+      : []
+    if (supportReceipts.some(receipt => !receipt)) {
+      return resolveCoordinationConsensus({
+        targetKinds, snapshotHash, candidateReceipts, supportReceipts: [],
+      })
+    }
+    return resolveCoordinationConsensus({
+      targetKinds, snapshotHash, candidateReceipts, supportReceipts,
+    })
+  }
+
+  v4SanitizeDeliveryText(value, limit = 6000) {
+    const privateWrapper = '(?:private[ _-]?(?:reasoning|thoughts?)|analysis|chain[ _-]?of[ _-]?thought|cot)'
+    const privateHeading = '(?:private[ _-]?(?:reasoning|thoughts?)|chain[ _-]?of[ _-]?thought|cot)'
+    const stripped = this.v4StripMeldworkControls(
+      publicCollaborationText(value, Number.MAX_SAFE_INTEGER),
+    )
+    const maximum = Number.isSafeInteger(limit) && limit >= 0 ? limit : 6000
+    let privateSectionLevel = null
+    const withoutPrivateSections = stripped.split(/\r?\n/).filter((line) => {
+      const heading = line.match(/^\s*(#{1,6})\s+(.+)$/u)
+      const level = heading?.[1].length
+      if (heading && new RegExp(`^${privateHeading}\\b`, 'iu').test(heading[2].trim())) {
+        privateSectionLevel = Math.min(privateSectionLevel ?? level, level)
+        return false
+      }
+      if (privateSectionLevel !== null && heading && level <= privateSectionLevel) {
+        privateSectionLevel = null
+      }
+      return privateSectionLevel === null
+    }).join('\n')
+    return withoutPrivateSections
+      .replace(new RegExp(`<\\s*${privateWrapper}\\b[^>]*>[\\s\\S]*?<\\/\\s*${privateWrapper}\\s*>`, 'giu'), '')
+      .replace(/(?:^|\n)\s*(?:my\s+)?private[ _-]?reasoning\s*:\s*[^\n]*/giu, '\n')
+      .replace(/\b(?:session(?:[ _-]?(?:id|ref))?)\b\s*(?::|=)\s*[A-Za-z0-9][A-Za-z0-9._:-]*/giu, '[redacted]')
+      .replace(/\b(?:session(?:[ _-]?(?:id|ref))?)\b\s+[A-Za-z0-9][A-Za-z0-9._:-]*/giu, '[redacted]')
+      .replace(/\b(?:session[-_][A-Za-z0-9._:-]+|[A-Za-z0-9][A-Za-z0-9._:-]*-(?:native-)?session)\b/giu, '[redacted]')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+      .slice(0, maximum)
+  }
+
+  v4StripMeldworkControls(text) {
+    const marker = '[[MELDWORK_'
+    const source = String(text || '')
+    const upper = source.toUpperCase()
+    let cursor = 0
+    let output = ''
+    while (true) {
+      const start = upper.indexOf(marker, cursor)
+      if (start < 0) return output + source.slice(cursor)
+      output += source.slice(cursor, start)
+      let quote = ''
+      let escaped = false
+      let braces = 0
+      let brackets = 0
+      let end = -1
+      for (let index = start + 2; index < source.length - 1; index += 1) {
+        const character = source[index]
+        if (quote) {
+          if (escaped) escaped = false
+          else if (character === '\\') escaped = true
+          else if (character === quote) quote = ''
+          continue
+        }
+        if (character === '"' || character === "'") {
+          quote = character
+        } else if (character === '{') {
+          braces += 1
+        } else if (character === '}') {
+          braces = Math.max(0, braces - 1)
+        } else if (character === '[') {
+          brackets += 1
+        } else if (character === ']') {
+          if (braces === 0 && brackets === 0 && source[index + 1] === ']') {
+            end = index + 2
+            break
+          }
+          brackets = Math.max(0, brackets - 1)
+        }
+      }
+      if (end < 0) return output
+      const header = source.slice(start, end)
+      if (!header.includes(':')) {
+        const closing = `[[/${header.slice(2, -2)}]]`.toUpperCase()
+        const closingStart = upper.indexOf(closing, end)
+        cursor = closingStart < 0 ? end : closingStart + closing.length
+      } else {
+        cursor = end
+      }
+    }
+  }
+
+  v4CoordinationText(result, limit = 4800) {
+    const candidates = Array.isArray(result?.candidates) ? result.candidates : []
+    if (!candidates.length) return ''
+    const supportCounts = new Map()
+    for (const planHash of result.supportPlanHashes || []) {
+      if (planHash) supportCounts.set(planHash, (supportCounts.get(planHash) || 0) + 1)
+    }
+    const lines = [
+      'MELDWORK_V4_RESPONSIBILITY_CANDIDATES_V1',
+      'Fields: h=planHash;s=support;f=finalizer;v=verifiers;a=[t=taskId,o=owner,r=role,x=objective,y=expectedOutput,i=inputRefs,a=artifactRefs,d=dependencies]',
+    ]
+    const append = (line) => {
+      const next = [...lines, line].join('\n')
+      if (next.length > limit) return false
+      lines.push(line)
+      return true
+    }
+    for (const plan of candidates) {
+      let safe = true
+      const text = value => {
+        const raw = String(value || '')
+        const sanitized = this.v4SanitizeDeliveryText(raw, 2000)
+        if (/\[\[MELDWORK_/iu.test(raw) || sanitized !== raw) safe = false
+        return sanitized
+      }
+      const values = value => Array.isArray(value) ? value.map(text) : []
+      const graph = {
+        h: plan.planHash,
+        s: supportCounts.get(plan.planHash) || 0,
+        f: text(plan.finalizerKind),
+        v: values(plan.verifierKinds),
+        a: plan.assignments.map(assignment => ({
+          t: text(assignment.taskId),
+          o: text(assignment.ownerKind),
+          r: text(assignment.role),
+          x: text(assignment.objective),
+          y: text(assignment.expectedOutput),
+          i: values(assignment.inputRefs),
+          a: values(assignment.artifactIds),
+          d: values(assignment.dependsOn),
+        })),
+      }
+      if (!safe) continue
+      append(JSON.stringify(graph))
+    }
+    return lines.join('\n')
+  }
+
+  v4ChallengeProposalText(binding, reviewerKind, limit = 1600) {
+    const proposalKind = String(binding?.proposalKind || '')
+    if (!proposalKind || proposalKind === reviewerKind) {
+      throw new Error('LOCAL_RUN_V4_CHALLENGE_BINDING_INVALID')
+    }
+    for (const artifactId of binding.artifactIds || []) {
+      try {
+        const { artifact, content } = this.v4ArtifactIdentity(artifactId)
+        const body = this.v4SanitizeDeliveryText(content, limit)
+        if (artifact.producedBy?.agentKind !== proposalKind || !body) continue
+        return [
+          'MELDWORK_V4_ASSIGNED_PROPOSAL_V1',
+          `Proposal Agent: ${proposalKind}`,
+          `Proposal Artifact: ${artifactId}`,
+          'Proposal body excerpt:',
+          body,
+        ].join('\n')
+      } catch { /* skip non-text and unavailable outcome refs */ }
+    }
+    throw new Error('LOCAL_RUN_V4_CHALLENGE_BINDING_INVALID')
+  }
+
+  v4CoordinationAssignment(coordinationPlan, kind, options = {}) {
+    const owned = coordinationPlan?.assignments?.filter(item => item.ownerKind === kind) || []
+    if (options.taskId) return owned.find(item => item.taskId === options.taskId) || null
+    if (options.role) return owned.find(item => item.role === options.role) || null
+    return owned[0] || null
+  }
+
+  v4WorkAssignmentText(
+    coordinationPlan, kind, taskId, snapshot = null, limit = 6000, receiptRecords = [],
+  ) {
+    const assignment = this.v4CoordinationAssignment(coordinationPlan, kind, { taskId })
+    if (!assignment) throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+    const snapshotSources = new Map([
+      [snapshot?.messageId, snapshot?.taskText],
+      ...(Array.isArray(snapshot?.history) ? snapshot.history : []).map(item => [item?.id, item?.text]),
+    ].filter(([sourceId]) => typeof sourceId === 'string' && sourceId))
+    const safeReferenceText = (value) => {
+      const raw = String(value || '').trim()
+      const sanitized = this.v4SanitizeDeliveryText(raw, Number.MAX_SAFE_INTEGER)
+      if (!raw || sanitized !== raw || /\[\[MELDWORK_/iu.test(raw)) {
+        throw new Error('LOCAL_RUN_V4_ASSIGNMENT_REFERENCE_INVALID')
+      }
+      return sanitized
+    }
+    const inputReferences = assignment.inputRefs.map((sourceId) => {
+      if (!snapshotSources.has(sourceId)) {
+        throw new Error('LOCAL_RUN_V4_ASSIGNMENT_REFERENCE_INVALID')
+      }
+      return {
+        kind: 'input', id: sourceId, header: `Input ${sourceId}:`,
+        body: safeReferenceText(snapshotSources.get(sourceId)),
+      }
+    })
+    const directArtifacts = assignment.artifactIds.map((artifactId) => {
+      let identity
+      try { identity = this.v4ArtifactIdentity(artifactId) } catch {
+        throw new Error('LOCAL_RUN_V4_ASSIGNMENT_REFERENCE_INVALID')
+      }
+      if (identity.artifact.contentRef?.mediaType !== 'text/plain') {
+        throw new Error('LOCAL_RUN_V4_ASSIGNMENT_REFERENCE_INVALID')
+      }
+      return {
+        kind: 'artifact', id: artifactId, header: `Artifact ${artifactId}:`,
+        body: safeReferenceText(identity.content),
+      }
+    })
+    const directReferences = [...inputReferences, ...directArtifacts]
+    const dependencies = new Set(assignment.dependsOn)
+    const latestDependencies = new Map()
+    for (const record of receiptRecords) {
+      const receipt = record?.receipt
+      if (receipt?.phase !== 'work' || !dependencies.has(receipt.workItemId)) continue
+      latestDependencies.set(receipt.workItemId, record)
+    }
+    const dependencyArtifacts = [...latestDependencies.values()]
+      .sort((left, right) => String(left.receipt.workItemId)
+        .localeCompare(String(right.receipt.workItemId)))
+      .flatMap(record => (record.receipt.artifactIds || []).map((artifactId, index) => ({
+        artifactId,
+        index,
+        receipt: record.receipt,
+      })))
+      .map(({ artifactId, index, receipt }) => {
+        let identity
+        try { identity = this.v4ArtifactIdentity(artifactId) } catch {
+          throw new Error('LOCAL_RUN_V4_REFERENCE_INVALID')
+        }
+        const mediaType = String(identity.artifact.contentRef?.mediaType || '')
+        const raw = String(identity.content || '').trim()
+        const body = mediaType === 'text/plain'
+          ? this.v4SanitizeDeliveryText(raw, Number.MAX_SAFE_INTEGER)
+          : ''
+        let omission = ''
+        if (mediaType !== 'text/plain') {
+          omission = `${artifactId} reason=non-text mediaType=${mediaType || 'unknown'}`
+        } else if (!raw) {
+          omission = `${artifactId} reason=empty`
+        } else if (body !== raw) {
+          omission = `${artifactId} reason=safety-filter`
+        }
+        return {
+          key: `${receipt.workItemId}:${index}`,
+          artifactId,
+          body,
+          omission,
+          header: `Artifact ${artifactId} from ${receipt.agentKind} work=${receipt.workItemId}`,
+        }
+      })
+    const render = (included) => {
+      const lines = [
+        'MELDWORK_V4_AGREED_WORK_PACKAGE_V1',
+        `Responsibility plan: ${coordinationPlan.planHash}`,
+        `Work item: ${assignment.taskId}`,
+        `Owner: ${assignment.ownerKind}`,
+        `Role: ${assignment.role}`,
+        `Input refs: ${assignment.inputRefs.length ? assignment.inputRefs.join(', ') : '(none)'}`,
+        `Artifact refs: ${assignment.artifactIds.length ? assignment.artifactIds.join(', ') : '(none)'}`,
+        `Dependencies: ${assignment.dependsOn.length ? assignment.dependsOn.join(', ') : '(none)'}`,
+      ]
+      if (inputReferences.length) {
+        lines.push('MELDWORK_V4_FROZEN_INPUT_REFS_V1')
+        for (const reference of inputReferences) {
+          lines.push(reference.header)
+          const body = included.get(`direct:${reference.kind}:${reference.id}`) || ''
+          if (body) lines.push(body)
+        }
+      }
+      if (directArtifacts.length) {
+        lines.push('MELDWORK_V4_DIRECT_ARTIFACT_REFS_V1')
+        for (const reference of directArtifacts) {
+          lines.push(reference.header)
+          const body = included.get(`direct:${reference.kind}:${reference.id}`) || ''
+          if (body) lines.push(body)
+        }
+      }
+      if (dependencyArtifacts.length) {
+        lines.push('MELDWORK_V4_REFERENCED_ARTIFACTS_V1')
+        for (const artifact of dependencyArtifacts) {
+          lines.push(artifact.header)
+          const body = included.get(`dependency:${artifact.key}`) || ''
+          if (body) lines.push(body)
+        }
+      }
+      const objective = included.get('objective') || ''
+      const expectedOutput = included.get('expectedOutput') || ''
+      lines.push(`Objective: ${objective}`, `Expected output: ${expectedOutput}`)
+      const freeTextOmissions = [
+        ...(objective.length < assignment.objective.length ? ['objective reason=budget'] : []),
+        ...(expectedOutput.length < assignment.expectedOutput.length
+          ? ['expectedOutput reason=budget'] : []),
+      ]
+      if (freeTextOmissions.length) {
+        lines.push('MELDWORK_V4_TRUNCATED_FREE_TEXT_V1', ...freeTextOmissions)
+      }
+      const directOmissions = directReferences.filter(reference => (
+        (included.get(`direct:${reference.kind}:${reference.id}`) || '').length
+          < reference.body.length
+      )).map(reference => `${reference.kind} ${reference.id} reason=budget`)
+      if (directOmissions.length) {
+        lines.push('MELDWORK_V4_OMITTED_DIRECT_REFERENCE_BODIES_V1', ...directOmissions)
+      }
+      const dependencyOmissions = dependencyArtifacts.flatMap((artifact) => {
+        if (artifact.omission) return [artifact.omission]
+        return (included.get(`dependency:${artifact.key}`) || '').length < artifact.body.length
+          ? [`${artifact.artifactId} reason=budget`]
+          : []
+      })
+      if (dependencyOmissions.length) {
+        lines.push('MELDWORK_V4_OMITTED_ARTIFACT_BODIES_V1', ...dependencyOmissions)
+      }
+      return lines.join('\n')
+    }
+    const maximum = Number.isSafeInteger(limit) && limit >= 0 ? limit : 6000
+    const fullIncluded = new Map([
+      ['objective', assignment.objective],
+      ['expectedOutput', assignment.expectedOutput],
+      ...directReferences.map(reference => [
+        `direct:${reference.kind}:${reference.id}`, reference.body,
+      ]),
+      ...dependencyArtifacts.filter(artifact => artifact.body).map(artifact => [
+        `dependency:${artifact.key}`, artifact.body,
+      ]),
+    ])
+    const full = render(fullIncluded)
+    if (full.length <= maximum) return full
+    const bodyFields = [...fullIncluded.entries()]
+    const bodyLineCount = directReferences.length
+      + dependencyArtifacts.filter(artifact => artifact.body).length
+    let remaining = maximum - render(new Map()).length - bodyLineCount
+    if (remaining < 0) throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+    const included = new Map()
+    let pendingFields = bodyFields.length
+    for (const [key, body] of bodyFields) {
+      const share = pendingFields > 0 ? Math.floor(remaining / pendingFields) : 0
+      const value = body.slice(0, Math.max(0, share))
+      included.set(key, value)
+      remaining -= value.length
+      pendingFields -= 1
+    }
+    const result = render(included)
+    if (result.length > maximum) throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+    return result
+  }
+
+  v4CheckpointRole(phase, slot, coordinationPlan, workAssignment = null) {
+    if (['proposal', 'challenge'].includes(phase)) return 'participant'
+    const assignment = phase === 'work'
+      ? (workAssignment || this.v4CoordinationAssignment(coordinationPlan, slot.agentKind))
+      : (phase === 'synthesis'
+        ? this.v4CoordinationAssignment(coordinationPlan, slot.agentKind, { role: 'integrator' })
+          || this.v4CoordinationAssignment(coordinationPlan, slot.agentKind)
+        : this.v4CoordinationAssignment(coordinationPlan, slot.agentKind))
+    if (phase === 'verification') {
+      if (coordinationPlan?.verifierKinds?.includes(slot.agentKind)) return 'verifier'
+      return assignment?.role || 'writer'
+    }
+    return assignment?.role || 'writer'
+  }
+
+  v4PromptRole(phase, kind, coordinationPlan, workAssignment = null) {
+    if (['proposal', 'challenge'].includes(phase)) return 'participant'
+    if (phase === 'verification') {
+      if (!coordinationPlan?.verifierKinds?.includes(kind)) {
+        throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+      }
+      return 'verifier'
+    }
+    const assignment = phase === 'work'
+      ? workAssignment
+      : (phase === 'synthesis'
+        ? this.v4CoordinationAssignment(coordinationPlan, kind, { role: 'integrator' })
+          || this.v4CoordinationAssignment(coordinationPlan, kind)
+        : this.v4CoordinationAssignment(coordinationPlan, kind))
+    if (!assignment) throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+    return assignment.role
+  }
+
+  v4BlackboardOwner(coordinationPlan, kind) {
+    const assignment = this.v4CoordinationAssignment(coordinationPlan, kind, { role: 'integrator' })
+      || this.v4CoordinationAssignment(coordinationPlan, kind)
+    if (!assignment) {
+      throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+    }
+    return {
+      type: 'agent',
+      agentKind: kind,
+      role: assignment.role,
+    }
+  }
+
+  v4ArtifactContext(
+    receiptRecords, phase, coordinationPlan, kind, limit = 3600, workTaskId = '',
+  ) {
+    let selected = []
+    if (phase === 'work') {
+      const assignment = this.v4CoordinationAssignment(
+        coordinationPlan, kind, { taskId: workTaskId },
+      )
+      const dependencies = new Set(assignment?.dependsOn || [])
+      selected = receiptRecords.filter(record => (
+        record?.receipt?.phase === 'work' && dependencies.has(record.receipt.workItemId)
+      ))
+    } else if (phase === 'synthesis') {
+      const workItems = new Set(coordinationPlan?.assignments?.map(item => item.taskId) || [])
+      selected = receiptRecords.filter(record => (
+        record?.receipt?.phase === 'work' && workItems.has(record.receipt.workItemId)
+      ))
+    } else if (phase === 'verification') {
+      const latest = this.v4LatestReceipt(receiptRecords, 'synthesis')
+      selected = latest ? [latest] : []
+    }
+    const latestByKey = new Map()
+    for (const record of selected) {
+      const receipt = record.receipt
+      const key = receipt.workItemId || `${receipt.phase}:${receipt.agentKind}`
+      latestByKey.set(key, record)
+    }
+    const records = [...latestByKey.values()].sort((left, right) => (
+      String(left.receipt.workItemId || left.receipt.agentKind)
+        .localeCompare(String(right.receipt.workItemId || right.receipt.agentKind))
+    ))
+    if (!records.length) return ''
+    const artifacts = records.flatMap((record, recordIndex) => {
+      const receipt = record.receipt
+      return (receipt.artifactIds || []).map((artifactId, artifactIndex) => ({
+        key: `${recordIndex}:${artifactIndex}`,
+        artifactId,
+        receipt,
+      }))
+    }).map(({ key, artifactId, receipt }) => {
+      let identity
+      try { identity = this.v4ArtifactIdentity(artifactId) } catch {
+        throw new Error('LOCAL_RUN_V4_REFERENCE_INVALID')
+      }
+      const mediaType = String(identity.artifact.contentRef?.mediaType || '')
+      const raw = String(identity.content || '').trim()
+      const body = mediaType === 'text/plain'
+        ? this.v4SanitizeDeliveryText(raw, Number.MAX_SAFE_INTEGER)
+        : ''
+      return {
+        key,
+        artifactId,
+        receipt,
+        mediaType,
+        raw,
+        body,
+        header: `Artifact ${artifactId} from ${receipt.agentKind} work=${receipt.workItemId || receipt.phase}`,
+      }
+    })
+    if (!artifacts.length) return ''
+    const maximum = Number.isSafeInteger(limit) && limit >= 0 ? limit : 3600
+    const textArtifacts = artifacts.filter(artifact => artifact.mediaType === 'text/plain'
+      && artifact.body)
+    const fixedOmissions = artifacts.flatMap((artifact) => {
+      if (artifact.mediaType !== 'text/plain') {
+        return [`${artifact.artifactId} reason=non-text mediaType=${artifact.mediaType || 'unknown'}`]
+      }
+      if (!artifact.raw) return [`${artifact.artifactId} reason=empty`]
+      return artifact.body === artifact.raw
+        ? []
+        : [`${artifact.artifactId} reason=safety-filter`]
+    })
+    const potentialBudgetOmissions = textArtifacts.map(artifact => (
+      `${artifact.artifactId} reason=budget`
+    ))
+    const structuralLines = [
+      'MELDWORK_V4_REFERENCED_ARTIFACTS_V1',
+      ...artifacts.map(artifact => artifact.header),
+    ]
+    const reservedManifest = [...fixedOmissions, ...potentialBudgetOmissions]
+    const reservedLines = reservedManifest.length
+      ? [...structuralLines, 'MELDWORK_V4_OMITTED_ARTIFACT_BODIES_V1', ...reservedManifest]
+      : structuralLines
+    const bodySeparators = textArtifacts.length
+    const bodyBudget = maximum - reservedLines.join('\n').length - bodySeparators
+    if (bodyBudget < 0) throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+    let remaining = bodyBudget
+    let remainingArtifacts = textArtifacts.length
+    const includedByKey = new Map()
+    for (const artifact of textArtifacts) {
+      const share = remainingArtifacts > 0 ? Math.floor(remaining / remainingArtifacts) : 0
+      const included = artifact.body.slice(0, Math.max(0, share))
+      includedByKey.set(artifact.key, included)
+      remaining -= included.length
+      remainingArtifacts -= 1
+    }
+    const budgetOmissions = textArtifacts.filter(artifact => (
+      includedByKey.get(artifact.key).length < artifact.body.length
+    )).map(artifact => `${artifact.artifactId} reason=budget`)
+    const lines = ['MELDWORK_V4_REFERENCED_ARTIFACTS_V1']
+    for (const artifact of artifacts) {
+      lines.push(artifact.header)
+      const included = includedByKey.get(artifact.key) || ''
+      if (included) lines.push(included)
+    }
+    const omissions = [...fixedOmissions, ...budgetOmissions]
+    if (omissions.length) {
+      lines.push('MELDWORK_V4_OMITTED_ARTIFACT_BODIES_V1', ...omissions)
+    }
+    const result = lines.join('\n')
+    if (result.length > maximum) throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+    return result
+  }
+
+  v4DeliveryPrompt(group, controller, input) {
+    const {
+      kind, phase, snapshot, receiptRecords, role, targetKinds, slot, options,
+      sessionBinding, skillHints = [],
+    } = input
+    const full = sessionBinding.sessionRotated === true || sessionBinding.hasSession !== true
+    const packageFloor = phase === 'proposal' ? 0 : collaborationPackageIndexText(targetKinds).length
+    let remaining = 6000 - packageFloor
+    let assignedProposalText = phase === 'challenge'
+      ? this.v4SanitizeDeliveryText(options.assignedProposalText || '', 1600)
+      : ''
+    if (assignedProposalText) {
+      remaining = Math.max(0, remaining - 2)
+      assignedProposalText = assignedProposalText.slice(0, remaining)
+      remaining -= assignedProposalText.length
+    }
+    const rawExtraContext = String(options.extraContext || '').trim()
+    const requestedExtraContext = this.v4SanitizeDeliveryText(rawExtraContext, 6000)
+    const artifactContextPlan = options.artifactContext?.coordinationPlan || null
+    const structuredArtifactContext = ['synthesis', 'verification'].includes(phase)
+      && options.artifactContext && typeof options.artifactContext === 'object'
+      && !Array.isArray(options.artifactContext)
+    if ((phase === 'work' || structuredArtifactContext) && rawExtraContext.length > 6000) {
+      throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+    }
+    if ((phase === 'work' || structuredArtifactContext)
+        && requestedExtraContext !== rawExtraContext) {
+      throw new Error('LOCAL_RUN_V4_ASSIGNMENT_REFERENCE_INVALID')
+    }
+    const extraLimit = Math.max(0, remaining - 2)
+    let extraContext = requestedExtraContext
+    if (structuredArtifactContext) {
+      const artifactLimit = extraLimit - (extraContext ? extraContext.length + 2 : 0)
+      const artifactContext = this.v4ArtifactContext(
+        receiptRecords,
+        phase,
+        artifactContextPlan,
+        kind,
+        Math.max(0, artifactLimit),
+      )
+      extraContext = [extraContext, artifactContext].filter(Boolean).join('\n\n')
+      if (extraContext.length > extraLimit) {
+        throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+      }
+    } else if (extraContext.length > extraLimit) {
+      if (phase === 'work') throw new Error('LOCAL_RUN_V4_DELIVERY_BUDGET_EXCEEDED')
+      const marker = 'MELDWORK_V4_CONTEXT_TRUNCATED_V1'
+      if (extraLimit <= marker.length + 1) {
+        extraContext = ''
+      } else {
+        let prefix = extraContext.slice(0, extraLimit - marker.length - 1)
+        const boundary = prefix.lastIndexOf('\n')
+        if (boundary > 0) prefix = prefix.slice(0, boundary)
+        extraContext = `${prefix.trimEnd()}\n${marker}`
+      }
+    }
+    if (extraContext) remaining -= extraContext.length + 2
+    const packageRecord = phase === 'proposal'
+      ? null
+      : this.v4Package(receiptRecords, {
+          recipientKind: kind,
+          sessionBinding,
+          deliveryState: controller.orchestration?.deliveryState || [],
+          targetKinds,
+          snapshotHash: controller.orchestration?.snapshotHash,
+          forceFull: full,
+          totalLimit: packageFloor + remaining,
+        })
+    const deliveryId = `delivery-${hashValue({
+      runId: controller.runId, recipientKind: kind, slotId: slot.slotId,
+      operationId: slot.operationId, packageHash: packageRecord?.packageHash || '', now: Date.now(),
+    }).slice(0, 64)}`
+    const delivery = packageRecord?.receipts?.length ? {
+      deliveryId,
+      packageHash: packageRecord.packageHash,
+      entries: packageRecord.receipts.map(receipt => ({
+        recipientKind: kind,
+        sessionRefHash: sessionBinding.sessionRefHash,
+        sessionProvenanceHash: sessionBinding.sessionProvenanceHash,
+        sourceAgentKind: receipt.agentKind,
+        sourcePhase: receipt.phase,
+        watermark: receipt.deliveryWatermark,
+        snapshotHash: receipt.snapshotHash,
+        operationId: receipt.operationId,
+        packageHash: packageRecord.packageHash,
+        deliveryId,
+        status: 'prepared',
+        updatedAt: Date.now(),
+      })),
+    } : null
+    if (delivery) {
+      const replaced = new Set(delivery.entries.map(entry => [
+        entry.recipientKind, entry.sessionRefHash, entry.sessionProvenanceHash,
+        entry.sourceAgentKind, entry.sourcePhase,
+      ].join('\u0000')))
+      const deliveryState = [
+        ...(controller.orchestration?.deliveryState || []).filter(entry => !replaced.has([
+          entry.recipientKind, entry.sessionRefHash, entry.sessionProvenanceHash,
+          entry.sourceAgentKind, entry.sourcePhase,
+        ].join('\u0000'))),
+        ...delivery.entries,
+      ].sort((left, right) => [
+        left.recipientKind, left.sessionRefHash, left.sessionProvenanceHash,
+        left.sourceAgentKind, left.sourcePhase,
+      ].join('\u0000').localeCompare([
+        right.recipientKind, right.sessionRefHash, right.sessionProvenanceHash,
+        right.sourceAgentKind, right.sourcePhase,
+      ].join('\u0000')))
+      this.checkpointOrchestration(group, controller, { deliveryState })
+    }
+    return {
+      prompt: this.v4PhasePrompt(group, kind, phase, snapshot, receiptRecords, role, {
+        reviewTarget: options.reviewTarget,
+        assignedProposalText,
+        packageText: packageRecord?.text || '',
+        extraContext,
+        snapshotHash: controller.orchestration?.snapshotHash,
+        skillHints,
+      }),
+      delivery,
+    }
+  }
+
+  v4SetDeliveryStatus(group, controller, delivery, status, binding = null) {
+    if (!delivery?.entries?.length) return
+    const deliveryState = (controller.orchestration?.deliveryState || []).map(entry => {
+      const matched = delivery.entries.some(candidate => candidate.deliveryId === entry.deliveryId
+        && candidate.sourceAgentKind === entry.sourceAgentKind
+        && candidate.sourcePhase === entry.sourcePhase
+        && entry.status === 'prepared')
+      return matched ? {
+        ...entry,
+        ...(binding ? {
+          sessionRefHash: binding.sessionRefHash,
+          sessionProvenanceHash: binding.sessionProvenanceHash,
+        } : {}),
+        status,
+        updatedAt: Date.now(),
+      } : entry
+    }).sort((left, right) => [
+      left.recipientKind, left.sessionRefHash, left.sessionProvenanceHash,
+      left.sourceAgentKind, left.sourcePhase,
+    ].join('\u0000').localeCompare([
+      right.recipientKind, right.sessionRefHash, right.sessionProvenanceHash,
+      right.sourceAgentKind, right.sourcePhase,
+    ].join('\u0000')))
+    this.checkpointOrchestration(group, controller, { deliveryState })
+  }
+
+  v4ChallengeTarget(kind, targetKinds, round = 1, seed = '') {
+    const kinds = Array.isArray(targetKinds) ? targetKinds : []
+    const index = kinds.indexOf(kind)
+    if (index < 0 || kinds.length < 2) return ''
+    const digest = createHash('sha256').update(JSON.stringify([seed, round, kinds])).digest('hex')
+    const offset = 1 + (Number.parseInt(digest.slice(0, 8), 16) % (kinds.length - 1))
+    return kinds[(index + offset) % kinds.length] || ''
+  }
+
+  v4ChallengeBindings({ controller, targetKinds, round, snapshotRecord, slots, receiptRecords }) {
+    const kinds = [...new Set(Array.isArray(targetKinds) ? targetKinds : [])].sort()
+    if (kinds.length < 2 || !Number.isSafeInteger(round) || round < 2) {
+      throw new Error('LOCAL_RUN_V4_CHALLENGE_BINDING_INVALID')
+    }
+    const digest = createHash('sha256').update(JSON.stringify([
+      snapshotRecord?.bodyHash || '', kinds,
+    ])).digest('hex')
+    const initialOffset = 1 + (Number.parseInt(digest.slice(0, 8), 16) % (kinds.length - 1))
+    const offset = 1 + ((initialOffset - 1 + (round - 2)) % (kinds.length - 1))
+    const slotsByKind = new Map(slots.map(slot => [slot.agentKind, slot]))
+    const proposalsByKind = new Map()
+    for (const record of receiptRecords) {
+      const receipt = record?.receipt
+      if (receipt?.phase === 'proposal' && kinds.includes(receipt.agentKind)) {
+        proposalsByKind.set(receipt.agentKind, receipt)
+      }
+    }
+    return kinds.map((reviewerKind, index) => {
+      const proposalKind = kinds[(index + offset) % kinds.length]
+      const reviewerSlot = slotsByKind.get(reviewerKind)
+      const proposalSlot = slotsByKind.get(proposalKind)
+      const proposalReceipt = proposalsByKind.get(proposalKind)
+      if (!reviewerSlot || !proposalSlot || !proposalReceipt) {
+        throw new Error('LOCAL_RUN_V4_CHALLENGE_BINDING_INVALID')
+      }
+      return {
+        round,
+        reviewerKind,
+        reviewerSlotId: reviewerSlot.slotId,
+        reviewerOperationId: this.v4OperationId(
+          controller, reviewerKind, 'challenge', reviewerSlot.slotId,
+        ),
+        proposalKind,
+        proposalSlotId: proposalSlot.slotId,
+        proposalOperationId: proposalReceipt.operationId,
+        proposalReceiptId: proposalReceipt.receiptId,
+        artifactIds: [...(proposalReceipt.artifactIds || [])],
+        evidenceIds: [...(proposalReceipt.evidenceIds || [])],
+      }
+    })
+  }
+
+  v4PhasePrompt(group, kind, phase, snapshot, receiptRecords, role, options = {}) {
+    const collaborationPackage = phase === 'proposal'
+      ? ''
+      : String(options.packageText || this.v4Package(receiptRecords, {
+          recipientKind: kind,
+          forceFull: options.forceFullPackage === true,
+          snapshotHash: options.snapshotHash,
+        }).text)
+    const reviewTarget = phase === 'challenge' ? String(options.reviewTarget || '') : ''
+    const assignedProposalText = phase === 'challenge'
+      ? this.v4SanitizeDeliveryText(options.assignedProposalText || '', 1600) : ''
+    const extraContext = this.v4SanitizeDeliveryText(options.extraContext || '', 6000)
+    return [
+      v4Prompt({ group, kind, phase, snapshot, role, skillHints: options.skillHints }),
+      reviewTarget
+        ? `Coverage responsibility: explicitly incorporate or challenge ${reviewTarget}'s proposal while negotiating with every peer. This coverage duty does not assign responsibilities or authorize you to allocate work for others.`
+        : '',
+      assignedProposalText,
+      collaborationPackage
+        ? `Selected records from completed phases:\n${collaborationPackage}`
+        : '',
+      extraContext,
+    ].filter(Boolean).join('\n\n')
+  }
+
+  recordV4ReviewerFindings({ controller, phase, kind, result, verdict, summary,
+    reviewedArtifactId = '' }) {
+    if (!this.outcomeStore || !['challenge', 'verification'].includes(phase)
+        || !['support', 'contradict'].includes(verdict) || !reviewedArtifactId) return []
+    const trace = result?.pendingMessage?.metadata?.trace || result?.message?.trace || {}
+    const runId = String(controller?.runId || '')
+    const agentRunId = String(trace.agentRunId || '')
+    if (!runId || !agentRunId) return []
+    const sourceEvidenceIds = Array.isArray(result?.outcomeRefs?.evidenceIds)
+      ? result.outcomeRefs.evidenceIds.filter(value => typeof value === 'string').slice(0, 62)
+      : []
+    try {
+      const { artifact, contentHash } = this.v4ArtifactIdentity(reviewedArtifactId)
+      const reviewEvidence = this.outcomeStore.putEvidence({
+        kind: 'review',
+        level: 'observed',
+        subject: { type: 'artifact', artifactId: reviewedArtifactId },
+        summary: publicCollaborationText(summary || '', 4000) || 'Agent review recorded.',
+        recordedBy: { kind: 'agent', runId, agentRunId, agentKind: kind },
+        refs: [
+          { type: 'artifact', artifactId: reviewedArtifactId },
+          { type: 'blob', contentRef: artifact.contentRef, contentHash },
+          ...sourceEvidenceIds.map(evidenceId => ({ type: 'evidence', evidenceId })),
+        ],
+      })
+      const input = {
+        artifactId: reviewedArtifactId,
+        relation: verdict,
+        summary: publicCollaborationText(summary || '', 4000) || 'Agent review recorded.',
+        reviewer: { kind: 'agent', runId, agentRunId, agentKind: kind },
+        evidenceIds: [reviewEvidence.evidenceId],
+      }
+      const candidate = createReviewerFindingRecord(input)
+      try { return [this.outcomeStore.getReviewerFinding(candidate.reviewerFindingId)] }
+      catch { return [this.outcomeStore.putReviewerFinding(candidate)] }
+    } catch {
+      return []
+    }
+  }
+
+  v4ReceiptForResult(result, phase, kind, slot, snapshotHash, options = {}) {
+    const raw = result?.collaboration
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED')
+    }
+    const summary = publicCollaborationText(raw.summary || '', 800)
+    if (!summary) throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    const parsedStatus = publicCollaborationText(raw.status || '', 40)
+    const status = ['completed', 'accepted', 'continue', 'needs-review', 'rejected']
+      .includes(parsedStatus)
+      ? parsedStatus
+      : 'completed'
+    const verdict = publicCollaborationText(raw.verdict || '', 80)
+    const deliveryWatermark = (Number(slot.deliveryWatermark) || 0) + 1
+    const outcomeRefs = phase === 'work'
+      ? (result?.producedOutcomeRefs || {})
+      : (result?.outcomeRefs || {})
+    const artifactIds = Array.isArray(outcomeRefs.artifactIds)
+      ? outcomeRefs.artifactIds.filter(value => typeof value === 'string').slice(0, 64)
+      : []
+    const evidenceIds = Array.isArray(outcomeRefs.evidenceIds)
+      ? outcomeRefs.evidenceIds.filter(value => typeof value === 'string')
+        .slice(0, 64)
+      : []
+    const findingIds = Array.isArray(raw.findingIds)
+      ? raw.findingIds.filter(value => typeof value === 'string').slice(0, 64)
+      : []
+    let unresolved = Array.isArray(raw.unresolved)
+      ? raw.unresolved.filter(value => value && typeof value === 'object')
+        .slice(0, 32)
+        .map(value => ({
+          id: publicCollaborationText(value.id || '', 120),
+          summary: publicCollaborationText(value.summary || '', 800),
+          refs: Array.isArray(value.refs)
+            ? value.refs.filter(ref => typeof ref === 'string').slice(0, 64)
+            : [],
+        }))
+        .filter(value => value.id && value.summary)
+      : []
+    const findings = Array.isArray(raw.findings)
+      ? raw.findings.filter(value => value && typeof value === 'object')
+        .slice(0, 16)
+        .map(value => ({
+          kind: publicCollaborationText(value.kind || 'observation', 80) || 'observation',
+          summary: publicCollaborationText(value.summary || '', 800),
+          ...(value.severity ? { severity: publicCollaborationText(value.severity, 40) } : {}),
+          refs: Array.isArray(value.refs)
+            ? value.refs.filter(ref => typeof ref === 'string').slice(0, 64)
+            : [],
+        }))
+        .filter(value => value.summary)
+      : []
+    const listFieldFrom = (value, limit = 32) => Array.isArray(value)
+      ? value.filter(item => typeof item === 'string').slice(0, limit)
+        .map(item => publicCollaborationText(item, 120))
+        .filter(Boolean)
+      : []
+    const listField = (field, limit = 32) => Array.isArray(raw[field])
+      ? raw[field].filter(value => typeof value === 'string').slice(0, limit)
+      : []
+    const proposedAssignments = Array.isArray(raw.proposedAssignments)
+      ? raw.proposedAssignments.filter(value => value && typeof value === 'object').slice(0, 32)
+        .map(value => ({
+          taskId: publicCollaborationText(value.taskId || '', 120),
+          ownerKind: publicCollaborationText(value.ownerKind || '', 120),
+          role: publicCollaborationText(value.role || '', 40),
+          objective: publicCollaborationText(value.objective || '', 2000),
+          expectedOutput: publicCollaborationText(value.expectedOutput || '', 2000),
+          inputRefs: listFieldFrom(value.inputRefs, 64),
+          artifactIds: listFieldFrom(value.artifactIds, 64),
+          dependsOn: listFieldFrom(value.dependsOn, 32),
+        }))
+        .filter(value => value.taskId && value.ownerKind && value.role
+          && value.objective && value.expectedOutput)
+      : []
+    const reviewerFindings = this.recordV4ReviewerFindings({
+      controller: options.controller,
+      phase,
+      kind,
+      result,
+      verdict,
+      summary,
+      reviewedArtifactId: options.reviewedArtifactId || '',
+    })
+    for (const finding of reviewerFindings) {
+      if (finding?.reviewerFindingId && !findingIds.includes(finding.reviewerFindingId)) {
+        findingIds.push(finding.reviewerFindingId)
+      }
+      for (const evidenceId of finding?.evidenceIds || []) {
+        if (!evidenceIds.includes(evidenceId) && evidenceIds.length < 64) {
+          evidenceIds.push(evidenceId)
+        }
+      }
+    }
+    if (['challenge', 'verification'].includes(phase)
+        && verdict === 'contradict' && unresolved.length === 0) {
+      if (reviewerFindings.length === 0) {
+        throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+      }
+      unresolved = reviewerFindings.slice(0, 32).map(finding => ({
+        id: this.v4IssueId({ receipt: { phase } }, finding.reviewerFindingId),
+        summary: publicCollaborationText(finding.summary || summary, 800) || summary,
+        refs: [finding.reviewerFindingId],
+      }))
+    }
+    const receipt = createCollaborationReceipt({
+      phase,
+      agentKind: kind,
+      slotId: slot.slotId,
+      operationId: slot.operationId,
+      status,
+      summary,
+      conclusion: '',
+      artifactIds,
+      evidenceIds,
+      findingIds,
+      unresolved,
+      findings,
+      claims: Array.isArray(raw.claims)
+        ? raw.claims.filter(value => typeof value === 'string').slice(0, 16)
+        : [],
+      refs: Array.isArray(raw.refs)
+        ? raw.refs.filter(value => typeof value === 'string').slice(0, 64)
+        : [],
+      capabilities: listField('capabilities', 32),
+      intendedWork: listField('intendedWork', 32),
+      deliverables: listField('deliverables', 32),
+      dependencies: listField('dependencies', 32),
+      proposedAssignments,
+      ...(typeof raw.finalizerKind === 'string' && raw.finalizerKind
+        ? { finalizerKind: publicCollaborationText(raw.finalizerKind, 120) } : {}),
+      ...(Array.isArray(raw.verifierKinds)
+        ? { verifierKinds: listField('verifierKinds', 2) } : {}),
+      ...(typeof raw.supportedPlanHash === 'string' && raw.supportedPlanHash
+        ? { supportedPlanHash: raw.supportedPlanHash } : {}),
+      ...(typeof raw.agreeToPlan === 'boolean' ? { agreeToPlan: raw.agreeToPlan } : {}),
+      ...(typeof raw.workItemId === 'string' && raw.workItemId
+        ? { workItemId: publicCollaborationText(raw.workItemId, 120) } : {}),
+      deliveryWatermark,
+      snapshotHash,
+    })
+    const resolvedIssueIds = Array.isArray(raw.resolvedIssueIds)
+      ? raw.resolvedIssueIds
+        .filter(value => typeof value === 'string')
+        .map(value => publicCollaborationText(value, 120))
+        .filter(Boolean)
+        .slice(0, 32)
+      : []
+    return {
+      receipt,
+      verdict,
+      resolvedIssueIds,
+    }
+  }
+
+  v4PhaseSlots({ controller, targetKinds, phase, activeKinds, slots, snapshotHash,
+    writerKind, operationIds = null, allowWrite = false, now = Date.now() }) {
+    const active = new Set(activeKinds)
+    return slots.map((slot, index) => {
+      const running = active.has(slot.agentKind)
+      const previousHistory = Array.isArray(slot.resultRefs?.workflowOutcomeRefs)
+        ? slot.resultRefs.workflowOutcomeRefs
+        : []
+      const operationId = running
+        ? (operationIds?.get(slot.agentKind)
+          || this.v4OperationId(controller, slot.agentKind, phase, slot.slotId))
+        : slot.operationId
+      return {
+        ...slot,
+        slotId: slot.slotId || `slot-${index + 1}-${slot.agentKind}`,
+        phase: running ? phase : (slot.phase || phase),
+        status: running ? 'planned' : (slot.status || 'completed'),
+        operationId,
+        queuePosition: index,
+        snapshotHash,
+        deliveryWatermark: Number(slot.deliveryWatermark) || 0,
+        receiptId: running ? '' : (slot.receiptId || ''),
+        resultHash: running ? '' : (slot.resultHash || ''),
+        assignedAt: slot.assignedAt || now,
+        startedAt: running ? now : (slot.startedAt || now),
+        finishedAt: running ? null : (slot.finishedAt || now),
+        commitStatus: running ? 'pending' : (slot.commitStatus || 'committed'),
+        attempt: (Number.isSafeInteger(slot.attempt) ? slot.attempt : 0) + (running ? 1 : 0),
+        permission: allowWrite && slot.agentKind === writerKind && phase === 'synthesis'
+          ? 'workspace-write'
+          : 'read-only',
+        resultRefs: {
+          artifactIds: Array.isArray(slot.resultRefs?.artifactIds)
+            ? [...slot.resultRefs.artifactIds]
+            : [],
+          evidenceIds: Array.isArray(slot.resultRefs?.evidenceIds)
+            ? [...slot.resultRefs.evidenceIds]
+            : [],
+          workflowOutcomeRefs: [...previousHistory],
+        },
+      }
+    })
+  }
+
+  v4CheckpointPhase(group, controller, {
+    targetKinds, phase, batchId, snapshotRecord, snapshotHash, slots,
+    writerKind, currentKinds = [], pendingKinds = [], receipts = [], commitState = null,
+    challengeBindings = controller.orchestration?.round === controller.currentRound
+      ? controller.orchestration?.challengeBindings
+      : null,
+    synthesisBinding = controller.orchestration?.synthesisBinding || null,
+    synthesisRecovery = controller.orchestration?.synthesisRecovery || null,
+    convergence = controller.orchestration?.convergence || null,
+    coordinationPlan = controller.orchestration?.coordinationPlan || null,
+    workReceipts = controller.orchestration?.workReceipts || [],
+    candidateCommit = controller.orchestration?.candidateCommit || null,
+    workAssignments = [],
+  }) {
+    const workAssignmentsByKind = new Map(workAssignments.map(assignment => (
+      [assignment.ownerKind, assignment]
+    )))
+    const assignments = slots.map((slot, index) => ({
+      agentKind: slot.agentKind,
+      slotId: slot.slotId,
+      role: this.v4CheckpointRole(
+        phase, slot, coordinationPlan, workAssignmentsByKind.get(slot.agentKind) || null,
+      ),
+      operationId: slot.operationId,
+      objective: phase === 'proposal'
+        ? 'Produce an independent bounded proposal.'
+        : (phase === 'work' && workAssignmentsByKind.has(slot.agentKind)
+          ? workAssignmentsByKind.get(slot.agentKind).objective
+          : `Complete the ${phase} collaboration phase using the peer-agreed responsibility plan.`),
+      expectedOutput: phase === 'work' && workAssignmentsByKind.has(slot.agentKind)
+        ? workAssignmentsByKind.get(slot.agentKind).expectedOutput
+        : 'Return a concise structured collaboration result.',
+      inputRefs: receipts.map(item => item.receipt?.receiptId).filter(Boolean).slice(-64),
+      readOnly: !(group.allowWrite === true
+        && slot.agentKind === writerKind && phase === 'synthesis'),
+      index,
+    }))
+    const plan = {
+      version: 1,
+      snapshotHash,
+      assignments: assignments.map(({ index: _index, ...assignment }) => assignment),
+      createdAt: snapshotRecord.capturedAt,
+      barrier: 'phase',
+    }
+    const watermarks = Array.isArray(controller.v4Watermarks)
+      ? controller.v4Watermarks
+      : []
+    const commit = commitState || {
+      status: 'pending',
+      writerKind: writerKind || null,
+      committedKinds: [],
+      pendingKinds: [...targetKinds],
+      operationId: '',
+      attempt: 0,
+      updatedAt: Date.now(),
+      committedSlotIds: [],
+      messageIds: [],
+      blackboardEntryIds: [],
+    }
+    const record = {
+      version: 4,
+      workflow: 'auto',
+      template: 'discussion',
+      phase,
+      batchId,
+      round: Math.max(0, Number(controller.currentRound) || 0),
+      currentKind: '',
+      currentKinds: [...currentKinds],
+      pendingKinds: [...pendingKinds],
+      activeKinds: [...targetKinds],
+      successfulKinds: slots
+        .filter(slot => ['completed', 'partial'].includes(slot.status))
+        .map(slot => slot.agentKind),
+      agreementKinds: [],
+      attachmentRecipients: [],
+      totalSuccesses: slots.filter(slot => slot.status === 'completed').length,
+      terminalFailureOccurred: slots.some(slot => slot.status === 'failed'),
+      snapshotHash,
+      snapshot: snapshotRecord,
+      plan,
+      slots,
+      deliveryWatermarks: watermarks,
+      ...(Array.isArray(controller.orchestration?.deliveryState)
+        ? { deliveryState: controller.orchestration.deliveryState.map(entry => ({ ...entry })) }
+        : {}),
+      commitState: commit,
+      ...(candidateCommit ? { candidateCommit: { ...candidateCommit } } : {}),
+      collaboration: controller.orchestration?.collaboration || emptyCollaborationState(),
+      ...(Array.isArray(challengeBindings)
+        ? { challengeBindings: challengeBindings.map(binding => ({
+            ...binding,
+            artifactIds: [...binding.artifactIds],
+            evidenceIds: [...binding.evidenceIds],
+          })) }
+        : {}),
+      ...(synthesisBinding ? {
+        synthesisBinding: {
+          ...synthesisBinding,
+          candidates: synthesisBinding.candidates.map(candidate => ({
+            ...candidate,
+            ...(candidate.evidence ? { evidence: { ...candidate.evidence } } : {}),
+          })),
+          verificationKinds: [...synthesisBinding.verificationKinds],
+        },
+      } : {}),
+      ...(synthesisRecovery ? {
+        synthesisRecovery: {
+          ...synthesisRecovery,
+          verificationKinds: [...synthesisRecovery.verificationKinds],
+          rankedKinds: [...synthesisRecovery.rankedKinds],
+          triedWriters: [...synthesisRecovery.triedWriters],
+          attempts: synthesisRecovery.attempts.map(attempt => ({ ...attempt })),
+          ...(synthesisRecovery.pendingGate
+            ? { pendingGate: { ...synthesisRecovery.pendingGate } }
+            : {}),
+        },
+      } : {}),
+      ...(convergence ? { convergence: { ...convergence, openIssueIds: [...convergence.openIssueIds] } } : {}),
+      ...(coordinationPlan ? {
+        coordinationPlan: {
+          ...coordinationPlan,
+          assignments: coordinationPlan.assignments.map(assignment => ({ ...assignment })),
+          verifierKinds: [...coordinationPlan.verifierKinds],
+          agreedBy: [...coordinationPlan.agreedBy],
+          ...(coordinationPlan.supportReceiptIds
+            ? { supportReceiptIds: [...coordinationPlan.supportReceiptIds] }
+            : {}),
+        },
+      } : {}),
+      ...(coordinationPlan ? {
+        workReceipts: workReceipts.map(receipt => ({
+          ...receipt,
+          snapshotContentRef: { ...receipt.snapshotContentRef },
+          collaborationReceipt: { ...receipt.collaborationReceipt },
+          artifacts: receipt.artifacts.map(artifact => ({
+            ...artifact,
+            contentRef: { ...artifact.contentRef },
+          })),
+        })),
+      } : {}),
+    }
+    this.checkpointOrchestration(group, controller, record)
+    return record
+  }
+
+  async runV4ProposalBatch(group, controller, threadRootId, phaseInput) {
+    const {
+      targetKinds, writerKind, batchId, snapshotRecord, snapshotHash,
+      phaseSlots, receiptRecords, dispatches,
+    } = phaseInput
+    const phaseReceipts = []
+    const failures = []
+    const pendingKinds = () => phaseSlots
+      .filter(slot => ['planned', 'queued', 'running', 'waiting'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    const checkpoint = () => this.v4CheckpointPhase(group, controller, {
+      targetKinds,
+      phase: 'proposal',
+      batchId,
+      snapshotRecord,
+      snapshotHash,
+      slots: phaseSlots,
+      writerKind,
+      currentKinds: pendingKinds(),
+      pendingKinds: pendingKinds(),
+      receipts: receiptRecords,
+    })
+    const failSlot = (slot, kind, error) => {
+      slot.status = 'failed'
+      slot.commitStatus = 'failed'
+      slot.finishedAt = Date.now()
+      failures.push({ kind, error })
+      if (!controller.signal.aborted) {
+        this.recordAgentFailure(group.id, kind, error, threadRootId, new Set())
+      }
+    }
+
+    for (const slot of phaseSlots) {
+      if (dispatches.some(dispatch => dispatch.kind === slot.agentKind)) slot.status = 'running'
+    }
+    const settled = await Promise.all(dispatches.map(async (dispatch) => {
+      const { kind, slot, context } = dispatch
+      try {
+        const invocation = await this.invokeWithUnauthorizedRecovery({
+          group,
+          kind,
+          controller,
+          activeKinds: targetKinds,
+          threadRootId,
+          context,
+        })
+        if (controller.signal.aborted) {
+          slot.status = 'stopped'
+          slot.commitStatus = 'partial'
+          slot.finishedAt = Date.now()
+          checkpoint()
+          return
+        }
+        const result = invocation.result
+        if (!result) {
+          failSlot(slot, kind, invocation.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE'))
+          checkpoint()
+          return
+        }
+        const reportedOperationId = result?.message?.trace?.context?.operationId
+          || result?.pendingMessage?.metadata?.trace?.context?.operationId
+        if (reportedOperationId && reportedOperationId !== slot.operationId) {
+          throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
+        }
+        const receiptRecord = this.v4ReceiptForResult(
+          result, 'proposal', kind, slot, snapshotHash, { controller },
+        )
+        if (!['completed', 'accepted'].includes(receiptRecord.receipt.status)) {
+          throw new Error('LOCAL_RUN_COLLABORATION_PROPOSAL_UNSUCCESSFUL')
+        }
+        const duplicate = receiptRecords.find(existing => (
+          existing?.receipt?.receiptId === receiptRecord.receipt.receiptId
+        ))
+        if (!duplicate) {
+          phaseReceipts.push(receiptRecord)
+          receiptRecords.push(receiptRecord)
+        }
+        const effectiveReceiptRecord = duplicate || receiptRecord
+        controller.v4ReceiptRecords = receiptRecords
+        slot.status = 'completed'
+        slot.commitStatus = 'pending'
+        slot.finishedAt = Date.now()
+        slot.receiptId = effectiveReceiptRecord.receipt.receiptId
+        slot.deliveryWatermark = effectiveReceiptRecord.receipt.deliveryWatermark
+        slot.resultHash = hashValue(effectiveReceiptRecord.receipt)
+        slot.resultRefs = {
+          artifactIds: result.outcomeRefs?.artifactIds || [],
+          evidenceIds: result.outcomeRefs?.evidenceIds || [],
+          workflowOutcomeRefs: [
+            ...(slot.resultRefs?.workflowOutcomeRefs || []),
+            {
+              receipt: effectiveReceiptRecord.receipt,
+              ...(effectiveReceiptRecord.verdict
+                ? { verdict: effectiveReceiptRecord.verdict }
+                : {}),
+              ...(effectiveReceiptRecord.resolvedIssueIds.length
+                ? { resolvedIssueIds: effectiveReceiptRecord.resolvedIssueIds }
+                : {}),
+            },
+          ],
+        }
+        const watermark = {
+          agentKind: effectiveReceiptRecord.receipt.agentKind,
+          phase: effectiveReceiptRecord.receipt.phase,
+          watermark: effectiveReceiptRecord.receipt.deliveryWatermark,
+          operationId: effectiveReceiptRecord.receipt.operationId,
+          snapshotHash: effectiveReceiptRecord.receipt.snapshotHash,
+          updatedAt: Date.now(),
+        }
+        controller.v4Watermarks = [
+          ...(controller.v4Watermarks || []).filter(existing => (
+            existing.agentKind !== watermark.agentKind || existing.phase !== watermark.phase
+          )),
+          watermark,
+        ]
+        checkpoint()
+      } catch (error) {
+        failSlot(slot, kind, error)
+        checkpoint()
+      }
+    }))
+    void settled
+    checkpoint()
+    controller.currentKind = ''
+    controller.progress = []
+    controller.completedKinds = [...new Set([
+      ...(controller.completedKinds || []),
+      ...phaseSlots.filter(slot => slot.status === 'completed').map(slot => slot.agentKind),
+    ])]
+    controller.failedKinds = [...new Set([
+      ...(controller.failedKinds || []),
+      ...failures.map(item => item.kind),
+    ])]
+    this.emitChanged()
+    return {
+      slots: phaseSlots,
+      receiptRecords,
+      phaseReceipts,
+      failures,
+      synthesisPendingMessage: null,
+      ok: failures.length === 0,
+    }
+  }
+
+  v4AdmitWorkSettlement(group, controller, threadRootId, item, input) {
+    const {
+      targetKinds, writerKind, batchId, snapshotRecord, snapshotHash,
+      phaseSlots, receiptRecords, challengeBindings, coordinationPlan, workAssignments,
+    } = input
+    const slot = phaseSlots.find(candidate => candidate.agentKind === item.kind)
+    const result = item.invocation?.result
+    const liveSlot = controller.orchestration?.slots?.find(candidate => (
+      candidate.slotId === slot?.slotId
+    ))
+    if (!slot || controller.signal.aborted
+        || ['completed', 'failed', 'stopped', 'committed'].includes(
+          controller.orchestration?.phase,
+        )
+        || !liveSlot || liveSlot.operationId !== slot.operationId
+        || !['planned', 'queued', 'running', 'waiting'].includes(liveSlot.status)) {
+      if (slot) {
+        slot.status = 'stopped'
+        slot.commitStatus = 'partial'
+        slot.finishedAt = Date.now()
+      }
+      return { workReceipts: input.workReceipts, failure: null }
+    }
+    if (!result) {
+      const error = item.error || item.invocation?.error
+        || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+      slot.status = 'failed'
+      slot.commitStatus = 'failed'
+      slot.finishedAt = Date.now()
+      this.recordAgentFailure(group.id, item.kind, error, threadRootId, new Set())
+      return { workReceipts: input.workReceipts, failure: { ...item, error } }
+    }
+    try {
+      const resultTrace = result?.message?.trace || result?.pendingMessage?.metadata?.trace
+      const reportedOperationId = result?.operationId || resultTrace?.context?.operationId
+      if (reportedOperationId !== slot.operationId
+          || resultTrace?.runId !== controller.runId) {
+        throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
+      }
+      const receiptRecord = this.v4ReceiptForResult(
+        result, 'work', item.kind, slot, snapshotHash, { controller },
+      )
+      const assignment = workAssignments?.find(candidate => candidate.ownerKind === item.kind)
+      if (!assignment || receiptRecord.receipt.workItemId !== assignment.taskId
+          || !this.v4ReceiptReferencesComplete(receiptRecord, '', {
+            runId: controller.runId,
+            agentRunId: resultTrace?.agentRunId,
+            agentKind: item.kind,
+            operationId: slot.operationId,
+          })) {
+        throw new Error('LOCAL_RUN_V4_WORK_RECEIPT_INVALID')
+      }
+      const exactReceipt = this.v4ExactWorkReceipt(
+        receiptRecord, assignment, slot, snapshotRecord, snapshotHash, coordinationPlan,
+      )
+      const durableReceipts = Array.isArray(controller.orchestration?.workReceipts)
+        ? controller.orchestration.workReceipts
+        : input.workReceipts
+      const appended = appendWorkReceipt(durableReceipts, exactReceipt)
+      const assignmentOrder = new Map(coordinationPlan.assignments.map((candidate, index) => (
+        [candidate.taskId, index]
+      )))
+      const workReceipts = [...appended].sort((left, right) => (
+        assignmentOrder.get(left.taskId) - assignmentOrder.get(right.taskId)
+      ))
+      const duplicate = receiptRecords.find(existing => (
+        existing?.receipt?.receiptId === receiptRecord.receipt.receiptId
+      ))
+      if (!duplicate) receiptRecords.push(receiptRecord)
+      const effectiveReceiptRecord = duplicate || receiptRecord
+      if (!duplicate) input.phaseReceipts.push(receiptRecord)
+      controller.v4ReceiptRecords = receiptRecords
+      controller.v4WorkReceipts = workReceipts
+      slot.status = 'completed'
+      slot.commitStatus = 'pending'
+      slot.finishedAt = Date.now()
+      slot.receiptId = effectiveReceiptRecord.receipt.receiptId
+      slot.deliveryWatermark = effectiveReceiptRecord.receipt.deliveryWatermark
+      slot.resultHash = hashValue(effectiveReceiptRecord.receipt)
+      slot.resultRefs = {
+        artifactIds: result.producedOutcomeRefs?.artifactIds || [],
+        evidenceIds: result.producedOutcomeRefs?.evidenceIds || [],
+        workflowOutcomeRefs: [
+          ...(slot.resultRefs?.workflowOutcomeRefs || []),
+          ...(!duplicate ? [{ receipt: effectiveReceiptRecord.receipt }] : []),
+        ],
+      }
+      const watermark = {
+        agentKind: effectiveReceiptRecord.receipt.agentKind,
+        phase: effectiveReceiptRecord.receipt.phase,
+        watermark: effectiveReceiptRecord.receipt.deliveryWatermark,
+        operationId: effectiveReceiptRecord.receipt.operationId,
+        snapshotHash: effectiveReceiptRecord.receipt.snapshotHash,
+        updatedAt: Date.now(),
+      }
+      controller.v4Watermarks = [
+        ...(controller.v4Watermarks || []).filter(existing => (
+          existing.agentKind !== watermark.agentKind || existing.phase !== watermark.phase
+        )),
+        watermark,
+      ]
+      const pendingKinds = phaseSlots.filter(candidate => (
+        ['planned', 'queued', 'running', 'waiting'].includes(candidate.status)
+      )).map(candidate => candidate.agentKind)
+      this.v4CheckpointPhase(group, controller, {
+        targetKinds,
+        phase: 'work',
+        batchId,
+        snapshotRecord,
+        snapshotHash,
+        slots: phaseSlots,
+        writerKind,
+        currentKinds: pendingKinds,
+        pendingKinds,
+        receipts: receiptRecords,
+        challengeBindings,
+        coordinationPlan,
+        workReceipts,
+        workAssignments,
+      })
+      return { workReceipts, failure: null }
+    } catch (error) {
+      if (error?.message === 'LOCAL_RUN_PERSIST_FAILED'
+          || String(error?.message || '').startsWith('TEST_CRASH:')) throw error
+      slot.status = 'failed'
+      slot.commitStatus = 'failed'
+      slot.finishedAt = Date.now()
+      this.recordAgentFailure(group.id, item.kind, error, threadRootId, new Set())
+      return { workReceipts: input.workReceipts, failure: { ...item, error } }
+    }
+  }
+
+  async runV4Phase(group, controller, threadRootId, context, phaseInput) {
+    const {
+      phase, activeKinds, targetKinds, writerKind, batchId,
+      snapshot, snapshotRecord, snapshotHash, slots, receiptRecords, challengeBindings,
+    } = phaseInput
+    const coordinationPlan = phaseInput.coordinationPlan || null
+    const workAssignments = phase === 'work' && Array.isArray(phaseInput.workAssignments)
+      ? phaseInput.workAssignments
+      : []
+    const workAssignmentsByKind = new Map(workAssignments.map(assignment => (
+      [assignment.ownerKind, assignment]
+    )))
+    if (phase === 'work' && (workAssignments.length !== activeKinds.length
+        || workAssignmentsByKind.size !== activeKinds.length
+        || activeKinds.some(kind => {
+          const assignment = workAssignmentsByKind.get(kind)
+          return !assignment || !coordinationPlan?.assignments?.some(candidate => (
+            candidate.taskId === assignment.taskId && candidate.ownerKind === kind
+          ))
+        }))) {
+      throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+    }
+    let workReceipts = Array.isArray(phaseInput.workReceipts)
+      ? [...phaseInput.workReceipts]
+      : []
+    const deliveryReceiptRecords = Array.isArray(phaseInput.deliveryReceiptRecords)
+      ? phaseInput.deliveryReceiptRecords
+      : [...receiptRecords]
+    const workContextLimit = Math.max(
+      0, 6000 - collaborationPackageIndexText(targetKinds).length - 2,
+    )
+    const extraContextFor = kind => phase === 'work'
+      ? this.v4WorkAssignmentText(
+          coordinationPlan,
+          kind,
+          workAssignmentsByKind.get(kind)?.taskId,
+          snapshot,
+          workContextLimit,
+          deliveryReceiptRecords,
+        )
+      : (phase === 'challenge' ? phaseInput.coordinationText || '' : '')
+    let synthesisRecovery = phaseInput.synthesisRecovery || null
+    const synthesisAttempt = phase === 'synthesis'
+      ? this.v4ActiveSynthesisAttempt(synthesisRecovery)
+      : null
+    const operationIds = synthesisAttempt
+      ? new Map([[synthesisAttempt.writerKind, synthesisAttempt.operationId]])
+      : (phase === 'work'
+        ? new Map(activeKinds.map((kind) => {
+            const slot = slots.find(candidate => candidate.agentKind === kind)
+            const assignment = workAssignmentsByKind.get(kind)
+            return [kind, this.v4OperationId(
+              controller, kind, `work:${assignment.taskId}`, slot?.slotId || '',
+            )]
+          }))
+        : null)
+    const phaseSlots = this.v4PhaseSlots({
+      controller,
+      targetKinds,
+      phase,
+      activeKinds,
+      slots,
+      snapshotHash,
+      writerKind,
+      operationIds,
+      allowWrite: group.allowWrite === true,
+    })
+    const activeSet = new Set(activeKinds)
+    const phaseReceipts = []
+    const snapshotSourceMessageIds = [snapshot.messageId, ...snapshot.history.map(item => item.id)]
+    this.v4CheckpointPhase(group, controller, {
+      targetKinds,
+      phase,
+      batchId,
+      snapshotRecord,
+      snapshotHash,
+      slots: phaseSlots.map(slot => ({
+        ...slot,
+        status: activeSet.has(slot.agentKind)
+          ? (phase === 'synthesis' ? 'queued' : 'running')
+          : slot.status,
+      })),
+      writerKind,
+      currentKinds: activeKinds,
+      pendingKinds: activeKinds,
+      receipts: receiptRecords,
+      challengeBindings,
+      synthesisRecovery,
+      coordinationPlan,
+      workReceipts,
+      workAssignments,
+    })
+    this.emitChanged()
+
+    if (phase === 'proposal') {
+      const dispatches = activeKinds.map(kind => {
+        const slot = phaseSlots.find(candidate => candidate.agentKind === kind)
+        const prompt = this.v4PhasePrompt(
+          group, kind, phase, snapshot, receiptRecords, 'participant', {
+            reviewTarget: '',
+            packageText: '',
+            skillHints: context.rootSkillsByKind.get(kind) || [],
+          },
+        )
+        return {
+          kind,
+          slot,
+          context: {
+            v4: true,
+            phase,
+            batchId,
+            slotId: slot.slotId,
+            snapshotHash,
+            sessionPolicy: 'frozen',
+            promptOverride: prompt,
+            contextPackId: controller.contextPackId,
+            snapshotSourceMessageIds,
+            snapshotSourceEntries: snapshot.history,
+            permissionMode: 'read-only',
+            singleWriterKind: writerKind,
+            parallelGraph: true,
+            deferMessage: true,
+            operationId: slot.operationId,
+            skillHints: context.rootSkillsByKind.get(kind) || [],
+            knowledgeBaseHints: context.rootKnowledgeBasesByKind.get(kind) || [],
+          },
+        }
+      })
+      return this.runV4ProposalBatch(group, controller, threadRootId, {
+        targetKinds,
+        writerKind,
+        batchId,
+        snapshotRecord,
+        snapshotHash,
+        phaseSlots,
+        receiptRecords,
+        dispatches,
+      })
+    }
+
+    const failures = []
+    let synthesisPendingMessage = null
+    let workAdmissionClosed = false
+    let workAdmissionTail = Promise.resolve()
+    const admitWork = (item) => {
+      const admission = workAdmissionTail.then(() => {
+        if (workAdmissionClosed) return { ...item, workSettled: true }
+        const admitted = this.v4AdmitWorkSettlement(
+          group, controller, threadRootId, item, {
+            targetKinds,
+            writerKind,
+            batchId,
+            snapshotRecord,
+            snapshotHash,
+            phaseSlots,
+            receiptRecords,
+            challengeBindings,
+            coordinationPlan,
+            workReceipts,
+            phaseReceipts,
+            workAssignments,
+          },
+        )
+        workReceipts = admitted.workReceipts
+        if (admitted.failure) failures.push(admitted.failure)
+        return { ...item, workSettled: true }
+      })
+      workAdmissionTail = admission.catch(() => { workAdmissionClosed = true })
+      return admission
+    }
+    const settled = await Promise.all(activeKinds.map(async kind => {
+      const slot = phaseSlots.find(candidate => candidate.agentKind === kind)
+      const challengeBinding = phase === 'challenge'
+        ? challengeBindings?.find(binding => binding.reviewerKind === kind) || null
+        : null
+      const assignedProposalText = challengeBinding
+        ? this.v4ChallengeProposalText(challengeBinding, kind)
+        : ''
+      const role = this.v4PromptRole(
+        phase, kind, coordinationPlan, workAssignmentsByKind.get(kind) || null,
+      )
+      const extraContext = extraContextFor(kind)
+      const prompt = this.v4PhasePrompt(
+        group,
+        kind,
+        phase,
+        snapshot,
+        deliveryReceiptRecords,
+        role,
+        {
+          reviewTarget: phase === 'challenge'
+            ? challengeBinding?.proposalKind || ''
+            : '',
+          assignedProposalText,
+          packageText: '',
+          extraContext,
+          snapshotHash,
+          skillHints: context.rootSkillsByKind.get(kind) || [],
+        },
+      )
+      let preparedDelivery = null
+      let item
+      try {
+        const invocation = await this.invokeWithUnauthorizedRecovery({
+          group,
+          kind,
+          controller,
+          activeKinds: targetKinds,
+          threadRootId,
+          context: {
+            v4: true,
+            phase,
+            batchId,
+            slotId: slot.slotId,
+            snapshotHash,
+            sessionPolicy: 'frozen',
+            promptOverride: prompt,
+            contextPackId: controller.contextPackId,
+            snapshotSourceMessageIds,
+            snapshotSourceEntries: snapshot.history,
+            permissionMode: group.allowWrite === true
+              && phase === 'synthesis' && kind === writerKind
+              ? 'workspace-write'
+              : 'read-only',
+            singleWriterKind: writerKind,
+            parallelGraph: true,
+            deferMessage: true,
+            operationId: slot.operationId,
+            v4SynthesisRecovery: phase === 'synthesis',
+            onLeaseAcquired: phase === 'synthesis'
+              ? (leaseState) => {
+                  const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+                  if (!activeAttempt || activeAttempt.operationId !== slot.operationId) {
+                    throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+                  }
+                  synthesisRecovery = this.v4UpdateSynthesisAttempt(
+                    synthesisRecovery,
+                    activeAttempt.operationId,
+                    {
+                      status: 'leased',
+                      permission: leaseState?.permissionMode === 'workspace-write'
+                        ? 'workspace-write' : 'read-only',
+                      leaseAcquired: true,
+                      sideEffectsPossible: leaseState?.sideEffectsPossible === true,
+                      outcomeCertainty: leaseState?.sideEffectsPossible === true
+                        ? 'unknown_outcome' : 'not_started',
+                    },
+                  )
+                  slot.status = 'running'
+                  this.v4CheckpointPhase(group, controller, {
+                    targetKinds,
+                    phase,
+                    batchId,
+                    snapshotRecord,
+                    snapshotHash,
+                    slots: phaseSlots,
+                    writerKind,
+                    currentKinds: activeKinds,
+                    pendingKinds: activeKinds,
+                    receipts: receiptRecords,
+                    challengeBindings,
+                    synthesisRecovery,
+                    coordinationPlan,
+                    workReceipts,
+                    workAssignments,
+                  })
+                }
+              : undefined,
+            v4PromptBuilder: (sessionBinding) => {
+              const built = this.v4DeliveryPrompt(group, controller, {
+                kind, phase, snapshot, receiptRecords: deliveryReceiptRecords,
+                role, targetKinds, slot,
+                options: {
+                  reviewTarget: phase === 'challenge'
+                    ? challengeBinding?.proposalKind || ''
+                    : '',
+                  assignedProposalText,
+                  extraContext,
+                  ...(['synthesis', 'verification'].includes(phase)
+                    ? { artifactContext: { coordinationPlan } }
+                    : {}),
+                },
+                sessionBinding,
+                skillHints: context.rootSkillsByKind.get(kind) || [],
+              })
+              preparedDelivery = built.delivery
+              return built
+            },
+            skillHints: context.rootSkillsByKind.get(kind) || [],
+            knowledgeBaseHints: context.rootKnowledgeBasesByKind.get(kind) || [],
+          },
+        })
+        if (invocation.result?.v4Delivery) {
+          this.v4SetDeliveryStatus(
+            group, controller, invocation.result.v4Delivery, 'acknowledged',
+            invocation.result.v4SessionBinding,
+          )
+        } else if (preparedDelivery) {
+          this.v4SetDeliveryStatus(group, controller, preparedDelivery, 'uncertain')
+        }
+        item = { kind, invocation }
+      } catch (error) {
+        if (preparedDelivery) this.v4SetDeliveryStatus(group, controller, preparedDelivery, 'uncertain')
+        item = { kind, error }
+      }
+      return phase === 'work' ? admitWork(item) : item
+    }))
+
+    for (const item of phase === 'work' ? [] : settled) {
+      const slot = phaseSlots.find(candidate => candidate.agentKind === item.kind)
+      const result = item.invocation?.result
+      if (controller.signal.aborted) {
+        slot.status = 'stopped'
+        slot.commitStatus = 'partial'
+        slot.finishedAt = Date.now()
+        continue
+      }
+      if (!result) {
+        const error = item.error || item.invocation?.error
+          || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+        slot.status = 'failed'
+        slot.commitStatus = 'failed'
+        slot.finishedAt = Date.now()
+        failures.push({ ...item, error })
+        if (!controller.signal.aborted) {
+          this.recordAgentFailure(group.id, item.kind, error, threadRootId, new Set())
+        }
+        if (phase === 'synthesis' && synthesisRecovery) {
+          const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+          if (activeAttempt?.operationId === slot.operationId) {
+            const failure = error?.invocationFailure || {}
+            const unknownWrite = activeAttempt.permission === 'workspace-write'
+              && activeAttempt.leaseAcquired
+              && failure.outcomeCertainty !== 'not_started'
+              && failure.outcomeCertainty !== 'known_failed'
+            synthesisRecovery = this.v4UpdateSynthesisAttempt(
+              synthesisRecovery,
+              activeAttempt.operationId,
+              unknownWrite ? {
+                status: 'unknown_outcome',
+                sideEffectsPossible: true,
+                outcomeCertainty: 'unknown_outcome',
+              } : {
+                status: 'failed',
+                sideEffectsPossible: false,
+                outcomeCertainty: failure.outcomeCertainty === 'not_started'
+                  ? 'not_started' : 'known_failed',
+              },
+            )
+          }
+        }
+        continue
+      }
+      try {
+        const reportedOperationId = result?.message?.trace?.context?.operationId
+          || result?.pendingMessage?.metadata?.trace?.context?.operationId
+        if (reportedOperationId && reportedOperationId !== slot.operationId) {
+          throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
+        }
+        const receiptRecord = this.v4ReceiptForResult(
+          result,
+          phase,
+          item.kind,
+          slot,
+          snapshotHash,
+          {
+            controller,
+            reviewedArtifactId: phase === 'challenge'
+              ? challengeBindings?.find(binding => (
+                binding.reviewerKind === item.kind
+              ))?.artifactIds?.[0] || ''
+              : (phase === 'verification'
+                ? [...receiptRecords].reverse().find(record => (
+                  record.receipt?.phase === 'synthesis'
+                ))?.receipt?.artifactIds?.[0] || ''
+                : ''),
+          },
+        )
+        if (phase === 'work') {
+          const assignment = workAssignmentsByKind.get(item.kind)
+          if (!assignment || receiptRecord.receipt.workItemId !== assignment.taskId) {
+            throw new Error('LOCAL_RUN_V4_WORK_RECEIPT_INVALID')
+          }
+          if (!this.v4ReceiptReferencesComplete(receiptRecord)) {
+            throw new Error('LOCAL_RUN_V4_WORK_RECEIPT_INVALID')
+          }
+        }
+        const duplicate = receiptRecords.find(existing => (
+          existing?.receipt?.receiptId === receiptRecord.receipt.receiptId
+        ))
+        if (!duplicate) {
+          phaseReceipts.push(receiptRecord)
+          receiptRecords.push(receiptRecord)
+        }
+        const effectiveReceiptRecord = duplicate || receiptRecord
+        controller.v4ReceiptRecords = receiptRecords
+        slot.status = 'completed'
+        slot.commitStatus = 'pending'
+        slot.finishedAt = Date.now()
+        slot.receiptId = effectiveReceiptRecord.receipt.receiptId
+        slot.deliveryWatermark = effectiveReceiptRecord.receipt.deliveryWatermark
+        slot.resultHash = hashValue(effectiveReceiptRecord.receipt)
+        slot.resultRefs = {
+          artifactIds: result.outcomeRefs?.artifactIds || [],
+          evidenceIds: result.outcomeRefs?.evidenceIds || [],
+          workflowOutcomeRefs: [
+            ...(slot.resultRefs?.workflowOutcomeRefs || []),
+            {
+              receipt: effectiveReceiptRecord.receipt,
+              ...(effectiveReceiptRecord.verdict ? { verdict: effectiveReceiptRecord.verdict } : {}),
+              ...(effectiveReceiptRecord.resolvedIssueIds.length
+                ? { resolvedIssueIds: effectiveReceiptRecord.resolvedIssueIds }
+                : {}),
+            },
+          ],
+        }
+        if (phase === 'synthesis' && !duplicate) {
+          synthesisPendingMessage = result.pendingMessage || result.message || null
+        }
+        if (phase === 'synthesis' && synthesisRecovery) {
+          const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+          if (!activeAttempt || activeAttempt.operationId !== slot.operationId) {
+            throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
+          }
+          synthesisRecovery = this.v4UpdateSynthesisAttempt(
+            synthesisRecovery,
+            activeAttempt.operationId,
+            { status: 'completed', outcomeCertainty: 'succeeded' },
+          )
+        }
+      } catch (error) {
+        slot.status = 'failed'
+        slot.commitStatus = 'failed'
+        slot.finishedAt = Date.now()
+        failures.push({ ...item, error })
+        if (phase === 'synthesis' && synthesisRecovery) {
+          const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+          if (activeAttempt?.operationId === slot.operationId) {
+            const failure = error?.invocationFailure || {}
+            const unknownWrite = activeAttempt.permission === 'workspace-write'
+              && activeAttempt.leaseAcquired
+              && failure.outcomeCertainty !== 'not_started'
+              && failure.outcomeCertainty !== 'known_failed'
+            synthesisRecovery = this.v4UpdateSynthesisAttempt(
+              synthesisRecovery,
+              activeAttempt.operationId,
+              unknownWrite ? {
+                status: 'unknown_outcome',
+                sideEffectsPossible: true,
+                outcomeCertainty: 'unknown_outcome',
+              } : {
+                status: 'failed',
+                sideEffectsPossible: false,
+                outcomeCertainty: failure.outcomeCertainty === 'not_started'
+                  ? 'not_started' : 'known_failed',
+              },
+            )
+          }
+        }
+        if (!controller.signal.aborted) {
+          this.recordAgentFailure(group.id, item.kind, error, threadRootId, new Set())
+        }
+      }
+    }
+    const newWatermarks = phaseReceipts.map(item => ({
+      agentKind: item.receipt.agentKind,
+      phase: item.receipt.phase,
+      watermark: item.receipt.deliveryWatermark,
+      operationId: item.receipt.operationId,
+      snapshotHash: item.receipt.snapshotHash,
+      updatedAt: Date.now(),
+    }))
+    controller.v4Watermarks = [
+      ...(controller.v4Watermarks || []).filter(existing => (
+        !newWatermarks.some(next => (
+          next.agentKind === existing.agentKind && next.phase === existing.phase
+        ))
+      )),
+      ...newWatermarks,
+    ]
+    if (phase === 'synthesis') {
+      const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+      if (activeAttempt?.status === 'unknown_outcome' && !synthesisRecovery.pendingGate) {
+        synthesisRecovery = {
+          ...synthesisRecovery,
+          pendingGate: this.v4SynthesisRecoveryGate(controller, synthesisRecovery),
+        }
+      }
+    }
+    this.v4CheckpointPhase(group, controller, {
+      targetKinds,
+      phase,
+      batchId,
+      snapshotRecord,
+      snapshotHash,
+      slots: phaseSlots,
+      writerKind,
+      currentKinds: [],
+      pendingKinds: [],
+      receipts: receiptRecords,
+      challengeBindings,
+      synthesisRecovery,
+      coordinationPlan,
+      workReceipts,
+      workAssignments,
+    })
+    controller.currentKind = ''
+    controller.progress = []
+    controller.completedKinds = [...new Set([
+      ...(controller.completedKinds || []),
+      ...activeKinds.filter(kind => !failures.some(item => item.kind === kind)),
+    ])]
+    controller.failedKinds = [...new Set([
+      ...(controller.failedKinds || []),
+      ...failures.map(item => item.kind),
+    ])]
+    this.emitChanged()
+    return {
+      slots: phaseSlots,
+      receiptRecords,
+      phaseReceipts,
+      failures,
+      synthesisPendingMessage,
+      synthesisRecovery,
+      workReceipts,
+      ok: failures.length === 0,
+    }
+  }
+
+  v4LatestReceipt(receiptRecords, phase, agentKind = '') {
+    return [...receiptRecords].reverse().find(record => (
+      record?.receipt?.phase === phase
+      && (!agentKind || record.receipt.agentKind === agentKind)
+    )) || null
+  }
+
+  v4WorkState(workReceipts, coordinationPlan) {
+    if (!coordinationPlan) throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
+    const completed = new Map()
+    for (const assignment of coordinationPlan.assignments) {
+      const exactReceipt = (Array.isArray(workReceipts) ? workReceipts : []).find(candidate => (
+        candidate?.planHash === coordinationPlan.planHash
+        && candidate.taskId === assignment.taskId
+        && candidate.ownerKind === assignment.ownerKind
+      ))
+      if (!exactReceipt) continue
+      const record = { receipt: exactReceipt.collaborationReceipt }
+      if (!this.v4ReceiptReferencesComplete(record)
+          || exactReceipt.artifacts.some((binding) => {
+            const identity = this.v4ArtifactIdentity(binding.artifactId)
+            return identity.contentHash !== binding.contentHash
+              || canonicalJson(identity.artifact.contentRef) !== canonicalJson(binding.contentRef)
+          })) {
+        throw new Error('LOCAL_RUN_V4_WORK_RECEIPT_INVALID')
+      }
+      completed.set(assignment.taskId, exactReceipt)
+    }
+    const pending = coordinationPlan.assignments.filter(assignment => !completed.has(assignment.taskId))
+    const ready = pending.filter(assignment => (
+      assignment.dependsOn.every(taskId => completed.has(taskId))
+    ))
+    return { completed, pending, ready }
+  }
+
+  v4ArtifactIdentity(artifactId) {
+    if (!this.outcomeStore || !this.outcomeStore.contentBlobStore) {
+      throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+    }
+    try {
+      const artifact = this.outcomeStore.getArtifact(artifactId)
+      if (!artifact?.contentRef || artifact.contentHash !== artifact.contentRef.hash) {
+        throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+      }
+      const bytes = this.outcomeStore.contentBlobStore.read(artifact.contentRef)
+      const contentHash = createHash('sha256').update(bytes).digest('hex')
+      if (contentHash !== artifact.contentHash) {
+        throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+      }
+      return {
+        artifact,
+        contentHash,
+        content: artifact.contentRef?.mediaType === 'text/plain'
+          ? bytes.toString('utf8')
+          : '',
+      }
+    } catch (error) {
+      if (error?.message === 'LOCAL_RUN_V4_CANDIDATE_INVALID') throw error
+      throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+    }
+  }
+
+  v4CandidateIdentity(record) {
+    const artifactId = record?.receipt?.artifactIds?.[0]
+    if (typeof artifactId !== 'string') throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+    const { contentHash } = this.v4ArtifactIdentity(artifactId)
+    return { artifactId, contentHash }
+  }
+
+  v4EvidenceRecord(evidenceId, errorCode = 'LOCAL_RUN_V4_REFERENCE_INVALID') {
+    try {
+      const evidence = this.outcomeStore.getEvidence(evidenceId)
+      const concrete = evidence.refs.some(reference => (
+        reference.type === 'artifact'
+        || reference.type === 'evidence'
+        || reference.type === 'blob'
+        || (reference.type === 'location' && Boolean(reference.contentHash))
+      ))
+      if (!concrete) throw new Error(errorCode)
+      return evidence
+    } catch (error) {
+      if (error?.message === errorCode) throw error
+      throw new Error(errorCode)
+    }
+  }
+
+  v4EvidenceSupportsArtifact(evidenceId, artifactId, contentHash, seen = new Set()) {
+    if (seen.has(evidenceId)) return false
+    seen.add(evidenceId)
+    const evidence = this.v4EvidenceRecord(
+      evidenceId, 'LOCAL_RUN_V4_REVIEW_FINDING_INVALID',
+    )
+    const artifactBound = evidence.subject?.type === 'artifact'
+      && evidence.subject.artifactId === artifactId
+      || evidence.refs.some(reference => (
+        reference.type === 'artifact' && reference.artifactId === artifactId
+      ))
+    const contentBound = evidence.refs.some(reference => (
+      reference.type === 'blob' && reference.contentHash === contentHash
+    ))
+    if (artifactBound && contentBound) return true
+    return evidence.refs.some(reference => (
+      reference.type === 'evidence'
+      && this.v4EvidenceSupportsArtifact(
+        reference.evidenceId, artifactId, contentHash, seen,
+      )
+    ))
+  }
+
+  v4ReceiptReferencesComplete(record, expectedArtifactId = '', expectedProducer = null) {
+    const receipt = record?.receipt
+    if (!receipt || !['completed', 'accepted'].includes(receipt.status)
+        || !receipt.artifactIds?.length || !receipt.evidenceIds?.length) return false
+    const artifacts = new Map()
+    for (const artifactId of receipt.artifactIds) {
+      const identity = this.v4ArtifactIdentity(artifactId)
+      artifacts.set(artifactId, identity)
+    }
+    const evidences = receipt.evidenceIds.map(evidenceId => this.v4EvidenceRecord(evidenceId))
+    if (expectedProducer) {
+      const runId = String(expectedProducer.runId || '')
+      const agentRunId = String(expectedProducer.agentRunId || '')
+      const agentKind = String(expectedProducer.agentKind || '')
+      const operationId = String(expectedProducer.operationId || '')
+      if (!runId || !agentRunId || !agentKind || !operationId
+          || receipt.agentKind !== agentKind || receipt.operationId !== operationId) return false
+      const evidenceBindings = evidences.map((evidence) => {
+        const recorder = evidence.recordedBy || {}
+        const recorderBound = recorder.kind === 'system'
+          ? recorder.actorId === 'meldwork-main'
+          : recorder.kind === 'agent'
+            && recorder.runId === runId
+            && recorder.agentRunId === agentRunId
+            && recorder.agentKind === agentKind
+        if (!recorderBound) return null
+        const boundArtifactIds = new Set([...artifacts.entries()]
+          .filter(([artifactId, identity]) => {
+            const artifactBound = evidence.subject?.type === 'artifact'
+              && evidence.subject.artifactId === artifactId
+              || evidence.refs.some(reference => (
+                reference.type === 'artifact' && reference.artifactId === artifactId
+              ))
+            const contentBound = evidence.refs.some(reference => (
+              reference.type === 'blob'
+                && reference.contentHash === identity.contentHash
+                && canonicalJson(reference.contentRef)
+                  === canonicalJson(identity.artifact.contentRef)
+            ))
+            return artifactBound && contentBound
+          })
+          .map(([artifactId]) => artifactId))
+        if (recorder.kind === 'system' && !boundArtifactIds.size) return null
+        return boundArtifactIds
+      })
+      if (evidenceBindings.some(binding => !binding)) return false
+      return [...artifacts.entries()].every(([artifactId, identity]) => {
+        const artifact = identity.artifact
+        return artifact.producedBy?.runId === runId
+          && artifact.producedBy?.agentRunId === agentRunId
+          && artifact.producedBy?.agentKind === agentKind
+          && evidenceBindings.some(binding => binding.has(artifactId))
+      })
+    }
+    const artifactId = expectedArtifactId || receipt.artifactIds[0]
+    const identity = artifacts.get(artifactId)
+    if (!identity) return false
+    return evidences.some(evidence => {
+      const artifactBound = evidence.subject?.type === 'artifact'
+        && evidence.subject.artifactId === artifactId
+        || evidence.refs.some(reference => (
+          reference.type === 'artifact' && reference.artifactId === artifactId
+        ))
+      const contentBound = evidence.refs.some(reference => (
+        reference.type === 'blob' && reference.contentHash === identity.contentHash
+      ))
+      return artifactBound && contentBound
+    })
+  }
+
+  v4TrustedSynthesisResult({
+    controller, slots, activeAttempt, synthesisRecovery, coordinationPlan, snapshotHash,
+  }) {
+    try {
+      const rankedKinds = coordinationRecoveryKinds(coordinationPlan)
+      if (!activeAttempt || !synthesisRecovery || !coordinationPlan?.planHash
+          || coordinationPlan.snapshotHash !== snapshotHash
+          || synthesisRecovery.originalWriterKind !== coordinationPlan.finalizerKind
+          || synthesisRecovery.activeWriterKind !== activeAttempt.writerKind
+          || canonicalJson(synthesisRecovery.rankedKinds) !== canonicalJson(rankedKinds)
+          || synthesisRecovery.rankingFingerprint !== hashValue({
+            planHash: coordinationPlan.planHash,
+            rankedKinds,
+          })) return false
+      const slot = slots.find(candidate => candidate.slotId === activeAttempt.slotId)
+      if (!slot || slot.agentKind !== activeAttempt.writerKind
+          || slot.operationId !== activeAttempt.operationId
+          || slot.snapshotHash !== snapshotHash) return false
+      const records = Array.isArray(slot.resultRefs?.workflowOutcomeRefs)
+        ? slot.resultRefs.workflowOutcomeRefs
+        : []
+      const record = [...records].reverse().find(candidate => {
+        const receipt = candidate?.receipt
+        return receipt?.phase === 'synthesis'
+          && receipt.agentKind === activeAttempt.writerKind
+          && receipt.slotId === activeAttempt.slotId
+          && receipt.operationId === activeAttempt.operationId
+          && receipt.snapshotHash === snapshotHash
+          && ['completed', 'accepted'].includes(receipt.status)
+      })
+      const receipt = record?.receipt
+      if (!receipt?.artifactIds?.length || !receipt.evidenceIds?.length
+          || canonicalJson(receipt.artifactIds)
+            !== canonicalJson(slot.resultRefs?.artifactIds || [])
+          || canonicalJson(receipt.evidenceIds)
+            !== canonicalJson(slot.resultRefs?.evidenceIds || [])) return false
+      return receipt.artifactIds.every((artifactId) => {
+        const { artifact, contentHash } = this.v4ArtifactIdentity(artifactId)
+        if (artifact.producedBy?.runId !== controller.runId
+            || artifact.producedBy?.agentKind !== activeAttempt.writerKind) return false
+        return receipt.evidenceIds.some((evidenceId) => {
+          const evidence = this.v4EvidenceRecord(evidenceId)
+          return evidence.recordedBy?.kind === 'system'
+            && evidence.recordedBy.actorId === 'meldwork-main'
+            && evidence.subject?.type === 'artifact'
+            && evidence.subject.artifactId === artifactId
+            && evidence.refs.some(reference => (
+              reference.type === 'artifact' && reference.artifactId === artifactId
+            ))
+            && evidence.refs.some(reference => (
+              reference.type === 'blob'
+                && reference.contentHash === contentHash
+                && canonicalJson(reference.contentRef) === canonicalJson(artifact.contentRef)
+            ))
+        })
+      })
+    } catch {
+      return false
+    }
+  }
+
+  v4ExactWorkReceipt(receiptRecord, assignment, slot, snapshotRecord, snapshotHash,
+    coordinationPlan) {
+    const receipt = receiptRecord?.receipt
+    if (!receipt || !assignment || !slot || !snapshotRecord?.bodyHash
+        || !snapshotRecord?.contentRef || !coordinationPlan?.planHash) {
+      throw new Error('LOCAL_RUN_V4_WORK_RECEIPT_INVALID')
+    }
+    const artifacts = receipt.artifactIds.map((artifactId) => {
+      const { artifact, contentHash } = this.v4ArtifactIdentity(artifactId)
+      return {
+        artifactId,
+        contentHash,
+        contentRef: artifact.contentRef,
+      }
+    })
+    return createWorkReceipt({
+      snapshotHash,
+      snapshotBodyHash: snapshotRecord.bodyHash,
+      snapshotContentRef: snapshotRecord.contentRef,
+      planHash: coordinationPlan.planHash,
+      taskId: assignment.taskId,
+      ownerKind: assignment.ownerKind,
+      slotId: slot.slotId,
+      operationId: slot.operationId,
+      collaborationReceipt: receipt,
+      artifacts,
+    })
+  }
+
+  v4ReviewFindings(input, options = {}) {
+    const record = input?.record
+    const receipt = record?.receipt
+    const reviewedArtifactId = String(input?.reviewedArtifactId || '')
+    const runId = String(options.runId || '')
+    const required = options.required === true || record?.verdict === 'contradict'
+    if (!receipt || !['challenge', 'verification'].includes(receipt.phase)
+        || !['support', 'contradict'].includes(record?.verdict)
+        || !reviewedArtifactId || !runId) {
+      throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+    }
+    const findingIds = Array.isArray(receipt.findingIds) ? receipt.findingIds : []
+    if (required && findingIds.length === 0) {
+      throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+    }
+    const { artifact, contentHash } = this.v4ArtifactIdentity(reviewedArtifactId)
+    const receiptEvidenceIds = Array.isArray(receipt.evidenceIds) ? receipt.evidenceIds : []
+    const receiptEvidenceSet = new Set(receiptEvidenceIds)
+    return findingIds.map((findingId) => {
+      let finding
+      try { finding = this.outcomeStore.getReviewerFinding(findingId) } catch {
+        throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+      }
+      if (finding.artifactId !== reviewedArtifactId
+          || finding.relation !== record.verdict
+          || finding.reviewer?.kind !== 'agent'
+          || finding.reviewer.runId !== runId
+          || finding.reviewer.agentKind !== receipt.agentKind
+          || !finding.reviewer.agentRunId
+          || !finding.evidenceIds.length) {
+        throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+      }
+      for (const evidenceId of finding.evidenceIds) {
+        if (!receiptEvidenceSet.has(evidenceId) && receiptEvidenceIds.length !== 64) {
+          throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+        }
+        const evidence = this.v4EvidenceRecord(
+          evidenceId, 'LOCAL_RUN_V4_REVIEW_FINDING_INVALID',
+        )
+        const recorder = evidence.recordedBy || {}
+        const directArtifactBound = evidence.subject?.type === 'artifact'
+          && evidence.subject.artifactId === reviewedArtifactId
+          && evidence.refs.some(reference => (
+            reference.type === 'artifact' && reference.artifactId === reviewedArtifactId
+          ))
+        const exactContentBound = evidence.refs.some(reference => (
+          reference.type === 'blob'
+            && reference.contentHash === contentHash
+            && canonicalJson(reference.contentRef) === canonicalJson(artifact.contentRef)
+        ))
+        if (evidence.kind !== 'review'
+            || recorder.kind !== 'agent'
+            || recorder.runId !== finding.reviewer.runId
+            || recorder.agentRunId !== finding.reviewer.agentRunId
+            || recorder.agentKind !== finding.reviewer.agentKind
+            || !directArtifactBound || !exactContentBound) {
+          throw new Error('LOCAL_RUN_V4_REVIEW_FINDING_INVALID')
+        }
+      }
+      return finding
+    })
+  }
+
+  v4ReviewReceiptComplete(input, options = {}) {
+    const status = input?.record?.receipt?.status
+    if (!['completed', 'accepted'].includes(status)) return false
+    return this.v4ReviewFindings(input, { ...options, required: true }).length > 0
+  }
+
+  v4IssueId(record, findingId) {
+    return `issue-${hashValue({
+      phase: record.receipt.phase,
+      reviewerFindingId: findingId,
+    })}`
+  }
+
+  v4IssueFromFinding(record, finding) {
+    const { contentHash } = this.v4ArtifactIdentity(finding.artifactId)
+    return {
+      id: this.v4IssueId(record, finding.reviewerFindingId),
+      artifactId: finding.artifactId,
+      findingId: finding.reviewerFindingId,
+      summary: finding.summary,
+      semanticKey: hashValue({
+        phase: record.receipt.phase,
+        candidateContentHash: contentHash,
+        relation: finding.relation,
+        reviewerKind: finding.reviewer.agentKind,
+        summary: finding.summary,
+      }),
+    }
+  }
+
+  v4IssuesFromReviews(inputs, options = {}) {
+    const issues = new Map()
+    for (const input of inputs) {
+      const record = input?.record
+      const findings = this.v4ReviewFindings(input, options)
+      if (record.verdict !== 'contradict') continue
+      for (const finding of findings) {
+        const issue = this.v4IssueFromFinding(record, finding)
+        issues.set(issue.id, issue)
+      }
+    }
+    return [...issues.values()].sort((left, right) => left.id.localeCompare(right.id))
+  }
+
+  v4CarriedIssues(receiptRecords, openIssueIds, options = {}) {
+    const requested = Array.isArray(openIssueIds) ? openIssueIds : []
+    if (new Set(requested).size !== requested.length) {
+      throw new Error('LOCAL_RUN_V4_ISSUE_INVALID')
+    }
+    if (requested.length === 0) return []
+    const requestedSet = new Set(requested)
+    const durableIssues = new Map()
+    try {
+      for (const record of receiptRecords) {
+        if (!['challenge', 'verification'].includes(record?.receipt?.phase)
+            || record.verdict !== 'contradict') continue
+        const findingIds = Array.isArray(record.receipt.findingIds)
+          ? record.receipt.findingIds : []
+        if (findingIds.length === 0) throw new Error('LOCAL_RUN_V4_ISSUE_INVALID')
+        for (const findingId of findingIds) {
+          const issueId = this.v4IssueId(record, findingId)
+          if (!requestedSet.has(issueId)) continue
+          const finding = this.outcomeStore.getReviewerFinding(findingId)
+          const scopedRecord = {
+            ...record,
+            receipt: { ...record.receipt, findingIds: [findingId] },
+          }
+          if (!this.v4ReviewReceiptComplete({
+            record: scopedRecord,
+            reviewedArtifactId: finding.artifactId,
+          }, options)) throw new Error('LOCAL_RUN_V4_ISSUE_INVALID')
+          const issues = this.v4IssuesFromReviews([{
+            record: scopedRecord,
+            reviewedArtifactId: finding.artifactId,
+          }], options)
+          for (const issue of issues) durableIssues.set(issue.id, issue)
+        }
+      }
+    } catch {
+      throw new Error('LOCAL_RUN_V4_ISSUE_INVALID')
+    }
+    return requested.map((issueId) => {
+      const issue = durableIssues.get(issueId)
+      if (!issue) throw new Error('LOCAL_RUN_V4_ISSUE_INVALID')
+      return issue
+    }).sort((left, right) => left.id.localeCompare(right.id))
+  }
+
+  v4ResolveIssues(openIssues, resolvedIssueIds) {
+    const issues = Array.isArray(openIssues) ? openIssues : []
+    const openIds = issues.map(issue => issue?.id)
+    const resolved = Array.isArray(resolvedIssueIds) ? resolvedIssueIds : []
+    if (openIds.some(issueId => typeof issueId !== 'string')
+        || new Set(openIds).size !== openIds.length
+        || resolved.some(issueId => typeof issueId !== 'string')
+        || new Set(resolved).size !== resolved.length
+        || resolved.some(issueId => !openIds.includes(issueId))) {
+      throw new Error('LOCAL_RUN_V4_RESOLUTION_INVALID')
+    }
+    const closed = new Set(resolved)
+    return issues.filter(issue => !closed.has(issue.id))
+  }
+
+  v4ReceiptForOperation(receiptRecords, phase, agentKind, operationId = '') {
+    return [...receiptRecords].reverse().find(record => (
+      record?.receipt?.phase === phase
+      && record.receipt.agentKind === agentKind
+      && (!operationId || record.receipt.operationId === operationId)
+    )) || null
+  }
+
+  v4RoundState(receiptRecords, targetKinds, writerKind, verificationKinds, options = {}) {
+    const slots = Array.isArray(options.slots) ? options.slots : []
+    const challengeBindings = Array.isArray(options.challengeBindings)
+      ? options.challengeBindings : []
+    const challengeInputs = targetKinds.map((kind) => {
+      const binding = challengeBindings.find(item => item.reviewerKind === kind)
+      const record = binding && this.v4ReceiptForOperation(
+        receiptRecords, 'challenge', kind, binding.reviewerOperationId,
+      )
+      return record && binding?.artifactIds?.[0]
+        ? { record, reviewedArtifactId: binding.artifactIds[0] }
+        : null
+    }).filter(Boolean)
+    const priorIssues = this.v4CarriedIssues(
+      receiptRecords,
+      options.previousConvergence?.openIssueIds || [],
+      { runId: options.runId },
+    )
+    const challengeIssues = this.v4IssuesFromReviews(challengeInputs, { runId: options.runId })
+    const issueMap = new Map(priorIssues.map(issue => [issue.id, issue]))
+    for (const issue of challengeIssues) {
+      const carried = [...issueMap.values()].some(existing => (
+        existing.semanticKey === issue.semanticKey
+      ))
+      if (!carried) issueMap.set(issue.id, issue)
+    }
+
+    const writerSlot = slots.find(slot => slot.agentKind === writerKind)
+    const synthesis = writerSlot && this.v4ReceiptForOperation(
+      receiptRecords, 'synthesis', writerKind, writerSlot.operationId,
+    )
+    if (!synthesis) throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+    const candidate = this.v4CandidateIdentity(synthesis)
+    if (!this.v4ReceiptReferencesComplete(synthesis, candidate.artifactId)) {
+      throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+    }
+    let openIssues = this.v4ResolveIssues(
+      [...issueMap.values()], synthesis.resolvedIssueIds || [],
+    )
+    const verificationInputs = verificationKinds.map((kind) => {
+      const slot = slots.find(candidateSlot => candidateSlot.agentKind === kind)
+      const record = slot && this.v4ReceiptForOperation(
+        receiptRecords, 'verification', kind, slot.operationId,
+      )
+      return record ? { record, reviewedArtifactId: candidate.artifactId } : null
+    }).filter(Boolean)
+    if (options.includeVerification === true) {
+      const verificationIssues = this.v4IssuesFromReviews(
+        verificationInputs, { runId: options.runId },
+      )
+      const nextIssues = new Map(openIssues.map(issue => [issue.id, issue]))
+      for (const issue of verificationIssues) {
+        const carried = [...nextIssues.values()].some(existing => (
+          existing.semanticKey === issue.semanticKey
+        ))
+        if (!carried) nextIssues.set(issue.id, issue)
+      }
+      openIssues = [...nextIssues.values()].sort((left, right) => left.id.localeCompare(right.id))
+    }
+    return {
+      candidate,
+      synthesis,
+      challengeInputs,
+      verificationInputs,
+      openIssues,
+    }
+  }
+
+  v4NextConvergence(previous, candidate, openIssueIds, round, writerKind) {
+    const { artifact, contentHash } = this.v4ArtifactIdentity(candidate?.artifactId)
+    const sortedIssueIds = [...new Set(openIssueIds || [])].sort()
+    if (contentHash !== candidate?.contentHash || artifact.producedBy.agentKind !== writerKind
+        || !Number.isSafeInteger(round) || round < 2
+        || sortedIssueIds.length !== (openIssueIds || []).length
+        || sortedIssueIds.some(issueId => !/^issue-[a-f0-9]{64}$/.test(issueId))) {
+      throw new Error('LOCAL_RUN_V4_CONVERGENCE_INVALID')
+    }
+    const stateKey = hashValue({ candidateContentHash: contentHash, openIssueIds: sortedIssueIds })
+    const stateChanged = !previous || previous.stateKey !== stateKey
+    let consecutiveStableRounds = 1
+    if (!stateChanged && previous.lastCompletedRound === round - 1) {
+      const previousArtifact = this.v4ArtifactIdentity(previous.candidateArtifactId).artifact
+      if (previousArtifact.producedBy.agentKind === writerKind) {
+        consecutiveStableRounds = previous.consecutiveStableRounds + 1
+      }
+    }
+    return {
+      candidateArtifactId: candidate.artifactId,
+      candidateContentHash: contentHash,
+      openIssueIds: sortedIssueIds,
+      stateKey,
+      lastCompletedRound: round,
+      consecutiveStableRounds,
+      stateEpoch: stateChanged ? (previous?.stateEpoch || 0) + 1 : previous.stateEpoch,
+      acknowledgedGateEpoch: previous?.acknowledgedGateEpoch || 0,
+    }
+  }
+
+  v4ShouldOpenStableGate(convergence, unlimitedRounds) {
+    return unlimitedRounds === true
+      && convergence?.consecutiveStableRounds >= 2
+      && convergence.acknowledgedGateEpoch !== convergence.stateEpoch
+  }
+
+  v4Acceptance(receiptRecords, targetKinds, writerKind, verificationKinds, options = {}) {
+    const state = this.v4RoundState(
+      receiptRecords, targetKinds, writerKind, verificationKinds,
+      { ...options, includeVerification: true },
+    )
+    const proposals = targetKinds.map(kind => (
+      this.v4LatestReceipt(receiptRecords, 'proposal', kind)
+    )).filter(Boolean)
+    const workState = options.coordinationPlan
+      ? this.v4WorkState(options.workReceipts, options.coordinationPlan)
+      : null
+    const referencesComplete = proposals.length === targetKinds.length
+      && proposals.every(record => this.v4ReceiptReferencesComplete(record))
+      && (!workState || workState.completed.size === options.coordinationPlan.assignments.length)
+      && this.v4ReceiptReferencesComplete(state.synthesis, state.candidate.artifactId)
+      && state.challengeInputs.length === targetKinds.length
+      && state.challengeInputs.every(input => this.v4ReviewReceiptComplete(
+        input, { runId: options.runId },
+      ))
+      && state.verificationInputs.length === verificationKinds.length
+      && state.verificationInputs.every(input => this.v4ReviewReceiptComplete(
+        input, { runId: options.runId },
+      ))
+    const allSupport = state.verificationInputs.length === verificationKinds.length
+      && state.verificationInputs.every(input => input.record.verdict === 'support')
+    const requiredSlotsHealthy = targetKinds.every(kind => {
+      if (options.coordinationPlan && kind !== writerKind
+          && !verificationKinds.includes(kind)) {
+        const assignments = options.coordinationPlan.assignments.filter(candidate => (
+          candidate.ownerKind === kind
+        ))
+        return assignments.length > 0 && assignments.every(assignment => (
+          workState?.completed.has(assignment.taskId)
+        ))
+      }
+      const slot = options.slots?.find(candidate => candidate.agentKind === kind)
+      const requiredPhase = kind === writerKind
+        ? 'synthesis'
+        : (verificationKinds.includes(kind)
+          ? 'verification'
+          : (options.coordinationPlan ? 'work' : 'challenge'))
+      return slot?.status === 'completed' && slot.phase === requiredPhase
+    })
+    return {
+      accepted: Boolean(referencesComplete && allSupport && requiredSlotsHealthy
+        && state.openIssues.length === 0),
+      candidateHash: state.candidate.contentHash,
+      candidateArtifactId: state.candidate.artifactId,
+      openIssueIds: state.openIssues.map(issue => issue.id),
+      unresolved: state.openIssues,
+      synthesis: state.synthesis,
+      verifications: state.verificationInputs.map(input => input.record),
+    }
+  }
+
+  async v4CommitAcceptedCandidate({
+    group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
+    slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
+    coordinationPlan, workReceipts, convergence, writerKind, verificationKinds, acceptance,
+  }) {
+    if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+    const synthesisRecord = this.v4LatestReceipt(receiptRecords, 'synthesis', writerKind)
+    const evidenceIds = [...(synthesisRecord?.receipt?.evidenceIds || [])]
+    const { artifact, contentHash, content } = this.v4ArtifactIdentity(
+      acceptance.candidateArtifactId,
+    )
+    if (!content || contentHash !== acceptance.candidateHash
+        || !evidenceIds.length
+        || !evidenceIds.some(evidenceId => this.v4EvidenceSupportsArtifact(
+          evidenceId, acceptance.candidateArtifactId, contentHash,
+        ))) {
+      throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+    }
+    const identity = {
+      runId: controller.runId,
+      taskId: controller.taskId,
+      candidateContentHash: contentHash,
+    }
+    const previous = controller.orchestration?.candidateCommit || null
+    const collaborationAtIntent = controller.orchestration?.collaboration || emptyCollaborationState()
+    const writerOwner = this.v4BlackboardOwner(coordinationPlan, writerKind)
+    const blackboardSequence = previous?.blackboardSequence
+      || (collaborationAtIntent.entries.at(-1)?.lifecycle?.sequence || 0) + 1
+    const blackboardRecordedAt = previous?.blackboardRecordedAt ?? 0
+    const commitId = candidateCommitSinkId(identity, 'commit')
+    const blackboardEntryAtIntent = createBlackboardEntryRecord({
+      entryType: 'artifact-ref',
+      subject: `candidate-commit:${commitId}`,
+      statement: candidateCommitBlackboardStatement({
+        candidateArtifactId: acceptance.candidateArtifactId,
+        candidateContentHash: contentHash,
+      }),
+      value: contentHash,
+      owner: writerOwner,
+      audience: { roles: [], agentKinds: [...targetKinds].sort() },
+      lifecycle: {
+        state: 'active', sequence: blackboardSequence,
+        recordedAt: blackboardRecordedAt, supersedesEntryId: null,
+      },
+      provenance: {
+        runId: controller.runId, taskId: controller.taskId,
+        round: controller.currentRound, agentRunId: null,
+        artifactIds: [acceptance.candidateArtifactId], evidenceIds,
+      },
+      refs: [acceptance.candidateArtifactId, ...evidenceIds],
+    })
+    const base = {
+      runId: controller.runId,
+      taskId: controller.taskId,
+      groupId: group.id,
+      threadRootId,
+      candidateArtifactId: acceptance.candidateArtifactId,
+      candidateContentHash: contentHash,
+      candidateContentRef: { ...artifact.contentRef },
+      evidenceIds,
+      writerKind,
+      writerRole: writerOwner.role,
+      commitId,
+      messageId: candidateCommitSinkId(identity, 'message'),
+      blackboardEntryId: blackboardEntryAtIntent.entryId,
+      blackboardSequence,
+      blackboardRecordedAt,
+    }
+    if (previous) {
+      const bound = Object.fromEntries(Object.keys(base).map(key => [key, previous[key]]))
+      if (canonicalJson(bound) !== canonicalJson(base)) {
+        throw new Error('LOCAL_RUN_COMMIT_INVALID')
+      }
+    }
+    let candidateCommit = previous || {
+      ...base,
+      status: 'intent',
+      messageStatus: 'pending',
+      blackboardStatus: 'pending',
+      attempt: 1,
+      updatedAt: Date.now(),
+    }
+    const checkpoint = (phase, nextCommit, collaboration, nextSlots = slots) => {
+      candidateCommit = nextCommit
+      if (collaboration) {
+        controller.orchestration = { ...controller.orchestration, collaboration }
+      }
+      this.v4CheckpointPhase(group, controller, {
+        targetKinds,
+        phase,
+        batchId,
+        snapshotRecord,
+        snapshotHash,
+        slots: nextSlots,
+        writerKind,
+        currentKinds: [],
+        pendingKinds: [],
+        receipts: receiptRecords,
+        challengeBindings,
+        synthesisBinding,
+        synthesisRecovery,
+        coordinationPlan,
+        workReceipts,
+        convergence,
+        candidateCommit,
+      })
+    }
+    if (!previous) checkpoint('commit', candidateCommit, controller.orchestration?.collaboration)
+
+    const messageInput = {
+      messageId: candidateCommit.messageId,
+      groupId: group.id,
+      agentKind: writerKind,
+      threadRootId,
+      content,
+      metadata: {},
+    }
+    const existingMessage = this.state().messages.find(message => (
+      message.id === candidateCommit.messageId
+    ))
+    if (candidateCommit.messageStatus === 'committed' && !existingMessage) {
+      throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    }
+    if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+    if (!this.commitV4AgentMessage) throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    const committedMessage = this.commitV4AgentMessage(messageInput)
+    if (committedMessage.id !== candidateCommit.messageId) {
+      throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    }
+    if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+    if (candidateCommit.status === 'intent') {
+      candidateCommit = {
+        ...candidateCommit,
+        status: 'message-committed',
+        messageStatus: 'committed',
+        updatedAt: Date.now(),
+      }
+      checkpoint('commit', candidateCommit, controller.orchestration.collaboration)
+    }
+
+    let collaboration = controller.orchestration.collaboration || emptyCollaborationState()
+    const existingEntry = collaboration.entries.find(entry => (
+      entry.entryId === candidateCommit.blackboardEntryId
+    ))
+    const blackboardEntry = createBlackboardEntryRecord({
+      entryType: 'artifact-ref',
+      subject: `candidate-commit:${candidateCommit.commitId}`,
+      statement: candidateCommitBlackboardStatement(candidateCommit),
+      value: contentHash,
+      owner: { type: 'agent', agentKind: writerKind, role: candidateCommit.writerRole },
+      audience: { roles: [], agentKinds: [...targetKinds].sort() },
+      lifecycle: {
+        state: 'active',
+        sequence: candidateCommit.blackboardSequence,
+        recordedAt: candidateCommit.blackboardRecordedAt,
+        supersedesEntryId: null,
+      },
+      provenance: {
+        runId: controller.runId,
+        taskId: controller.taskId,
+        round: controller.currentRound,
+        agentRunId: null,
+        artifactIds: [acceptance.candidateArtifactId],
+        evidenceIds,
+      },
+      refs: [acceptance.candidateArtifactId, ...evidenceIds],
+    })
+    if (blackboardEntry.entryId !== candidateCommit.blackboardEntryId) {
+      throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    }
+    if (existingEntry && canonicalJson(existingEntry) !== canonicalJson(blackboardEntry)) {
+      throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    }
+    if (candidateCommit.blackboardStatus === 'committed' && !existingEntry) {
+      throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    }
+    if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+    if (!existingEntry) {
+      const {
+        entryId: _entryId,
+        version: _version,
+        recordType: _recordType,
+        ...blackboardInput
+      } = blackboardEntry
+      collaboration = appendBlackboardEntry(collaboration, blackboardInput)
+      const appended = collaboration.entries.find(entry => entry.entryId === blackboardEntry.entryId)
+      if (!appended || canonicalJson(appended) !== canonicalJson(blackboardEntry)) {
+        throw new Error('LOCAL_RUN_COMMIT_INVALID')
+      }
+    }
+    if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+    if (candidateCommit.status === 'message-committed') {
+      candidateCommit = {
+        ...candidateCommit,
+        status: 'sinks-committed',
+        blackboardStatus: 'committed',
+        updatedAt: Date.now(),
+      }
+      checkpoint('commit', candidateCommit, collaboration)
+    }
+
+    if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+    const finalSlots = slots.map(slot => ({
+      ...slot,
+      phase: slot.agentKind === writerKind ? 'completed' : slot.phase,
+      status: ['failed', 'stopped', 'timeout', 'interrupted'].includes(slot.status)
+        ? slot.status : 'completed',
+      finishedAt: slot.finishedAt || Date.now(),
+      commitStatus: 'committed',
+    }))
+    candidateCommit = {
+      ...candidateCommit,
+      status: 'completed',
+      messageStatus: 'committed',
+      blackboardStatus: 'committed',
+      updatedAt: Date.now(),
+    }
+    checkpoint('completed', candidateCommit, collaboration, finalSlots)
+    controller.completedKinds = [...targetKinds]
+    controller.failedKinds = []
+    controller.currentKind = ''
+    controller.progress = []
+    this.emitChanged()
+    return 'completed'
+  }
+
+  async runV4Discussion(group, controller, threadRootId, context, resume = false) {
+    const targetKinds = [...controller.targetKinds]
+    const existing = controller.orchestration?.version === 4
+      ? controller.orchestration
+      : null
+    if (existing?.synthesisBinding) {
+      throw new Error('LOCAL_RUN_V4_LEGACY_SYNTHESIS_BINDING_UNSUPPORTED')
+    }
+    let synthesisBinding = existing?.synthesisBinding
+      ? {
+          ...existing.synthesisBinding,
+          candidates: existing.synthesisBinding.candidates.map(candidate => ({
+            ...candidate,
+            ...(candidate.evidence ? { evidence: { ...candidate.evidence } } : {}),
+          })),
+          verificationKinds: [...existing.synthesisBinding.verificationKinds],
+        }
+      : null
+    let synthesisRecovery = existing?.synthesisRecovery
+      ? {
+          ...existing.synthesisRecovery,
+          verificationKinds: [...existing.synthesisRecovery.verificationKinds],
+          rankedKinds: [...existing.synthesisRecovery.rankedKinds],
+          triedWriters: [...existing.synthesisRecovery.triedWriters],
+          attempts: existing.synthesisRecovery.attempts.map(attempt => ({ ...attempt })),
+          ...(existing.synthesisRecovery.pendingGate
+            ? { pendingGate: { ...existing.synthesisRecovery.pendingGate } }
+            : {}),
+        }
+      : null
+    let coordinationPlan = existing?.coordinationPlan
+      ? {
+          ...existing.coordinationPlan,
+          assignments: existing.coordinationPlan.assignments.map(assignment => ({
+            ...assignment,
+            inputRefs: [...assignment.inputRefs],
+            artifactIds: [...assignment.artifactIds],
+            dependsOn: [...assignment.dependsOn],
+          })),
+          verifierKinds: [...existing.coordinationPlan.verifierKinds],
+          agreedBy: [...existing.coordinationPlan.agreedBy],
+          ...(existing.coordinationPlan.supportReceiptIds
+            ? { supportReceiptIds: [...existing.coordinationPlan.supportReceiptIds] }
+            : {}),
+        }
+      : null
+    const postSynthesisPhases = new Set([
+      'synthesis', 'verification', 'human-gate', 'commit', 'committed', 'completed',
+    ])
+    const synthesisObservable = existing && (
+      postSynthesisPhases.has(existing.phase)
+      || commitDeliveryObservable(existing.commitState)
+      || existing.slots?.some(slot => (
+        postSynthesisPhases.has(slot.phase)
+        || (slot.resultRefs?.workflowOutcomeRefs || []).some(item => (
+          ['synthesis', 'verification'].includes(item?.receipt?.phase)
+        ))
+      ))
+    )
+    if (!synthesisBinding && !coordinationPlan && synthesisObservable) {
+      throw new Error('LOCAL_RUN_V4_SYNTHESIS_BINDING_REQUIRED')
+    }
+    let writerKind = synthesisRecovery?.activeWriterKind
+      || coordinationPlan?.finalizerKind || synthesisBinding?.writerKind || ''
+    controller.currentRound = Math.max(1, controller.currentRound || existing?.round || 0)
+    const rootMessage = existing ? null : this.state().messages.find(message => (
+      message.id === threadRootId && message.groupId === group.id && message.role === 'user'
+    ))
+    const snapshot = existing
+      ? this.v4LoadSnapshot(existing, {
+          taskId: controller.taskId,
+          messageId: threadRootId,
+          groupId: controller.groupId,
+          targetKinds,
+        })
+      : v4Snapshot({
+          state: this.state(),
+          group,
+          taskId: threadRootId,
+          targetKinds,
+          message: rootMessage,
+          skillHintsByKind: context.rootSkillsByKind,
+          phase: 'proposal',
+          writerKind,
+        })
+    if (existing) {
+      const persistedSkills = this.v4SnapshotSkillHints(snapshot, targetKinds)
+      const hasPersistedSkills = targetKinds.some(kind => (
+        (persistedSkills.get(kind) || []).length > 0
+      ))
+      context = {
+        rootAttachments: [],
+        rootSkillsByKind: hasPersistedSkills
+          ? await this.v4RestoreSnapshotSkills(snapshot, targetKinds, persistedSkills)
+          : persistedSkills,
+        rootKnowledgeBasesByKind: new Map(targetKinds.map(kind => [kind, []])),
+        rootMediaRequest: null,
+      }
+    }
+    const builtSnapshot = existing
+      ? { record: existing.snapshot, snapshotHash: existing.snapshotHash }
+      : this.v4SnapshotRecord(controller, snapshot, targetKinds)
+    const snapshotRecord = builtSnapshot.record
+    const snapshotHash = builtSnapshot.snapshotHash
+    const batchId = existing?.batchId || this.v4BatchId(controller, 'discussion')
+    const receiptRecords = this.v4RestoreReceipts(controller)
+    let workReceipts = Array.isArray(existing?.workReceipts)
+      ? existing.workReceipts.map(receipt => ({
+          ...receipt,
+          snapshotContentRef: { ...receipt.snapshotContentRef },
+          collaborationReceipt: { ...receipt.collaborationReceipt },
+          artifacts: receipt.artifacts.map(artifact => ({
+            ...artifact,
+            contentRef: { ...artifact.contentRef },
+          })),
+        }))
+      : []
+    controller.v4WorkReceipts = workReceipts
+    let challengeBindings = Array.isArray(existing?.challengeBindings)
+      ? existing.challengeBindings.map(binding => ({
+          ...binding,
+          artifactIds: [...binding.artifactIds],
+          evidenceIds: [...binding.evidenceIds],
+        }))
+      : null
+    controller.v4Watermarks = existing?.deliveryWatermarks
+      ? existing.deliveryWatermarks.map(item => ({ ...item }))
+      : []
+    const initialSlots = existing?.slots?.length
+      ? existing.slots.map(slot => ({ ...slot }))
+      : targetKinds.map((kind, index) => ({
+          slotId: `slot-${index + 1}-${kind}`,
+          agentKind: kind,
+          phase: 'proposal',
+          status: 'planned',
+          operationId: this.v4OperationId(
+            controller, kind, 'proposal', `slot-${index + 1}-${kind}`,
+          ),
+          queuePosition: index,
+          snapshotHash,
+          deliveryWatermark: 0,
+          receiptId: '',
+          resultHash: '',
+          assignedAt: Date.now(),
+          startedAt: Date.now(),
+          finishedAt: null,
+          commitStatus: 'pending',
+          attempt: 0,
+          permission: 'read-only',
+          resultRefs: { artifactIds: [], evidenceIds: [], workflowOutcomeRefs: [] },
+        }))
+    let slots = initialSlots
+    if (!existing) {
+      this.v4CheckpointPhase(group, controller, {
+        targetKinds,
+        phase: 'proposal',
+        batchId,
+        snapshotRecord,
+        snapshotHash,
+        slots,
+        writerKind,
+        currentKinds: targetKinds,
+        pendingKinds: targetKinds,
+        receipts: receiptRecords,
+      })
+      this.emitChanged()
+    }
+
+    const latestFor = (phase, kind) => this.v4LatestReceipt(receiptRecords, phase, kind)
+    const pendingKindsFor = (phase, activeKinds, workAssignments = []) => activeKinds.filter(kind => {
+      if (phase === 'work') {
+        const assignment = workAssignments.find(candidate => candidate.ownerKind === kind)
+        return !assignment || !workReceipts.some(receipt => (
+          receipt.planHash === coordinationPlan.planHash
+          && receipt.taskId === assignment.taskId
+          && receipt.ownerKind === kind
+        ))
+      }
+      const latest = latestFor(phase, kind)
+      if (!latest) return true
+      if (phase === 'proposal') return false
+      const slot = slots.find(candidate => candidate.agentKind === kind)
+      const synthesisAttempt = phase === 'synthesis'
+        ? [...(synthesisRecovery?.attempts || [])].reverse().find(attempt => (
+            attempt.writerKind === kind
+          ))
+        : null
+      const expected = synthesisAttempt?.operationId || (slot
+        ? this.v4OperationId(controller, kind, phase, slot.slotId)
+        : '')
+      return latest.receipt.operationId !== expected
+    })
+    const checkpointPhase = (phase, activeKinds, phaseSlots = slots, bindings = challengeBindings) => {
+      this.v4CheckpointPhase(group, controller, {
+        targetKinds,
+        phase,
+        batchId,
+        snapshotRecord,
+        snapshotHash,
+        slots: phaseSlots,
+        writerKind,
+        currentKinds: [...activeKinds],
+        pendingKinds: [...activeKinds],
+        receipts: receiptRecords,
+        challengeBindings: bindings,
+        synthesisBinding,
+        synthesisRecovery,
+        coordinationPlan,
+        workReceipts,
+      })
+    }
+    const runPhase = async (phase, activeKinds, bindings = challengeBindings, options = {}) => {
+      const workAssignments = Array.isArray(options.workAssignments)
+        ? options.workAssignments
+        : []
+      const pending = pendingKindsFor(phase, activeKinds, workAssignments)
+      if (!pending.length) {
+        checkpointPhase(phase, [], slots)
+        return { ok: true, phaseReceipts: [], synthesisPendingMessage: null }
+      }
+      const result = await this.runV4Phase(group, controller, threadRootId, context, {
+        phase,
+        activeKinds: pending,
+        targetKinds,
+        writerKind,
+        batchId,
+        snapshot,
+        snapshotRecord,
+        snapshotHash,
+        slots,
+        receiptRecords,
+        challengeBindings: bindings,
+        synthesisBinding,
+        synthesisRecovery,
+        coordinationPlan,
+        workReceipts,
+        deliveryReceiptRecords: options.deliveryReceiptRecords,
+        coordinationText: options.coordinationText || '',
+        workAssignments,
+      })
+      slots = result.slots
+      if (result.synthesisRecovery) synthesisRecovery = result.synthesisRecovery
+      if (result.workReceipts) {
+        workReceipts = result.workReceipts
+        controller.v4WorkReceipts = workReceipts
+      }
+      return result
+    }
+    const addRoundLimitNotice = () => {
+      if (this.state().messages.some(message => (
+        message.threadRootId === threadRootId
+          && message.system?.key === 'system.autoRoundLimit'
+      ))) return
+      this.addMessage(
+        group.id,
+        'system',
+        `Automatic discussion reached the ${controller.maxRounds || 6}-round safety limit without consensus.`,
+        '',
+        threadRootId,
+        { key: 'system.autoRoundLimit', params: { rounds: controller.maxRounds || 6 } },
+      )
+    }
+    const requestStableGate = async (convergence) => {
+      if (!this.requestHumanGate) return 'round-limit'
+      const gateAgentRunId = this.v4OperationId(controller, writerKind, 'human-gate',
+        slots.find(slot => slot.agentKind === writerKind)?.slotId || '')
+      checkpointPhase('human-gate', [], slots)
+      const gate = await this.requestHumanGate({
+        type: 'decision',
+        runId: controller.runId,
+        agentRunId: gateAgentRunId,
+        agentKind: writerKind,
+        summary: 'The candidate and unresolved issues have remained unchanged for two rounds.',
+        options: [
+          { optionId: 'continue-discussion', name: 'Continue', kind: 'accept' },
+          { optionId: 'stop-discussion', name: 'Stop', kind: 'reject' },
+        ],
+        request: {
+          phase: 'discussion',
+          round: convergence.lastCompletedRound,
+          candidateHash: convergence.candidateContentHash,
+          unresolvedIssueIds: [...convergence.openIssueIds],
+          stateEpoch: convergence.stateEpoch,
+        },
+      }, {
+        signal: controller.signal,
+        preserveOnAbort: () => controller.stopReason === 'shutdown',
+        continuation: {
+          resumeKind: 'v4_human_gate',
+          agentRunId: gateAgentRunId,
+          agentKind: writerKind,
+          round: convergence.lastCompletedRound,
+          stateEpoch: convergence.stateEpoch,
+        },
+      })
+      if (gate.status !== 'approved') {
+        if (gate.gateId) this.completeHumanGateContinuation?.(
+          controller.runId, gate.gateId, 'cancelled',
+        )
+        return 'stopped'
+      }
+      const current = controller.orchestration?.convergence
+      if (!current || current.stateEpoch !== convergence.stateEpoch
+          || current.stateKey !== convergence.stateKey) {
+        throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+      }
+      controller.orchestration = {
+        ...controller.orchestration,
+        convergence: { ...current, acknowledgedGateEpoch: current.stateEpoch },
+      }
+      if (gate.gateId && this.completeHumanGateContinuation?.(
+        controller.runId, gate.gateId, 'completed',
+      ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      return 'continue'
+    }
+    const requestSynthesisRecoveryGate = async () => {
+      const binding = synthesisRecovery?.pendingGate
+      if (!binding || !this.requestHumanGate) return 'failed'
+      slots = slots.map(slot => slot.status === 'running'
+        ? { ...slot, status: 'waiting' }
+        : slot)
+      checkpointPhase('human-gate', [], slots)
+      const gate = await this.requestHumanGate({
+        type: 'decision',
+        runId: controller.runId,
+        agentRunId: binding.operationId,
+        agentKind: binding.writerKind,
+        summary: 'The workspace-write synthesis attempt may have produced side effects, but its result is unknown.',
+        options: [
+          { optionId: 'retry-original-writer', name: 'Retry original writer', kind: 'accept' },
+          ...(binding.proposedReplacementKind ? [{
+            optionId: 'replace-next-writer', name: 'Replace with next writer', kind: 'accept',
+          }] : []),
+          { optionId: 'stop-discussion', name: 'Stop', kind: 'reject' },
+        ],
+        request: {
+          phase: 'synthesis-recovery',
+          bindingHash: binding.bindingHash,
+          writerKind: binding.writerKind,
+          slotId: binding.slotId,
+          operationId: binding.operationId,
+          attempt: binding.attempt,
+          proposedReplacementKind: binding.proposedReplacementKind,
+          round: binding.round,
+          stateEpoch: binding.stateEpoch,
+          outcomeCertainty: 'unknown_outcome',
+        },
+      }, {
+        signal: controller.signal,
+        preserveOnAbort: () => controller.stopReason === 'shutdown',
+        continuation: {
+          resumeKind: 'v4_synthesis_recovery',
+          agentRunId: binding.operationId,
+          agentKind: binding.writerKind,
+          round: binding.round,
+          stateEpoch: binding.stateEpoch,
+        },
+      })
+      if (gate.status !== 'approved' || gate.optionId === 'stop-discussion') {
+        synthesisRecovery = this.v4CancelSynthesisRecovery(synthesisRecovery)
+        checkpointPhase('human-gate', [], slots)
+        if (gate.gateId) this.completeHumanGateContinuation?.(
+          controller.runId, gate.gateId, 'cancelled',
+        )
+        return 'stopped'
+      }
+      if (!['retry-original-writer', 'replace-next-writer'].includes(gate.optionId)) {
+        throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+      }
+      const nextWriterKind = gate.optionId === 'replace-next-writer'
+        ? binding.proposedReplacementKind
+        : binding.writerKind
+      if (!nextWriterKind) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+      synthesisRecovery = this.v4AppendSynthesisAttempt(
+        controller, coordinationPlan || synthesisBinding, synthesisRecovery, slots, nextWriterKind,
+      )
+      writerKind = synthesisRecovery.activeWriterKind
+      const nextAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+      slots = slots.map(slot => slot.agentKind === writerKind ? {
+        ...slot,
+        phase: 'synthesis',
+        status: 'planned',
+        operationId: nextAttempt.operationId,
+        receiptId: '',
+        resultHash: '',
+        finishedAt: null,
+        commitStatus: 'pending',
+        permission: group.allowWrite === true ? 'workspace-write' : 'read-only',
+      } : { ...slot, permission: 'read-only' })
+      checkpointPhase('synthesis', [writerKind], slots)
+      if (gate.gateId && this.completeHumanGateContinuation?.(
+        controller.runId, gate.gateId, 'completed',
+      ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      return 'continue'
+    }
+
+    let round = Math.max(1, Number(existing?.round) || controller.currentRound || 1)
+    const acknowledgedGateResume = resume === true
+      && existing?.phase === 'challenge'
+      && existing.convergence?.acknowledgedGateEpoch === existing.convergence?.stateEpoch
+      && existing.convergence?.lastCompletedRound === round
+      && controller.continuation?.resumeKind === 'v4_human_gate'
+      && controller.continuation?.state === 'completed'
+    if (acknowledgedGateResume) {
+      round += 1
+      controller.currentRound = round
+      challengeBindings = null
+    }
+    let proposalComplete = targetKinds.every(kind => Boolean(latestFor('proposal', kind)))
+    const legacyBoundRun = Boolean(synthesisBinding && !coordinationPlan)
+    const postChallengePhases = new Set([
+      'coordination', 'work', 'synthesis', 'verification',
+      'human-gate', 'commit', 'committed', 'completed',
+    ])
+    const challengeObservable = existing && (
+      postChallengePhases.has(existing.phase)
+      || existing.slots?.some(slot => (
+        (slot.phase === 'challenge' && slot.status !== 'planned')
+        || postChallengePhases.has(slot.phase)
+        || (slot.resultRefs?.workflowOutcomeRefs || []).some(item => (
+          item?.receipt?.phase === 'challenge'
+        ))
+      ))
+    )
+    if (!coordinationPlan && !legacyBoundRun
+        && !challengeBindings && challengeObservable && !acknowledgedGateResume) {
+      throw new Error('LOCAL_RUN_V4_CHALLENGE_BINDING_REQUIRED')
+    }
+    if (!coordinationPlan && !legacyBoundRun
+        && challengeBindings?.some(binding => binding.round !== round)) {
+      throw new Error('LOCAL_RUN_V4_CHALLENGE_BINDING_INVALID')
+    }
+    if (existing?.candidateCommit) {
+      const verificationKinds = synthesisRecovery?.verificationKinds
+        || coordinationPlan?.verifierKinds
+        || synthesisBinding?.verificationKinds
+        || []
+      const validationSlots = slots.map(slot => (
+        slot.agentKind === writerKind && slot.phase === 'completed'
+          ? { ...slot, phase: 'synthesis' }
+          : slot
+      ))
+      const acceptance = this.v4Acceptance(
+        receiptRecords, targetKinds, writerKind, verificationKinds,
+        {
+          runId: controller.runId,
+          round,
+          slots: validationSlots,
+          challengeBindings,
+          previousConvergence: null,
+          coordinationPlan,
+          workReceipts,
+        },
+      )
+      if (!acceptance.accepted
+          || acceptance.candidateArtifactId !== existing.candidateCommit.candidateArtifactId
+          || acceptance.candidateHash !== existing.candidateCommit.candidateContentHash) {
+        throw new Error('LOCAL_RUN_V4_CANDIDATE_INVALID')
+      }
+      return this.v4CommitAcceptedCandidate({
+        group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
+        slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
+        coordinationPlan, workReceipts, convergence: existing.convergence,
+        writerKind, verificationKinds, acceptance,
+      })
+    }
+    while (!controller.signal.aborted) {
+      controller.currentRound = round
+      if (!proposalComplete) {
+        const proposal = await runPhase('proposal', targetKinds)
+        if (!proposal.ok) return 'failed'
+        proposalComplete = targetKinds.every(kind => Boolean(latestFor('proposal', kind)))
+        if (!proposalComplete) return 'failed'
+      }
+
+      if (!coordinationPlan && !legacyBoundRun) {
+        if (round === 1) {
+          if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+            addRoundLimitNotice()
+            return 'round-limit'
+          }
+          round = 2
+          controller.currentRound = round
+        }
+
+        if (!challengeBindings || challengeBindings[0]?.round !== round) {
+          slots = slots.map((slot) => ({
+            ...slot,
+            phase: 'challenge',
+            status: 'planned',
+            operationId: this.v4OperationId(controller, slot.agentKind, 'challenge', slot.slotId),
+            receiptId: '',
+            resultHash: '',
+            startedAt: Date.now(),
+            finishedAt: null,
+            commitStatus: 'pending',
+            permission: 'read-only',
+          }))
+          challengeBindings = this.v4ChallengeBindings({
+            controller,
+            targetKinds,
+            round,
+            snapshotRecord,
+            slots,
+            receiptRecords,
+          })
+          checkpointPhase('challenge', targetKinds, slots, challengeBindings)
+          this.emitChanged()
+        }
+
+        const knownCoordination = this.v4CoordinationResult({
+          receiptRecords,
+          targetKinds,
+          snapshotHash,
+          requireSupport: false,
+        })
+        const challenge = await runPhase('challenge', targetKinds, challengeBindings, {
+          coordinationText: this.v4CoordinationText(knownCoordination),
+        })
+        if (!challenge.ok) return controller.signal.aborted ? 'stopped' : 'failed'
+        if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+
+        const coordination = this.v4CoordinationResult({
+          receiptRecords,
+          targetKinds,
+          snapshotHash,
+          challengeBindings,
+        })
+        if (!coordination.plan) {
+          if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+            addRoundLimitNotice()
+            return 'round-limit'
+          }
+          round += 1
+          controller.currentRound = round
+          challengeBindings = null
+          this.emitChanged()
+          continue
+        }
+        coordinationPlan = coordination.plan
+        writerKind = coordinationPlan.finalizerKind
+        this.v4CheckpointPhase(group, controller, {
+          targetKinds,
+          phase: 'coordination',
+          batchId,
+          snapshotRecord,
+          snapshotHash,
+          slots,
+          writerKind,
+          currentKinds: [],
+          pendingKinds: [],
+          receipts: receiptRecords,
+          challengeBindings,
+          coordinationPlan,
+        })
+        this.emitChanged()
+      }
+
+      if (coordinationPlan) {
+        while (!controller.signal.aborted) {
+          const workState = this.v4WorkState(workReceipts, coordinationPlan)
+          if (!workState.pending.length) break
+          if (!workState.ready.length) return 'failed'
+          const readyAssignments = []
+          const readyOwners = new Set()
+          for (const assignment of workState.ready) {
+            if (readyOwners.has(assignment.ownerKind)) continue
+            readyOwners.add(assignment.ownerKind)
+            readyAssignments.push(assignment)
+          }
+          const readyKinds = targetKinds.filter(kind => readyOwners.has(kind))
+          const completedBefore = workState.completed.size
+          const work = await runPhase('work', readyKinds, challengeBindings, {
+            deliveryReceiptRecords: [...receiptRecords],
+            workAssignments: readyAssignments,
+          })
+          if (!work.ok) return controller.signal.aborted ? 'stopped' : 'failed'
+          const completedAfter = this.v4WorkState(workReceipts, coordinationPlan).completed.size
+          if (completedAfter <= completedBefore) return 'failed'
+        }
+        if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+        writerKind = coordinationPlan.finalizerKind
+      } else {
+        writerKind = synthesisRecovery?.activeWriterKind || synthesisBinding.writerKind
+      }
+
+      const roleBinding = coordinationPlan || synthesisBinding
+      if (!roleBinding) return 'failed'
+      if (!synthesisRecovery) {
+        synthesisRecovery = this.v4CreateSynthesisRecovery(
+          controller,
+          roleBinding,
+          slots,
+          { stateEpoch: controller.orchestration?.convergence?.stateEpoch || 0 },
+        )
+        writerKind = synthesisRecovery.activeWriterKind
+      } else if (!this.v4ActiveSynthesisAttempt(synthesisRecovery)) {
+        const latestAttempt = synthesisRecovery.attempts.at(-1)
+        const currentRoundOperationId = latestAttempt
+          ? this.v4SynthesisAttemptOperationId(
+              controller,
+              latestAttempt.writerKind,
+              latestAttempt.slotId,
+              latestAttempt.attempt,
+            )
+          : ''
+        if (latestAttempt?.status === 'completed'
+            && latestAttempt.operationId !== currentRoundOperationId) {
+          synthesisRecovery = this.v4AppendSynthesisAttempt(
+            controller,
+            roleBinding,
+            synthesisRecovery,
+            slots,
+            synthesisRecovery.activeWriterKind,
+          )
+        }
+      }
+      let activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+      if (activeAttempt?.status === 'leased'
+          && activeAttempt.permission === 'workspace-write'
+          && activeAttempt.leaseAcquired === true) {
+        const acceptedReceipt = this.v4TrustedSynthesisResult({
+          controller,
+          slots,
+          activeAttempt,
+          synthesisRecovery,
+          coordinationPlan,
+          snapshotHash,
+        })
+        if (!acceptedReceipt) {
+          synthesisRecovery = this.v4UpdateSynthesisAttempt(
+            synthesisRecovery,
+            activeAttempt.operationId,
+            {
+              status: 'unknown_outcome',
+              sideEffectsPossible: true,
+              outcomeCertainty: 'unknown_outcome',
+            },
+          )
+          synthesisRecovery = {
+            ...synthesisRecovery,
+            pendingGate: this.v4SynthesisRecoveryGate(controller, synthesisRecovery),
+          }
+          activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+        }
+      }
+      if (activeAttempt?.status === 'unknown_outcome') {
+        if (!synthesisRecovery.pendingGate) {
+          synthesisRecovery = {
+            ...synthesisRecovery,
+            pendingGate: this.v4SynthesisRecoveryGate(controller, synthesisRecovery),
+          }
+        }
+        const recoveryResult = await requestSynthesisRecoveryGate()
+        if (recoveryResult !== 'continue') return recoveryResult
+      }
+      let verificationKinds = [...synthesisRecovery.verificationKinds]
+      let synthesis = null
+      while (!controller.signal.aborted) {
+        writerKind = synthesisRecovery.activeWriterKind
+        verificationKinds = [...synthesisRecovery.verificationKinds]
+        synthesis = await runPhase('synthesis', [writerKind])
+        if (synthesis.ok) break
+        if (controller.signal.aborted) return 'stopped'
+        const failedAttempt = [...synthesisRecovery.attempts].reverse()[0]
+        if (failedAttempt?.status === 'unknown_outcome') {
+          const recoveryResult = await requestSynthesisRecoveryGate()
+          if (recoveryResult !== 'continue') return recoveryResult
+          continue
+        }
+        const replacement = coordinationPlan
+          ? null
+          : this.v4ReplaceSynthesisWriter(
+              controller, synthesisBinding, synthesisRecovery, slots,
+            )
+        if (!replacement) return 'failed'
+        synthesisRecovery = replacement
+        writerKind = replacement.activeWriterKind
+        verificationKinds = [...replacement.verificationKinds]
+      }
+      if (!synthesis?.ok) return controller.signal.aborted ? 'stopped' : 'failed'
+      let synthesisPendingMessage = synthesis.synthesisPendingMessage
+      const synthesisReceipt = latestFor('synthesis', writerKind)
+      if (!synthesisPendingMessage && synthesisReceipt) {
+        const candidateArtifactId = synthesisReceipt.receipt.artifactIds?.[0]
+        let candidateContent = ''
+        if (candidateArtifactId) {
+          try { candidateContent = this.v4ArtifactIdentity(candidateArtifactId).content } catch {}
+        }
+        synthesisPendingMessage = {
+          groupId: group.id,
+          role: 'agent',
+          content: candidateContent
+            || synthesisReceipt.receipt.conclusion
+            || synthesisReceipt.receipt.summary,
+          agentKind: writerKind,
+          threadRootId,
+          system: null,
+          metadata: {},
+        }
+      }
+      if (!synthesisPendingMessage) return 'failed'
+      const previousConvergence = controller.orchestration?.convergence || null
+      this.v4RoundState(
+        receiptRecords, targetKinds, writerKind, verificationKinds,
+        {
+          runId: controller.runId,
+          round,
+          slots,
+          challengeBindings,
+          previousConvergence,
+          includeVerification: false,
+        },
+      )
+      const verification = await runPhase('verification', verificationKinds)
+      if (!verification.ok) return controller.signal.aborted ? 'stopped' : 'partial'
+
+      const acceptance = this.v4Acceptance(
+        receiptRecords, targetKinds, writerKind, verificationKinds,
+        {
+          runId: controller.runId,
+          round,
+          slots,
+          challengeBindings,
+          previousConvergence,
+          coordinationPlan,
+          workReceipts,
+        },
+      )
+      const convergence = this.v4NextConvergence(
+        previousConvergence,
+        {
+          artifactId: acceptance.candidateArtifactId,
+          contentHash: acceptance.candidateHash,
+        },
+        acceptance.openIssueIds,
+        round,
+        writerKind,
+      )
+      this.v4CheckpointPhase(group, controller, {
+        targetKinds,
+        phase: 'verification',
+        batchId,
+        snapshotRecord,
+        snapshotHash,
+        slots,
+        writerKind,
+        currentKinds: [],
+        pendingKinds: [],
+        receipts: receiptRecords,
+        challengeBindings,
+        synthesisBinding,
+        coordinationPlan,
+        convergence,
+      })
+      if (acceptance.accepted) {
+        return this.v4CommitAcceptedCandidate({
+          group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
+          slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
+          coordinationPlan, workReceipts, convergence,
+          writerKind, verificationKinds, acceptance,
+        })
+      }
+
+      if (this.v4ShouldOpenStableGate(convergence, controller.unlimitedRounds)) {
+        const gateResult = await requestStableGate(convergence)
+        if (gateResult !== 'continue') return gateResult
+      }
+      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+        addRoundLimitNotice()
+        return 'round-limit'
+      }
+      if (controller.signal.aborted) break
+      round += 1
+      controller.currentRound = round
+      if (coordinationPlan) {
+        challengeBindings = null
+        if (Object.hasOwn(controller.orchestration || {}, 'challengeBindings')) {
+          const { challengeBindings: _challengeBindings, ...orchestration } = controller.orchestration
+          controller.orchestration = orchestration
+        }
+      }
+      this.emitChanged()
+    }
+    return terminalRunStatusForReason(controller.stopReason)
+  }
+
   async runRounds(group, controller, threadRootId, maxRounds, context, resume = false) {
     const {
       rootAttachments,
@@ -1483,17 +5479,21 @@ class LocalWorkspaceAutoRunner {
     group, targetKinds, threadRootId, maxRounds, reservation = null, preparedContext = null,
     unlimitedRounds = false, taskGraph = null,
   ) {
-    reservation.orchestration = this.orchestrationCursor(targetKinds, taskGraph)
+    const v4 = reservation?.v4 === true
+    if (!v4) reservation.orchestration = this.orchestrationCursor(targetKinds, taskGraph)
     const controller = this.beginRun(
       group.id, 'auto', targetKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
     )
+    controller.v4 = v4
     const promise = (async () => {
       let runStatus = 'failed'
       try {
         const context = await this.automaticContext(
           group, controller, threadRootId, preparedContext,
         )
-        runStatus = taskGraph
+        runStatus = v4
+          ? await this.runV4Discussion(group, controller, threadRootId, context)
+          : taskGraph
           ? await this.runTaskGraph(group, controller, threadRootId, context)
           : await this.runRounds(group, controller, threadRootId, maxRounds, context)
       } catch (error) {
@@ -1530,6 +5530,18 @@ class LocalWorkspaceAutoRunner {
   }
 
   async resume(group, durable, controller, replayedResult = null) {
+    if (controller.orchestration?.version === 4 || controller.v4 === true) {
+      controller.v4 = true
+      const context = {
+        rootAttachments: [],
+        rootSkillsByKind: new Map(controller.targetKinds.map(kind => [kind, []])),
+        rootKnowledgeBasesByKind: new Map(controller.targetKinds.map(kind => [kind, []])),
+        rootMediaRequest: null,
+      }
+      return this.runV4Discussion(
+        group, controller, durable.threadRootId, context, true,
+      )
+    }
     if (controller.orchestration?.version === 3) {
       const cursor = parseTaskGraphCursor(controller.orchestration.taskGraph)
       const runningNodeId = cursor.currentNodeIds.length === 1

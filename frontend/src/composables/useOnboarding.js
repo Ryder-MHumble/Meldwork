@@ -1,12 +1,13 @@
 import { computed, ref } from 'vue'
 import { publicAsset } from '../catalog.js'
 import { t } from '../i18n.js'
+import { readProductPreference, writeProductPreference } from '../product-preferences.js'
 
-const ONBOARDING_KEY = 'roundrelay-onboarding-seen-v1'
+const ONBOARDING_PREFERENCE = 'onboarding-seen-v1'
 const ONBOARDING_SLIDE_MS = 3200
 
 function onboardingSeen() {
-  try { return localStorage.getItem(ONBOARDING_KEY) === '1' } catch { return false }
+  try { return readProductPreference(ONBOARDING_PREFERENCE) === '1' } catch { return false }
 }
 
 export function useOnboarding({ refreshAgents }) {
@@ -59,7 +60,7 @@ export function useOnboarding({ refreshAgents }) {
   }
 
   function completeOnboardingState() {
-    try { localStorage.setItem(ONBOARDING_KEY, '1') } catch { /* noop */ }
+    try { writeProductPreference(ONBOARDING_PREFERENCE, '1') } catch { /* noop */ }
     onboardingCompleted.value = true
     clearOnboardingPlayback()
     onboardingVisible.value = false

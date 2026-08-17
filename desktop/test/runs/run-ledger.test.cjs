@@ -1,5 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -7,8 +8,17 @@ const path = require('node:path')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const {
   appendHandoff,
+  createBlackboardEntryRecord,
   emptyCollaborationState,
 } = require('../../src/collaboration/collaboration-records.cjs')
+const {
+  createCollaborationReceipt,
+  createCoordinationPlan,
+  createOrchestrationV4,
+  createSynthesisBinding,
+  createWorkReceipt,
+  hashValue,
+} = require('../../src/collaboration/orchestration-v4-records.cjs')
 const { createTaskGraph, createTaskGraphCursor } = require('../../src/collaboration/task-graph-records.cjs')
 
 test('keeps the ledger facade limited to RunLedger', () => {
@@ -16,11 +26,72 @@ test('keeps the ledger facade limited to RunLedger', () => {
 })
 
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-run-ledger-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-run-ledger-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   return {
     directory,
     storagePath: path.join(directory, 'private', 'run-ledger.json'),
+  }
+}
+
+function discussionSnapshot(targetKinds, round = 0) {
+  const hash = createHash('sha256').update(JSON.stringify({ targetKinds, round })).digest('hex')
+  return {
+    contextPackId: null,
+    taskId: 'task-discussion',
+    round,
+    targetKinds: [...targetKinds],
+    sourceIds: ['task-discussion'],
+    capturedAt: 1000,
+    charCount: 123,
+    contentHash: hash,
+    bodyHash: createHash('sha256').update(JSON.stringify({ targetKinds, round, body: true })).digest('hex'),
+    contentRef: {
+      algorithm: 'sha256', hash, size: 123, mediaType: 'application/json',
+    },
+  }
+}
+
+function candidateCommitState({ runId, taskId, groupId, threadRootId, writerKind }) {
+  const candidateBody = 'Ledger candidate body.'
+  const candidateContentHash = createHash('sha256').update(candidateBody).digest('hex')
+  const candidateArtifactId = `artifact-${'5'.repeat(64)}`
+  const evidenceIds = [`evidence-${'7'.repeat(64)}`]
+  const writerRole = 'integrator'
+  const sinkId = (prefix, sink) => {
+    const body = JSON.stringify({ candidateContentHash, runId, sink, taskId })
+    return `${prefix}-${createHash('sha256').update(body).digest('hex')}`
+  }
+  const commitId = sinkId('candidate-commit', 'commit')
+  const blackboardEntry = createBlackboardEntryRecord({
+    entryType: 'artifact-ref', subject: `candidate-commit:${commitId}`,
+    statement: `Accepted candidate Artifact ${candidateArtifactId} `
+      + `(sha256:${candidateContentHash}).`,
+    value: candidateContentHash,
+    owner: { type: 'agent', agentKind: writerKind, role: writerRole },
+    audience: { roles: [], agentKinds: ['codex', 'hermes', 'workbuddy'] },
+    lifecycle: { state: 'active', sequence: 1, recordedAt: 0, supersedesEntryId: null },
+    provenance: {
+      runId, taskId, round: 2, agentRunId: null,
+      artifactIds: [candidateArtifactId], evidenceIds,
+    },
+    refs: [candidateArtifactId, ...evidenceIds],
+  })
+  return {
+    status: 'intent', runId, taskId, groupId, threadRootId,
+    candidateArtifactId,
+    candidateContentHash,
+    candidateContentRef: {
+      algorithm: 'sha256', hash: candidateContentHash, size: 31, mediaType: 'text/plain',
+    },
+    evidenceIds,
+    writerKind, writerRole,
+    commitId,
+    messageId: sinkId('message', 'message'),
+    blackboardEntryId: blackboardEntry.entryId,
+    blackboardSequence: 1, blackboardRecordedAt: 0,
+    messageStatus: 'pending', blackboardStatus: 'pending',
+    attempt: 1, updatedAt: 1001,
   }
 }
 
@@ -198,6 +269,544 @@ test('persists strict v3 task-graph cursors without weakening v1 and v2 loading'
       taskGraph: { ...taskGraph, terminalState: 'accepted' },
     },
   }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+})
+
+test('persists strict v4 concurrent batch state and rejects mutated snapshot bindings', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const orchestration = createOrchestrationV4({
+    workflow: 'manual',
+    template: 'concurrent-batch',
+    targetKinds: ['codex', 'hermes'],
+    collaboration: emptyCollaborationState(),
+  }, { targetKinds: ['codex', 'hermes'], now: 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-orchestration-v4', 'group-orchestration-v4'),
+    targetKinds: ['codex', 'hermes'],
+    orchestration,
+  })
+  assert.equal(saved.orchestration.version, 4)
+  assert.deepEqual(saved.orchestration.currentKinds, ['codex', 'hermes'])
+  assert.equal(saved.orchestration.plan.snapshotHash, saved.orchestration.snapshotHash)
+
+  const restored = new RunLedger({ storagePath, now: () => 1100 })
+  assert.deepEqual(restored.get(saved.runId).orchestration, saved.orchestration)
+  assert.throws(() => ledger.checkpoint({
+    runId: saved.runId,
+    orchestration: {
+      ...saved.orchestration,
+      slots: saved.orchestration.slots.map((slot, index) => index === 0
+        ? { ...slot, snapshotHash: 'b'.repeat(64) }
+        : slot),
+    },
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+  assert.deepEqual(ledger.get(saved.runId).orchestration, saved.orchestration)
+})
+
+test('roundtrips Auto candidate commit state and rejects parent or sink tampering', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex', 'hermes', 'workbuddy']
+  const base = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'coordination', round: 2,
+    snapshot: discussionSnapshot(targetKinds, 2),
+  }, { targetKinds, now: 1000 })
+  const coordinationPlan = createCoordinationPlan({
+    snapshotHash: base.snapshotHash,
+    targetKinds,
+    assignments: [
+      { taskId: 'codex-work', ownerKind: 'codex', role: 'worker', objective: 'Codex work.', expectedOutput: 'Codex Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
+      { taskId: 'hermes-work', ownerKind: 'hermes', role: 'worker', objective: 'Hermes work.', expectedOutput: 'Hermes Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
+      { taskId: 'integrate-work', ownerKind: 'workbuddy', role: 'integrator', objective: 'Integrate work.', expectedOutput: 'Integrated Artifact.', inputRefs: [], artifactIds: [], dependsOn: ['codex-work', 'hermes-work'] },
+    ],
+    finalizerKind: 'workbuddy', verifierKinds: ['codex', 'hermes'], agreedBy: targetKinds,
+  })
+  const runId = 'run-v4-candidate-commit'
+  const groupId = 'group-v4-candidate-commit'
+  const parent = runRecord(runId, groupId)
+  const candidateCommit = candidateCommitState({
+    runId, taskId: parent.taskId, groupId, threadRootId: parent.threadRootId,
+    writerKind: coordinationPlan.finalizerKind,
+  })
+  const orchestration = createOrchestrationV4({
+    ...base,
+    phase: 'commit',
+    currentKinds: [], pendingKinds: [],
+    coordinationPlan,
+    commitState: { ...base.commitState, writerKind: coordinationPlan.finalizerKind },
+    candidateCommit,
+  }, { targetKinds, now: 1001 })
+  const saved = ledger.checkpoint({
+    ...parent, mode: 'auto', targetKinds, currentRound: 2, maxRounds: 3, orchestration,
+  })
+
+  assert.deepEqual(saved.orchestration.candidateCommit, candidateCommit)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(runId).orchestration.candidateCommit,
+    candidateCommit,
+  )
+  for (const candidateCommitOverride of [
+    { ...candidateCommit, taskId: 'different-task' },
+    { ...candidateCommit, groupId: 'different-group' },
+    { ...candidateCommit, threadRootId: 'different-thread' },
+    { ...candidateCommit, messageId: `message-${'8'.repeat(64)}` },
+  ]) {
+    assert.throws(() => ledger.checkpoint({
+      runId,
+      orchestration: { ...saved.orchestration, candidateCommit: candidateCommitOverride },
+    }))
+  }
+})
+
+test('preserves validated V4 recipient delivery acknowledgement through the Run Ledger', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const orchestration = createOrchestrationV4({
+    workflow: 'manual',
+    template: 'concurrent-batch',
+    targetKinds: ['codex', 'hermes'],
+    deliveryState: [{
+      recipientKind: 'codex',
+      sessionRefHash: '1'.repeat(64),
+      sessionProvenanceHash: '2'.repeat(64),
+      sourceAgentKind: 'hermes',
+      sourcePhase: 'proposal',
+      watermark: 3,
+      snapshotHash: '3'.repeat(64),
+      operationId: 'operation-hermes',
+      packageHash: '4'.repeat(64),
+      deliveryId: 'delivery-1',
+      status: 'acknowledged',
+      updatedAt: 1000,
+    }],
+  }, { targetKinds: ['codex', 'hermes'], now: 1000 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-v4-delivery-state', 'group-v4-delivery-state'),
+    targetKinds: ['codex', 'hermes'],
+    orchestration,
+  })
+  assert.equal(orchestration.deliveryState?.length, 1)
+  assert.deepEqual(new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration.deliveryState,
+    orchestration.deliveryState)
+})
+
+test('restart retains same-Run delivery acknowledgements without sharing a concurrent Run state', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex', 'hermes', 'workbuddy', 'kimi', 'openclaw']
+  const sessionBindings = [
+    { recipientKind: 'codex', sessionRefHash: '1'.repeat(64), sessionProvenanceHash: '2'.repeat(64) },
+    { recipientKind: 'hermes', sessionRefHash: '3'.repeat(64), sessionProvenanceHash: '4'.repeat(64) },
+  ]
+  const deliveryState = sessionBindings.flatMap(binding => targetKinds.map((sourceAgentKind) => ({
+    ...binding,
+    sourceAgentKind,
+    sourcePhase: 'proposal',
+    watermark: 3,
+    snapshotHash: '5'.repeat(64),
+    operationId: `operation-wave-3-${sourceAgentKind}`,
+    packageHash: '6'.repeat(64),
+    deliveryId: `delivery-${binding.recipientKind}-${sourceAgentKind}-wave-3`,
+    status: 'acknowledged',
+    updatedAt: 1000,
+  }))).sort((left, right) => [
+    left.recipientKind, left.sessionRefHash, left.sessionProvenanceHash,
+    left.sourceAgentKind, left.sourcePhase,
+  ].join('\u0000').localeCompare([
+    right.recipientKind, right.sessionRefHash, right.sessionProvenanceHash,
+    right.sourceAgentKind, right.sourcePhase,
+  ].join('\u0000')))
+  const orchestration = createOrchestrationV4({
+    workflow: 'manual', template: 'concurrent-batch', targetKinds, deliveryState,
+  }, { targetKinds, now: 1000 })
+  const runA = ledger.checkpoint({
+    ...runRecord('run-v4-restart-a', 'group-v4-restart-a'),
+    targetKinds,
+    orchestration,
+  })
+  const runB = ledger.checkpoint({
+    ...runRecord('run-v4-restart-b', 'group-v4-restart-b'),
+    targetKinds,
+    orchestration: createOrchestrationV4({
+      workflow: 'manual', template: 'concurrent-batch', targetKinds,
+    }, { targetKinds, now: 1000 }),
+  })
+
+  const restarted = new RunLedger({ storagePath, now: () => 1100 })
+  assert.deepEqual(restarted.get(runA.runId).orchestration.deliveryState, deliveryState)
+  assert.equal(restarted.get(runB.runId).orchestration.deliveryState, undefined)
+})
+
+test('preserves validated V4 challenge bindings through the Run Ledger allowlist', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex', 'hermes']
+  const base = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'challenge', round: 2,
+    snapshot: discussionSnapshot(targetKinds, 2),
+  }, { targetKinds, now: 1000 })
+  const slots = base.slots.map((slot) => {
+    const receipt = createCollaborationReceipt({
+      phase: 'proposal', agentKind: slot.agentKind, slotId: slot.slotId,
+      operationId: `operation-proposal-${slot.agentKind}`, status: 'completed',
+      summary: `${slot.agentKind} proposal`, artifactIds: [`artifact-${slot.agentKind}`],
+      evidenceIds: [`evidence-${slot.agentKind}`], snapshotHash: base.snapshotHash,
+      deliveryWatermark: 1,
+    })
+    return {
+      ...slot,
+      resultRefs: {
+        artifactIds: [...receipt.artifactIds], evidenceIds: [...receipt.evidenceIds],
+        workflowOutcomeRefs: [{ receipt }],
+      },
+    }
+  })
+  const challengeBindings = slots.map((slot, index) => {
+    const proposalSlot = slots[1 - index]
+    const receipt = proposalSlot.resultRefs.workflowOutcomeRefs[0].receipt
+    return {
+      round: 2,
+      reviewerKind: slot.agentKind,
+      reviewerSlotId: slot.slotId,
+      reviewerOperationId: slot.operationId,
+      proposalKind: proposalSlot.agentKind,
+      proposalSlotId: proposalSlot.slotId,
+      proposalOperationId: receipt.operationId,
+      proposalReceiptId: receipt.receiptId,
+      artifactIds: [...receipt.artifactIds],
+      evidenceIds: [...receipt.evidenceIds],
+    }
+  })
+  const orchestration = { ...base, slots, challengeBindings }
+  const saved = ledger.checkpoint({
+    ...runRecord('run-v4-challenge-bindings', 'group-v4-challenge-bindings'),
+    mode: 'auto', targetKinds, currentRound: 2, maxRounds: 3, orchestration,
+  })
+
+  assert.deepEqual(saved.orchestration.challengeBindings, challengeBindings)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration.challengeBindings,
+    challengeBindings,
+  )
+})
+
+test('roundtrips exact V4 work receipts and rejects tampered receipt hashes', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex', 'hermes', 'workbuddy']
+  const base = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'coordination', round: 2,
+    snapshot: discussionSnapshot(targetKinds, 2),
+  }, { targetKinds, now: 1000 })
+  const coordinationPlan = createCoordinationPlan({
+    snapshotHash: base.snapshotHash,
+    targetKinds,
+    assignments: [
+      { taskId: 'codex-work', ownerKind: 'codex', role: 'worker', objective: 'Codex work.', expectedOutput: 'Codex Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
+      { taskId: 'hermes-work', ownerKind: 'hermes', role: 'worker', objective: 'Hermes work.', expectedOutput: 'Hermes Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
+      { taskId: 'integrate-work', ownerKind: 'workbuddy', role: 'integrator', objective: 'Integrate work.', expectedOutput: 'Integrated Artifact.', inputRefs: [], artifactIds: [], dependsOn: ['codex-work', 'hermes-work'] },
+    ],
+    finalizerKind: 'workbuddy',
+    verifierKinds: ['codex', 'hermes'],
+    agreedBy: targetKinds,
+  })
+  const slot = base.slots.find(candidate => candidate.agentKind === 'codex')
+  const artifactId = `artifact-${'a'.repeat(64)}`
+  const artifactHash = 'b'.repeat(64)
+  const collaborationReceipt = createCollaborationReceipt({
+    phase: 'work', agentKind: 'codex', slotId: slot.slotId,
+    operationId: slot.operationId, status: 'completed',
+    summary: 'Codex completed its negotiated work package.',
+    artifactIds: [artifactId], evidenceIds: [], workItemId: 'codex-work',
+    snapshotHash: base.snapshotHash, deliveryWatermark: 3,
+  })
+  const workReceipt = createWorkReceipt({
+    snapshotHash: base.snapshotHash,
+    snapshotBodyHash: base.snapshot.bodyHash,
+    snapshotContentRef: base.snapshot.contentRef,
+    planHash: coordinationPlan.planHash,
+    taskId: 'codex-work', ownerKind: 'codex', slotId: slot.slotId,
+    operationId: slot.operationId, collaborationReceipt,
+    artifacts: [{
+      artifactId,
+      contentHash: artifactHash,
+      contentRef: {
+        algorithm: 'sha256', hash: artifactHash, size: 42, mediaType: 'application/json',
+      },
+    }],
+  })
+  const orchestration = createOrchestrationV4({
+    ...base,
+    phase: 'work',
+    currentKinds: ['hermes', 'workbuddy'],
+    pendingKinds: ['hermes', 'workbuddy'],
+    coordinationPlan,
+    workReceipts: [workReceipt],
+    commitState: { ...base.commitState, writerKind: coordinationPlan.finalizerKind },
+    slots: base.slots.map(candidate => candidate.slotId === slot.slotId ? {
+      ...candidate,
+      phase: 'work',
+      status: 'completed',
+      finishedAt: 1001,
+      receiptId: collaborationReceipt.receiptId,
+      resultHash: hashValue(collaborationReceipt),
+      resultRefs: {
+        artifactIds: [artifactId],
+        evidenceIds: [],
+        workflowOutcomeRefs: [{ receipt: collaborationReceipt }],
+      },
+    } : { ...candidate, phase: 'work' }),
+  }, { targetKinds, now: 1001 })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-v4-work-receipt', 'group-v4-work-receipt'),
+    mode: 'auto', targetKinds, currentRound: 2, maxRounds: 3, orchestration,
+  })
+
+  assert.deepEqual(saved.orchestration.workReceipts, [workReceipt])
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration.workReceipts,
+    [workReceipt],
+  )
+  assert.throws(() => ledger.checkpoint({
+    runId: saved.runId,
+    orchestration: {
+      ...saved.orchestration,
+      workReceipts: [{ ...workReceipt, resultHash: 'f'.repeat(64) }],
+    },
+  }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+  assert.deepEqual(ledger.get(saved.runId).orchestration.workReceipts, [workReceipt])
+})
+
+test('persists the V4 synthesis binding through journal recovery and restart', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex', 'hermes']
+  const base = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'challenge', round: 2,
+    snapshot: discussionSnapshot(targetKinds, 2),
+  }, { targetKinds, now: 1000 })
+  const slots = base.slots.map((slot) => {
+    const proposalReceipt = createCollaborationReceipt({
+      phase: 'proposal', agentKind: slot.agentKind, slotId: slot.slotId,
+      operationId: `operation-proposal-${slot.agentKind}`, status: 'completed',
+      summary: `${slot.agentKind} proposal`, snapshotHash: base.snapshotHash,
+      deliveryWatermark: 1,
+    })
+    const challengeReceipt = createCollaborationReceipt({
+      phase: 'challenge', agentKind: slot.agentKind, slotId: slot.slotId,
+      operationId: slot.operationId, status: 'completed',
+      summary: `${slot.agentKind} challenge`, snapshotHash: base.snapshotHash,
+      deliveryWatermark: 2,
+    })
+    return {
+      ...slot,
+      status: 'completed',
+      finishedAt: 1001,
+      resultRefs: {
+        artifactIds: [], evidenceIds: [],
+        workflowOutcomeRefs: [
+          { receipt: proposalReceipt },
+          { receipt: challengeReceipt, verdict: 'support' },
+        ],
+      },
+    }
+  })
+  const challengeBindings = slots.map((slot, index) => {
+    const proposalSlot = slots[1 - index]
+    const proposalReceipt = proposalSlot.resultRefs.workflowOutcomeRefs[0].receipt
+    return {
+      round: 2,
+      reviewerKind: slot.agentKind,
+      reviewerSlotId: slot.slotId,
+      reviewerOperationId: slot.operationId,
+      proposalKind: proposalSlot.agentKind,
+      proposalSlotId: proposalSlot.slotId,
+      proposalOperationId: proposalReceipt.operationId,
+      proposalReceiptId: proposalReceipt.receiptId,
+      artifactIds: [],
+      evidenceIds: [],
+    }
+  })
+  const synthesisBinding = createSynthesisBinding({
+    snapshotContentHash: base.snapshot.bodyHash,
+    targetKinds,
+    candidates: [
+      { kind: 'codex', score: 700 },
+      { kind: 'hermes', score: 600 },
+    ],
+  })
+  const saved = ledger.checkpoint({
+    ...runRecord('run-v4-synthesis-binding', 'group-v4-synthesis-binding'),
+    mode: 'auto', targetKinds, currentRound: 2, maxRounds: 3,
+    orchestration: {
+      ...base,
+      currentKinds: [],
+      pendingKinds: [],
+      slots,
+      challengeBindings,
+      synthesisBinding,
+      commitState: { ...base.commitState, writerKind: synthesisBinding.writerKind },
+    },
+  })
+
+  assert.deepEqual(saved.orchestration.synthesisBinding, synthesisBinding)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration.synthesisBinding,
+    synthesisBinding,
+  )
+
+  const writerKind = synthesisBinding.writerKind
+  const writerSlot = slots.find(slot => slot.agentKind === writerKind)
+  const operationId = `operation-synthesis-${writerKind}-1`
+  const rankedKinds = [writerKind, ...targetKinds.filter(kind => kind !== writerKind)]
+  const recovery = {
+    revision: 1,
+    originalWriterKind: writerKind,
+    activeWriterKind: writerKind,
+    verificationKinds: rankedKinds.filter(kind => kind !== writerKind).slice(0, 1),
+    rankedKinds,
+    rankingFingerprint: createHash('sha256').update(JSON.stringify({
+      rankedKinds,
+      selectionInputHash: synthesisBinding.selectionInputHash,
+    })).digest('hex'),
+    stateEpoch: 0,
+    triedWriters: [writerKind],
+    attempts: [{
+      attemptId: `synthesis-attempt-${writerKind}-1`,
+      writerKind,
+      slotId: writerSlot.slotId,
+      operationId,
+      attempt: 1,
+      status: 'intent',
+      permission: 'workspace-write',
+      leaseAcquired: false,
+      sideEffectsPossible: false,
+      outcomeCertainty: 'not_started',
+      updatedAt: 1001,
+    }],
+  }
+  const recoverySlots = slots.map(slot => slot.agentKind === writerKind
+    ? { ...slot, phase: 'synthesis', status: 'planned', operationId, permission: 'workspace-write' }
+    : slot)
+  const recoveryPlan = {
+    ...base.plan,
+    assignments: base.plan.assignments.map(assignment => assignment.agentKind === writerKind
+      ? { ...assignment, operationId }
+      : assignment),
+  }
+  const recovered = ledger.checkpoint({
+    runId: saved.runId,
+    orchestration: {
+      ...saved.orchestration,
+      phase: 'synthesis',
+      currentKind: '',
+      currentKinds: [writerKind],
+      pendingKinds: [writerKind],
+      plan: recoveryPlan,
+      slots: recoverySlots,
+      synthesisRecovery: recovery,
+    },
+  })
+  assert.deepEqual(recovered.orchestration.synthesisRecovery, recovery)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1200 }).get(saved.runId).orchestration.synthesisRecovery,
+    recovery,
+  )
+})
+
+test('preserves strict V4 convergence and Gate epoch through restart', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex', 'hermes']
+  const base = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'challenge', round: 2,
+    snapshot: discussionSnapshot(targetKinds, 2),
+  }, { targetKinds, now: 1000 })
+  const slots = base.slots.map((slot) => {
+    const proposalReceipt = createCollaborationReceipt({
+      phase: 'proposal', agentKind: slot.agentKind, slotId: slot.slotId,
+      operationId: `operation-proposal-${slot.agentKind}`, status: 'completed',
+      summary: `${slot.agentKind} proposal`, snapshotHash: base.snapshotHash,
+      deliveryWatermark: 1,
+    })
+    const challengeReceipt = createCollaborationReceipt({
+      phase: 'challenge', agentKind: slot.agentKind, slotId: slot.slotId,
+      operationId: slot.operationId, status: 'completed',
+      summary: `${slot.agentKind} challenge`, snapshotHash: base.snapshotHash,
+      deliveryWatermark: 2,
+    })
+    return {
+      ...slot,
+      status: 'completed',
+      finishedAt: 1001,
+      resultRefs: {
+        artifactIds: [], evidenceIds: [],
+        workflowOutcomeRefs: [
+          { receipt: proposalReceipt },
+          { receipt: challengeReceipt, verdict: 'support' },
+        ],
+      },
+    }
+  })
+  const challengeBindings = slots.map((slot, index) => {
+    const proposalSlot = slots[1 - index]
+    const proposalReceipt = proposalSlot.resultRefs.workflowOutcomeRefs[0].receipt
+    return {
+      round: 2,
+      reviewerKind: slot.agentKind,
+      reviewerSlotId: slot.slotId,
+      reviewerOperationId: slot.operationId,
+      proposalKind: proposalSlot.agentKind,
+      proposalSlotId: proposalSlot.slotId,
+      proposalOperationId: proposalReceipt.operationId,
+      proposalReceiptId: proposalReceipt.receiptId,
+      artifactIds: [],
+      evidenceIds: [],
+    }
+  })
+  const synthesisBinding = createSynthesisBinding({
+    snapshotContentHash: base.snapshot.bodyHash,
+    targetKinds,
+    candidates: [
+      { kind: 'codex', score: 700 },
+      { kind: 'hermes', score: 600 },
+    ],
+  })
+  const candidateContentHash = '2'.repeat(64)
+  const openIssueIds = [`issue-${'3'.repeat(64)}`]
+  const convergence = {
+    candidateArtifactId: `artifact-${'1'.repeat(64)}`,
+    candidateContentHash,
+    openIssueIds,
+    stateKey: createHash('sha256').update(JSON.stringify({
+      candidateContentHash,
+      openIssueIds,
+    })).digest('hex'),
+    lastCompletedRound: 2,
+    consecutiveStableRounds: 2,
+    stateEpoch: 7,
+    acknowledgedGateEpoch: 7,
+  }
+  const saved = ledger.checkpoint({
+    ...runRecord('run-v4-convergence', 'group-v4-convergence'),
+    mode: 'auto', targetKinds, currentRound: 2, maxRounds: 3,
+    orchestration: {
+      ...base,
+      currentKinds: [],
+      pendingKinds: [],
+      slots,
+      challengeBindings,
+      synthesisBinding,
+      commitState: { ...base.commitState, writerKind: synthesisBinding.writerKind },
+      convergence,
+    },
+  })
+
+  assert.deepEqual(saved.orchestration.convergence, convergence)
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).orchestration.convergence,
+    convergence,
+  )
 })
 
 test('persists sanitized attempt history through journal recovery and restart', (t) => {

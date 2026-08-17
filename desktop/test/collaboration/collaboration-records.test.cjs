@@ -86,6 +86,22 @@ test('Handoff and Blackboard records are strict, content-addressed, and secret-s
   }), { message: 'HANDOFF_ID_MISMATCH' })
 })
 
+test('Blackboard entries retain the negotiated integrator owner role', () => {
+  const entry = createBlackboardEntryRecord(claimInput('workbuddy', 'integrator', 'ready', 1))
+  assert.equal(entry.owner.role, 'integrator')
+})
+
+test('Blackboard entries roundtrip negotiated worker and verifier owners only', () => {
+  for (const role of ['worker', 'verifier']) {
+    const entry = createBlackboardEntryRecord(claimInput('codex', role, 'ready', 1))
+    const state = { version: 1, handoffs: [], entries: [entry] }
+    assert.equal(parseCollaborationState(state).entries[0].owner.role, role)
+  }
+  assert.throws(() => createBlackboardEntryRecord(
+    claimInput('codex', 'participant', 'ready', 1),
+  ), { message: 'BLACKBOARD_ENTRY_SCHEMA_INVALID' })
+})
+
 test('conflicting claims append a conflict and remain selectively visible', () => {
   let state = emptyCollaborationState()
   state = appendBlackboardEntry(state, claimInput('codex', 'primary', 'ready', 1))

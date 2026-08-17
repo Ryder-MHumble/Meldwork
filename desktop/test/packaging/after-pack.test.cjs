@@ -6,9 +6,9 @@ const afterPack = require('../../scripts/after-pack.cjs')
 function darwinContext({ addElectronFuses = async () => {}, generateFuseConfig } = {}) {
   return {
     electronPlatformName: 'darwin',
-    appOutDir: '/tmp/roundrelay-pack',
+    appOutDir: '/tmp/meldwork-pack',
     packager: {
-      appInfo: { productFilename: 'RoundRelay' },
+      appInfo: { productFilename: 'Meldwork' },
       addElectronFuses,
       generateFuseConfig: generateFuseConfig || (async config => config),
     },
@@ -19,7 +19,7 @@ test('macOS packaging removes unused permission declarations before signing', as
   const calls = []
   const generatedFuseConfigs = []
   const fuseCalls = []
-  const appPath = path.join('/tmp/roundrelay-pack', 'RoundRelay.app')
+  const appPath = path.join('/tmp/meldwork-pack', 'Meldwork.app')
   const infoPlistPath = path.join(appPath, 'Contents', 'Info.plist')
   const generatedFuseConfig = { version: 'test-v1' }
   const context = darwinContext({

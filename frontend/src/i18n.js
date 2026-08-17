@@ -1,12 +1,13 @@
 import { ref } from 'vue'
 import en from './locales/en.js'
 import zh from './locales/zh.js'
+import { readProductPreference, writeProductPreference } from './product-preferences.js'
 
 const messages = { en, zh }
 
 function initialLocale() {
   try {
-    const saved = localStorage.getItem('roundrelay-locale')
+    const saved = readProductPreference('locale')
     if (saved === 'en' || saved === 'zh') return saved
   } catch { /* localStorage may be unavailable */ }
   return typeof navigator !== 'undefined' && navigator.language?.toLowerCase().startsWith('zh') ? 'zh' : 'en'
@@ -17,7 +18,7 @@ export const locale = ref(initialLocale())
 export function setLocale(value) {
   locale.value = value === 'zh' ? 'zh' : 'en'
   if (typeof document !== 'undefined') document.documentElement.lang = locale.value === 'zh' ? 'zh-CN' : 'en'
-  try { localStorage.setItem('roundrelay-locale', locale.value) } catch { /* noop */ }
+  try { writeProductPreference('locale', locale.value) } catch { /* noop */ }
 }
 
 function expandParam(name, params, depth, trail) {

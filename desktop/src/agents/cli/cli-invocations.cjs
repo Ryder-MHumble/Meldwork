@@ -12,7 +12,7 @@ function codexSandbox(requested) {
     if (!CODEX_SANDBOXES.has(requested)) throw new Error('CODEX_SANDBOX_UNSUPPORTED')
     return requested
   }
-  const configured = process.env.ROUNDRELAY_CODEX_SANDBOX || 'read-only'
+  const configured = process.env.MELDWORK_CODEX_SANDBOX || 'read-only'
   return CODEX_SANDBOXES.has(configured) ? configured : 'read-only'
 }
 

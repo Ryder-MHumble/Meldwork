@@ -1,19 +1,29 @@
 const { EventEmitter } = require('node:events')
-const { randomUUID } = require('node:crypto')
+const { createHash, randomUUID } = require('node:crypto')
 const path = require('node:path')
 const { ContentBlobStore } = require('../attachments/content-blob-store.cjs')
 const { ContextPackStore } = require('../collaboration/context-pack-store.cjs')
 const { HumanGateCoordinator } = require('../gates/human-gate-coordinator.cjs')
 const { HumanGateStore } = require('../gates/human-gate-store.cjs')
 const { OutcomeStore } = require('../collaboration/outcome-store.cjs')
-const { normalizeOutcomeRefs, normalizeSessionMeta } = require('../runs/run-harness.cjs')
+const { hashValue } = require('../collaboration/orchestration-v4-records.cjs')
+const {
+  RunHarness,
+  normalizeOutcomeRefs,
+  normalizeSessionMeta,
+} = require('../runs/run-harness.cjs')
+const { RunBudget } = require('../runs/run-budget.cjs')
 const { LocalWorkspaceRunLedger } = require('./local-workspace-ledger.cjs')
 const { LocalWorkspaceAgentCatalog } = require('./local-workspace-agent-catalog.cjs')
 const { LocalWorkspaceAgentInvocation } = require('./local-workspace-agent-invocation.cjs')
 const { LocalWorkspaceAutoRunner } = require('./local-workspace-auto-runner.cjs')
 const { LocalWorkspaceConversations } = require('./local-workspace-conversations.cjs')
 const { LocalWorkspaceContextPacks } = require('./local-workspace-context-packs.cjs')
-const { LocalWorkspaceMessageSubmission } = require('./local-workspace-message-submission.cjs')
+const {
+  LocalWorkspaceMessageSubmission,
+  isV4ManualUnknownWriter,
+  v4ManualRecoveryGateInput,
+} = require('./local-workspace-message-submission.cjs')
 const { LocalWorkspaceRunCoordinator } = require('./local-workspace-run-coordinator.cjs')
 const { LocalWorkspaceRunMessages } = require('./local-workspace-run-messages.cjs')
 const { AgentRouter } = require('../agents/agent-routing.cjs')
@@ -36,6 +46,7 @@ const {
   SESSION_KEY,
   cleanInline,
   defaultAgentLabel,
+  normalizeLoadedMessage,
   normalizeSessionRef,
   terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
@@ -48,6 +59,10 @@ const {
 
 const MAX_AGENT_OUTCOME_ARTIFACTS = 16
 const OUTCOME_RECORDER = Object.freeze({ kind: 'system', actorId: 'meldwork-main' })
+const TERMINAL_RUN_STATUSES = new Set([
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
+])
 
 class LocalWorkspace extends EventEmitter {
   constructor(options) {
@@ -93,7 +108,7 @@ class LocalWorkspace extends EventEmitter {
     this.runLedger = options.runLedger || null
     this.workspaceRecovery = this.load()
     this.state = this.workspaceRecovery.state
-    const privateRoot = path.join(path.dirname(this.storagePath), 'roundrelay-private')
+    const privateRoot = path.join(path.dirname(this.storagePath), 'meldwork-private')
     this.contentBlobStore = options.contentBlobStore || new ContentBlobStore({
       rootPath: path.join(privateRoot, 'content-blobs'),
     })
@@ -130,6 +145,8 @@ class LocalWorkspace extends EventEmitter {
     this.detectedAgents = []
     this.preparingRuns = new Map()
     this.activeRuns = new Map()
+    this.pendingV4ManualRecoveries = new Map()
+    this.pendingV4AutoRecoveries = new Map()
     this.runCheckpointTimers = new Map()
     this.humanGateWaitTails = new Map()
     this.shuttingDown = false
@@ -258,8 +275,11 @@ class LocalWorkspace extends EventEmitter {
       recordAgentFailure: (...args) => this.recordAgentFailure(...args),
       recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),
       addMessage: (...args) => this.addMessage(...args),
+      commitV4AgentMessage: input => this.commitV4AgentMessage(input),
       emitChanged: () => this.emitChanged(),
       finishRun: (...args) => this.finishRun(...args),
+      outcomeStore: this.outcomeStore,
+      contentBlobStore: this.contentBlobStore,
       checkpointRun: (...args) => this.checkpointRun(...args),
       hasRunLedger: () => Boolean(this.runLedger),
       requestHumanGate: (...args) => this.requestHumanGate(...args),
@@ -309,12 +329,16 @@ class LocalWorkspace extends EventEmitter {
       checkpointRun: (...args) => this.checkpointRun(...args),
       hasRunLedger: () => Boolean(this.runLedger),
       routeAgents: input => this.agentRouter.route(input),
+      contentBlobStore: this.contentBlobStore,
+      outcomeStore: this.outcomeStore,
+      commitV4AgentMessage: input => this.commitV4AgentMessage(input),
+      requestHumanGate: (...args) => this.requestHumanGate(...args),
+      completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
     })
     if (this.workspaceRecovery.trusted) {
       this.humanGateCoordinator.reconcileDecisions?.()
       this.restoreInterruptedRuns()
       this.humanGateCoordinator.reconcileOrphans?.()
-      this.resumeReadyHumanGates()
     }
   }
 
@@ -334,7 +358,292 @@ class LocalWorkspace extends EventEmitter {
   }
 
   restoreInterruptedRuns() {
+    const recoverableV4Manual = this.recoverableV4ManualRecords()
+    const recoverableV4Auto = this.recoverableV4AutoRecords()
     this.runLedgerCoordinator.restoreInterruptedRuns()
+    if (!recoverableV4Manual.length && !recoverableV4Auto.length) return
+
+    let messagesChanged = false
+    for (const record of recoverableV4Manual) {
+      let durable
+      try {
+        durable = this.runLedger.checkpoint(record)
+      } catch {
+        continue
+      }
+      const allowedMessageIds = new Set(
+        durable.orchestration.slots.map(slot => slot.messageId).filter(Boolean),
+      )
+      const retainedMessages = this.state.messages.filter(message => (
+        message.trace?.runId !== durable.runId || allowedMessageIds.has(message.id)
+      ))
+      if (retainedMessages.length !== this.state.messages.length) {
+        this.state.messages = retainedMessages
+        messagesChanged = true
+      }
+      this.prepareV4ManualRecovery(durable)
+    }
+    for (const record of recoverableV4Auto) {
+      let durable
+      try {
+        durable = this.runLedger.checkpoint(record)
+      } catch {
+        continue
+      }
+      const allowedMessageIds = new Set([
+        ...(durable.orchestration.commitState.messageIds || []),
+        ...(durable.orchestration.candidateCommit?.messageId
+          ? [durable.orchestration.candidateCommit.messageId] : []),
+      ])
+      const retainedMessages = this.state.messages.filter(message => (
+        message.trace?.runId !== durable.runId || allowedMessageIds.has(message.id)
+      ))
+      if (retainedMessages.length !== this.state.messages.length) {
+        this.state.messages = retainedMessages
+        messagesChanged = true
+      }
+      this.prepareV4AutoRecovery(durable)
+    }
+    if (messagesChanged) this.save()
+  }
+
+  recoverableV4ManualRecords() {
+    let records = []
+    try { records = this.runLedger?.list?.() || [] } catch { return [] }
+    const groupIds = new Set(this.state.groups.map(group => group.id))
+    const retainedGroups = new Set()
+    return records.filter((record) => {
+      const orchestration = record?.orchestration
+      const terminalRecovery = record?.continuation
+        ? this.v4ManualTerminalRecovery(record)
+        : null
+      if (record?.mode !== 'manual' || TERMINAL_RUN_STATUSES.has(record.status)
+          || !groupIds.has(record.groupId) || retainedGroups.has(record.groupId)
+          || orchestration?.version !== 4 || orchestration.workflow !== 'manual'
+          || orchestration.template !== 'concurrent-batch'
+          || (record.continuation && !terminalRecovery)) {
+        return false
+      }
+      retainedGroups.add(record.groupId)
+      return true
+    })
+  }
+
+  recoverableV4AutoRecords() {
+    let records = []
+    try { records = this.runLedger?.list?.() || [] } catch { return [] }
+    const groupIds = new Set(this.state.groups.map(group => group.id))
+    const retainedGroups = new Set()
+    return records.filter((record) => {
+      const orchestration = record?.orchestration
+      const terminalRecovery = record?.continuation
+        ? this.v4SynthesisTerminalRecovery(record)
+        : null
+      const commitState = orchestration?.commitState
+      const candidateCommit = orchestration?.candidateCommit
+      const resumablePhase = [
+        'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
+      ].includes(orchestration?.phase)
+      const resumableCommit = ['commit', 'committed', 'completed'].includes(orchestration?.phase)
+        && ['committing', 'committed'].includes(commitState?.status)
+        && Array.isArray(commitState.messageIds) && commitState.messageIds.length === 1
+      const resumableCandidateCommit = ['commit', 'completed'].includes(orchestration?.phase)
+        && ['intent', 'message-committed', 'sinks-committed', 'completed']
+          .includes(candidateCommit?.status)
+        && candidateCommit.messageId
+        && candidateCommit.blackboardEntryId
+      const synthesisGateBinding = orchestration?.synthesisRecovery?.pendingGate
+      const resumableSynthesisGate = orchestration?.phase === 'human-gate'
+        && synthesisGateBinding
+        && orchestration.synthesisRecovery.attempts?.some(attempt => (
+          attempt.status === 'unknown_outcome'
+          && attempt.writerKind === synthesisGateBinding.writerKind
+          && attempt.operationId === synthesisGateBinding.operationId
+        ))
+      if (record?.mode !== 'auto' || TERMINAL_RUN_STATUSES.has(record.status)
+          || !groupIds.has(record.groupId) || retainedGroups.has(record.groupId)
+          || orchestration?.version !== 4 || orchestration.workflow !== 'auto'
+          || orchestration.template !== 'discussion'
+          || (record.continuation && !terminalRecovery)
+          || (!resumablePhase && !resumableCommit
+            && !resumableCandidateCommit && !resumableSynthesisGate && !terminalRecovery)) {
+        return false
+      }
+      retainedGroups.add(record.groupId)
+      return true
+    })
+  }
+
+  prepareV4ManualRecovery(durable) {
+    const group = this.state.groups.find(item => item.id === durable.groupId)
+    if (!group || this.activeRuns.has(group.id)) return false
+    const controller = this.createRunController(
+      'manual', durable.targetKinds, durable.threadRootId,
+    )
+    controller.runId = durable.runId
+    controller.taskId = durable.taskId
+    controller.contextPackId = durable.contextPackId
+    controller.taskBound = true
+    controller.groupId = group.id
+    controller.currentRound = durable.currentRound || 0
+    controller.startedAt = durable.startedAt
+    controller.attemptHistory = [...(durable.attemptHistory || [])]
+    controller.orchestration = structuredClone(durable.orchestration)
+    controller.continuation = durable.continuation
+      ? structuredClone(durable.continuation)
+      : null
+    controller.completedKinds = controller.orchestration.slots
+      .filter(slot => ['completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted']
+        .includes(slot.status))
+      .map(slot => slot.agentKind)
+    controller.failedKinds = controller.orchestration.slots
+      .filter(slot => ['failed', 'stopped', 'timeout', 'interrupted'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    controller.harness = new RunHarness({
+      runId: durable.runId,
+      groupId: group.id,
+      threadRootId: durable.threadRootId,
+      targetKinds: durable.targetKinds,
+      agentRuns: durable.agentRuns,
+    })
+    if (durable.budget) {
+      controller.budget = new RunBudget({
+        ...durable.budget,
+        now: Date.now,
+      })
+    }
+    this.activeRuns.set(group.id, controller)
+    this.pendingV4ManualRecoveries.set(durable.runId, { group, durable, controller })
+    return true
+  }
+
+  prepareV4AutoRecovery(durable) {
+    const group = this.state.groups.find(item => item.id === durable.groupId)
+    if (!group || this.activeRuns.has(group.id)) return false
+    const controller = this.createRunController(
+      'auto', durable.targetKinds, durable.threadRootId,
+      durable.maxRounds, durable.unlimitedRounds,
+    )
+    controller.runId = durable.runId
+    controller.taskId = durable.taskId
+    controller.contextPackId = durable.contextPackId
+    controller.taskBound = true
+    controller.groupId = group.id
+    controller.currentRound = durable.currentRound || 0
+    controller.startedAt = durable.startedAt
+    controller.attemptHistory = [...(durable.attemptHistory || [])]
+    controller.orchestration = structuredClone(durable.orchestration)
+    controller.continuation = durable.continuation
+      ? structuredClone(durable.continuation)
+      : null
+    controller.v4 = true
+    controller.completedKinds = controller.orchestration.slots
+      .filter(slot => ['completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted']
+        .includes(slot.status))
+      .map(slot => slot.agentKind)
+    controller.failedKinds = controller.orchestration.slots
+      .filter(slot => ['failed', 'stopped', 'timeout', 'interrupted'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    controller.harness = new RunHarness({
+      runId: durable.runId,
+      groupId: group.id,
+      threadRootId: durable.threadRootId,
+      targetKinds: durable.targetKinds,
+      agentRuns: durable.agentRuns,
+    })
+    if (durable.budget) {
+      controller.budget = new RunBudget({ ...durable.budget, now: Date.now })
+    }
+    this.activeRuns.set(group.id, controller)
+    this.pendingV4AutoRecoveries.set(durable.runId, { group, durable, controller })
+    return true
+  }
+
+  resumeV4ManualRecoveries() {
+    const recoveries = [...this.pendingV4ManualRecoveries.values()]
+    this.pendingV4ManualRecoveries.clear()
+    for (const recovery of recoveries) {
+      queueMicrotask(() => {
+        this.resumeV4ManualRecovery(recovery).catch((error) => {
+          if (!recovery.controller.stopReason) {
+            recovery.controller.stopReason = String(
+              error?.code || error?.message || 'LOCAL_RUN_CONTINUATION_INVALID',
+            )
+          }
+        })
+      })
+    }
+  }
+
+  resumeV4AutoRecoveries() {
+    const recoveries = [...this.pendingV4AutoRecoveries.values()]
+    this.pendingV4AutoRecoveries.clear()
+    for (const recovery of recoveries) {
+      queueMicrotask(() => {
+        this.resumeV4AutoRecovery(recovery).catch((error) => {
+          if (!recovery.controller.stopReason) {
+            recovery.controller.stopReason = String(
+              error?.code || error?.message || 'LOCAL_RUN_CONTINUATION_INVALID',
+            )
+          }
+        })
+      })
+    }
+  }
+
+  async resumeV4AutoRecovery({ group, durable, controller }) {
+    try {
+      const terminalRecovery = this.v4SynthesisTerminalRecovery(durable)
+      if (terminalRecovery?.state === 'cancelled') {
+        controller.stopReason = 'human_gate_rejected'
+        await this.finishRun(group.id, controller, 'stopped')
+        return
+      }
+      const finalStatus = await this.autoRunner.resume(group, durable, controller)
+      await this.finishRun(group.id, controller, finalStatus)
+    } catch (error) {
+      controller.stopReason = String(error?.message || 'LOCAL_RUN_CONTINUATION_INVALID')
+      await this.finishRun(group.id, controller, 'failed')
+    }
+  }
+
+  async resumeV4ManualRecovery({ group, durable, controller }) {
+    try {
+      const terminalRecovery = this.v4ManualTerminalRecovery(durable)
+      if (terminalRecovery?.state === 'cancelled') {
+        controller.stopReason = 'human_gate_rejected'
+        await this.finishRun(group.id, controller, 'stopped')
+        return
+      }
+      if (terminalRecovery?.state === 'failed') {
+        controller.stopReason = durable.reason || 'human_gate_continuation_failed'
+        await this.finishRun(group.id, controller, 'failed')
+        return
+      }
+      const result = await this.messageSubmission.resumeV4Manual({
+        group,
+        durable,
+        controller,
+        ...(terminalRecovery ? {
+          onlyKind: terminalRecovery.slot.agentKind,
+          resumedGate: {
+            gateId: terminalRecovery.gate.gateId,
+            type: terminalRecovery.gate.type,
+            agentRunId: terminalRecovery.gate.agentRunId,
+            agentKind: terminalRecovery.gate.agentKind,
+            status: terminalRecovery.gate.status,
+            optionId: terminalRecovery.gate.decision.optionId,
+            request: terminalRecovery.request,
+            requestHash: terminalRecovery.gate.requestHash,
+            used: false,
+          },
+        } : {}),
+      })
+      await this.finishRun(group.id, controller, result.status)
+    } catch (error) {
+      controller.stopReason = String(error?.message || 'LOCAL_RUN_CONTINUATION_INVALID')
+      await this.finishRun(group.id, controller, 'failed')
+    }
   }
 
   runLedgerRecord(groupId, controller, status = '') {
@@ -441,6 +750,9 @@ class LocalWorkspace extends EventEmitter {
         agentRunId: input.agentRunId,
         agentKind: input.agentKind,
         round: input.round || 0,
+        ...(['v4_human_gate', 'v4_synthesis_recovery'].includes(input.resumeKind)
+          ? { stateEpoch: input.stateEpoch }
+          : {}),
         createdAt: timestamp,
         updatedAt: timestamp,
         ...(input.requestId ? {
@@ -502,6 +814,225 @@ class LocalWorkspace extends EventEmitter {
     return true
   }
 
+  v4SynthesisRecoveryGateMatch(
+    runRecord, gateRecord, gateInput = null, allowTerminalContinuation = false,
+  ) {
+    const orchestration = runRecord?.orchestration
+    const recovery = orchestration?.synthesisRecovery
+    const binding = recovery?.pendingGate
+    if (runRecord?.mode !== 'auto' || TERMINAL_RUN_STATUSES.has(runRecord.status)
+        || (!allowTerminalContinuation && runRecord.continuation) || orchestration?.version !== 4
+        || orchestration.workflow !== 'auto' || orchestration.template !== 'discussion'
+        || orchestration.phase !== 'human-gate' || !binding) return null
+    const matchingAttempts = recovery.attempts?.filter(attempt => (
+      attempt.status === (allowTerminalContinuation ? 'cancelled' : 'unknown_outcome')
+      && attempt.outcomeCertainty === 'unknown_outcome'
+      && attempt.permission === 'workspace-write'
+      && attempt.leaseAcquired === true
+      && attempt.sideEffectsPossible === true
+      && attempt.writerKind === binding.writerKind
+      && attempt.slotId === binding.slotId
+      && attempt.operationId === binding.operationId
+      && attempt.attempt === binding.attempt
+    )) || []
+    const slot = orchestration.slots?.find(candidate => (
+      candidate.slotId === binding.slotId
+      && candidate.agentKind === binding.writerKind
+      && candidate.operationId === binding.operationId
+      && candidate.permission === 'workspace-write'
+      && ['waiting', 'failed'].includes(candidate.status)
+    ))
+    const bindingFields = {
+      writerKind: binding.writerKind,
+      slotId: binding.slotId,
+      operationId: binding.operationId,
+      attempt: binding.attempt,
+      proposedReplacementKind: binding.proposedReplacementKind,
+      round: binding.round,
+      stateEpoch: binding.stateEpoch,
+      rankingFingerprint: binding.rankingFingerprint,
+    }
+    if (matchingAttempts.length !== 1 || !slot
+        || recovery.activeWriterKind !== binding.writerKind
+        || recovery.stateEpoch !== binding.stateEpoch
+        || recovery.rankingFingerprint !== binding.rankingFingerprint
+        || binding.bindingHash !== hashValue(bindingFields)) return null
+    const expectedSummary = 'The workspace-write synthesis attempt may have produced side effects, but its result is unknown.'
+    const expectedOptions = [
+      { optionId: 'retry-original-writer', name: 'Retry original writer', kind: 'accept' },
+      ...(binding.proposedReplacementKind ? [{
+        optionId: 'replace-next-writer', name: 'Replace with next writer', kind: 'accept',
+      }] : []),
+      { optionId: 'stop-discussion', name: 'Stop', kind: 'reject' },
+    ]
+    const expectedRequest = {
+      phase: 'synthesis-recovery',
+      bindingHash: binding.bindingHash,
+      writerKind: binding.writerKind,
+      slotId: binding.slotId,
+      operationId: binding.operationId,
+      attempt: binding.attempt,
+      proposedReplacementKind: binding.proposedReplacementKind,
+      round: binding.round,
+      stateEpoch: binding.stateEpoch,
+      outcomeCertainty: 'unknown_outcome',
+    }
+    let gate
+    let request
+    try {
+      gate = this.humanGateStore.get(gateRecord?.gateId)
+      request = this.humanGateStore.request(gate.gateId)
+    } catch {
+      return null
+    }
+    const expectedRequestFields = Reflect.ownKeys(expectedRequest)
+    const requestFields = request && typeof request === 'object' && !Array.isArray(request)
+      ? Reflect.ownKeys(request)
+      : []
+    const continuation = runRecord.continuation
+    if (gate.status !== (allowTerminalContinuation ? 'rejected' : 'pending')
+        || gate.type !== 'decision'
+        || gate.runId !== runRecord.runId || gate.agentRunId !== binding.operationId
+        || gate.agentKind !== binding.writerKind || gate.summary !== expectedSummary
+        || gate.expiresAt !== undefined || hashValue(gate.options) !== hashValue(expectedOptions)
+        || requestFields.length !== expectedRequestFields.length
+        || !requestFields.every(field => expectedRequestFields.includes(field))
+        || hashValue(request) !== hashValue(expectedRequest)
+        || (allowTerminalContinuation && (
+          continuation?.state !== 'cancelled'
+          || continuation.gateId !== gate.gateId
+          || continuation.gateType !== gate.type
+          || continuation.resumeKind !== 'v4_synthesis_recovery'
+          || continuation.agentRunId !== binding.operationId
+          || continuation.agentKind !== binding.writerKind
+          || continuation.round !== binding.round
+          || continuation.stateEpoch !== binding.stateEpoch
+        ))) return null
+    if (gateInput) {
+      const expectedInputFields = [
+        'type', 'runId', 'agentRunId', 'agentKind', 'summary', 'options', 'request',
+      ]
+      const inputFields = Reflect.ownKeys(gateInput)
+      const inputRequestFields = gateInput.request && typeof gateInput.request === 'object'
+        && !Array.isArray(gateInput.request) ? Reflect.ownKeys(gateInput.request) : []
+      if (inputFields.length !== expectedInputFields.length
+          || !inputFields.every(field => expectedInputFields.includes(field))
+          || gateInput.type !== gate.type || gateInput.runId !== gate.runId
+          || gateInput.agentRunId !== gate.agentRunId || gateInput.agentKind !== gate.agentKind
+          || gateInput.summary !== gate.summary
+          || hashValue(gateInput.options) !== hashValue(gate.options)
+          || inputRequestFields.length !== expectedRequestFields.length
+          || !inputRequestFields.every(field => expectedRequestFields.includes(field))
+          || hashValue(gateInput.request) !== hashValue(request)) return null
+    }
+    return { gate, binding }
+  }
+
+  v4SynthesisTerminalRecovery(runRecord) {
+    const continuation = runRecord?.continuation
+    if (continuation?.state !== 'cancelled'
+        || continuation.resumeKind !== 'v4_synthesis_recovery') return null
+    let gate
+    try { gate = this.humanGateStore.get(continuation.gateId) } catch { return null }
+    const match = this.v4SynthesisRecoveryGateMatch(runRecord, gate, null, true)
+    if (!match || gate.decision?.status !== 'rejected'
+        || gate.decision.optionId !== 'stop-discussion') return null
+    return { ...match, state: continuation.state }
+  }
+
+  v4ManualRecoveryGateMatch(
+    runRecord, gateRecord, gateInput = null, allowContinuation = false,
+  ) {
+    const orchestration = runRecord?.orchestration
+    if (runRecord?.mode !== 'manual' || TERMINAL_RUN_STATUSES.has(runRecord.status)
+        || orchestration?.version !== 4 || orchestration.workflow !== 'manual'
+        || orchestration.template !== 'concurrent-batch' || orchestration.phase !== 'proposal'
+        || (!allowContinuation && runRecord.continuation)) return null
+    let gate
+    let request
+    try {
+      gate = this.humanGateStore.get(gateRecord?.gateId)
+      request = this.humanGateStore.request(gate.gateId)
+    } catch {
+      return null
+    }
+    const slot = orchestration.slots?.find(candidate => (
+      candidate.slotId === request?.slotId
+      && candidate.agentKind === gate.agentKind
+      && candidate.operationId === request?.operationId
+    ))
+    const slotIndex = runRecord.targetKinds?.indexOf(slot?.agentKind) ?? -1
+    const expectedSlotId = `slot-${slotIndex + 1}-${slot?.agentKind}`
+    const expectedOperationId = slot ? `agent-operation-${createHash('sha256').update(
+      `${runRecord.runId}:${orchestration.batchId}:${slot.agentKind}`,
+    ).digest('hex')}` : ''
+    const assignment = orchestration.plan?.assignments?.find(item => item.slotId === slot?.slotId)
+    const continuation = runRecord.continuation
+    const allowedContinuationSlot = allowContinuation
+      && ['running', 'queued', 'completed', 'partial', 'failed'].includes(slot?.status)
+    if (!slot || slotIndex < 0 || slot.slotId !== expectedSlotId
+        || slot.operationId !== expectedOperationId || slot.commitStatus === 'committed'
+        || orchestration.commitState?.writerKind !== slot.agentKind
+        || assignment?.agentKind !== slot.agentKind
+        || assignment?.operationId !== slot.operationId
+        || (!allowContinuation && !isV4ManualUnknownWriter(slot))
+        || (allowContinuation && !allowedContinuationSlot)
+        || (allowContinuation && continuation && (
+          continuation.gateId !== gate.gateId
+          || continuation.gateType !== 'retry'
+          || continuation.resumeKind !== 'agent_slot'
+          || continuation.agentRunId !== slot.operationId
+          || continuation.agentKind !== slot.agentKind
+          || continuation.round !== (orchestration.snapshot?.round || 0)
+        ))) return null
+    const expectedInput = v4ManualRecoveryGateInput(
+      runRecord.runId, orchestration.batchId, slot,
+    )
+    const expectedRequestFields = Reflect.ownKeys(expectedInput.request)
+    const requestFields = request && typeof request === 'object' && !Array.isArray(request)
+      ? Reflect.ownKeys(request)
+      : []
+    if ((!allowContinuation && gate.status !== 'pending')
+        || gate.type !== expectedInput.type || gate.runId !== expectedInput.runId
+        || gate.agentRunId !== expectedInput.agentRunId
+        || gate.agentKind !== expectedInput.agentKind || gate.summary !== expectedInput.summary
+        || gate.expiresAt !== undefined || hashValue(gate.options) !== hashValue(expectedInput.options)
+        || requestFields.length !== expectedRequestFields.length
+        || !requestFields.every(field => expectedRequestFields.includes(field))
+        || hashValue(request) !== hashValue(expectedInput.request)) return null
+    if (gateInput) {
+      const expectedInputFields = Reflect.ownKeys(expectedInput)
+      const inputFields = Reflect.ownKeys(gateInput)
+      const inputRequestFields = gateInput.request && typeof gateInput.request === 'object'
+        && !Array.isArray(gateInput.request) ? Reflect.ownKeys(gateInput.request) : []
+      if (inputFields.length !== expectedInputFields.length
+          || !inputFields.every(field => expectedInputFields.includes(field))
+          || gateInput.type !== expectedInput.type || gateInput.runId !== expectedInput.runId
+          || gateInput.agentRunId !== expectedInput.agentRunId
+          || gateInput.agentKind !== expectedInput.agentKind
+          || gateInput.summary !== expectedInput.summary
+          || hashValue(gateInput.options) !== hashValue(expectedInput.options)
+          || inputRequestFields.length !== expectedRequestFields.length
+          || !inputRequestFields.every(field => expectedRequestFields.includes(field))
+          || hashValue(gateInput.request) !== hashValue(expectedInput.request)) return null
+    }
+    return { gate, request, slot }
+  }
+
+  v4ManualTerminalRecovery(runRecord) {
+    const continuation = runRecord?.continuation
+    if (!['completed', 'failed', 'cancelled'].includes(continuation?.state)) return null
+    let gate
+    try { gate = this.humanGateStore.get(continuation.gateId) } catch { return null }
+    const match = this.v4ManualRecoveryGateMatch(runRecord, gate, null, true)
+    if (!match || !gate.decision) return null
+    if (continuation.state === 'completed'
+        && (gate.status !== 'approved' || gate.decision.optionId !== 'retry-once')) return null
+    if (continuation.state === 'cancelled'
+        && (gate.status !== 'rejected' || gate.decision.optionId !== 'cancel-retry')) return null
+    return { ...match, state: continuation.state }
+  }
+
   async requestHumanGate(input, options = {}) {
     const runId = String(input?.runId || '')
     const previous = this.humanGateWaitTails.get(runId) || Promise.resolve()
@@ -512,7 +1043,18 @@ class LocalWorkspace extends EventEmitter {
     try {
       await previous
       if (options.signal?.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
-      const decision = await this.humanGateCoordinator.wait(input, {
+      let waitInput = input
+      try {
+        const durable = this.runLedger?.get?.(runId)
+        const matches = this.humanGateStore.list({ runId, pendingOnly: true })
+          .map(gate => this.v4SynthesisRecoveryGateMatch(durable, gate, input)
+            || this.v4ManualRecoveryGateMatch(durable, gate, input))
+          .filter(Boolean)
+        if (matches.length === 1) {
+          waitInput = { ...input, createdAt: matches[0].gate.createdAt }
+        }
+      } catch { /* A non-matching durable Gate follows the normal fail-closed path. */ }
+      const decision = await this.humanGateCoordinator.wait(waitInput, {
         ...options,
         onCreated: record => { gateId = record.gateId },
       })
@@ -535,7 +1077,13 @@ class LocalWorkspace extends EventEmitter {
 
   canResumeHumanGateRecord(runRecord, gateRecord = null) {
     const continuation = runRecord?.continuation
-    if (!continuation || continuation.gateId !== gateRecord?.gateId && gateRecord) return false
+    if (!continuation) {
+      return Boolean(gateRecord && (
+        this.v4SynthesisRecoveryGateMatch(runRecord, gateRecord)
+        || this.v4ManualRecoveryGateMatch(runRecord, gateRecord)
+      ))
+    }
+    if (continuation.gateId !== gateRecord?.gateId && gateRecord) return false
     if (!['pending', 'ready', 'resuming'].includes(continuation.state)) return false
     let gate = gateRecord
     try { gate ||= this.humanGateStore.get(continuation.gateId) } catch { return false }
@@ -591,6 +1139,55 @@ class LocalWorkspace extends EventEmitter {
   canResumeOrchestration(durable, workflow) {
     const cursor = durable?.orchestration
     const continuation = durable?.continuation
+    if (workflow === 'auto' && continuation?.resumeKind === 'v4_synthesis_recovery') {
+      const recovery = cursor?.synthesisRecovery
+      const binding = recovery?.pendingGate
+      const continuedAttempt = recovery?.attempts?.find(candidate => (
+        candidate.operationId === binding?.operationId
+      ))
+      const appliedAttempt = recovery?.attempts?.find(candidate => (
+        candidate.operationId === continuation.agentRunId
+      ))
+      const activeAttempt = recovery?.attempts?.find(candidate => (
+        ['intent', 'leased', 'unknown_outcome'].includes(candidate.status)
+      ))
+      const waitingForDecision = cursor?.phase === 'human-gate'
+        && binding?.writerKind === continuation.agentKind
+        && binding?.operationId === continuation.agentRunId
+        && binding?.round === continuation.round
+        && binding?.stateEpoch === continuation.stateEpoch
+        && continuedAttempt?.status === 'unknown_outcome'
+      const approvedActionApplied = cursor?.phase === 'synthesis'
+        && !binding
+        && appliedAttempt?.status === 'superseded'
+        && activeAttempt?.status === 'intent'
+        && activeAttempt.operationId !== continuation.agentRunId
+      const rejectedActionApplied = cursor?.phase === 'human-gate'
+        && binding?.writerKind === continuation.agentKind
+        && binding?.operationId === continuation.agentRunId
+        && binding?.round === continuation.round
+        && binding?.stateEpoch === continuation.stateEpoch
+        && continuedAttempt?.status === 'cancelled'
+        && continuedAttempt.sideEffectsPossible === true
+        && continuedAttempt.outcomeCertainty === 'unknown_outcome'
+      return durable?.mode === 'auto'
+        && cursor?.version === 4
+        && cursor.workflow === 'auto'
+        && cursor.template === 'discussion'
+        && (waitingForDecision || approvedActionApplied || rejectedActionApplied)
+    }
+    if (workflow === 'auto' && continuation?.resumeKind === 'v4_human_gate') {
+      return durable?.mode === 'auto'
+        && cursor?.version === 4
+        && cursor.workflow === 'auto'
+        && cursor.template === 'discussion'
+        && cursor.phase === 'human-gate'
+        && Array.isArray(cursor.activeKinds)
+        && cursor.activeKinds.length > 0
+        && cursor.activeKinds.every(kind => (
+          Array.isArray(durable.targetKinds) && durable.targetKinds.includes(kind)
+        ))
+    }
     const supportedCursor = workflow === 'auto'
       ? [1, 2, 3].includes(cursor?.version)
       : cursor?.version === 1
@@ -614,6 +1211,50 @@ class LocalWorkspace extends EventEmitter {
 
   canResumeManualOrchestration(durable) {
     return this.canResumeOrchestration(durable, 'manual')
+  }
+
+  canResumeV4ManualAgentSlot(durable, gate) {
+    const cursor = durable?.orchestration
+    const continuation = durable?.continuation
+    if (durable?.mode !== 'manual' || continuation?.resumeKind !== 'agent_slot'
+        || cursor?.version !== 4 || cursor.workflow !== 'manual'
+        || cursor.template !== 'concurrent-batch'
+        || !['budget', 'permission', 'retry', 'input'].includes(gate?.type)
+        || gate.runId !== durable.runId || gate.agentRunId !== continuation.agentRunId
+        || gate.agentKind !== continuation.agentKind
+        || continuation.round !== (cursor.snapshot?.round || 0)) {
+      return false
+    }
+    const matches = cursor.slots.filter(slot => slot.agentKind === continuation.agentKind)
+    if (matches.length !== 1) return false
+    const slot = matches[0]
+    const slotIndex = durable.targetKinds.indexOf(continuation.agentKind)
+    const expectedSlotId = `slot-${slotIndex + 1}-${continuation.agentKind}`
+    const expectedOperationId = `agent-operation-${createHash('sha256').update(
+      `${durable.runId}:${cursor.batchId}:${continuation.agentKind}`,
+    ).digest('hex')}`
+    const assignment = cursor.plan?.assignments?.find(item => item.slotId === slot.slotId)
+    const manualRecovery = gate.type === 'retry'
+      ? this.v4ManualRecoveryGateMatch(durable, gate, null, true)
+      : null
+    const agentRun = durable.agentRuns?.find(item => (
+      item.agentRunId === continuation.agentRunId
+      && item.kind === continuation.agentKind
+      && item.round === continuation.round
+    ))
+    return Boolean(
+      assignment
+      && (agentRun || manualRecovery?.slot === slot)
+      && slotIndex >= 0
+      && slot.slotId === expectedSlotId
+      && slot.queuePosition === slotIndex
+      && slot.operationId === expectedOperationId
+      && assignment.agentKind === slot.agentKind
+      && assignment.operationId === slot.operationId
+      && JSON.stringify(cursor.snapshot?.targetKinds) === JSON.stringify(durable.targetKinds)
+      && cursor.snapshot?.targetKinds?.includes(slot.agentKind)
+      && durable.targetKinds?.includes(slot.agentKind),
+    )
   }
 
   canResumeAutoOrchestration(durable) {
@@ -830,6 +1471,7 @@ class LocalWorkspace extends EventEmitter {
       const group = this.getGroup(durable.groupId)
       const resumableManual = this.canResumeManualOrchestration(durable)
       const resumableAuto = this.canResumeAutoOrchestration(durable)
+      const resumableV4ManualSlot = this.canResumeV4ManualAgentSlot(durable, gate)
       const resumableTaskGraphDecision = durable.continuation.resumeKind === 'role_review_decision'
         && durable.mode === 'auto'
         && durable.orchestration?.version === 3
@@ -838,7 +1480,8 @@ class LocalWorkspace extends EventEmitter {
           && decision.status === 'approved'
           && !this.canFinalizeReplayedAgentSlot(durable)
           && !resumableManual
-          && !resumableAuto) {
+          && !resumableAuto
+          && !resumableV4ManualSlot) {
         throw new Error('LOCAL_RUN_ORCHESTRATION_RESUME_UNAVAILABLE')
       }
       if (durable.continuation.resumeKind === 'role_review_decision'
@@ -850,6 +1493,274 @@ class LocalWorkspace extends EventEmitter {
           group, durable, controller, decision,
         )
         await this.finishRun(durable.groupId, controller, finalStatus)
+        return
+      }
+      if (durable.continuation.resumeKind === 'v4_synthesis_recovery') {
+        if (!resumableAuto) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        const request = this.humanGateStore.request(gate.gateId)
+        const recovery = durable.orchestration.synthesisRecovery
+        const requestBinding = request && typeof request === 'object' ? {
+          bindingHash: request.bindingHash,
+          writerKind: request.writerKind,
+          slotId: request.slotId,
+          operationId: request.operationId,
+          attempt: request.attempt,
+          proposedReplacementKind: request.proposedReplacementKind,
+          round: request.round,
+          stateEpoch: request.stateEpoch,
+          rankingFingerprint: recovery.rankingFingerprint,
+        } : null
+        const binding = recovery.pendingGate || requestBinding
+        const requestFields = request && typeof request === 'object' && !Array.isArray(request)
+          ? Reflect.ownKeys(request)
+          : []
+        const bindingFields = binding ? {
+          writerKind: binding.writerKind,
+          slotId: binding.slotId,
+          operationId: binding.operationId,
+          attempt: binding.attempt,
+          proposedReplacementKind: binding.proposedReplacementKind,
+          round: binding.round,
+          stateEpoch: binding.stateEpoch,
+          rankingFingerprint: binding.rankingFingerprint,
+        } : null
+        const validRequest = requestFields.length === 10
+          && requestFields.every(field => typeof field === 'string' && [
+            'phase', 'bindingHash', 'writerKind', 'slotId', 'operationId', 'attempt',
+            'proposedReplacementKind', 'round', 'stateEpoch', 'outcomeCertainty',
+          ].includes(field))
+          && request.phase === 'synthesis-recovery'
+          && request.outcomeCertainty === 'unknown_outcome'
+          && request.bindingHash === binding.bindingHash
+          && request.writerKind === binding.writerKind
+          && request.slotId === binding.slotId
+          && request.operationId === binding.operationId
+          && request.attempt === binding.attempt
+          && request.proposedReplacementKind === binding.proposedReplacementKind
+          && request.round === binding.round
+          && request.stateEpoch === binding.stateEpoch
+          && request.bindingHash === hashValue(bindingFields)
+        const approvedOption = decision.status === 'approved'
+          && ['retry-original-writer', 'replace-next-writer'].includes(decision.optionId)
+        const stoppedOption = decision.status === 'rejected'
+          && decision.optionId === 'stop-discussion'
+        if (gate.type !== 'decision' || !validRequest || (!approvedOption && !stoppedOption)
+            || gate.agentKind !== binding.writerKind
+            || gate.agentRunId !== binding.operationId
+            || durable.continuation.agentKind !== binding.writerKind
+            || durable.continuation.agentRunId !== binding.operationId
+            || durable.continuation.round !== binding.round
+            || durable.continuation.stateEpoch !== binding.stateEpoch) {
+          throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        }
+        if (stoppedOption) {
+          controller.orchestration = {
+            ...controller.orchestration,
+            synthesisRecovery: this.autoRunner.v4CancelSynthesisRecovery(recovery),
+            currentKind: '',
+            currentKinds: [],
+            pendingKinds: [],
+          }
+          if (this.checkpointRun(durable.groupId, controller) !== true && this.runLedger) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
+          this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
+          await this.finishRun(durable.groupId, controller, 'stopped')
+          return
+        }
+        const writerKind = decision.optionId === 'replace-next-writer'
+          ? binding.proposedReplacementKind
+          : binding.writerKind
+        if (!writerKind) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        const appliedAttempt = recovery.attempts.find(attempt => (
+          attempt.operationId === binding.operationId
+        ))
+        const activeAttempt = this.autoRunner.v4ActiveSynthesisAttempt(recovery)
+        const approvedActionApplied = !recovery.pendingGate
+          && durable.orchestration.phase === 'synthesis'
+          && appliedAttempt?.status === 'superseded'
+          && activeAttempt?.status === 'intent'
+          && activeAttempt.writerKind === writerKind
+        const nextRecovery = approvedActionApplied
+          ? recovery
+          : this.autoRunner.v4AppendSynthesisAttempt(
+              controller,
+              durable.orchestration.coordinationPlan || durable.orchestration.synthesisBinding,
+              recovery,
+              durable.orchestration.slots,
+              writerKind,
+            )
+        const nextAttempt = this.autoRunner.v4ActiveSynthesisAttempt(nextRecovery)
+        const nextSlots = durable.orchestration.slots.map(slot => slot.agentKind === writerKind
+          ? approvedActionApplied ? { ...slot, permission: 'workspace-write' } : {
+              ...slot,
+              phase: 'synthesis',
+              status: 'planned',
+              operationId: nextAttempt.operationId,
+              receiptId: '',
+              resultHash: '',
+              finishedAt: null,
+              commitStatus: 'pending',
+              permission: 'workspace-write',
+            }
+          : { ...slot, permission: 'read-only' })
+        controller.currentKind = writerKind
+        controller.v4Watermarks = durable.orchestration.deliveryWatermarks.map(item => ({
+          ...item,
+        }))
+        if (!approvedActionApplied) {
+          this.autoRunner.v4CheckpointPhase(group, controller, {
+            targetKinds: durable.targetKinds,
+            phase: 'synthesis',
+            batchId: durable.orchestration.batchId,
+            snapshotRecord: durable.orchestration.snapshot,
+            snapshotHash: durable.orchestration.snapshotHash,
+            slots: nextSlots,
+            writerKind,
+            currentKinds: [writerKind],
+            pendingKinds: [writerKind],
+            receipts: this.autoRunner.v4RestoreReceipts(controller),
+            challengeBindings: durable.orchestration.challengeBindings,
+            synthesisBinding: durable.orchestration.synthesisBinding,
+            synthesisRecovery: nextRecovery,
+            convergence: durable.orchestration.convergence || null,
+            coordinationPlan: durable.orchestration.coordinationPlan,
+            workReceipts: durable.orchestration.workReceipts,
+          })
+        }
+        if (!this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
+        const finalStatus = await this.autoRunner.resume(group, durable, controller)
+        await this.finishRun(durable.groupId, controller, finalStatus)
+        return
+      }
+      if (durable.continuation.resumeKind === 'v4_human_gate') {
+        if (decision.status !== 'approved') {
+          this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
+          await this.finishRun(durable.groupId, controller, 'stopped')
+          return
+        }
+        const request = this.humanGateStore.request(gate.gateId)
+        const requestFields = request && typeof request === 'object' && !Array.isArray(request)
+          ? Reflect.ownKeys(request)
+          : []
+        const unresolvedIssueIds = request?.unresolvedIssueIds
+        const writerKind = durable.orchestration?.commitState?.writerKind
+        const writerSlot = durable.orchestration?.slots?.find(slot => (
+          slot.agentKind === writerKind
+        ))
+        const expectedAgentRunId = writerSlot
+          ? this.autoRunner.v4OperationId(
+              controller, writerKind, 'human-gate', writerSlot.slotId,
+            )
+          : ''
+        const convergence = durable.orchestration?.convergence
+        const validRequest = requestFields.length === 5
+          && requestFields.every(field => typeof field === 'string'
+            && ['phase', 'round', 'candidateHash', 'unresolvedIssueIds', 'stateEpoch'].includes(field))
+          && request.phase === 'discussion'
+          && Number.isSafeInteger(request.round)
+          && request.round >= 1
+          && /^[a-f0-9]{64}$/.test(String(request.candidateHash || ''))
+          && Array.isArray(unresolvedIssueIds)
+          && unresolvedIssueIds.length <= 32
+          && unresolvedIssueIds.every(issueId => (
+            typeof issueId === 'string'
+            && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/.test(issueId)
+          ))
+          && new Set(unresolvedIssueIds).size === unresolvedIssueIds.length
+          && Number.isSafeInteger(request.stateEpoch)
+          && request.stateEpoch >= 1
+        if (gate.type !== 'decision'
+            || decision.optionId !== 'continue-discussion'
+            || !validRequest
+            || request.round !== durable.continuation.round
+            || request.round !== durable.currentRound
+            || request.round !== durable.orchestration?.round
+            || request.stateEpoch !== durable.continuation.stateEpoch
+            || request.stateEpoch !== convergence?.stateEpoch
+            || request.candidateHash !== convergence?.candidateContentHash
+            || JSON.stringify([...unresolvedIssueIds].sort())
+              !== JSON.stringify(convergence?.openIssueIds || [])
+            || convergence.acknowledgedGateEpoch === convergence.stateEpoch
+            || !writerKind
+            || !writerSlot
+            || durable.continuation.agentKind !== writerKind
+            || gate.agentKind !== writerKind
+            || durable.continuation.agentRunId !== expectedAgentRunId
+            || gate.agentRunId !== expectedAgentRunId) {
+          throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        }
+        const previousWaitingGateIds = new Set(controller.waitingGateIds)
+        const previousContinuation = controller.continuation
+        const previousCurrentKind = controller.currentKind
+        const previousOrchestration = controller.orchestration
+        try {
+          controller.waitingGateIds.delete(gate.gateId)
+          controller.continuation = {
+            ...controller.continuation,
+            state: 'completed',
+            updatedAt: this.continuationTimestamp(),
+          }
+          controller.currentKind = ''
+          controller.orchestration = {
+            ...controller.orchestration,
+            phase: 'challenge',
+            currentKind: '',
+            currentKinds: [],
+            pendingKinds: [],
+            convergence: {
+              ...controller.orchestration.convergence,
+              acknowledgedGateEpoch: request.stateEpoch,
+            },
+          }
+          if (this.checkpointRun(durable.groupId, controller) !== true && this.runLedger) {
+            throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          }
+        } catch (error) {
+          controller.waitingGateIds.clear()
+          for (const gateId of previousWaitingGateIds) controller.waitingGateIds.add(gateId)
+          controller.continuation = previousContinuation
+          controller.currentKind = previousCurrentKind
+          controller.orchestration = previousOrchestration
+          throw error
+        }
+        const finalStatus = await this.autoRunner.resume(
+          group, durable, controller,
+        )
+        await this.finishRun(durable.groupId, controller, finalStatus)
+        return
+      }
+      if (resumableV4ManualSlot) {
+        if (decision.status !== 'approved') {
+          this.completeHumanGateContinuation(durable.runId, gate.gateId, 'cancelled')
+          await this.finishRun(durable.groupId, controller, 'stopped')
+          return
+        }
+        const request = this.humanGateStore.request(gate.gateId)
+        const result = await this.messageSubmission.resumeV4Manual({
+          group,
+          durable,
+          controller,
+          onlyKind: durable.continuation.agentKind,
+          resumedGate: {
+            gateId: gate.gateId,
+            type: gate.type,
+            agentRunId: gate.agentRunId,
+            agentKind: gate.agentKind,
+            status: decision.status,
+            optionId: decision.optionId,
+            request,
+            requestHash: gate.requestHash,
+            ...(gate.type === 'input' ? { response: decision.response } : {}),
+            used: false,
+          },
+        })
+        if (!this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
+        await this.finishRun(durable.groupId, controller, result.status)
         return
       }
       const request = this.humanGateStore.request(gate.gateId)
@@ -1029,7 +1940,11 @@ class LocalWorkspace extends EventEmitter {
   }
 
   async refreshAgents() {
-    return this.agentCatalog.refresh()
+    const snapshot = await this.agentCatalog.refresh()
+    this.resumeV4ManualRecoveries()
+    this.resumeV4AutoRecoveries()
+    this.resumeReadyHumanGates()
+    return snapshot
   }
 
   setSidebarVisibility(kind, visible) {
@@ -1070,6 +1985,52 @@ class LocalWorkspace extends EventEmitter {
     return this.conversations.addMessage(
       groupId, role, content, agentKind, threadRootId, system, metadata,
     )
+  }
+
+  commitV4AgentMessage(input = {}) {
+    const messageId = String(input.messageId || '')
+    const existing = this.state.messages.find(message => message.id === messageId)
+    if (existing) {
+      if (existing.groupId !== input.groupId || existing.role !== 'agent'
+          || existing.agentKind !== input.agentKind
+          || String(existing.threadRootId || '') !== String(input.threadRootId || '')
+          || existing.content !== input.content) {
+        throw new Error('LOCAL_RUN_COMMIT_INVALID')
+      }
+      return existing
+    }
+    const group = this.getGroup(input.groupId)
+    const message = normalizeLoadedMessage({
+      id: messageId,
+      groupId: group.id,
+      role: 'agent',
+      agentKind: input.agentKind,
+      senderName: this.agentLabel(input.agentKind),
+      content: input.content,
+      createdAt: this.now(),
+      ...(input.threadRootId ? { threadRootId: input.threadRootId } : {}),
+      ...(input.metadata?.elapsedMs != null ? { elapsedMs: input.metadata.elapsedMs } : {}),
+      ...(Array.isArray(input.metadata?.toolCalls) ? { toolCalls: input.metadata.toolCalls } : {}),
+      ...(Array.isArray(input.metadata?.attachments)
+        ? { attachments: input.metadata.attachments } : {}),
+      ...(input.metadata?.responseVersionRootId
+        ? { responseVersionRootId: input.metadata.responseVersionRootId } : {}),
+      ...(input.metadata?.trace ? { trace: input.metadata.trace } : {}),
+    })
+    if (!message || message.id !== messageId) throw new Error('LOCAL_RUN_COMMIT_INVALID')
+    const previousMessages = [...this.state.messages]
+    const previousUpdatedAt = group.updatedAt
+    try {
+      this.state.messages.push(message)
+      group.updatedAt = message.createdAt
+      this.save()
+    } catch (error) {
+      this.state.messages = previousMessages
+      group.updatedAt = previousUpdatedAt
+      throw error
+    }
+    this.emitChanged()
+    return message
   }
 
   sessionKey(groupId, kind, taskId = '') {

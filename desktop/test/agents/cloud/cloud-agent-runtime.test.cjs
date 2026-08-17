@@ -53,7 +53,7 @@ function event(sequence, type, fields = {}) {
 }
 
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cloud-runtime-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cloud-runtime-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const contentBlobStore = new ContentBlobStore({
     rootPath: path.join(directory, 'private', 'content-blobs'),

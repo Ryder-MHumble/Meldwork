@@ -58,7 +58,7 @@ describe('overlay lifecycle', () => {
     expect(closeCollapsedGroupMenu).toHaveBeenCalledOnce()
     expect(document.body.classList.contains('modal-open')).toBe(true)
     expect(pushState).toHaveBeenCalledWith(
-      { roundrelayOverlay: true },
+      { meldworkOverlay: true },
       '',
       window.location.href,
     )

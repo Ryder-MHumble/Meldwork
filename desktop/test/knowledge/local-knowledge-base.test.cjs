@@ -507,7 +507,7 @@ test('knowledge probes receive only the minimal system environment', async () =>
     HOME: MOCK_HOME,
     LANG: 'en_US.UTF-8',
     OPENAI_API_KEY: 'must-not-reach-probe',
-    ROUNDRELAY_PRIVATE_VALUE: 'must-not-reach-probe',
+    MELDWORK_PRIVATE_VALUE: 'must-not-reach-probe',
   }
 
   const sources = await resolveKnowledgeBaseSources(options)
@@ -519,7 +519,7 @@ test('knowledge probes receive only the minimal system environment', async () =>
     assert.equal(childEnv.LANG, 'en_US.UTF-8')
     assert.match(childEnv.PATH, new RegExp(`(?:^|:)${MOCK_BIN}(?::|$)`))
     assert.equal(Object.hasOwn(childEnv, 'OPENAI_API_KEY'), false)
-    assert.equal(Object.hasOwn(childEnv, 'ROUNDRELAY_PRIVATE_VALUE'), false)
+    assert.equal(Object.hasOwn(childEnv, 'MELDWORK_PRIVATE_VALUE'), false)
   }
 })
 

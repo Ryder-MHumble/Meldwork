@@ -22,8 +22,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -33,7 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -44,12 +44,12 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
   it('shows a calm full-screen Agent discovery state until the first refresh completes', async () => {
     const fixture = createBridge()
     const pendingRefresh = deferred()
     fixture.bridge.localWorkspace.refreshAgents.mockReturnValueOnce(pendingRefresh.promise)
-    window.roundrelayDesktop = fixture.bridge
+    window.meldworkDesktop = fixture.bridge
 
     const wrapper = mount(App, { attachTo: document.body })
     await flushPromises()
@@ -214,7 +214,7 @@ describe('RoundRelay workbench', () => {
           name: 'Codex',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: true,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -225,7 +225,7 @@ describe('RoundRelay workbench', () => {
           name: 'Agent review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T09:00:00Z',
           updatedAt: '2026-07-29T09:00:00Z',
@@ -285,7 +285,7 @@ describe('RoundRelay workbench', () => {
         name: 'Recovery history',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -312,7 +312,7 @@ describe('RoundRelay workbench', () => {
         name: 'Home navigation',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -354,7 +354,7 @@ describe('RoundRelay workbench', () => {
         name: 'External removal',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -382,7 +382,7 @@ describe('RoundRelay workbench', () => {
         name: 'Preserved draft',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -441,7 +441,7 @@ describe('RoundRelay workbench', () => {
           name: `Collapsed group ${index}`,
           topic: '',
           agentKinds: index % 2 ? ['codex', 'hermes'] : ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: `2026-07-29T08:${String(index).padStart(2, '0')}:00Z`,
           updatedAt: `2026-07-29T08:${String(index).padStart(2, '0')}:00Z`,
@@ -496,7 +496,7 @@ describe('RoundRelay workbench', () => {
           name: 'Running direct',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -507,7 +507,7 @@ describe('RoundRelay workbench', () => {
           name: 'Running group',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:01:00Z',
           updatedAt: '2026-07-29T08:01:00Z',
@@ -567,7 +567,7 @@ describe('RoundRelay workbench', () => {
           name: 'Running direct',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -578,7 +578,7 @@ describe('RoundRelay workbench', () => {
           name: 'Running group',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:01:00Z',
           updatedAt: '2026-07-29T08:01:00Z',
@@ -649,7 +649,7 @@ describe('RoundRelay workbench', () => {
         name: 'Empty stale group',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:02:00Z',
         updatedAt: '2026-07-29T08:02:00Z',
@@ -671,7 +671,7 @@ describe('RoundRelay workbench', () => {
         name: 'Shortcuts',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -910,7 +910,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -961,7 +961,7 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
 
     expect(wrapper.get('.run-trace-panel').exists()).toBe(true)
-    expect(pushState).toHaveBeenCalledWith({ roundrelayTracePanel: true }, '', window.location.href)
+    expect(pushState).toHaveBeenCalledWith({ meldworkTracePanel: true }, '', window.location.href)
     expect(wrapper.get('.trace-context-stats').text()).toContain('4 messages injected for this attempt')
     expect(wrapper.get('.trace-context-stats').text()).toContain('3 messages compacted')
     expect(wrapper.get('.trace-context-stats').text()).toContain('720 context characters')
@@ -1191,7 +1191,7 @@ describe('RoundRelay workbench', () => {
     const inputs = wrapper.findAll('.provider-editor input')
     await inputs[0].setValue('Local gateway')
     await inputs[1].setValue('https://gateway.example/v1')
-    await inputs[2].setValue('roundrelay-model')
+    await inputs[2].setValue('meldwork-model')
     await inputs[3].setValue('secret-key')
     await wrapper.get('form.provider-editor').trigger('submit')
     await flushPromises()
@@ -1200,7 +1200,7 @@ describe('RoundRelay workbench', () => {
       preset: 'custom',
       provider: 'Local gateway',
       baseUrl: 'https://gateway.example/v1',
-      model: 'roundrelay-model',
+      model: 'meldwork-model',
       apiKey: 'secret-key',
     })
     wrapper.unmount()
@@ -1236,7 +1236,7 @@ describe('RoundRelay workbench', () => {
     const inputs = wrapper.findAll('.provider-editor input')
     await inputs[0].setValue('Local gateway')
     await inputs[1].setValue('https://gateway.example/v1')
-    await inputs[2].setValue('roundrelay-model')
+    await inputs[2].setValue('meldwork-model')
     await inputs[3].setValue('secret-key')
     await wrapper.get('form.provider-editor').trigger('submit')
     await flushPromises()
@@ -1263,7 +1263,7 @@ describe('RoundRelay workbench', () => {
         name: '',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1306,7 +1306,7 @@ describe('RoundRelay workbench', () => {
         name: 'Multiline failure',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:01:00Z',
@@ -1351,7 +1351,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1380,7 +1380,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1417,6 +1417,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'manual',
+      protocol: 'v4',
       maxRounds: 6,
     })
 
@@ -1443,6 +1444,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'manual',
+      protocol: 'v4',
       maxRounds: 6,
     })
 
@@ -1471,7 +1473,7 @@ describe('RoundRelay workbench', () => {
           name: 'Review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -1483,7 +1485,7 @@ describe('RoundRelay workbench', () => {
           name: 'Codex direct',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:01:00Z',
           updatedAt: '2026-07-29T08:01:00Z',
@@ -1529,7 +1531,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1603,6 +1605,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'auto',
+      protocol: 'v4',
       maxRounds: 6,
     })
     expect(bridge.localWorkspace.startAuto).toBeUndefined()
@@ -1617,7 +1620,7 @@ describe('RoundRelay workbench', () => {
         name: 'Open discussion',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1655,6 +1658,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'auto',
+      protocol: 'v4',
       maxRounds: 6,
       unlimitedRounds: true,
     })
@@ -1672,7 +1676,7 @@ describe('RoundRelay workbench', () => {
       directAgentKind: 'codex',
       name: 'Codex',
       agentKinds: ['codex'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: true,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
@@ -1699,7 +1703,7 @@ describe('RoundRelay workbench', () => {
       directAgentKind: 'codex',
       name: 'Codex',
       agentKinds: ['codex'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: true,
     })
     expect(wrapper.get('.conversation-capabilities').text()).toContain('Write enabled')
@@ -1720,7 +1724,7 @@ describe('RoundRelay workbench', () => {
       name: 'Local review',
       topic: 'Review the implementation',
       agentKinds: ['codex', 'hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: true,
     }))
     expect(() => structuredClone(bridge.localWorkspace.createGroup.mock.calls.at(-1)[0])).not.toThrow()
@@ -1735,7 +1739,7 @@ describe('RoundRelay workbench', () => {
       directAgentKind: 'codex',
       name: 'Codex',
       agentKinds: ['codex'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
@@ -1768,7 +1772,7 @@ describe('RoundRelay workbench', () => {
       name: 'Review',
       topic: '',
       agentKinds: ['codex', 'hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
@@ -1810,7 +1814,7 @@ describe('RoundRelay workbench', () => {
       name: 'Review',
       topic: '',
       agentKinds: ['codex', 'hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
@@ -1871,7 +1875,7 @@ describe('RoundRelay workbench', () => {
         name: 'Hermes history',
         topic: '',
         agentKinds: ['hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1907,7 +1911,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: 'Initial topic',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1930,7 +1934,7 @@ describe('RoundRelay workbench', () => {
       name: 'Review',
       topic: 'Initial topic',
       agentKinds: ['codex', 'hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
     })
     expect(() => structuredClone(bridge.localWorkspace.updateGroup.mock.calls[0][1])).not.toThrow()
@@ -1945,7 +1949,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: 'Initial topic',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1968,7 +1972,7 @@ describe('RoundRelay workbench', () => {
       name: 'Architecture review',
       topic: 'Initial topic',
       agentKinds: ['codex', 'hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: true,
     })
     expect(wrapper.get('.conversation-header h1').text()).toBe('Architecture review')
@@ -1991,7 +1995,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex review',
         topic: 'Keep context',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -2019,7 +2023,7 @@ describe('RoundRelay workbench', () => {
       name: 'Code audit',
       topic: 'Keep context',
       agentKinds: ['codex'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
     })
     expect(wrapper.get('.conversation-header h1').text()).toBe('Code audit')

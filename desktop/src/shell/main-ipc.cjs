@@ -25,6 +25,32 @@ function isPlainObject(value) {
   return prototype === Object.prototype || prototype === null
 }
 
+function normalizeWorkspaceProtocol(input) {
+  if (!isPlainObject(input)) return input
+  const selected = []
+  if (Object.hasOwn(input, 'protocol')) {
+    if (!['legacy', 'v4'].includes(input.protocol)) {
+      throw new Error('LOCAL_MESSAGE_PROTOCOL_INVALID')
+    }
+    selected.push(input.protocol)
+  }
+  for (const key of ['harnessVersion', 'collaborationVersion']) {
+    if (!Object.hasOwn(input, key)) continue
+    if (![3, 4].includes(input[key])) throw new Error('LOCAL_MESSAGE_PROTOCOL_INVALID')
+    selected.push(input[key] === 4 ? 'v4' : 'legacy')
+  }
+  if (Object.hasOwn(input, 'v4')) {
+    if (typeof input.v4 !== 'boolean') throw new Error('LOCAL_MESSAGE_PROTOCOL_INVALID')
+    selected.push(input.v4 ? 'v4' : 'legacy')
+  }
+  if (new Set(selected).size > 1) throw new Error('LOCAL_MESSAGE_PROTOCOL_INVALID')
+  const normalized = { ...input, protocol: selected[0] || 'legacy' }
+  delete normalized.harnessVersion
+  delete normalized.collaborationVersion
+  delete normalized.v4
+  return normalized
+}
+
 function boundedIds(value, pattern) {
   return Array.isArray(value) && value.length <= 64
     && new Set(value).size === value.length
@@ -220,11 +246,12 @@ function registerDesktopIpc(options) {
   registerTrustedHandle('local-workspace:send', async (input) => {
     const workspace = getWorkspace()
     if (!workspace) throw new Error('LOCAL_WORKSPACE_UNAVAILABLE')
-    if ((!Array.isArray(input?.targetKinds) || !input.targetKinds.length)
-        && input?.routingMode !== 'automatic') {
+    const normalizedInput = normalizeWorkspaceProtocol(input)
+    if ((!Array.isArray(normalizedInput?.targetKinds) || !normalizedInput.targetKinds.length)
+        && normalizedInput?.routingMode !== 'automatic') {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
-    return workspace.sendMessage(input)
+    return workspace.sendMessage(normalizedInput)
   })
   registerTrustedHandle('local-workspace:stop', (groupId, runId) => {
     const workspace = getWorkspace()

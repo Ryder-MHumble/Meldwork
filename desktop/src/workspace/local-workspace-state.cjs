@@ -18,6 +18,64 @@ const FINISHED_AGENT_STATUSES = new Set([
 const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
 const TERMINAL_PERSISTENCE_STATES = new Set(['pending', 'retrying', 'failed'])
 
+const V4_PHASES = new Set([
+  'prepare', 'dispatch', 'running', 'reconcile', 'proposal', 'challenge',
+  'coordination', 'work', 'synthesis', 'verification', 'commit', 'committed', 'completed',
+  'human-gate', 'stopped', 'failed',
+])
+const V4_SLOT_STATUSES = new Set([
+  'planned', 'prepared', 'queued', 'running', 'waiting', 'completed', 'partial',
+  'settled', 'committed', 'failed', 'stopped', 'timeout', 'interrupted',
+  'cancelled', 'unknown_outcome',
+])
+const V4_SLOT_ROLES = new Set([
+  'primary', 'reviewer', 'arbiter', 'worker', 'integrator',
+  'synthesizer', 'verifier', 'writer', 'participant',
+])
+const PUBLIC_AGENT_KIND = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
+
+function publicOrchestrationSnapshot(orchestration) {
+  if (!orchestration || orchestration.version !== 4) return null
+  if (!V4_PHASES.has(orchestration.phase)) return null
+  const phase = orchestration.phase
+  const currentKinds = [...new Set(
+    (Array.isArray(orchestration.currentKinds) ? orchestration.currentKinds : [])
+      .filter(kind => typeof kind === 'string' && PUBLIC_AGENT_KIND.test(kind)),
+  )].slice(0, 32)
+  const roleByAgentKind = new Map(
+    (Array.isArray(orchestration.plan?.assignments) ? orchestration.plan.assignments : [])
+      .filter(assignment => assignment && typeof assignment === 'object')
+      .map(assignment => [assignment.agentKind, assignment.role]),
+  )
+  const round = Number.isSafeInteger(orchestration.round) && orchestration.round >= 0
+    ? Math.min(orchestration.round, 100000)
+    : null
+  const slots = (Array.isArray(orchestration.slots) ? orchestration.slots : [])
+    .slice(0, 32)
+    .map(slot => {
+      if (!slot || typeof slot !== 'object') return null
+      const agentKind = typeof slot.agentKind === 'string' ? slot.agentKind : ''
+      if (!PUBLIC_AGENT_KIND.test(agentKind)
+          || !V4_SLOT_STATUSES.has(slot.status)
+          || !V4_PHASES.has(slot.phase)) return null
+      const role = roleByAgentKind.get(agentKind)
+      return {
+        agentKind,
+        phase: slot.phase,
+        status: slot.status,
+        ...(V4_SLOT_ROLES.has(role) ? { role } : {}),
+        ...(round !== null ? { round } : {}),
+      }
+    })
+    .filter(Boolean)
+  return {
+    version: 4,
+    phase,
+    currentKinds,
+    slots,
+  }
+}
+
 function terminalPersistenceSnapshot(value) {
   if (!value || !TERMINAL_PERSISTENCE_STATES.has(value.state)) return null
   return {
@@ -168,15 +226,20 @@ function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds
     const maxRounds = mode === 'auto' && !unlimitedRounds
       ? cleanRunMaxRounds(record.maxRounds)
       : 0
+    const isV4 = record.orchestration?.version === 4
+    const orchestration = publicOrchestrationSnapshot(record.orchestration)
+    const publicOrchestration = orchestration || (isV4 ? { version: 4 } : null)
     projectedGroupIds.add(record.groupId)
     snapshots.push({
       groupId: record.groupId,
       runId: record.runId,
-      taskId: record.taskId || '',
-      contextPackId: record.contextPackId || '',
-      contextPackState: record.contextPackState || (record.contextPackId
-        ? 'captured'
-        : 'legacy-unavailable'),
+      ...(!isV4 ? {
+        taskId: record.taskId || '',
+        contextPackId: record.contextPackId || '',
+        contextPackState: record.contextPackState || (record.contextPackId
+          ? 'captured'
+          : 'legacy-unavailable'),
+      } : {}),
       phase: 'running',
       mode,
       targetKinds: record.targetKinds || [],
@@ -195,6 +258,7 @@ function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds
       agentRuns: Array.isArray(record.agentRuns) ? record.agentRuns : [],
       waitingGateIds: [gate.gateId],
       budget: record.budget || null,
+      ...(publicOrchestration ? { orchestration: publicOrchestration } : {}),
     })
   }
   return snapshots
@@ -242,12 +306,17 @@ function workspaceSnapshot({
       const unlimitedRounds = mode === 'auto' && run.unlimitedRounds === true
       const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
       const terminalPersistence = terminalPersistenceSnapshot(run.terminalPersistence)
+      const isV4 = run.orchestration?.version === 4
+      const orchestration = publicOrchestrationSnapshot(run.orchestration)
+      const publicOrchestration = orchestration || (isV4 ? { version: 4 } : null)
       return {
         groupId,
         runId: run.runId || '',
-        taskId: run.taskId || '',
-        contextPackId: run.contextPackId || '',
-        contextPackState: run.contextPackId ? 'captured' : 'legacy-unavailable',
+        ...(!isV4 ? {
+          taskId: run.taskId || '',
+          contextPackId: run.contextPackId || '',
+          contextPackState: run.contextPackId ? 'captured' : 'legacy-unavailable',
+        } : {}),
         phase,
         mode,
         targetKinds: run.targetKinds || [],
@@ -264,7 +333,8 @@ function workspaceSnapshot({
         agentRuns: run.harness?.snapshot?.() || [],
         waitingGateIds: [...(run.waitingGateIds || [])],
         budget: run.budget?.snapshot?.() || null,
-        ...(terminalPersistence ? { terminalPersistence } : {}),
+        ...(publicOrchestration ? { orchestration: publicOrchestration } : {}),
+        ...(!isV4 && terminalPersistence ? { terminalPersistence } : {}),
       }
     }), ...durableRuns],
   }

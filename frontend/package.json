@@ -1,27 +1,30 @@
 {
   "name": "meldwork-frontend",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Meldwork local-first multi-Agent collaboration workspace",
   "author": "Ryder-MHumble",
   "license": "SEE LICENSE IN LICENSE",
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=22.12.0"
   },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "build:desktop": "vite build --mode desktop",
     "preview": "vite preview",
-    "test": "vitest run src/__tests__/roundrelay/*.spec.js",
-    "test:watch": "vitest src/__tests__/roundrelay/*.spec.js"
+    "test": "vitest run src/__tests__/meldwork/*.spec.js",
+    "test:watch": "vitest src/__tests__/meldwork/*.spec.js"
   },
   "dependencies": {
     "@vicons/ionicons5": "^0.12.0",
-    "dompurify": "^3.4.11",
+    "dompurify": "^3.4.13",
     "marked": "^9.0.0",
     "three": "^0.185.1",
     "vue": "^3.4.0"
+  },
+  "overrides": {
+    "nanoid": "3.3.18"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.8",

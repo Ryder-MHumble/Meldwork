@@ -164,25 +164,31 @@ function normalizeSourceMessageIds(value) {
     .slice(0, 32)
 }
 
-function normalizeOutcomeRefs(input) {
+function normalizeOutcomeRefs(input, options = {}) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
   const refs = {}
-  let remaining = MAX_OUTCOME_REFS
+  const strict = options.strict === true
   for (const [field, pattern] of Object.entries(OUTCOME_REF_PATTERNS)) {
-    if (!remaining) break
-    const values = [...new Set((Array.isArray(input[field]) ? input[field] : [])
+    const raw = Array.isArray(input[field]) ? input[field] : []
+    if (strict && raw.length > MAX_OUTCOME_REFS) {
+      throw new Error('RUN_HARNESS_V4_OUTCOME_REFS_INVALID')
+    }
+    const values = [...new Set(raw
       .map(value => String(value || ''))
       .filter(value => pattern.test(value)))]
-      .slice(0, remaining)
+      .slice(0, MAX_OUTCOME_REFS)
     if (values.length) refs[field] = values
-    remaining -= values.length
+  }
+  const rawWorkflowOutcomeRefs = Array.isArray(input.workflowOutcomeRefs)
+    ? input.workflowOutcomeRefs
+    : []
+  if (strict && rawWorkflowOutcomeRefs.length > MAX_OUTCOME_REFS) {
+    throw new Error('RUN_HARNESS_V4_OUTCOME_REFS_INVALID')
   }
   const workflowOutcomeRefs = []
   const seenWorkflowOutcomeRefs = new Set()
-  for (const value of Array.isArray(input.workflowOutcomeRefs)
-    ? input.workflowOutcomeRefs
-    : []) {
-    if (!remaining) break
+  for (const value of rawWorkflowOutcomeRefs) {
+    if (workflowOutcomeRefs.length >= MAX_OUTCOME_REFS) break
     let ref
     try {
       ref = normalizeContentBlobRef(value)
@@ -193,7 +199,6 @@ function normalizeOutcomeRefs(input) {
     if (seenWorkflowOutcomeRefs.has(key)) continue
     seenWorkflowOutcomeRefs.add(key)
     workflowOutcomeRefs.push(ref)
-    remaining -= 1
   }
   if (workflowOutcomeRefs.length) refs.workflowOutcomeRefs = workflowOutcomeRefs
   return refs

@@ -63,7 +63,7 @@ test('rejects unsupported workflow submissions before launching an Agent', async
 test('workspace startup rejects orphaned Human Gates after restoring interrupted Runs', (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  const privateRoot = path.join(directory, 'roundrelay-private')
+  const privateRoot = path.join(directory, 'meldwork-private')
   const contentBlobStore = new ContentBlobStore({
     rootPath: path.join(privateRoot, 'content-blobs'),
   })
@@ -1400,7 +1400,7 @@ test('direct conversations force manual mode and reuse their group Agent session
   assert.equal(direct.directAgentKind, 'codex')
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'codex'])
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
-  assert.equal(calls.some(call => call.prompt.includes('ROUNDRELAY_CONSENSUS')), false)
+  assert.equal(calls.some(call => call.prompt.includes('MELDWORK_CONSENSUS')), false)
   assert.equal(workspace.snapshot().messages.some(message => message.threadRootId), false)
   const restored = new LocalWorkspace(options)
   assert.deepEqual(restored.snapshot().groups[0], direct)
@@ -1922,7 +1922,7 @@ test('every built-in conversational Agent starts a newly targeted group task out
     if (call.agent.kind === 'openclaw') {
       assert.match(
         call.runOptions.sessionRef,
-        /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/,
+        /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/,
       )
     } else {
       assert.equal(call.runOptions.sessionRef, '', call.agent.kind)
@@ -1944,7 +1944,7 @@ test('task sessions migrate only their exact legacy root without guessing anothe
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1996,7 +1996,7 @@ test('legacy GEO context survives without cross-task native session reuse', asyn
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} completed the GEO turn\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} completed the GEO turn\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-group-session`,
     }
   }
@@ -2195,7 +2195,7 @@ test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
   await workspace.sendMessage({ groupId: first.id, text: 'Kimi 1', targetKinds: ['kimi'] })
   const firstRoot = workspace.snapshot().messages[0].id
   const openClawKey = workspace.sessionKey(first.id, 'openclaw')
-  workspace.state.sessions[openClawKey] = 'explicit:roundrelay-legacy-openclaw'
+  workspace.state.sessions[openClawKey] = 'explicit:meldwork-legacy-openclaw'
   workspace.save()
   await workspace.sendMessage({
     groupId: first.id, text: 'Kimi 2', targetKinds: ['kimi'], threadRootId: firstRoot,
@@ -2210,11 +2210,11 @@ test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
 
   const sessionRefs = calls.map(call => call.runOptions.sessionRef)
   assert.deepEqual(sessionRefs.slice(0, 2), ['', ''])
-  assert.match(sessionRefs[2], /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
-  assert.match(sessionRefs[3], /^agent:main:desktop-roundrelay-[a-f0-9]{20}-openclaw$/)
+  assert.match(sessionRefs[2], /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/)
+  assert.match(sessionRefs[3], /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/)
   assert.notEqual(sessionRefs[3], sessionRefs[2])
   assert.notEqual(sessionRefs[4], sessionRefs[2])
-  assert.notEqual(workspace.state.sessions[openClawKey], 'explicit:roundrelay-legacy-openclaw')
+  assert.notEqual(workspace.state.sessions[openClawKey], 'explicit:meldwork-legacy-openclaw')
   assert.notEqual(workspace.sessionKey(first.id, 'openclaw', firstRoot), openClawKey)
   assert.equal(calls[0].runOptions.sandbox, 'workspace-write')
   assert.equal(calls[1].runOptions.sandbox, 'workspace-write')

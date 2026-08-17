@@ -15,6 +15,16 @@ function deferredState(promise) {
   return state
 }
 
+function deferred() {
+  let resolve
+  let reject
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
 test('exports one process-wide scheduler with bounded defaults and no run deadline', () => {
   assert.equal(processRunScheduler instanceof RunScheduler, true)
   assert.deepEqual(processRunScheduler.snapshot().limits, { task: 2, workspace: 2, global: 4 })
@@ -178,5 +188,279 @@ test('four suspended global leases consume no capacity while waiting', async () 
   assert.equal(scheduler.snapshot().active.global, 0)
   for (const release of releases) release()
   await Promise.all(suspended)
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('task pause blocks queued same-task work while another task uses released capacity', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 3, globalLimit: 1 })
+  const ownerReady = deferred()
+  const startSuspend = deferred()
+  const gate = deferred()
+  const suspended = deferred()
+  const owner = scheduler.withLease({ taskId: 'task-1', workspaceKey: 'workspace-a' }, async lease => {
+    ownerReady.resolve()
+    await startSuspend.promise
+    await lease.suspend(async () => {
+      suspended.resolve()
+      await gate.promise
+    }, { pauseTask: true })
+  })
+  await ownerReady.promise
+
+  const sameTask = scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-b' })
+  const sameTaskState = deferredState(sameTask)
+  const otherTask = scheduler.acquire({ taskId: 'task-2', workspaceKey: 'workspace-c' })
+  const otherTaskState = deferredState(otherTask)
+  startSuspend.resolve()
+  await suspended.promise
+  await new Promise(resolve => setImmediate(resolve))
+
+  const observed = {
+    sameTaskSettled: sameTaskState.settled,
+    otherTaskSettled: otherTaskState.settled,
+  }
+  let sameTaskLease = observed.sameTaskSettled ? await sameTask : null
+  sameTaskLease?.release()
+  const otherTaskLease = await otherTask
+  otherTaskLease.release()
+  gate.resolve()
+  await owner
+  sameTaskLease ||= await sameTask
+  sameTaskLease.release()
+
+  assert.deepEqual(observed, { sameTaskSettled: false, otherTaskSettled: true })
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('task-pause owner reacquires before an older queued same-task request', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 2, globalLimit: 1 })
+  const ownerReady = deferred()
+  const startSuspend = deferred()
+  const gate = deferred()
+  const suspended = deferred()
+  const order = []
+  const owner = scheduler.withLease({ taskId: 'task-1', workspaceKey: 'workspace-a' }, async lease => {
+    ownerReady.resolve()
+    await startSuspend.promise
+    await lease.suspend(async () => {
+      suspended.resolve()
+      await gate.promise
+    }, { pauseTask: true })
+    order.push('owner-reacquired')
+  })
+  await ownerReady.promise
+  const queued = scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-b' })
+    .then(lease => {
+      order.push('queued-acquired')
+      lease.release()
+    })
+  startSuspend.resolve()
+  await suspended.promise
+
+  gate.resolve()
+  await Promise.all([owner, queued])
+
+  assert.deepEqual(order, ['owner-reacquired', 'queued-acquired'])
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('task-pause reacquire keeps the validated lease binding when caller input mutates', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 3, globalLimit: 2 })
+  const originalController = new AbortController()
+  const mutatedController = new AbortController()
+  mutatedController.abort()
+  const input = {
+    taskId: 'task-original',
+    workspaceKey: 'workspace-original',
+    signal: originalController.signal,
+  }
+  const gate = deferred()
+  const suspended = deferred()
+  const ownerReacquired = deferred()
+  const releaseOwner = deferred()
+  let reacquiredBinding = null
+  const owner = scheduler.withLease(input, async lease => {
+    await lease.suspend(async () => {
+      input.taskId = 'task-mutated'
+      input.workspaceKey = 'workspace-mutated'
+      input.signal = mutatedController.signal
+      suspended.resolve()
+      await gate.promise
+    }, { pauseTask: true })
+    reacquiredBinding = { taskId: lease.taskId, workspaceKey: lease.workspaceKey }
+    ownerReacquired.resolve()
+    await releaseOwner.promise
+  })
+  await suspended.promise
+  const queued = scheduler.acquire({
+    taskId: 'task-original', workspaceKey: 'workspace-queued',
+  })
+  const queuedState = deferredState(queued)
+
+  gate.resolve()
+  await ownerReacquired.promise
+  await new Promise(resolve => setImmediate(resolve))
+  const queuedWhileOwnerActive = queuedState.settled
+  releaseOwner.resolve()
+  await owner
+  const queuedLease = await queued
+  queuedLease.release()
+
+  assert.deepEqual(reacquiredBinding, {
+    taskId: 'task-original', workspaceKey: 'workspace-original',
+  })
+  assert.equal(queuedWhileOwnerActive, false)
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('task-pause rejection reacquires before rethrow and leaves the task usable', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 2, globalLimit: 1 })
+  const waiting = deferred()
+  const suspended = deferred()
+  const failureCaught = deferred()
+  const releaseOwner = deferred()
+  const failure = new Error('GATE_CHECKPOINT_FAILED')
+  let caughtBinding = null
+  let caughtFailure = null
+  const owner = scheduler.withLease({
+    taskId: 'task-1', workspaceKey: 'workspace-a',
+  }, async lease => {
+    try {
+      await lease.suspend(async () => {
+        suspended.resolve()
+        await waiting.promise
+      }, { pauseTask: true })
+    } catch (error) {
+      caughtFailure = error
+      caughtBinding = { taskId: lease.taskId, workspaceKey: lease.workspaceKey }
+      failureCaught.resolve()
+      await releaseOwner.promise
+      throw error
+    }
+  })
+  await suspended.promise
+  const queued = scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-b' })
+  const queuedState = deferredState(queued)
+
+  waiting.reject(failure)
+  await failureCaught.promise
+  await new Promise(resolve => setImmediate(resolve))
+  const queuedBeforeRethrow = queuedState.settled
+  releaseOwner.resolve()
+  await assert.rejects(owner, error => error === failure)
+  const queuedLease = await queued
+  queuedLease.release()
+  const nextLease = await scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-a' })
+  nextLease.release()
+
+  assert.equal(caughtFailure, failure)
+  assert.deepEqual(caughtBinding, { taskId: 'task-1', workspaceKey: 'workspace-a' })
+  assert.equal(queuedBeforeRethrow, false)
+  assert.deepEqual(scheduler.snapshot().active, { global: 0, tasks: [], workspaces: [] })
+  assert.deepEqual(scheduler.snapshot().queued, [])
+})
+
+test('multiple task-pause tokens keep queued same-task work blocked until the final Gate settles', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 3, globalLimit: 2 })
+  const startSuspend = deferred()
+  const firstGate = deferred()
+  const secondGate = deferred()
+  const firstSuspended = deferred()
+  const secondSuspended = deferred()
+  const firstReady = deferred()
+  const secondReady = deferred()
+  const first = scheduler.withLease({ taskId: 'task-1', workspaceKey: 'workspace-a' }, async lease => {
+    firstReady.resolve()
+    await startSuspend.promise
+    await lease.suspend(async () => {
+      firstSuspended.resolve()
+      await firstGate.promise
+    }, { pauseTask: true })
+  })
+  const second = scheduler.withLease({ taskId: 'task-1', workspaceKey: 'workspace-b' }, async lease => {
+    secondReady.resolve()
+    await startSuspend.promise
+    await lease.suspend(async () => {
+      secondSuspended.resolve()
+      await secondGate.promise
+    }, { pauseTask: true })
+  })
+  await Promise.all([firstReady.promise, secondReady.promise])
+  const queued = scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-c' })
+  const queuedState = deferredState(queued)
+  startSuspend.resolve()
+  await Promise.all([firstSuspended.promise, secondSuspended.promise])
+  await new Promise(resolve => setImmediate(resolve))
+  const beforeResolution = queuedState.settled
+
+  firstGate.resolve()
+  await first
+  await new Promise(resolve => setImmediate(resolve))
+  const afterFirstResolution = queuedState.settled
+
+  secondGate.resolve()
+  await second
+  const queuedLease = await queued
+  queuedLease.release()
+
+  assert.equal(beforeResolution, false)
+  assert.equal(afterFirstResolution, false)
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('abort while task-paused removes the pause without reacquiring the aborted lease', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 2, globalLimit: 1 })
+  const controller = new AbortController()
+  const suspended = deferred()
+  const owner = scheduler.withLease({
+    taskId: 'task-1', workspaceKey: 'workspace-a', signal: controller.signal,
+  }, lease => lease.suspend(() => new Promise((resolve, reject) => {
+    suspended.resolve()
+    controller.signal.addEventListener('abort', () => reject(new Error('GATE_ABORTED')), { once: true })
+  }), { pauseTask: true }))
+  await suspended.promise
+  const queued = scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-b' })
+  const queuedState = deferredState(queued)
+  await new Promise(resolve => setImmediate(resolve))
+  const settledBeforeAbort = queuedState.settled
+
+  controller.abort()
+  await assert.rejects(owner, { message: 'GATE_ABORTED' })
+  const queuedLease = await queued
+  queuedLease.release()
+
+  assert.equal(settledBeforeAbort, false)
+  assert.deepEqual(scheduler.snapshot().active, { global: 0, tasks: [], workspaces: [] })
+  assert.deepEqual(scheduler.snapshot().queued, [])
+})
+
+test('legacy suspension still dispatches older queued same-task work while waiting', async () => {
+  const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 2, globalLimit: 1 })
+  const ownerReady = deferred()
+  const startSuspend = deferred()
+  const gate = deferred()
+  const suspended = deferred()
+  const owner = scheduler.withLease({ taskId: 'task-1', workspaceKey: 'workspace-a' }, async lease => {
+    ownerReady.resolve()
+    await startSuspend.promise
+    await lease.suspend(async () => {
+      suspended.resolve()
+      await gate.promise
+    })
+  })
+  await ownerReady.promise
+  const queued = scheduler.acquire({ taskId: 'task-1', workspaceKey: 'workspace-b' })
+  const queuedState = deferredState(queued)
+  startSuspend.resolve()
+  await suspended.promise
+  await new Promise(resolve => setImmediate(resolve))
+  const dispatchedWhileWaiting = queuedState.settled
+
+  const queuedLease = await queued
+  queuedLease.release()
+  gate.resolve()
+  await owner
+
+  assert.equal(dispatchedWhileWaiting, true)
   assert.equal(scheduler.snapshot().active.global, 0)
 })

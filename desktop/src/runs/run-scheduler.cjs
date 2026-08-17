@@ -1,6 +1,8 @@
 const DEFAULT_TASK_CONCURRENCY = 2
 const DEFAULT_WORKSPACE_CONCURRENCY = 2
 const DEFAULT_GLOBAL_CONCURRENCY = 4
+const schedulerPauseTokens = new WeakMap()
+const schedulerLeaseBindings = new WeakMap()
 
 function positiveLimit(value, fallback) {
   const number = Number(value)
@@ -18,6 +20,28 @@ function resourceKey(value, code) {
   return key
 }
 
+function installTaskPause(scheduler, taskId) {
+  const token = Object.freeze({})
+  const pauses = schedulerPauseTokens.get(scheduler)
+  const tokens = pauses.get(taskId) || new Set()
+  tokens.add(token)
+  pauses.set(taskId, tokens)
+  return token
+}
+
+function removeTaskPause(scheduler, taskId, token) {
+  const pauses = schedulerPauseTokens.get(scheduler)
+  const tokens = pauses.get(taskId)
+  if (!tokens) return
+  tokens.delete(token)
+  if (!tokens.size) pauses.delete(taskId)
+}
+
+function taskPauseAllows(scheduler, entry) {
+  const tokens = schedulerPauseTokens.get(scheduler).get(entry.taskId)
+  return !tokens?.size || (entry.pauseToken && tokens.has(entry.pauseToken))
+}
+
 class RunScheduler {
   constructor(options = {}) {
     this.limits = Object.freeze({
@@ -31,6 +55,7 @@ class RunScheduler {
     this.activeWorkspaces = new Map()
     this.queue = []
     this.sequence = 0
+    schedulerPauseTokens.set(this, new Map())
   }
 
   resourceCount(collection, key) {
@@ -38,7 +63,8 @@ class RunScheduler {
   }
 
   canGrant(entry) {
-    return this.activeGlobal < this.limits.global
+    return taskPauseAllows(this, entry)
+      && this.activeGlobal < this.limits.global
       && this.resourceCount(this.activeTasks, entry.taskId) < this.limits.task
       && this.resourceCount(this.activeWorkspaces, entry.workspaceKey) < this.limits.workspace
   }
@@ -71,6 +97,11 @@ class RunScheduler {
         return true
       },
     })
+    schedulerLeaseBindings.set(lease, Object.freeze({
+      taskId: entry.taskId,
+      workspaceKey: entry.workspaceKey,
+      signal: entry.signal,
+    }))
     entry.resolve(lease)
   }
 
@@ -90,7 +121,7 @@ class RunScheduler {
     }
   }
 
-  acquire(input = {}) {
+  #enqueueAcquire(input = {}, pauseToken = null) {
     let taskId
     let workspaceKey
     try {
@@ -112,6 +143,7 @@ class RunScheduler {
         reject,
         cancelled: false,
         abortHandler: null,
+        pauseToken,
       }
       entry.abortHandler = () => {
         if (entry.cancelled) return
@@ -125,6 +157,10 @@ class RunScheduler {
       this.queue.push(entry)
       this.drain()
     })
+  }
+
+  acquire(input = {}) {
+    return this.#enqueueAcquire(input)
   }
 
   async withLease(input, operation) {
@@ -144,25 +180,37 @@ class RunScheduler {
         activeLease = null
         return current?.release() || false
       },
-      suspend: async (waitingOperation) => {
+      suspend: async (waitingOperation, options = {}) => {
         if (typeof waitingOperation !== 'function') {
           throw schedulerError('RUN_SCHEDULER_OPERATION_REQUIRED')
         }
         if (closed || !activeLease) throw schedulerError('RUN_SCHEDULER_LEASE_INACTIVE')
-        activeLease.release()
-        activeLease = null
-        let result
-        let failure
+        const binding = schedulerLeaseBindings.get(activeLease)
+        const taskId = binding.taskId
+        const pauseToken = options?.pauseTask === true
+          ? installTaskPause(this, taskId)
+          : null
         try {
-          result = await waitingOperation()
-        } catch (error) {
-          failure = error
+          activeLease.release()
+          activeLease = null
+          let result
+          let failure
+          try {
+            result = await waitingOperation()
+          } catch (error) {
+            failure = error
+          }
+          if (!closed && !binding.signal?.aborted) {
+            activeLease = await this.#enqueueAcquire(binding, pauseToken)
+          }
+          if (failure) throw failure
+          return result
+        } finally {
+          if (pauseToken) {
+            removeTaskPause(this, taskId, pauseToken)
+            this.drain()
+          }
         }
-        if (!closed && !input?.signal?.aborted) {
-          activeLease = await this.acquire(input)
-        }
-        if (failure) throw failure
-        return result
       },
     })
     try {

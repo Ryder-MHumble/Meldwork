@@ -68,7 +68,7 @@ function downloadResponse(url, signal, redirects = 0) {
 async function defaultDownloadScript(url, signal) {
   if (signal?.aborted) throw abortError()
   const parsed = validateScriptUrl(url)
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'roundrelay-agent-install-'))
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'meldwork-agent-install-'))
   const extension = parsed.pathname.endsWith('.ps1') ? '.ps1' : '.sh'
   const target = path.join(directory, `installer${extension}`)
   let bytes = 0
@@ -99,7 +99,7 @@ async function defaultDownloadScript(url, signal) {
 async function defaultRemoveDownload(target) {
   if (!target) return
   const directory = path.dirname(target)
-  if (!path.basename(directory).startsWith('roundrelay-agent-install-')) return
+  if (!path.basename(directory).startsWith('meldwork-agent-install-')) return
   await fs.promises.rm(directory, { recursive: true, force: true })
 }
 

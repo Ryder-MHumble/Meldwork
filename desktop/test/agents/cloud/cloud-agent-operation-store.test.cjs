@@ -12,7 +12,7 @@ const MAX_STORE_BYTES = 4 * 1024 * 1024
 const MAX_OPERATIONS = 2048
 
 function fixture(t) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cloud-operations-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cloud-operations-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   return path.join(directory, 'private', 'cloud-agent-operations.json')
 }

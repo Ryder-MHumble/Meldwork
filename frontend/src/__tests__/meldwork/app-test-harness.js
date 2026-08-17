@@ -151,8 +151,8 @@ export function createBridge() {
         decision: { status, optionId: decision.optionId },
       }
     }),
-    pickDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
-    defaultDirectory: vi.fn(async () => '/tmp/roundrelay-workspace'),
+    pickDirectory: vi.fn(async () => '/tmp/meldwork-workspace'),
+    defaultDirectory: vi.fn(async () => '/tmp/meldwork-workspace'),
     onChanged: vi.fn((callback) => {
       workspaceChanged = callback
       return vi.fn(() => { if (workspaceChanged === callback) workspaceChanged = null })
@@ -277,7 +277,7 @@ export function createBridge() {
 export async function mountApp(configure = () => {}) {
   const fixture = createBridge()
   configure(fixture)
-  window.roundrelayDesktop = fixture.bridge
+  window.meldworkDesktop = fixture.bridge
   const wrapper = mount(App, { attachTo: document.body })
   await flushPromises()
   return { wrapper, ...fixture }

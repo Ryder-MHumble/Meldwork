@@ -3,6 +3,23 @@ const { z } = require('zod')
 
 const { canonicalJson } = require('./context-pack-records.cjs')
 const { redactSecrets } = require('../security/secret-redaction.cjs')
+const {
+  applyCollaborationReceipt,
+  buildCollaborationPackage,
+  collaborationPackageIndexText,
+  collaborationChars,
+  collaborationPayloadBudget,
+  createCollaborationReceipt,
+  createOrchestrationV4,
+  enforceCollaborationBudget,
+  parseCollaborationControlBlock,
+  parseCollaborationText,
+  parseOrchestrationV4,
+  parseResultCollaboration,
+  normalizeCollaborationControlBlock,
+  normalizeOrchestrationV4,
+  parseCollaborationReceipt,
+} = require('./orchestration-v4-records.cjs')
 
 const COLLABORATION_STATE_VERSION = 1
 const HANDOFF_VERSION = 1
@@ -17,6 +34,7 @@ const HANDOFF_ID = /^handoff-[a-f0-9]{64}$/
 const BLACKBOARD_ENTRY_ID = /^blackboard-entry-[a-f0-9]{64}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const ROLES = ['primary', 'reviewer', 'arbiter']
+const OWNER_ROLES = [...ROLES, 'integrator', 'worker', 'verifier']
 const trustedStates = new WeakSet()
 
 function collaborationError(code) {
@@ -39,6 +57,7 @@ const publicIdSchema = z.string().regex(PUBLIC_ID)
 const handoffIdSchema = z.string().regex(HANDOFF_ID)
 const entryIdSchema = z.string().regex(BLACKBOARD_ENTRY_ID)
 const roleSchema = z.enum(ROLES)
+const ownerRoleSchema = z.enum(OWNER_ROLES)
 const boundedTextSchema = z.string().min(1).max(MAX_TEXT_CHARS)
 const optionalTextSchema = z.string().max(MAX_TEXT_CHARS)
 
@@ -48,6 +67,15 @@ const actorSchema = z.discriminatedUnion('type', [
     type: z.literal('agent'),
     agentKind: publicIdSchema,
     role: roleSchema,
+  }),
+])
+
+const ownerSchema = z.discriminatedUnion('type', [
+  z.strictObject({ type: z.literal('harness') }),
+  z.strictObject({
+    type: z.literal('agent'),
+    agentKind: publicIdSchema,
+    role: ownerRoleSchema,
   }),
 ])
 
@@ -106,7 +134,7 @@ const entryContentFields = {
   subject: boundedTextSchema,
   statement: optionalTextSchema,
   value: optionalTextSchema,
-  owner: actorSchema,
+  owner: ownerSchema,
   audience: audienceSchema,
   lifecycle: lifecycleSchema,
   provenance: provenanceSchema,
@@ -263,6 +291,13 @@ function validActor(value) {
     && PUBLIC_ID.test(value.agentKind) && ROLES.includes(value.role)
 }
 
+function validOwner(value) {
+  if (!isRecord(value) || !['harness', 'agent'].includes(value.type)) return false
+  if (value.type === 'harness') return exactFields(value, ['type'])
+  return exactFields(value, ['type', 'agentKind', 'role'])
+    && PUBLIC_ID.test(value.agentKind) && OWNER_ROLES.includes(value.role)
+}
+
 function validProvenance(value) {
   return exactFields(value, [
     'runId', 'taskId', 'round', 'agentRunId', 'artifactIds', 'evidenceIds',
@@ -316,7 +351,7 @@ function validEntryRecord(record) {
       || !validText(record.subject)
       || !validText(record.statement, false)
       || !validText(record.value, false)
-      || !validActor(record.owner)
+      || !validOwner(record.owner)
       || !exactFields(record.audience, ['roles', 'agentKinds'])
       || !uniqueValidArray(record.audience.roles, role => ROLES.includes(role), ROLES.length)
       || !uniqueValidArray(record.audience.agentKinds, id => PUBLIC_ID.test(id), 32)
@@ -500,7 +535,7 @@ function publicCollaborationText(value, limit = MAX_TEXT_CHARS) {
 
 function collaborationPackageText(handoff, entries) {
   const lines = [
-    'ROUNDRELAY_COLLABORATION_PACKAGE_V1',
+    'MELDWORK_COLLABORATION_PACKAGE_V1',
     `Role: ${handoff.destination.role}`,
     `Objective: ${handoff.objective}`,
     `Expected output: ${handoff.expectedOutput}`,
@@ -538,4 +573,19 @@ module.exports = {
   publicCollaborationText,
   roleForIndex,
   visibleBlackboardEntries,
+  applyCollaborationReceipt,
+  buildCollaborationPackage,
+  collaborationPackageIndexText,
+  collaborationChars,
+  collaborationPayloadBudget,
+  createCollaborationReceipt,
+  createOrchestrationV4,
+  enforceCollaborationBudget,
+  parseCollaborationControlBlock,
+  parseCollaborationText,
+  parseOrchestrationV4,
+  parseResultCollaboration,
+  normalizeCollaborationControlBlock,
+  normalizeOrchestrationV4,
+  parseCollaborationReceipt,
 }

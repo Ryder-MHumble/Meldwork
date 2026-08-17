@@ -82,6 +82,17 @@
   box-shadow: none;
 }
 
+.round-unlimited-symbol {
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: currentColor;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+}
+
 .round-settings-trigger.unlimited:hover:not(:disabled) {
   background: transparent;
   box-shadow: none;
@@ -487,6 +498,35 @@
     0 12px 28px rgb(32 43 53 / 0.12);
 }
 
+.composer-box.unlimited-mode {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent),
+    0 8px 22px rgb(32 43 53 / 0.08);
+}
+
+.composer-box.unlimited-running {
+  animation: unlimited-composer-breathe 2.4s ease-in-out infinite;
+}
+
+.composer-box.unlimited-running .round-unlimited-symbol {
+  animation: unlimited-symbol-breathe 1.8s ease-in-out infinite;
+}
+
+@keyframes unlimited-composer-breathe {
+  0%, 100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent),
+      0 8px 22px rgb(32 43 53 / 0.08);
+  }
+  50% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent),
+      0 10px 26px rgb(32 43 53 / 0.12);
+  }
+}
+
+@keyframes unlimited-symbol-breathe {
+  0%, 100% { opacity: 0.72; transform: scale(0.94); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
 .composer-drop-overlay {
   position: absolute;
   inset: 0;
@@ -510,6 +550,11 @@
 
 :root[data-theme="dark"] .composer-box {
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.26);
+}
+
+:root[data-theme="dark"] .composer-box.unlimited-mode {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
+    0 8px 24px rgb(0 0 0 / 0.26);
 }
 
 .composer-box:focus-within {
@@ -977,6 +1022,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .composer-box.unlimited-running,
+  .composer-box.unlimited-running .round-unlimited-symbol,
+  .smart-team-icon-state,
+  .smart-team-icon-network {
+    animation: none;
+    transform: none;
+  }
+
   .smart-team-icon-state,
   .smart-team-icon-network {
     transition: none;
@@ -1118,8 +1171,11 @@
 
   .mode-segmented button {
     min-width: 86px;
+    height: 32px;
     padding-inline: 4px;
     font-size: 10px;
+    line-height: 1.05;
+    white-space: normal;
   }
 
   .round-settings-trigger {

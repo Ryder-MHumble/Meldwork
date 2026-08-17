@@ -1,4 +1,5 @@
 const path = require('node:path')
+const { createHash } = require('node:crypto')
 const {
   KNOWLEDGE_BASE_KINDS,
   MAX_KNOWLEDGE_BASE_HINTS,
@@ -21,6 +22,28 @@ const { MAX_RUN_AGENT_ATTEMPTS } = require('../runs/failure-policy.cjs')
 const { mediaGenerationRequest } = require('../media/media-generation-request.cjs')
 const { createTaskGraph } = require('../collaboration/task-graph-records.cjs')
 const { assertLocalSkillExecution } = require('../skills/local-skill-contract.cjs')
+const {
+  ROLES,
+  appendBlackboardEntry,
+  createBlackboardEntryRecord,
+  emptyCollaborationState,
+  roleForIndex,
+} = require('../collaboration/collaboration-records.cjs')
+const { canonicalJson } = require('../collaboration/context-pack-records.cjs')
+const {
+  createCollaborationReceipt,
+  createOrchestrationV4,
+  hashValue,
+  parseOrchestrationV4,
+} = require('../collaboration/orchestration-v4-records.cjs')
+const {
+  restoreV4SnapshotSkills,
+  v4Prompt,
+  v4Snapshot,
+  v4SnapshotBodyHash,
+  v4SnapshotSkillHints,
+  validateV4SnapshotBody,
+} = require('./local-workspace-context.cjs')
 
 function hardBudgetFailure(error) {
   return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
@@ -30,6 +53,37 @@ function hardBudgetFailure(error) {
 function circuitBreakerFailure(error) {
   return error?.code === 'LOCAL_RUN_CIRCUIT_BREAKER'
     || error?.message === 'LOCAL_RUN_CIRCUIT_BREAKER'
+}
+
+function isV4ManualUnknownWriter(slot) {
+  return slot?.permission === 'workspace-write'
+    && slot.status === 'running'
+    && slot.commitStatus !== 'committed'
+    && Number.isSafeInteger(slot.attempt)
+    && slot.attempt > 0
+}
+
+function v4ManualRecoveryGateInput(runId, batchId, slot) {
+  return {
+    type: 'retry',
+    runId,
+    agentRunId: slot.operationId,
+    agentKind: slot.agentKind,
+    summary: 'The recovered workspace-write Agent attempt may already have changed the workspace.',
+    options: [
+      { optionId: 'retry-once', name: 'Retry once', kind: 'allow_once' },
+      { optionId: 'cancel-retry', name: 'Do not retry', kind: 'reject_once' },
+    ],
+    request: {
+      phase: 'manual-writer-recovery',
+      batchId,
+      slotId: slot.slotId,
+      operationId: slot.operationId,
+      attempt: slot.attempt,
+      outcomeCertainty: 'unknown_outcome',
+      sideEffectsPossible: true,
+    },
+  }
 }
 
 class LocalWorkspaceMessageSubmission {
@@ -65,6 +119,11 @@ class LocalWorkspaceMessageSubmission {
     this.checkpointRun = options.checkpointRun
     this.hasRunLedger = options.hasRunLedger || (() => false)
     this.routeAgents = options.routeAgents
+    this.contentBlobStore = options.contentBlobStore
+    this.outcomeStore = options.outcomeStore
+    this.commitV4AgentMessage = options.commitV4AgentMessage
+    this.requestHumanGate = options.requestHumanGate
+    this.completeHumanGateContinuation = options.completeHumanGateContinuation
   }
 
   async resolveAttachments(attachmentRefs, signal) {
@@ -275,6 +334,12 @@ class LocalWorkspaceMessageSubmission {
     return {
       mode,
       targetKinds,
+      v4: (mode === 'manual' || mode === 'auto')
+        && group.conversationType !== 'direct'
+        && targetKinds.length > 1
+        && !regenerateMessageId
+        && input.protocol !== 'legacy'
+        && this.v4Requested(input),
       unlimitedRounds,
       maxRounds,
       requestedThreadRootId,
@@ -358,12 +423,911 @@ class LocalWorkspaceMessageSubmission {
     ].join('\n')
   }
 
+  v4Requested(input) {
+    if (input?.protocol === 'legacy' || input?.harnessVersion === 3) return false
+    return input?.protocol === 'v4'
+      || input?.harnessVersion === 4
+      || input?.collaborationVersion === 4
+      || input?.v4 === true
+  }
+
+  v4BatchId(controller, phase = 'proposal') {
+    const digest = createHash('sha256').update(JSON.stringify([
+      controller.runId,
+      controller.taskId,
+      phase,
+      controller.currentRound || 0,
+    ])).digest('hex').slice(0, 32)
+    return `batch-${digest}`
+  }
+
+  v4WriterKind(controller, targetKinds, seed = '') {
+    const kinds = Array.isArray(targetKinds) ? targetKinds : []
+    if (!kinds.length) return ''
+    const digest = createHash('sha256').update(JSON.stringify([
+      controller?.runId || '', controller?.taskId || '', seed, kinds,
+    ])).digest('hex')
+    return kinds[Number.parseInt(digest.slice(0, 8), 16) % kinds.length]
+  }
+
+  checkpointV4Manual(group, controller) {
+    if (this.hasRunLedger() && this.checkpointRun(group.id, controller) !== true) {
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    }
+    this.emitChanged()
+  }
+
+  persistV4Snapshot(controller, snapshot, targetKinds) {
+    if (!this.contentBlobStore) throw new Error('LOCAL_RUN_SNAPSHOT_STORE_UNAVAILABLE')
+    const serialized = canonicalJson(snapshot)
+    const contentRef = this.contentBlobStore.put(serialized, { mediaType: 'application/json' })
+    const sourceIds = [snapshot?.messageId, ...(snapshot?.history || []).map(item => item.id)]
+      .filter(Boolean).slice(-64)
+    const record = {
+      contextPackId: controller.contextPackId || null,
+      taskId: snapshot?.taskId || controller.taskId || null,
+      messageId: snapshot?.messageId || controller.threadRootId || null,
+      groupId: snapshot?.group?.id || controller.groupId || null,
+      round: Math.max(0, Number(controller.currentRound) || 0),
+      targetKinds: [...targetKinds],
+      sourceIds,
+      capturedAt: Date.now(),
+      charCount: Buffer.byteLength(serialized),
+      contentHash: contentRef.hash,
+      bodyHash: v4SnapshotBodyHash(snapshot),
+      contentRef,
+    }
+    return { body: snapshot, record, hash: hashValue(record) }
+  }
+
+  loadV4Snapshot(orchestration, bindings) {
+    const snapshotRecord = orchestration?.snapshot
+    if (!snapshotRecord?.contentRef || !this.contentBlobStore) {
+      throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    }
+    let bytes
+    try { bytes = this.contentBlobStore.read(snapshotRecord.contentRef) } catch {
+      throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    }
+    let body
+    try { body = JSON.parse(bytes.toString('utf8')) } catch {
+      throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    }
+    return validateV4SnapshotBody({
+      body,
+      serialized: bytes.toString('utf8'),
+      byteLength: bytes.length,
+      record: snapshotRecord,
+      orchestrationSnapshotHash: orchestration.snapshotHash,
+      ...bindings,
+    })
+  }
+
+  v4ResultBodyRecord(controller, slot, pendingMessage) {
+    if (!pendingMessage || pendingMessage.role !== 'agent'
+        || !this.contentBlobStore || !this.outcomeStore) {
+      throw new Error('LOCAL_RUN_RESULT_BODY_INVALID')
+    }
+    const trace = pendingMessage.metadata?.trace
+    const body = JSON.parse(JSON.stringify({
+      version: 1,
+      agentKind: slot.agentKind,
+      slotId: slot.slotId,
+      operationId: slot.operationId,
+      threadRootId: pendingMessage.threadRootId || '',
+      content: pendingMessage.content,
+      metadata: {
+        ...(pendingMessage.metadata?.elapsedMs != null
+          ? { elapsedMs: pendingMessage.metadata.elapsedMs } : {}),
+        ...(Array.isArray(pendingMessage.metadata?.toolCalls)
+          ? { toolCalls: pendingMessage.metadata.toolCalls } : {}),
+        ...(Array.isArray(pendingMessage.metadata?.attachments)
+          ? { attachments: pendingMessage.metadata.attachments } : {}),
+        ...(pendingMessage.metadata?.responseVersionRootId
+          ? { responseVersionRootId: pendingMessage.metadata.responseVersionRootId } : {}),
+        ...(trace ? { trace } : {}),
+      },
+    }))
+    const contentRef = this.contentBlobStore.put(canonicalJson(body), {
+      mediaType: 'application/json',
+    })
+    return this.outcomeStore.putArtifact({
+      type: 'structured-data',
+      name: `${slot.agentKind}-manual-v4-result.json`,
+      producedBy: {
+        runId: controller.runId,
+        agentRunId: String(trace?.agentRunId || slot.operationId),
+        agentKind: slot.agentKind,
+      },
+      contentRef,
+      contentHash: contentRef.hash,
+    })
+  }
+
+  loadV4ResultBody(slot) {
+    if (!slot?.resultBodyArtifactId || !this.outcomeStore || !this.contentBlobStore) {
+      throw new Error('LOCAL_RUN_RESULT_BODY_INVALID')
+    }
+    let artifact
+    let bytes
+    try {
+      artifact = this.outcomeStore.getArtifact(slot.resultBodyArtifactId)
+      bytes = this.contentBlobStore.read(artifact.contentRef)
+    } catch {
+      throw new Error('LOCAL_RUN_RESULT_BODY_INVALID')
+    }
+    let body
+    try { body = JSON.parse(bytes.toString('utf8')) } catch {
+      throw new Error('LOCAL_RUN_RESULT_BODY_INVALID')
+    }
+    if (canonicalJson(body) !== bytes.toString('utf8')
+        || body?.version !== 1
+        || body.agentKind !== slot.agentKind
+        || body.slotId !== slot.slotId
+        || body.operationId !== slot.operationId
+        || typeof body.content !== 'string'
+        || !body.metadata || typeof body.metadata !== 'object' || Array.isArray(body.metadata)) {
+      throw new Error('LOCAL_RUN_RESULT_BODY_INVALID')
+    }
+    return body
+  }
+
+  v4BlackboardEntry(controller, targetKinds, slot, receipt, resultBody, outcomeRefs) {
+    return createBlackboardEntryRecord({
+      entryType: 'claim',
+      subject: `Manual response from ${slot.agentKind}`,
+      statement: receipt.summary,
+      value: receipt.summary,
+      owner: {
+        type: 'agent',
+        agentKind: slot.agentKind,
+        role: roleForIndex(targetKinds.indexOf(slot.agentKind)),
+      },
+      audience: { roles: [...ROLES], agentKinds: [] },
+      lifecycle: {
+        state: 'active',
+        sequence: targetKinds.indexOf(slot.agentKind) + 1,
+        recordedAt: slot.finishedAt,
+        supersedesEntryId: null,
+      },
+      provenance: {
+        runId: controller.runId,
+        taskId: controller.taskId,
+        round: 1,
+        agentRunId: resultBody.metadata?.trace?.agentRunId || slot.operationId,
+        artifactIds: outcomeRefs.artifactIds,
+        evidenceIds: outcomeRefs.evidenceIds,
+      },
+      refs: [...new Set([
+        ...outcomeRefs.artifactIds,
+        ...outcomeRefs.evidenceIds,
+        slot.resultBodyArtifactId,
+      ])],
+    })
+  }
+
+  v4Orchestration({ controller, workflow, template, phase, batchId, snapshotRecord, slots,
+    writerKind, targetKinds, collaboration = emptyCollaborationState(), commitState = null }) {
+    const slotList = Array.isArray(slots) ? slots : []
+    if (!snapshotRecord) throw new Error('LOCAL_RUN_SNAPSHOT_INVALID')
+    const snapshotHash = hashValue(snapshotRecord)
+    const normalizedPhase = phase
+    const assignments = slotList.map((slot, index) => ({
+      agentKind: slot.agentKind,
+      slotId: slot.slotId,
+      role: slot.agentKind === writerKind ? 'writer' : 'primary',
+      operationId: slot.operationId,
+      objective: normalizedPhase === 'proposal'
+        ? 'Produce an independent bounded response.'
+        : 'Complete the assigned collaboration phase.',
+      expectedOutput: 'Return a concise structured collaboration result.',
+      inputRefs: [],
+      readOnly: slot.permission !== 'workspace-write',
+      index,
+    }))
+    const plan = {
+      version: 1,
+      snapshotHash,
+      assignments: assignments.map(({ index: _index, ...assignment }) => assignment),
+      createdAt: Date.now(),
+      barrier: 'batch',
+    }
+    const normalizedSlots = slotList.map((slot, index) => {
+      const status = slot.status === 'pending' ? 'planned' : slot.status
+      const terminal = ['completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted']
+        .includes(status)
+      return {
+        slotId: slot.slotId,
+        agentKind: slot.agentKind,
+        phase: normalizedPhase,
+        status,
+        operationId: slot.operationId,
+        queuePosition: index,
+        snapshotHash,
+        deliveryWatermark: Number(slot.deliveryWatermark?.watermark ?? slot.deliveryWatermark)
+          || (Array.isArray(slot.deliveryWatermark?.entryIds) ? slot.deliveryWatermark.entryIds.length : 0),
+        receiptId: slot.receiptId || '',
+        resultHash: slot.resultHash || '',
+        assignedAt: slot.assignedAt || Date.now(),
+        startedAt: slot.startedAt || Date.now(),
+        finishedAt: terminal ? (slot.finishedAt || Date.now()) : null,
+        commitStatus: slot.commitStatus || (terminal ? 'committed' : 'pending'),
+        attempt: Number.isSafeInteger(slot.attempt) ? slot.attempt : 0,
+        ...(slot.permission ? { permission: slot.permission } : {}),
+        ...(slot.resultRefs ? { resultRefs: slot.resultRefs } : {}),
+        resultBodyArtifactId: slot.resultBodyArtifactId || '',
+        commitId: slot.commitId,
+        messageId: slot.messageId,
+        blackboardEntryId: slot.blackboardEntryId || '',
+      }
+    })
+    const completedKinds = normalizedSlots
+      .filter(slot => ['completed', 'partial'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    const pendingKinds = normalizedSlots
+      .filter(slot => !['completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    const commit = commitState || {
+      status: 'pending',
+      writerKind: writerKind || null,
+      committedKinds: [],
+      pendingKinds: [...targetKinds],
+      operationId: '',
+      attempt: 0,
+      updatedAt: Date.now(),
+    }
+    const normalizedCommit = {
+      status: commit.status || 'pending',
+      writerKind: commit.writerKind || writerKind || null,
+      committedKinds: commit.committedKinds || normalizedSlots
+        .filter(slot => slot.commitStatus === 'committed').map(slot => slot.agentKind),
+      pendingKinds: commit.pendingKinds || pendingKinds,
+      operationId: commit.operationId || '',
+      attempt: Number.isSafeInteger(commit.attempt) ? commit.attempt : 0,
+      updatedAt: commit.updatedAt || Date.now(),
+      ...(Array.isArray(commit.committedSlotIds)
+        ? { committedSlotIds: [...commit.committedSlotIds] } : {}),
+      ...(Array.isArray(commit.messageIds) ? { messageIds: [...commit.messageIds] } : {}),
+      ...(Array.isArray(commit.blackboardEntryIds)
+        ? { blackboardEntryIds: [...commit.blackboardEntryIds] } : {}),
+    }
+    return createOrchestrationV4({
+      workflow,
+      template,
+      phase: normalizedPhase,
+      batchId,
+      currentKinds: normalizedPhase === 'proposal' ? [...pendingKinds] : [],
+      snapshotHash,
+      snapshot: snapshotRecord,
+      plan,
+      slots: normalizedSlots,
+      deliveryWatermarks: targetKinds.map(kind => {
+        const slot = normalizedSlots.find(item => item.agentKind === kind)
+        const latestReceipt = slot?.resultRefs?.workflowOutcomeRefs?.findLast?.(
+          record => record?.receipt,
+        )?.receipt
+        return {
+          agentKind: kind,
+          phase: latestReceipt?.phase || normalizedPhase,
+          watermark: slot?.deliveryWatermark || 0,
+          operationId: latestReceipt?.operationId || slot?.operationId || '',
+          snapshotHash,
+          updatedAt: Date.now(),
+        }
+      }),
+      commitState: normalizedCommit,
+      pendingKinds,
+      activeKinds: [...targetKinds],
+      successfulKinds: completedKinds,
+      agreementKinds: [],
+      attachmentRecipients: [],
+      totalSuccesses: completedKinds.length,
+      terminalFailureOccurred: normalizedSlots.some(slot => slot.status === 'failed'),
+      collaboration,
+    }, { targetKinds, now: Date.now() })
+  }
+
+  async commitV4ManualBarrier({ group, controller, targetKinds, slots, snapshotRecord,
+    batchId, writerKind }) {
+    const successfulSlots = slots.filter(slot => ['completed', 'partial'].includes(slot.status))
+    const committedKinds = successfulSlots
+      .filter(slot => slot.commitStatus === 'committed')
+      .map(slot => slot.agentKind)
+    const committedSlotIds = successfulSlots
+      .filter(slot => slot.commitStatus === 'committed')
+      .map(slot => slot.slotId)
+    const messageIds = successfulSlots
+      .filter(slot => slot.commitStatus === 'committed')
+      .map(slot => slot.messageId)
+    const blackboardEntryIds = successfulSlots
+      .filter(slot => slot.commitStatus === 'committed')
+      .map(slot => slot.blackboardEntryId)
+    controller.orchestration = this.v4Orchestration({
+      controller,
+      workflow: 'manual',
+      template: 'concurrent-batch',
+      phase: 'commit',
+      batchId,
+      snapshotRecord,
+      slots,
+      writerKind,
+      targetKinds,
+      collaboration: controller.orchestration?.collaboration || emptyCollaborationState(),
+      commitState: {
+        status: 'committing',
+        writerKind: writerKind || null,
+        committedKinds,
+        pendingKinds: successfulSlots
+          .filter(slot => slot.commitStatus !== 'committed').map(slot => slot.agentKind),
+        committedSlotIds,
+        messageIds,
+        blackboardEntryIds,
+        operationId: `commit-operation-${hashValue({ batchId, targetKinds })}`,
+        attempt: (controller.orchestration?.commitState?.attempt || 0) + 1,
+        updatedAt: Date.now(),
+      },
+    })
+    this.checkpointV4Manual(group, controller)
+
+    for (const slot of successfulSlots) {
+      if (controller.signal.aborted) break
+      const resultBody = this.loadV4ResultBody(slot)
+      const workflowRecord = slot.resultRefs?.workflowOutcomeRefs?.find(item => (
+        item?.receipt?.receiptId === slot.receiptId
+      ))
+      if (!workflowRecord?.receipt || workflowRecord.blackboardEntry?.entryId !== slot.blackboardEntryId) {
+        throw new Error('LOCAL_RUN_RESULT_BODY_INVALID')
+      }
+      const message = this.commitV4AgentMessage({
+        messageId: slot.messageId,
+        groupId: group.id,
+        agentKind: slot.agentKind,
+        threadRootId: resultBody.threadRootId,
+        content: resultBody.content,
+        metadata: resultBody.metadata,
+      })
+      let collaboration = controller.orchestration.collaboration
+      if (!collaboration.entries.some(entry => entry.entryId === slot.blackboardEntryId)) {
+        const {
+          entryId: _entryId,
+          version: _version,
+          recordType: _recordType,
+          ...blackboardInput
+        } = workflowRecord.blackboardEntry
+        collaboration = appendBlackboardEntry(collaboration, blackboardInput)
+        if (!collaboration.entries.some(entry => entry.entryId === slot.blackboardEntryId)) {
+          throw new Error('LOCAL_RUN_COMMIT_INVALID')
+        }
+      }
+      slot.commitStatus = 'committed'
+      const currentCommitted = successfulSlots
+        .filter(candidate => candidate.commitStatus === 'committed')
+      controller.orchestration = this.v4Orchestration({
+        controller,
+        workflow: 'manual',
+        template: 'concurrent-batch',
+        phase: 'commit',
+        batchId,
+        snapshotRecord,
+        slots,
+        writerKind,
+        targetKinds,
+        collaboration,
+        commitState: {
+          ...controller.orchestration.commitState,
+          committedKinds: currentCommitted.map(candidate => candidate.agentKind),
+          pendingKinds: successfulSlots
+            .filter(candidate => candidate.commitStatus !== 'committed')
+            .map(candidate => candidate.agentKind),
+          committedSlotIds: currentCommitted.map(candidate => candidate.slotId),
+          messageIds: currentCommitted.map(candidate => candidate.messageId),
+          blackboardEntryIds: currentCommitted.map(candidate => candidate.blackboardEntryId),
+          updatedAt: Date.now(),
+        },
+      })
+      if (message.id !== slot.messageId) throw new Error('LOCAL_RUN_COMMIT_INVALID')
+      this.checkpointV4Manual(group, controller)
+    }
+
+    const allCommitted = successfulSlots.every(slot => slot.commitStatus === 'committed')
+    controller.orchestration = this.v4Orchestration({
+      controller,
+      workflow: 'manual',
+      template: 'concurrent-batch',
+      phase: controller.signal.aborted ? 'stopped' : 'completed',
+      batchId,
+      snapshotRecord,
+      slots,
+      writerKind,
+      targetKinds,
+      collaboration: controller.orchestration.collaboration,
+      commitState: {
+        ...controller.orchestration.commitState,
+        status: controller.signal.aborted || !allCommitted
+          ? 'partial'
+          : (slots.some(slot => slot.status === 'failed') ? 'partial' : 'committed'),
+        pendingKinds: successfulSlots
+          .filter(slot => slot.commitStatus !== 'committed').map(slot => slot.agentKind),
+        updatedAt: Date.now(),
+      },
+    })
+    this.checkpointV4Manual(group, controller)
+  }
+
+  async executeV4ManualSlots({ group, targetKinds, prepared, controller, threadRootId,
+    snapshot, snapshotRecord, batchId, slots, writerKind, activeKinds,
+    skillHintsByKind = new Map(), resumedGate = null }) {
+    const snapshotSourceMessageIds = [snapshot.messageId, ...snapshot.history.map(item => item.id)]
+    const frozenSnapshotHash = controller.orchestration.snapshotHash
+    const prompts = new Map(activeKinds.map(kind => [kind, v4Prompt({
+      group: { ...group, ...snapshot.group },
+      kind,
+      phase: 'proposal',
+      role: kind === writerKind ? 'writer-proposal' : 'proposal',
+      snapshot,
+      skillHints: skillHintsByKind.get(kind) || [],
+    })]))
+    const pending = await Promise.all(activeKinds.map(async (kind) => {
+      const index = targetKinds.indexOf(kind)
+      const slot = slots[index]
+      slot.status = 'queued'
+      slot.finishedAt = null
+      slot.commitStatus = 'pending'
+      controller.orchestration = this.v4Orchestration({
+        controller,
+        workflow: 'manual',
+        template: 'concurrent-batch',
+        phase: 'proposal',
+        batchId,
+        snapshotRecord,
+        slots,
+        writerKind,
+        targetKinds,
+        collaboration: controller.orchestration.collaboration,
+        commitState: controller.orchestration.commitState,
+      })
+      this.checkpointV4Manual(group, controller)
+      let leaseAcquired = false
+      try {
+        const invocation = await this.invokeWithRecovery({
+          group: slot.permission === 'workspace-write' ? group : { ...group, allowWrite: false },
+          kind,
+          controller,
+          activeKinds: targetKinds,
+          threadRootId,
+          context: {
+            v4: true,
+            phase: 'proposal',
+            batchId,
+            slotId: slot.slotId,
+            snapshotHash: frozenSnapshotHash,
+            sessionPolicy: 'frozen',
+            promptOverride: prompts.get(kind),
+            contextPackId: controller.contextPackId,
+            snapshotSourceMessageIds,
+            snapshotSourceEntries: snapshot.history,
+            permissionMode: slot.permission,
+            singleWriterKind: writerKind || '',
+            parallelGraph: true,
+            deferMessage: true,
+            operationId: slot.operationId,
+            onLeaseAcquired: () => {
+              if (leaseAcquired) return
+              leaseAcquired = true
+              slot.status = 'running'
+              slot.attempt += 1
+              slot.startedAt = Date.now()
+              slot.finishedAt = null
+              if (resumedGate?.gateId
+                  && controller.continuation?.gateId === resumedGate.gateId
+                  && controller.continuation.state === 'completed') {
+                controller.continuation = null
+              }
+              controller.orchestration = this.v4Orchestration({
+                controller,
+                workflow: 'manual',
+                template: 'concurrent-batch',
+                phase: 'proposal',
+                batchId,
+                snapshotRecord,
+                slots,
+                writerKind,
+                targetKinds,
+                collaboration: controller.orchestration.collaboration,
+                commitState: controller.orchestration.commitState,
+              })
+              this.checkpointV4Manual(group, controller)
+            },
+            ...(resumedGate?.agentKind === kind ? { resumedGate } : {}),
+            skillHints: skillHintsByKind.get(kind) || [],
+            knowledgeBaseHints: prepared?.knowledgeBaseHintsByKind?.get(kind) || [],
+          },
+        })
+        if (controller.signal.aborted) return { kind, index, stopped: true }
+        const result = invocation?.result
+        if (!result?.pendingMessage || !result.collaboration) {
+          throw invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+        }
+        const resultBodyArtifact = this.v4ResultBodyRecord(
+          controller, slot, result.pendingMessage,
+        )
+        const outcomeRefs = {
+          artifactIds: result.outcomeRefs?.artifactIds || [],
+          evidenceIds: result.outcomeRefs?.evidenceIds || [],
+        }
+        slot.status = 'completed'
+        slot.commitStatus = 'pending'
+        slot.finishedAt = Date.now()
+        slot.resultBodyArtifactId = resultBodyArtifact.artifactId
+        const receipt = createCollaborationReceipt({
+          phase: 'proposal',
+          agentKind: kind,
+          slotId: slot.slotId,
+          operationId: slot.operationId,
+          status: result.collaboration.status || 'completed',
+          summary: result.collaboration.summary,
+          conclusion: '',
+          artifactIds: outcomeRefs.artifactIds,
+          evidenceIds: outcomeRefs.evidenceIds,
+          unresolved: result.collaboration.unresolved || [],
+          claims: result.collaboration.claims || [],
+          findings: result.collaboration.findings || [],
+          refs: result.collaboration.refs || [],
+          deliveryWatermark: 1,
+          snapshotHash: frozenSnapshotHash,
+        })
+        slot.resultHash = hashValue(receipt)
+        slot.receiptId = receipt.receiptId
+        slot.deliveryWatermark = receipt.deliveryWatermark
+        const resultBody = this.loadV4ResultBody(slot)
+        const blackboardEntry = this.v4BlackboardEntry(
+          controller, targetKinds, slot, receipt, resultBody, outcomeRefs,
+        )
+        slot.blackboardEntryId = blackboardEntry.entryId
+        slot.resultRefs = {
+          ...outcomeRefs,
+          workflowOutcomeRefs: [{ receipt, blackboardEntry }],
+        }
+        controller.orchestration = this.v4Orchestration({
+          controller,
+          workflow: 'manual',
+          template: 'concurrent-batch',
+          phase: 'proposal',
+          batchId,
+          snapshotRecord,
+          slots,
+          writerKind,
+          targetKinds,
+          collaboration: controller.orchestration.collaboration,
+          commitState: controller.orchestration.commitState,
+        })
+        this.checkpointV4Manual(group, controller)
+        return { kind, index, invocation }
+      } catch (error) {
+        const preserveQueuedForRecovery = controller.signal.aborted
+          && controller.stopReason === 'shutdown'
+          && !leaseAcquired
+          && slot.status === 'queued'
+        slot.status = preserveQueuedForRecovery
+          ? 'queued'
+          : (controller.signal.aborted ? 'stopped' : 'failed')
+        slot.commitStatus = preserveQueuedForRecovery
+          ? 'pending'
+          : (controller.signal.aborted ? 'partial' : 'failed')
+        slot.finishedAt = preserveQueuedForRecovery ? null : Date.now()
+        controller.orchestration = this.v4Orchestration({
+          controller,
+          workflow: 'manual',
+          template: 'concurrent-batch',
+          phase: controller.signal.aborted ? 'stopped' : 'proposal',
+          batchId,
+          snapshotRecord,
+          slots,
+          writerKind,
+          targetKinds,
+          collaboration: controller.orchestration.collaboration,
+          commitState: controller.orchestration.commitState,
+        })
+        this.checkpointV4Manual(group, controller)
+        return { kind, index, error }
+      }
+    }))
+
+    const failures = []
+    for (const item of pending.sort((left, right) => left.index - right.index)) {
+      const slot = slots[item.index]
+      if (!controller.signal.aborted && slot.status === 'completed') continue
+      const error = item.error || item.invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
+      failures.push({ ...item, error })
+      if (!controller.signal.aborted) this.recordAgentFailure(
+        group.id, item.kind, error, threadRootId,
+      )
+    }
+    controller.completedKinds = targetKinds.filter(kind => {
+      const status = slots.find(slot => slot.agentKind === kind)?.status
+      return ['completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted'].includes(status)
+    })
+    controller.failedKinds = slots
+      .filter(slot => ['failed', 'stopped', 'timeout', 'interrupted'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    controller.currentKind = ''
+    return { failures }
+  }
+
+  async runV4Manual({ group, targetKinds, userMessage, prepared, controller, threadRootId }) {
+    const writerKind = group.allowWrite === true
+      ? this.v4WriterKind(controller, targetKinds, 'manual')
+      : ''
+    const snapshot = v4Snapshot({
+      state: this.snapshot(),
+      group,
+      taskId: userMessage.id,
+      targetKinds,
+      message: userMessage,
+      skillHintsByKind: prepared.skillHintsByKind,
+      phase: 'proposal',
+      writerKind,
+    })
+    const frozenSnapshot = this.persistV4Snapshot(controller, snapshot, targetKinds)
+    const batchId = this.v4BatchId(controller, 'proposal')
+    const slots = targetKinds.map((kind, index) => ({
+      slotId: `slot-${index + 1}-${kind}`,
+      agentKind: kind,
+      phase: 'proposal',
+      status: 'pending',
+      attempt: 0,
+      operationId: `agent-operation-${createHash('sha256').update(`${controller.runId}:${batchId}:${kind}`).digest('hex')}`,
+      permission: writerKind && kind === writerKind ? 'workspace-write' : 'read-only',
+      resultRefs: { artifactIds: [], evidenceIds: [] },
+      deliveryWatermark: { version: 1, entryIds: [] },
+      resultBodyArtifactId: '',
+      commitId: `commit-${hashValue({ batchId, kind, index })}`,
+      messageId: `message-${hashValue({ batchId, kind, index })}`,
+      blackboardEntryId: '',
+    }))
+    controller.orchestration = this.v4Orchestration({
+      controller,
+      workflow: 'manual',
+      template: 'concurrent-batch',
+      phase: 'proposal',
+      batchId,
+      snapshotRecord: frozenSnapshot.record,
+      slots,
+      writerKind,
+      targetKinds,
+    })
+    this.checkpointV4Manual(group, controller)
+
+    const execution = await this.executeV4ManualSlots({
+      group,
+      targetKinds,
+      prepared,
+      controller,
+      threadRootId,
+      snapshot,
+      snapshotRecord: frozenSnapshot.record,
+      batchId,
+      slots,
+      writerKind,
+      activeKinds: targetKinds,
+      skillHintsByKind: prepared.skillHintsByKind,
+    })
+    const successfulKinds = slots
+      .filter(slot => ['completed', 'partial'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    if (!controller.signal.aborted) {
+      await this.commitV4ManualBarrier({
+        group,
+        controller,
+        targetKinds,
+        slots,
+        snapshotRecord: frozenSnapshot.record,
+        batchId,
+        writerKind,
+      })
+    }
+    return {
+      status: controller.signal.aborted
+        ? terminalRunStatusForReason(controller.stopReason)
+        : (successfulKinds.length === targetKinds.length ? 'completed' : 'partial'),
+      failures: execution.failures,
+    }
+  }
+
+  async resumeV4Manual({ group, durable, controller, onlyKind = '', resumedGate = null }) {
+    let orchestration
+    try {
+      orchestration = parseOrchestrationV4(controller.orchestration, {
+        targetKinds: durable.targetKinds,
+      })
+    } catch (error) {
+      controller.orchestration = structuredClone(durable.orchestration)
+      throw error
+    }
+    controller.orchestration = orchestration
+    if (orchestration?.version !== 4 || orchestration.template !== 'concurrent-batch'
+        || orchestration.workflow !== 'manual') {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const targetKinds = [...durable.targetKinds]
+    const slots = orchestration.slots.map(slot => ({ ...slot }))
+    const snapshot = this.loadV4Snapshot(orchestration, {
+      taskId: durable.taskId,
+      messageId: durable.threadRootId,
+      groupId: durable.groupId,
+      targetKinds,
+    })
+    const persistedSkills = v4SnapshotSkillHints(snapshot, targetKinds)
+    const hasPersistedSkills = targetKinds.some(kind => (
+      (persistedSkills.get(kind) || []).length > 0
+    ))
+    const skillHintsByKind = hasPersistedSkills
+      ? await restoreV4SnapshotSkills({
+          snapshot,
+          targetKinds,
+          validateSkillSelections: this.validateSkillSelections,
+          persisted: persistedSkills,
+        })
+      : persistedSkills
+    const writerKind = orchestration.commitState?.writerKind || ''
+    for (const slot of slots.filter(slot => ['completed', 'partial'].includes(slot.status))) {
+      this.loadV4ResultBody(slot)
+    }
+    let effectiveOnlyKind = onlyKind
+    let effectiveResumedGate = resumedGate
+    if (!effectiveOnlyKind) {
+      const unknownWriters = slots.filter(isV4ManualUnknownWriter)
+      if (unknownWriters.length > 1) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+      const unknownWriter = unknownWriters[0]
+      if (unknownWriter) {
+        if (!this.requestHumanGate) throw new Error('LOCAL_RUN_RETRY_GATE_INVALID')
+        const gate = await this.requestHumanGate(
+          v4ManualRecoveryGateInput(controller.runId, orchestration.batchId, unknownWriter),
+          {
+            signal: controller.signal,
+            preserveOnAbort: () => controller.stopReason === 'shutdown',
+            continuation: {
+              resumeKind: 'agent_slot',
+              agentRunId: unknownWriter.operationId,
+              agentKind: unknownWriter.agentKind,
+              round: orchestration.snapshot?.round || 0,
+            },
+          },
+        )
+        if (gate.status !== 'approved') {
+          if (this.completeHumanGateContinuation?.(
+            controller.runId, gate.gateId, 'cancelled',
+          ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          controller.stopReason = 'human_gate_rejected'
+          return { status: 'stopped', failures: [] }
+        }
+        if (gate.optionId !== 'retry-once') throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        unknownWriter.status = 'queued'
+        unknownWriter.finishedAt = null
+        unknownWriter.commitStatus = 'pending'
+        controller.orchestration = this.v4Orchestration({
+          controller,
+          workflow: 'manual',
+          template: 'concurrent-batch',
+          phase: 'proposal',
+          batchId: orchestration.batchId,
+          snapshotRecord: orchestration.snapshot,
+          slots,
+          writerKind,
+          targetKinds,
+          collaboration: orchestration.collaboration,
+          commitState: orchestration.commitState,
+        })
+        this.checkpointV4Manual(group, controller)
+        if (this.completeHumanGateContinuation?.(
+          controller.runId, gate.gateId, 'completed',
+        ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        effectiveOnlyKind = unknownWriter.agentKind
+        effectiveResumedGate = {
+          gateId: gate.gateId,
+          type: 'retry',
+          agentRunId: unknownWriter.operationId,
+          agentKind: unknownWriter.agentKind,
+          status: gate.status,
+          optionId: gate.optionId,
+          request: v4ManualRecoveryGateInput(
+            controller.runId, orchestration.batchId, unknownWriter,
+          ).request,
+          used: false,
+        }
+      }
+    }
+    const boundSlot = effectiveOnlyKind
+      ? slots.find(slot => slot.agentKind === effectiveOnlyKind)
+      : null
+    const approvedGateRetry = Boolean(
+      effectiveResumedGate
+      && boundSlot
+      && effectiveResumedGate.agentKind === effectiveOnlyKind
+      && effectiveResumedGate.status === 'approved',
+    )
+    const retryable = slot => (
+      slot.commitStatus !== 'committed'
+      && !['completed', 'partial'].includes(slot.status)
+      && (slot.permission === 'read-only'
+        || ['planned', 'prepared', 'queued', 'failed'].includes(slot.status)
+        || (approvedGateRetry && slot === boundSlot))
+    )
+    const candidates = slots.filter(slot => (
+      (!effectiveOnlyKind || slot.agentKind === effectiveOnlyKind) && retryable(slot)
+    )).map(slot => slot.agentKind)
+    if (effectiveOnlyKind && !candidates.includes(effectiveOnlyKind)
+        && !['completed', 'partial'].includes(boundSlot?.status)) {
+      throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    }
+    const execution = candidates.length
+      ? await this.executeV4ManualSlots({
+          group,
+          targetKinds,
+          prepared: null,
+          controller,
+          threadRootId: durable.threadRootId,
+          snapshot,
+          snapshotRecord: orchestration.snapshot,
+          batchId: orchestration.batchId,
+          slots,
+          writerKind,
+          activeKinds: candidates,
+          skillHintsByKind,
+          resumedGate: effectiveResumedGate,
+        })
+      : { failures: [] }
+    if (effectiveOnlyKind && !controller.signal.aborted) {
+      const peerCandidates = slots.filter(slot => (
+        slot.agentKind !== effectiveOnlyKind && retryable(slot)
+      )).map(slot => slot.agentKind)
+      if (peerCandidates.length) {
+        const peerExecution = await this.executeV4ManualSlots({
+          group,
+          targetKinds,
+          prepared: null,
+          controller,
+          threadRootId: durable.threadRootId,
+          snapshot,
+          snapshotRecord: orchestration.snapshot,
+          batchId: orchestration.batchId,
+          slots,
+          writerKind,
+          activeKinds: peerCandidates,
+          skillHintsByKind,
+        })
+        execution.failures.push(...peerExecution.failures)
+      }
+    }
+    if (!controller.signal.aborted) {
+      await this.commitV4ManualBarrier({
+        group,
+        controller,
+        targetKinds,
+        slots,
+        snapshotRecord: orchestration.snapshot,
+        batchId: orchestration.batchId,
+        writerKind,
+      })
+    }
+    const successfulKinds = slots
+      .filter(slot => ['completed', 'partial'].includes(slot.status))
+      .map(slot => slot.agentKind)
+    return {
+      status: controller.signal.aborted
+        ? terminalRunStatusForReason(controller.stopReason)
+        : (successfulKinds.length === targetKinds.length ? 'completed' : 'partial'),
+      failures: execution.failures,
+    }
+  }
+
   async send(input) {
     const group = this.getGroup(input.groupId)
     if (this.isGroupBusy(group.id)) throw new Error('LOCAL_GROUP_RUNNING')
     const {
       mode,
       targetKinds,
+      v4,
       unlimitedRounds,
       maxRounds,
       requestedThreadRootId,
@@ -380,6 +1344,7 @@ class LocalWorkspaceMessageSubmission {
       maxRounds,
       unlimitedRounds,
     )
+    reservation.v4 = v4
     try {
       if (regeneration) reservation.responseVersionRootId = regeneration.responseVersionRootId
       this.configureRunBudget(reservation, input.budget || {})
@@ -485,17 +1450,19 @@ class LocalWorkspaceMessageSubmission {
           if (regeneration) {
             this.resetAgentSession(group, targetKinds[0], true, userMessage.id)
           }
-          reservation.orchestration = {
-            version: 1,
-            workflow: 'manual',
-            currentKind: '',
-            pendingKinds: [...targetKinds],
-            activeKinds: [...targetKinds],
-            successfulKinds: [],
-            agreementKinds: [],
-            attachmentRecipients: [],
-            totalSuccesses: 0,
-            terminalFailureOccurred: false,
+          if (!v4) {
+            reservation.orchestration = {
+              version: 1,
+              workflow: 'manual',
+              currentKind: '',
+              pendingKinds: [...targetKinds],
+              activeKinds: [...targetKinds],
+              successfulKinds: [],
+              agreementKinds: [],
+              attachmentRecipients: [],
+              totalSuccesses: 0,
+              terminalFailureOccurred: false,
+            }
           }
           controller = this.beginRun(
             group.id, 'manual', targetKinds, threadRootId, reservation,
@@ -511,6 +1478,18 @@ class LocalWorkspaceMessageSubmission {
           throw error
         }
         if (controller.signal.aborted) throw new Error('LOCAL_AGENT_EXECUTION_STOPPED')
+        if (v4) {
+          const v4Result = await this.runV4Manual({
+            group,
+            targetKinds,
+            userMessage,
+            prepared,
+            controller,
+            threadRootId,
+          })
+          runStatus = v4Result.status
+          return this.snapshot()
+        }
         let activeKinds = [...targetKinds]
         const pendingKinds = [...targetKinds]
         const replacementInstructions = new Map()
@@ -723,6 +1702,7 @@ class LocalWorkspaceMessageSubmission {
     const reservation = this.reserveRun(
       group.id, 'auto', targetKinds, threadRootId, maxRounds, unlimitedRounds,
     )
+    reservation.v4 = input.protocol !== 'legacy' && this.v4Requested(input)
     try {
       this.configureRunBudget(reservation, input.budget || {})
       const contextPack = this.createContextPack({
@@ -747,4 +1727,8 @@ class LocalWorkspaceMessageSubmission {
   }
 }
 
-module.exports = { LocalWorkspaceMessageSubmission }
+module.exports = {
+  LocalWorkspaceMessageSubmission,
+  isV4ManualUnknownWriter,
+  v4ManualRecoveryGateInput,
+}

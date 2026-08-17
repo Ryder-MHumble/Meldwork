@@ -38,7 +38,7 @@ const TAR = Buffer.concat([Buffer.alloc(257), Buffer.from('ustar'), Buffer.alloc
 const SEVEN_ZIP = Buffer.from([0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c, 0x00])
 
 function fixture(t, createId) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-attachments-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-attachments-'))
   const rootPath = path.join(directory, 'attachments')
   let sequence = 0
   const store = new AttachmentStore({

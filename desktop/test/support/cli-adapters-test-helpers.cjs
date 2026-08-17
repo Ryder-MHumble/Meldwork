@@ -8,7 +8,7 @@ function executable(directory, name, source) {
   return filename
 }
 
-async function readWhenReady(filename, timeoutMs = 2000) {
+async function readWhenReady(filename, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {
@@ -22,7 +22,7 @@ async function readWhenReady(filename, timeoutMs = 2000) {
   throw new Error(`Timed out waiting for ${filename}`)
 }
 
-async function readJsonWhenReady(filename, timeoutMs = 2000) {
+async function readJsonWhenReady(filename, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     try {

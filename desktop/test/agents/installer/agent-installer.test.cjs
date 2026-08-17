@@ -74,7 +74,7 @@ function installer(overrides = {}) {
     platform: 'darwin',
     detectAgents: async () => [],
     findCommand: async command => (command === 'npm' ? '/usr/local/bin/npm' : ''),
-    downloadScript: async () => '/tmp/roundrelay-installer/install.sh',
+    downloadScript: async () => '/tmp/meldwork-installer/install.sh',
     removeDownload: async () => {},
     runProcess: async () => {},
     verifyNpmIntegrity: async () => {},
@@ -356,7 +356,7 @@ test('installer processes inherit the same enhanced Finder-safe search path', as
       PATH: '/usr/bin:/bin',
       PNPM_HOME: '/Users/Ryder/Library/pnpm',
       OPENAI_API_KEY: 'test-provider-key',
-      ROUNDRELAY_SESSION_SECRET: 'test-private-value',
+      MELDWORK_SESSION_SECRET: 'test-private-value',
       USER_PROMPT: 'test-private-prompt',
     },
     spawnFn: (command, args, options) => {
@@ -374,7 +374,7 @@ test('installer processes inherit the same enhanced Finder-safe search path', as
   assert.ok(childPath.includes('/Users/Ryder/Library/pnpm'))
   assert.ok(childPath.includes('/Users/Ryder/.local/share/fnm/aliases/default/bin'))
   assert.equal('OPENAI_API_KEY' in calls[0].options.env, false)
-  assert.equal('ROUNDRELAY_SESSION_SECRET' in calls[0].options.env, false)
+  assert.equal('MELDWORK_SESSION_SECRET' in calls[0].options.env, false)
   assert.equal('USER_PROMPT' in calls[0].options.env, false)
   assert.deepEqual(calls[0].options.stdio, ['ignore', 'ignore', 'ignore'])
   assert.equal(calls[0].options.shell, false)
@@ -390,7 +390,7 @@ test('npm integrity verification queries the exact release without a shell or se
     env: {
       PATH: '/usr/bin:/bin',
       OPENAI_API_KEY: 'test-provider-key',
-      ROUNDRELAY_SESSION_SECRET: 'test-private-value',
+      MELDWORK_SESSION_SECRET: 'test-private-value',
       USER_PROMPT: 'test-private-prompt',
     },
     execFileFn: async (command, args, options) => {
@@ -407,7 +407,7 @@ test('npm integrity verification queries the exact release without a shell or se
   ])
   assert.equal(calls[0].options.shell, false)
   assert.equal('OPENAI_API_KEY' in calls[0].options.env, false)
-  assert.equal('ROUNDRELAY_SESSION_SECRET' in calls[0].options.env, false)
+  assert.equal('MELDWORK_SESSION_SECRET' in calls[0].options.env, false)
   assert.equal('USER_PROMPT' in calls[0].options.env, false)
 })
 
@@ -423,7 +423,7 @@ test('npm integrity verification fails closed on registry mismatch or malformed 
 })
 
 test('script integrity verification hashes only bounded regular files', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-installer-integrity-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-installer-integrity-'))
   const filename = path.join(directory, 'install.sh')
   const source = '#!/bin/bash\necho verified\n'
   fs.writeFileSync(filename, source)
@@ -808,11 +808,11 @@ test('script installation verifies the immutable download before process launch'
     downloadScript: async (...args) => {
       order.push('download')
       downloads.push(args)
-      return '/tmp/roundrelay-installer/install.sh'
+      return '/tmp/meldwork-installer/install.sh'
     },
     verifyScriptIntegrity: async (filename, selectedRecipe, options) => {
       order.push('integrity')
-      assert.equal(filename, '/tmp/roundrelay-installer/install.sh')
+      assert.equal(filename, '/tmp/meldwork-installer/install.sh')
       assert.deepEqual(selectedRecipe, recipe)
       assert.equal(options.signal.aborted, false)
     },
@@ -826,7 +826,7 @@ test('script installation verifies the immutable download before process launch'
   assert.deepEqual(calls[0].slice(0, 2), [
     recipe.interpreter,
     recipe.args.map(value => value === '$SCRIPT'
-      ? '/tmp/roundrelay-installer/install.sh'
+      ? '/tmp/meldwork-installer/install.sh'
       : value),
   ])
   assert.deepEqual(order, ['download', 'integrity', 'install'])
@@ -837,7 +837,7 @@ test('script integrity failure cleans up the download without launching it', asy
   const service = installer({
     downloadScript: async () => {
       order.push('download')
-      return '/tmp/roundrelay-installer/install.sh'
+      return '/tmp/meldwork-installer/install.sh'
     },
     verifyScriptIntegrity: async () => {
       order.push('integrity')
@@ -1010,7 +1010,7 @@ test('cancels only the active task and never exposes commands or output in state
 test('process cancellation escalates from SIGTERM to SIGKILL', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-installer-abort-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-installer-abort-'))
   const readyFile = path.join(directory, 'ready')
   const termFile = path.join(directory, 'term')
   const script = path.join(directory, 'ignore-term.sh')

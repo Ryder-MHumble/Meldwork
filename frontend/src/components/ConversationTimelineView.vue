@@ -18,7 +18,8 @@
     {{ directTraceEventLiveStatus }}
   </p>
 
-  <div ref="messageScroller" class="message-scroll" @scroll="handleMessageScroll">
+  <div class="conversation-timeline">
+    <div ref="messageScroller" class="message-scroll" @scroll="handleMessageScroll">
     <section v-if="conversationEmptyVisible" class="conversation-empty">
       <img class="conversation-empty-wordmark" :src="productWordmark" alt="Meldwork" />
       <Transition name="empty-showcase" mode="out-in">
@@ -186,19 +187,6 @@
                   >
                     <CheckmarkCircleOutline v-if="messageDeleteArmedId === message.id" />
                     <TrashOutline v-else />
-                  </button>
-                  <button
-                    v-if="message.role === 'agent' && message.content"
-                    class="message-copy-button"
-                    type="button"
-                    :data-tooltip="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                    :aria-label="isMessageCopied(message.id) ? t('conversation.copied') : t('conversation.copyMessage')"
-                    @click.stop="copyMessageContent(message, $event, true)"
-                    @keydown.enter.prevent="copyMessageContent(message, $event, true)"
-                    @keydown.space.prevent="copyMessageContent(message, $event, true)"
-                  >
-                    <CheckmarkCircleOutline v-if="isMessageCopied(message.id)" />
-                    <CopyOutline v-else />
                   </button>
                   <button
                     v-if="message.role === 'agent'"
@@ -448,34 +436,36 @@
                   </button>
                 </div>
               </div>
-              <div
-                v-if="message.role === 'agent' && responseVersionInfo(message).total > 1"
-                class="response-version-controls"
-                :aria-label="t('conversation.responseVersions')"
-              >
-                <button
-                  type="button"
-                  :disabled="!responseVersionInfo(message).hasPrevious"
-                  :title="t('conversation.previousResponseVersion')"
-                  :aria-label="t('conversation.previousResponseVersion')"
-                  @click.stop="selectResponseVersion(message, -1)"
-                >
-                  <ChevronBackOutline />
-                </button>
-                <span aria-live="polite">
-                  {{ t('conversation.responseVersion', responseVersionInfo(message)) }}
-                </span>
-                <button
-                  type="button"
-                  :disabled="!responseVersionInfo(message).hasNext"
-                  :title="t('conversation.nextResponseVersion')"
-                  :aria-label="t('conversation.nextResponseVersion')"
-                  @click.stop="selectResponseVersion(message, 1)"
-                >
-                  <ChevronForwardOutline />
-                </button>
-              </div>
               <div v-if="message.role === 'agent'" class="message-footer-actions">
+                <div
+                  v-if="responseVersionInfo(message).total > 1"
+                  class="response-version-controls"
+                  :aria-label="t('conversation.responseVersions')"
+                >
+                  <button
+                    type="button"
+                    :disabled="!responseVersionInfo(message).hasPrevious"
+                    :data-tooltip="t('conversation.previousResponseVersion')"
+                    :title="t('conversation.previousResponseVersion')"
+                    :aria-label="t('conversation.previousResponseVersion')"
+                    @click.stop="selectResponseVersion(message, -1)"
+                  >
+                    <ChevronBackOutline />
+                  </button>
+                  <span aria-live="polite">
+                    {{ t('conversation.responseVersion', responseVersionInfo(message)) }}
+                  </span>
+                  <button
+                    type="button"
+                    :disabled="!responseVersionInfo(message).hasNext"
+                    :data-tooltip="t('conversation.nextResponseVersion')"
+                    :title="t('conversation.nextResponseVersion')"
+                    :aria-label="t('conversation.nextResponseVersion')"
+                    @click.stop="selectResponseVersion(message, 1)"
+                  >
+                    <ChevronForwardOutline />
+                  </button>
+                </div>
                 <button
                   v-if="!message.provisional"
                   class="message-regenerate-button"
@@ -652,6 +642,22 @@
                   {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}
                 </span>
               </div>
+              <div
+                v-if="isDisplayedCoordinatedRun && displayedRunPhaseLabel"
+                class="run-phase-feedback"
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+              >
+                <span class="run-phase-feedback-label">{{ t('run.phaseFeedback') }}</span>
+                <strong>{{ displayedRunPhaseLabel }}</strong>
+                <small v-if="displayedRunPhaseSlots.length">
+                  {{ t('run.phaseSlots', {
+                    completed: displayedRunPhaseSlots.filter(slot => orchestrationSlotCompleted(slot.status)).length,
+                    total: displayedRunPhaseSlots.length,
+                  }) }}
+                </small>
+              </div>
             </div>
             <button
               v-if="activeGroup.conversationType !== 'direct' && displayedRunAgentRuns.length"
@@ -713,6 +719,19 @@
         </section>
       </div>
     </div>
+    </div>
+    <Transition name="conversation-jump-to-latest">
+      <button
+        v-if="showScrollToLatest"
+        class="conversation-jump-to-latest"
+        type="button"
+        :data-tooltip="t('conversation.jumpToLatest')"
+        :aria-label="t('conversation.jumpToLatest')"
+        @click="scrollToLatest({ force: true })"
+      >
+        <ArrowDownOutline aria-hidden="true" />
+      </button>
+    </Transition>
   </div>
   <AttachmentMediaPreview
     v-if="mediaPreviewAttachment"
@@ -727,6 +746,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
+  ArrowDownOutline,
   AttachOutline,
   ArchiveOutline,
   CheckmarkCircleOutline,
@@ -750,6 +770,7 @@ import {
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
 import { skillKey } from '../composables/useComposerContext.js'
+import { orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { locale } from '../i18n.js'
 import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
 import AttachmentMediaPreview from './AttachmentMediaPreview.vue'
@@ -785,6 +806,8 @@ const {
   displayedRunAgentToneForKind,
   displayedRunAgentTraceLabel,
   displayedRunLabel,
+  displayedRunPhaseLabel,
+  displayedRunPhaseSlots,
   displayedRunTargetKinds,
   displayedRunTopicRootId,
   emptyShowcaseIndex,
@@ -834,7 +857,9 @@ const {
   runRoundProgress,
   runStatusLabel,
   runStatusTone,
+  scrollToLatest,
   selectResponseVersion,
+  showScrollToLatest,
   syncDirectTraceDisclosure,
   t,
   terminalSystemConclusion,

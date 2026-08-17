@@ -1,5 +1,5 @@
 {"type":"init","session_id":"gemini-fixture-session"}
 {"type":"message","role":"assistant","content":"Gemini fixture reply","delta":true}
-{"type":"tool_use","tool_name":"google_search","tool_id":"gemini-tool-search-1","parameters":{"query":"RoundRelay"}}
+{"type":"tool_use","tool_name":"google_search","tool_id":"gemini-tool-search-1","parameters":{"query":"Meldwork"}}
 {"type":"tool_result","tool_id":"gemini-tool-search-1","status":"success","output":"fixture-private-token /Users/private/result"}
 {"type":"result","status":"success"}

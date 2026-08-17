@@ -40,7 +40,7 @@ export function retainedTraceEvents(events) {
 
 export function runStatusTone(status) {
   const normalized = String(status || '').trim().toLowerCase()
-  if (['completed', 'succeeded'].includes(normalized)) return 'completed'
+  if (['completed', 'succeeded', 'settled', 'committed'].includes(normalized)) return 'completed'
   if (['failed', 'timeout', 'budget-exhausted', 'circuit-breaker'].includes(normalized)) return 'failed'
   if (['partial', 'round-limit', 'stopped', 'cancelled', 'interrupted'].includes(normalized)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(normalized)) return 'running'

@@ -4,7 +4,7 @@ import { flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AGENTS } from '../../catalog.js'
 import RunTracePanel from '../../components/RunTracePanel.vue'
-import { setLocale } from '../../i18n.js'
+import { setLocale, t } from '../../i18n.js'
 import { deferred, imageAttachment, mountApp } from './app-test-harness.js'
 import { readStylesSource } from './style-test-helpers.js'
 
@@ -21,8 +21,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -33,7 +33,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   vi.unstubAllGlobals()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -44,7 +44,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
   it('creates one live non-Codex tool row from trusted scope without a durable Run', async () => {
     const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
       state.groups.push({
@@ -53,7 +53,7 @@ describe('RoundRelay workbench', () => {
         name: 'Live Hermes trace',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -117,7 +117,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -185,7 +185,7 @@ describe('RoundRelay workbench', () => {
         name: 'Hermes trace',
         topic: '',
         agentKinds: ['hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: true,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:02:00Z',
@@ -226,7 +226,7 @@ describe('RoundRelay workbench', () => {
         name: 'Runtime controls',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-08-04T08:00:00.000Z',
         updatedAt: '2026-08-04T08:00:00.000Z',
@@ -341,7 +341,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace boundaries',
         topic: '',
         agentKinds: ['codex', 'hermes', 'claude', 'openclaw'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:06:00Z',
@@ -508,7 +508,7 @@ describe('RoundRelay workbench', () => {
         name: 'Retained empty trace',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:02:00Z',
@@ -678,7 +678,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace lifecycle',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -734,7 +734,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace modal history',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:02:00Z',
@@ -778,7 +778,7 @@ describe('RoundRelay workbench', () => {
     expect(wrapper.find('.run-trace-panel').exists()).toBe(false)
     expect(wrapper.find('.modal').exists()).toBe(true)
     expect(historyReplace).toHaveBeenCalledWith(
-      { roundrelayOverlay: true },
+      { meldworkOverlay: true },
       '',
       window.location.href,
     )
@@ -799,7 +799,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace focus',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -838,7 +838,7 @@ describe('RoundRelay workbench', () => {
         name: 'Trace title focus',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -879,7 +879,7 @@ describe('RoundRelay workbench', () => {
         name: 'Durable trace',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1001,7 +1001,7 @@ describe('RoundRelay workbench', () => {
         name: 'Timeout trace',
         topic: '',
         agentKinds: ['codex', 'hermes', 'workbuddy'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:04:00Z',
@@ -1199,6 +1199,225 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('keeps main V4 phase feedback aligned with Trace in both locales', async () => {
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-v4-phase-feedback',
+        conversationType: 'group',
+        name: 'V4 phase feedback',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.runningGroupIds = ['group-v4-phase-feedback']
+      state.runs = [{
+        runId: 'run-v4-phase-feedback',
+        groupId: 'group-v4-phase-feedback',
+        mode: 'auto',
+        phase: 'running',
+        targetKinds: ['codex', 'hermes'],
+        completedKinds: [],
+        failedKinds: [],
+        currentKind: '',
+        agentRuns: [],
+        orchestration: {
+          version: 4,
+          template: 'discussion',
+          phase: 'coordination',
+          currentKinds: ['codex', 'hermes'],
+          slots: [
+            { agentKind: 'codex', phase: 'coordination', status: 'settled' },
+            { agentKind: 'hermes', phase: 'coordination', status: 'committed' },
+          ],
+        },
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('Current phase')
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('Responsibility alignment')
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('2/2 Agents')
+
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('当前阶段')
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('职责协商')
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('2/2 个 Agent')
+
+    state.runs[0].orchestration = {
+      ...state.runs[0].orchestration,
+      phase: 'work',
+      slots: state.runs[0].orchestration.slots.map(slot => ({ ...slot, phase: 'work' })),
+    }
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('协作执行')
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('2/2 个 Agent')
+
+    setLocale('en')
+    await flushPromises()
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('Collaborative execution')
+    expect(wrapper.get('.run-phase-feedback').text()).toContain('2/2 Agents')
+    wrapper.unmount()
+  })
+
+  it('renders V4 phase feedback with completed slot counts', async () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-v4-phase',
+          agentRunId: 'run-v4-phase:1:codex',
+          agentKind: 'codex',
+          round: 1,
+          status: 'running',
+          events: [],
+          orchestration: {
+            version: 4,
+            template: 'discussion',
+            phase: 'proposal',
+            currentKinds: ['codex', 'hermes'],
+            slots: [
+              { agentKind: 'codex', phase: 'proposal', status: 'completed', role: 'integrator', attempt: 1 },
+              { agentKind: 'hermes', phase: 'proposal', status: 'running', role: 'verifier', attempt: 1 },
+            ],
+          },
+        }],
+        selectedAgentRunId: 'run-v4-phase:1:codex',
+      },
+    })
+
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('Current phase')
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('Parallel proposals')
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('1/2 Agents')
+    expect(wrapper.get('.trace-phase-slot-list').text()).toContain('Codex')
+    expect(wrapper.get('.trace-phase-slot-list').text()).toContain('Hermes')
+    expect(wrapper.findAll('.trace-phase-slot-role').map(role => role.text()))
+      .toEqual(['Integrator', 'Verifier'])
+
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('当前阶段')
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('并行提案')
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('1/2 个 Agent')
+    expect(wrapper.findAll('.trace-phase-slot-role').map(role => role.text()))
+      .toEqual(['整合者', '复核者'])
+    wrapper.unmount()
+  })
+
+  it('omits unrecognized Trace role values instead of exposing internal identifiers', () => {
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [{
+          runId: 'run-v4-private-role',
+          agentRunId: 'run-v4-private-role:1:codex',
+          agentKind: 'codex',
+          round: 1,
+          status: 'running',
+          events: [],
+          orchestration: {
+            version: 4,
+            template: 'discussion',
+            phase: 'work',
+            currentKinds: ['codex'],
+            slots: [{
+              agentKind: 'codex',
+              phase: 'work',
+              status: 'running',
+              role: 'writer:operation-private-123',
+            }],
+          },
+        }],
+        selectedAgentRunId: 'run-v4-private-role:1:codex',
+      },
+    })
+
+    expect(wrapper.find('.trace-phase-slot-role').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('operation-private-123')
+    wrapper.unmount()
+  })
+
+  it('provides every allowed collaboration role through the shared i18n catalog', () => {
+    const roles = [
+      'primary', 'reviewer', 'arbiter', 'worker', 'integrator',
+      'synthesizer', 'verifier', 'writer', 'participant',
+    ]
+
+    setLocale('en')
+    expect(roles.map(role => t(`run.role.${role}`))).toEqual([
+      'Primary', 'Reviewer', 'Arbiter', 'Worker', 'Integrator',
+      'Synthesizer', 'Verifier', 'Writer', 'Participant',
+    ])
+
+    setLocale('zh')
+    expect(roles.map(role => t(`run.role.${role}`))).toEqual([
+      '主提案者', '审查者', '仲裁者', '执行者', '整合者',
+      '合成者', '复核者', '写入者', '参与者',
+    ])
+  })
+
+  it('keeps Trace Agent roles and phase status readable in a narrow drawer', () => {
+    const source = readFileSync(resolve(process.cwd(), 'src/components/RunTracePanel.vue'), 'utf8')
+
+    expect(source).toMatch(/\.trace-phase-slot-list li\s*\{[^}]*flex-wrap:\s*wrap;/s)
+    expect(source).toMatch(/\.trace-phase-slot-list li > span\s*\{[^}]*min-width:\s*0;[^}]*flex:[^;]+;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s)
+    expect(source).toMatch(/\.trace-phase-slot-list li small\s*\{[^}]*min-width:\s*0;[^}]*flex:[^;]+;[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/s)
+  })
+
+  it('renders coordination and work V4 phases with localized Trace labels', async () => {
+    const item = {
+      runId: 'run-v4-coordination',
+      agentRunId: 'run-v4-coordination:1:codex',
+      agentKind: 'codex',
+      round: 1,
+      status: 'running',
+      events: [],
+      orchestration: {
+        version: 4,
+        template: 'discussion',
+        phase: 'coordination',
+        currentKinds: ['codex'],
+        slots: [{ agentKind: 'codex', phase: 'coordination', status: 'running' }],
+      },
+    }
+    const wrapper = mount(RunTracePanel, {
+      props: {
+        open: true,
+        items: [item],
+        selectedAgentRunId: item.agentRunId,
+      },
+    })
+
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('Responsibility alignment')
+
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('职责协商')
+
+    await wrapper.setProps({
+      items: [{
+        ...item,
+        orchestration: {
+          ...item.orchestration,
+          phase: 'work',
+          slots: [{ agentKind: 'codex', phase: 'work', status: 'running' }],
+        },
+      }],
+    })
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('协作执行')
+
+    setLocale('en')
+    await flushPromises()
+    expect(wrapper.get('.trace-phase-feedback').text()).toContain('Collaborative execution')
+    wrapper.unmount()
+  })
+
   it('labels historical trace events whose detailed input and result were not captured', async () => {
     const wrapper = mount(RunTracePanel, {
       props: {
@@ -1311,7 +1530,7 @@ describe('RoundRelay workbench', () => {
         name: 'Scroll protection',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1356,6 +1575,12 @@ describe('RoundRelay workbench', () => {
 
     expect(wrapper.get('.message-row.agent[data-agent-kind="codex"]').text()).toContain('new output')
     expect(scrollTop).toBe(400)
+    expect(wrapper.get('.conversation-jump-to-latest').attributes('aria-label')).toBe('Jump to latest message')
+
+    await wrapper.get('.conversation-jump-to-latest').trigger('click')
+    await flushPromises()
+    expect(scrollTop).toBe(1200)
+    expect(wrapper.find('.conversation-jump-to-latest').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -1367,7 +1592,7 @@ describe('RoundRelay workbench', () => {
       name,
       topic: '',
       agentKinds: [kind],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt,
@@ -1409,7 +1634,7 @@ describe('RoundRelay workbench', () => {
           name: 'Codex review',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:02:00Z',
@@ -1420,7 +1645,7 @@ describe('RoundRelay workbench', () => {
           name: 'Group review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:03:00Z',
@@ -1530,7 +1755,7 @@ describe('RoundRelay workbench', () => {
       name: 'Hermes review',
       topic: '',
       agentKinds: ['hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:01:00Z',
@@ -1556,7 +1781,7 @@ describe('RoundRelay workbench', () => {
       name: 'Hermes review',
       topic: '',
       agentKinds: ['hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:01:00Z',
@@ -1581,7 +1806,7 @@ describe('RoundRelay workbench', () => {
       name: 'Pending runs',
       topic: '',
       agentKinds: ['codex', 'hermes'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:02:00Z',

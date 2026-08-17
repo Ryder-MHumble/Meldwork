@@ -21,8 +21,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -32,7 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -43,7 +43,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
   it('groups direct sessions under visible Agents and keeps local session actions explicit', async () => {
     const existing = {
       id: 'direct-codex-1',
@@ -52,7 +52,7 @@ describe('RoundRelay workbench', () => {
       name: 'Earlier Codex conversation with a longer sidebar title',
       topic: '',
       agentKinds: ['codex'],
-      workdir: '/tmp/roundrelay-workspace',
+      workdir: '/tmp/meldwork-workspace',
       allowWrite: false,
       createdAt: '2026-07-29T08:00:00Z',
       updatedAt: '2026-07-29T08:00:00Z',
@@ -166,7 +166,7 @@ describe('RoundRelay workbench', () => {
           name: `Codex ${index + 1}`,
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: `2026-07-29T08:${String(index).padStart(2, '0')}:00Z`,
           updatedAt: `2026-07-29T09:${String(59 - index).padStart(2, '0')}:00Z`,
@@ -179,7 +179,7 @@ describe('RoundRelay workbench', () => {
           name: `Group ${index + 1}`,
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: `2026-07-29T10:${String(index).padStart(2, '0')}:00Z`,
           updatedAt: `2026-07-29T11:${String(59 - index).padStart(2, '0')}:00Z`,
@@ -228,7 +228,7 @@ describe('RoundRelay workbench', () => {
         name: 'Market research',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -270,7 +270,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',

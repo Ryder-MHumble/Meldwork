@@ -88,12 +88,12 @@ input.on('line', (line) => {
     send({
       jsonrpc: '2.0', id: 77, method: 'session/request_permission',
       params: {
-        _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+        _meta: { providerSecret: process.env.MELDWORK_TEST_SECRET },
         sessionId: 'permission-session',
         toolCall: {
-          _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+          _meta: { providerSecret: process.env.MELDWORK_TEST_SECRET },
           toolCallId: 'tool-1',
-          title: 'write /Users/private/workspace token=' + process.env.ROUNDRELAY_TEST_SECRET
+          title: 'write /Users/private/workspace token=' + process.env.MELDWORK_TEST_SECRET
             + ' api_key=sk-testpermissionsecret123456789',
           kind: 'edit',
           status: 'pending',
@@ -104,11 +104,11 @@ input.on('line', (line) => {
         },
         options: [
           {
-            _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+            _meta: { providerSecret: process.env.MELDWORK_TEST_SECRET },
             optionId: 'allow-once', name: 'Allow once', kind: 'allow_once',
           },
           {
-            _meta: { providerSecret: process.env.ROUNDRELAY_TEST_SECRET },
+            _meta: { providerSecret: process.env.MELDWORK_TEST_SECRET },
             optionId: 'reject-once', name: 'Reject once', kind: 'reject_once',
           },
         ],
@@ -212,7 +212,7 @@ test('Kimi stream JSON output returns assistant text and the native session id',
 })
 
 test('Kimi ACP plan mode creates and resumes sessions while reporting incomplete turns', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-'))
   const workdir = fs.realpathSync(directory)
   const lifecycleFile = path.join(directory, 'lifecycle.log')
   const promptDeliveryFile = path.join(directory, 'prompt-delivery.log')
@@ -224,7 +224,7 @@ if (process.argv.includes('--prompt')) {
 }
 const readline = require('node:readline')
 const input = readline.createInterface({ input: process.stdin })
-const record = value => fs.appendFileSync(process.env.ROUNDRELAY_TEST_LIFECYCLE_FILE, value + '\\n')
+const record = value => fs.appendFileSync(process.env.MELDWORK_TEST_LIFECYCLE_FILE, value + '\\n')
 process.on('SIGTERM', () => {
   record('sigterm')
   process.exit(0)
@@ -241,7 +241,7 @@ input.on('line', (line) => {
     send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
   } else if (message.method === 'session/new') {
     setup = 'new'
-    sessionId = process.env.ROUNDRELAY_TEST_SECRET || 'kimi-acp-session'
+    sessionId = process.env.MELDWORK_TEST_SECRET || 'kimi-acp-session'
     send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
   } else if (message.method === 'session/resume') {
     setup = 'resume'
@@ -254,7 +254,7 @@ input.on('line', (line) => {
   } else if (message.method === 'session/prompt') {
     if (message.params.sessionId !== sessionId) process.exit(4)
     fs.appendFileSync(
-      process.env.ROUNDRELAY_TEST_PROMPT_DELIVERY_FILE,
+      process.env.MELDWORK_TEST_PROMPT_DELIVERY_FILE,
       line + '\\n',
     )
     promptRequest = message
@@ -322,8 +322,8 @@ input.on('line', (line) => {
 `)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const env = {
-    ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile,
-    ROUNDRELAY_TEST_PROMPT_DELIVERY_FILE: promptDeliveryFile,
+    MELDWORK_TEST_LIFECYCLE_FILE: lifecycleFile,
+    MELDWORK_TEST_PROMPT_DELIVERY_FILE: promptDeliveryFile,
   }
   const createdSessionRefs = []
   const createdEvents = []
@@ -432,7 +432,7 @@ input.on('line', (line) => {
     'private session prompt',
     workdir,
     {
-      env: { ...env, ROUNDRELAY_TEST_SECRET: privateSessionId },
+      env: { ...env, MELDWORK_TEST_SECRET: privateSessionId },
       onSessionRef: sessionRef => privateSessionRefs.push(sessionRef),
     },
   )
@@ -446,7 +446,7 @@ input.on('line', (line) => {
 })
 
 test('ACP outbound callback failure prevents session prompt delivery', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-acp-outbound-blocked-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-outbound-blocked-'))
   const deliveryFile = path.join(directory, 'delivered.txt')
   const cli = executable(directory, 'kimi-acp-outbound-blocked.cjs', `
 const fs = require('node:fs')
@@ -462,7 +462,7 @@ input.on('line', (line) => {
   } else if (message.method === 'session/set_mode') {
     send({ jsonrpc: '2.0', id: message.id, result: {} })
   } else if (message.method === 'session/prompt') {
-    fs.writeFileSync(process.env.ROUNDRELAY_TEST_DELIVERY_FILE, 'delivered')
+    fs.writeFileSync(process.env.MELDWORK_TEST_DELIVERY_FILE, 'delivered')
     send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
   }
 })
@@ -476,7 +476,7 @@ input.on('line', (line) => {
       'must not be delivered',
       directory,
       {
-        env: { ROUNDRELAY_TEST_DELIVERY_FILE: deliveryFile },
+        env: { MELDWORK_TEST_DELIVERY_FILE: deliveryFile },
         onOutboundPayload: async () => { throw callbackError },
       },
     ),
@@ -486,12 +486,12 @@ input.on('line', (line) => {
 })
 
 test('ACP permission callback uses sanitized requests and fail-closed decisions', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-acp-permission-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-permission-'))
   const cli = permissionRequestExecutable(directory)
   const secret = 'permission-provider-secret'
   const agent = { kind: 'kimi', executable: cli, name: 'Kimi' }
   const run = onPermissionRequest => runAgent(agent, 'request permission', directory, {
-    env: { ROUNDRELAY_TEST_SECRET: secret },
+    env: { MELDWORK_TEST_SECRET: secret },
     onPermissionRequest,
   })
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -551,7 +551,7 @@ test('ACP permission callback uses sanitized requests and fail-closed decisions'
     const requested = new Promise(resolve => { requestedResolve = resolve })
     const outcome = runAgent(agent, 'wait for permission', directory, {
       signal: controller.signal,
-      env: { ROUNDRELAY_TEST_SECRET: secret },
+      env: { MELDWORK_TEST_SECRET: secret },
       onPermissionRequest: async (_request, context) => {
         assert.equal(context.signal, controller.signal)
         requestedResolve()
@@ -566,7 +566,7 @@ test('ACP permission callback uses sanitized requests and fail-closed decisions'
 })
 
 test('Kimi ACP preserves new sessions across failures and keeps diagnostics private', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-session-ref-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-session-ref-'))
   const promptFailureCli = executable(directory, 'kimi-acp-prompt-failure.cjs', `
 const readline = require('node:readline')
 const input = readline.createInterface({ input: process.stdin })
@@ -584,7 +584,7 @@ input.on('line', (line) => {
       jsonrpc: '2.0', id: message.id,
       error: {
         code: -32000,
-        message: 'prompt failed in /private/roundrelay-agent with ' + process.env.ROUNDRELAY_TEST_SECRET,
+        message: 'prompt failed in /private/meldwork-agent with ' + process.env.MELDWORK_TEST_SECRET,
       },
     })
   }
@@ -618,13 +618,13 @@ input.on('line', (line) => {
       'fail prompt',
       directory,
       {
-        env: { ROUNDRELAY_TEST_SECRET: secret },
+        env: { MELDWORK_TEST_SECRET: secret },
         onSessionRef: sessionRef => promptFailureSessionRefs.push(sessionRef),
       },
     ),
     (error) => {
       assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
-      assert.match(error.diagnostic, /prompt failed in \/private\/roundrelay-agent with \[redacted\]/)
+      assert.match(error.diagnostic, /prompt failed in \/private\/meldwork-agent with \[redacted\]/)
       assert.equal(error.diagnostic.includes(secret), false)
       assert.equal(Object.prototype.propertyIsEnumerable.call(error, 'diagnostic'), false)
       assert.doesNotMatch(error.message, /private|redacted|secret/i)
@@ -651,7 +651,7 @@ input.on('line', (line) => {
 })
 
 test('Kimi ACP classifies an explicitly missing resumed session', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-missing-session-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-missing-session-'))
   const cli = executable(directory, 'kimi-acp-missing-session.cjs', `
 const readline = require('node:readline')
 const input = readline.createInterface({ input: process.stdin })
@@ -687,7 +687,7 @@ input.on('line', (line) => {
 })
 
 test('Kimi ACP rejects unsafe protocol input without logging secret-bearing messages', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-invalid-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-invalid-'))
   const secret = 'private-kimi-transport-secret'
   const cli = executable(directory, 'kimi-acp-invalid.cjs', `
 const readline = require('node:readline')
@@ -702,12 +702,12 @@ input.on('line', (line) => {
   } else if (message.method === 'session/set_mode') {
     send({ jsonrpc: '2.0', id: message.id, result: {} })
   } else if (message.method === 'session/prompt') {
-    if (process.env.ROUNDRELAY_TEST_CASE === 'malformed') {
-      process.stdout.write('{"secret":"' + process.env.ROUNDRELAY_TEST_SECRET + '"\\n')
+    if (process.env.MELDWORK_TEST_CASE === 'malformed') {
+      process.stdout.write('{"secret":"' + process.env.MELDWORK_TEST_SECRET + '"\\n')
     } else {
       send({
         jsonrpc: '2.0', method: 'unsupported/client_method',
-        params: { secret: process.env.ROUNDRELAY_TEST_SECRET },
+        params: { secret: process.env.MELDWORK_TEST_SECRET },
       })
     }
   }
@@ -725,7 +725,7 @@ input.on('line', (line) => {
         { kind: 'kimi', executable: cli, name: 'Kimi' },
         'validate transport',
         directory,
-        { env: { ROUNDRELAY_TEST_CASE: testCase, ROUNDRELAY_TEST_SECRET: secret } },
+        { env: { MELDWORK_TEST_CASE: testCase, MELDWORK_TEST_SECRET: secret } },
       ),
       (error) => {
         assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
@@ -740,7 +740,7 @@ input.on('line', (line) => {
 })
 
 test('Kimi ACP bounds unframed input, cumulative reply text, and total protocol traffic', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-limits-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-limits-'))
   const cli = executable(directory, 'kimi-acp-limits.cjs', `
 const readline = require('node:readline')
 const input = readline.createInterface({ input: process.stdin })
@@ -754,7 +754,7 @@ input.on('line', (line) => {
   } else if (message.method === 'session/set_mode') {
     send({ jsonrpc: '2.0', id: message.id, result: {} })
   } else if (message.method === 'session/prompt') {
-    const testCase = process.env.ROUNDRELAY_TEST_CASE
+    const testCase = process.env.MELDWORK_TEST_CASE
     if (testCase === 'line') {
       process.stdout.write('x'.repeat(1024 * 1024 + 1))
       return
@@ -787,7 +787,7 @@ input.on('line', (line) => {
         { kind: 'kimi', executable: cli, name: 'Kimi' },
         'validate bounds',
         directory,
-        { env: { ROUNDRELAY_TEST_CASE: testCase } },
+        { env: { MELDWORK_TEST_CASE: testCase } },
       ),
       (error) => {
         assert.equal(error.message, 'LOCAL_AGENT_PROCESS_FAILED')
@@ -801,7 +801,7 @@ input.on('line', (line) => {
 test('Kimi ACP cancellation notifies the session and terminates the child process', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-kimi-acp-abort-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-abort-'))
   const readyFile = path.join(directory, 'ready')
   const cancelFile = path.join(directory, 'cancel.json')
   const lifecycleFile = path.join(directory, 'lifecycle.log')
@@ -810,7 +810,7 @@ const fs = require('node:fs')
 const readline = require('node:readline')
 const input = readline.createInterface({ input: process.stdin })
 const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
-const record = value => fs.appendFileSync(process.env.ROUNDRELAY_TEST_LIFECYCLE_FILE, value + '\\n')
+const record = value => fs.appendFileSync(process.env.MELDWORK_TEST_LIFECYCLE_FILE, value + '\\n')
 process.on('SIGTERM', () => record('sigterm'))
 input.on('close', () => record('stdin-close'))
 input.on('line', (line) => {
@@ -822,10 +822,10 @@ input.on('line', (line) => {
   } else if (message.method === 'session/set_mode') {
     send({ jsonrpc: '2.0', id: message.id, result: {} })
   } else if (message.method === 'session/prompt') {
-    fs.writeFileSync(process.env.ROUNDRELAY_TEST_READY_FILE, String(process.pid))
+    fs.writeFileSync(process.env.MELDWORK_TEST_READY_FILE, String(process.pid))
   } else if (message.method === 'session/cancel') {
     record('cancel')
-    fs.writeFileSync(process.env.ROUNDRELAY_TEST_CANCEL_FILE, JSON.stringify(message.params))
+    fs.writeFileSync(process.env.MELDWORK_TEST_CANCEL_FILE, JSON.stringify(message.params))
   }
 })
 setInterval(() => {}, 1000)
@@ -840,9 +840,9 @@ setInterval(() => {}, 1000)
     {
       signal: controller.signal,
       env: {
-        ROUNDRELAY_TEST_READY_FILE: readyFile,
-        ROUNDRELAY_TEST_CANCEL_FILE: cancelFile,
-        ROUNDRELAY_TEST_LIFECYCLE_FILE: lifecycleFile,
+        MELDWORK_TEST_READY_FILE: readyFile,
+        MELDWORK_TEST_CANCEL_FILE: cancelFile,
+        MELDWORK_TEST_LIFECYCLE_FILE: lifecycleFile,
       },
     },
   ).then(value => ({ value }), error => ({ error }))
@@ -955,7 +955,7 @@ test('Qwen selects OpenAI auth when the shared provider is enabled', () => {
 })
 
 test('Claude and Qwen stream answers and safe tool lifecycle events without final duplication', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-claude-qwen-events-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-claude-qwen-events-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 
   for (const kind of ['claude', 'qwen']) {
@@ -1192,7 +1192,7 @@ test('Gemini stream JSON output returns assistant chunks and the native session 
 })
 
 test('runAgent streams Gemini answer deltas without duplicating the final reply', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-gemini-events-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-gemini-events-'))
   const cli = executable(directory, 'gemini-events.cjs', `
 const events = [
   { type: 'init', session_id: 'gemini-event-session' },
@@ -1346,14 +1346,14 @@ test('OpenCodeReview fails closed for failed, non-terminal, and unknown JSON sta
 })
 
 test('OpenCodeReview resolves only after a verified foreground terminal result', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ocr-terminal-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-ocr-terminal-'))
   const marker = path.join(directory, 'stdout-ready')
   const cli = executable(directory, 'ocr-terminal.cjs', `
 const fs = require('node:fs')
 process.stdout.write(JSON.stringify({
   status: 'success', message: 'Verified review result', comments: [], session_id: 'ocr-run-2',
 }))
-fs.writeFileSync(process.env.ROUNDRELAY_TEST_MARKER, 'ready')
+fs.writeFileSync(process.env.MELDWORK_TEST_MARKER, 'ready')
 setTimeout(() => process.exit(0), 80)
 `)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -1363,7 +1363,7 @@ setTimeout(() => process.exit(0), 80)
     { kind: 'opencodereview', executable: cli, name: 'OpenCodeReview' },
     'Review the current diff',
     directory,
-    { env: { ROUNDRELAY_TEST_MARKER: marker } },
+    { env: { MELDWORK_TEST_MARKER: marker } },
   ).then((result) => {
     resolved = true
     return result
@@ -1381,7 +1381,7 @@ setTimeout(() => process.exit(0), 80)
 })
 
 test('OpenCodeReview rejects an exit-zero acknowledgement without a terminal review', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-ocr-accepted-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-ocr-accepted-'))
   const cli = executable(directory, 'ocr-accepted.cjs', `
 process.stdout.write(JSON.stringify({ status: 'accepted', job_id: 'not-terminal' }))
 `)
@@ -1530,7 +1530,7 @@ test('structured JSON documents fail closed when malformed or over the safe limi
 })
 
 test('every resumable built-in adapter classifies an invalid native Session', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-invalid-sessions-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-invalid-sessions-'))
   const cli = executable(directory, 'invalid-session.cjs', `
 process.stderr.write('Saved session was not found or has expired.\\n')
 process.exit(2)
@@ -1580,7 +1580,7 @@ test('OpenCode JSONL output returns completed text and the native session id', (
 })
 
 test('supported local CLIs run in the selected workdir and return native session ids', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-workdir-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-workdir-'))
   const workdir = fs.realpathSync(directory)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const fixtures = [
@@ -1640,7 +1640,7 @@ test('supported local CLIs run in the selected workdir and return native session
 })
 
 test('every conversational built-in Agent emits its answer through the shared runtime event contract', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-events-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-events-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const manifest = JSON.parse(fs.readFileSync(
     path.join(OUTPUT_FIXTURE_DIRECTORY, 'manifest.json'),
@@ -1680,7 +1680,7 @@ process.stdout.write(${JSON.stringify(raw)})
 })
 
 test('runAgent retains final structured output after stdout exceeds its capture limit', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-long-output-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-long-output-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const fillerBytes = 10 * 1024 * 1024 + 64 * 1024
   const fixtures = [{
@@ -1764,7 +1764,7 @@ process.stdout.write(JSON.stringify({
 })
 
 test('final JSON agents emit one sanitized fallback answer event', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-final-events-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-final-events-'))
   const cli = executable(directory, 'final-events.cjs', `
 process.stdout.write(JSON.stringify({
   type: 'result',
@@ -1806,7 +1806,7 @@ process.stdout.write(JSON.stringify({
 })
 
 test('runtime event callback failures do not change the Agent result', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-event-callback-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-event-callback-'))
   const cli = executable(directory, 'event-callback.cjs', `
 process.stdout.write(JSON.stringify({
   type: 'result', result: 'callback-safe reply', session_id: 'callback-session',
@@ -1829,7 +1829,7 @@ process.stdout.write(JSON.stringify({
 })
 
 test('runAgent forces OpenCode read-only permissions without changing user configuration', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-opencode-permission-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-opencode-permission-'))
   const cli = executable(directory, 'opencode-permission.cjs', `
 process.stdout.write(JSON.stringify({
   type: 'text',
@@ -1859,7 +1859,7 @@ process.stdout.write(JSON.stringify({
 })
 
 test('runAgent injects Provider secrets through the child environment only', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-provider-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-provider-'))
   const cli = executable(directory, 'provider-env.cjs', `
 process.stdout.write([
   process.env.KIMI_MODEL_NAME,
@@ -1885,21 +1885,21 @@ process.stdout.write([
   assert.equal(result.text, 'glm|https://api.example.com/v1|[redacted]')
 })
 
-test('runAgent never exposes unrelated RoundRelay process values to local CLIs', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-private-'))
+test('runAgent never exposes unrelated Meldwork process values to local CLIs', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-private-'))
   const cli = executable(directory, 'token-env.cjs', `
 process.stdout.write(JSON.stringify({
   type: 'result',
-  result: process.env.ROUNDRELAY_PRIVATE_VALUE || 'not-exposed',
+  result: process.env.MELDWORK_PRIVATE_VALUE || 'not-exposed',
   session_id: 'claude-session',
 }))
 `)
-  const previous = process.env.ROUNDRELAY_PRIVATE_VALUE
-  process.env.ROUNDRELAY_PRIVATE_VALUE = 'test-private-value'
+  const previous = process.env.MELDWORK_PRIVATE_VALUE
+  process.env.MELDWORK_PRIVATE_VALUE = 'test-private-value'
   t.after(() => {
     fs.rmSync(directory, { recursive: true, force: true })
-    if (previous == null) delete process.env.ROUNDRELAY_PRIVATE_VALUE
-    else process.env.ROUNDRELAY_PRIVATE_VALUE = previous
+    if (previous == null) delete process.env.MELDWORK_PRIVATE_VALUE
+    else process.env.MELDWORK_PRIVATE_VALUE = previous
   })
 
   const result = await runAgent(
@@ -1912,7 +1912,7 @@ process.stdout.write(JSON.stringify({
 })
 
 test('runAgent scopes the child environment and redacts current Agent secrets from output', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-env-scope-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-env-scope-'))
   const cli = executable(directory, 'env-scope.cjs', `
 process.stdout.write(JSON.stringify({
   type: 'result',
@@ -1953,7 +1953,7 @@ process.stdout.write(JSON.stringify({
 })
 
 test('runAgent keeps redacted Provider diagnostics out of renderer-visible errors', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-error-secret-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-error-secret-'))
   const cli = executable(directory, 'error-secret.cjs', `
 process.stderr.write('Provider rejected ' + process.env.OPENAI_API_KEY)
 process.exit(1)
@@ -1980,7 +1980,7 @@ process.exit(1)
 })
 
 test('legacy adapters classify an explicitly missing resumed session', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-missing-session-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-missing-session-'))
   const cli = executable(directory, 'missing-session.cjs', `
 process.stderr.write('No conversation found with session ID qwen-stale-session')
 process.exit(1)
@@ -2004,7 +2004,7 @@ process.exit(1)
 })
 
 test('structured CLI authentication failures expose only a stable error code', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-error-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-error-'))
   const cli = executable(directory, 'structured-error.cjs', `
 process.stderr.write('startup warning')
 process.stdout.write(JSON.stringify([{ type: 'result', subtype: 'error_during_execution',
@@ -2025,7 +2025,7 @@ process.exit(1)
 })
 
 test('generic CLI failures keep executable paths in main-process diagnostics only', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-process-error-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-process-error-'))
   const cli = executable(directory, 'process-error.cjs', `
 process.stderr.write('Agent crashed in /private/agents/qwen: upstream failure')
 process.exit(1)
@@ -2045,7 +2045,7 @@ process.exit(1)
 })
 
 test('nonzero CLI exits without diagnostics retain the stable exited code', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-empty-error-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-empty-error-'))
   const cli = executable(directory, 'empty-error.cjs', 'process.exit(1)')
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
 

@@ -55,7 +55,11 @@
 
       <div
         class="composer-box"
-        :class="{ 'is-dragging-files': composerDropActive }"
+        :class="{
+          'is-dragging-files': composerDropActive,
+          'unlimited-mode': activeUnlimitedAutoRun,
+          'unlimited-running': activeUnlimitedAutoRun,
+        }"
         @dragenter="handleComposerDragEnter"
         @dragover="handleComposerDragOver"
         @dragleave="handleComposerDragLeave"
@@ -75,7 +79,7 @@
               :disabled="Boolean(activeRun) || sending"
               @click="discussionMode = 'manual'"
             >
-              {{ t('composer.manual') }}
+              {{ manualModeLabel }}
             </button>
             <button
               type="button"
@@ -125,11 +129,12 @@
               :aria-label="t('composer.maxRounds')"
               aria-haspopup="dialog"
               :aria-expanded="roundSettingsOpen ? 'true' : 'false'"
-              :class="{ unlimited: unlimitedRounds }"
+              :class="{ unlimited: activeUnlimitedAutoRun }"
               :disabled="Boolean(activeRun) || sending"
               @click="roundSettingsOpen = !roundSettingsOpen"
             >
-              <span>{{ unlimitedRounds ? t('composer.unlimitedRounds') : t('composer.autoRounds', { count: maxRounds }) }}</span>
+              <span v-if="activeUnlimitedAutoRun" class="round-unlimited-symbol" aria-hidden="true">∞</span>
+              <span>{{ unlimitedRounds || activeUnlimitedAutoRun ? t('composer.unlimitedRounds') : t('composer.autoRounds', { count: maxRounds }) }}</span>
               <ChevronDownOutline :class="{ open: roundSettingsOpen }" />
             </button>
             <section
@@ -423,7 +428,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import {
   AddOutline,
   ArchiveOutline,
@@ -526,6 +531,7 @@ const {
   isImageAttachment,
   knowledgeBaseLogo,
   knowledgeBaseName,
+  manualModeLabel,
   maxRounds,
   openSkillMenu,
   pickAttachments,
@@ -556,6 +562,11 @@ const {
 } = props.controller
 
 const smartTeamTooltipOpen = ref(false)
+const activeUnlimitedAutoRun = computed(() => (
+  activeRun.value?.mode === 'auto'
+  && activeRun.value?.unlimitedRounds === true
+  && ['preparing', 'running', 'waiting'].includes(String(activeRun.value?.phase || '').toLowerCase())
+))
 
 function handleSmartTeamToggle() {
   toggleAutomaticTeamFormation()

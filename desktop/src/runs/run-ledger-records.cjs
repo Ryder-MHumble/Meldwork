@@ -27,6 +27,7 @@ const {
 } = require('./failure-policy.cjs')
 const { parseCollaborationState } = require('../collaboration/collaboration-records.cjs')
 const { parseTaskGraphCursor } = require('../collaboration/task-graph-records.cjs')
+const { parseOrchestrationV4 } = require('../collaboration/orchestration-v4-records.cjs')
 
 const DEFAULT_MAX_DURABLE_AGENT_RUNS = 256
 const MAX_TARGET_KINDS = 32
@@ -55,10 +56,12 @@ const SHA256 = /^[a-f0-9]{64}$/
 const CONTINUATION_FIELDS = new Set([
   'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
   'round', 'createdAt', 'updatedAt', 'requestId', 'requestHash',
-  'sessionRefHash', 'sessionProvenanceHash',
+  'sessionRefHash', 'sessionProvenanceHash', 'stateEpoch',
 ])
 const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry', 'input'])
-const CONTINUATION_RESUME_KINDS = new Set(['agent_slot', 'role_review_decision'])
+const CONTINUATION_RESUME_KINDS = new Set([
+  'agent_slot', 'role_review_decision', 'v4_human_gate', 'v4_synthesis_recovery',
+])
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
 ])
@@ -66,6 +69,9 @@ const ORCHESTRATION_FIELDS = new Set([
   'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
   'totalSuccesses', 'terminalFailureOccurred', 'collaboration', 'template', 'taskGraph',
+  'phase', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
+  'slots', 'deliveryWatermarks', 'deliveryState', 'commitState', 'challengeBindings', 'synthesisBinding',
+  'synthesisRecovery', 'convergence', 'coordinationPlan', 'workReceipts', 'candidateCommit',
 ])
 const ORCHESTRATION_WORKFLOWS = new Set(['manual', 'auto'])
 
@@ -372,18 +378,26 @@ function normalizeContinuation(input) {
   const requestHash = String(input.requestHash || '')
   const sessionRefHash = String(input.sessionRefHash || '')
   const sessionProvenanceHash = String(input.sessionProvenanceHash || '')
+  const hasStateEpoch = hasOwn(input, 'stateEpoch')
+  const stateEpoch = boundedNumber(input.stateEpoch, 0, 1000000)
   const hasRequestBinding = requestId && SHA256.test(requestHash)
     && SHA256.test(sessionRefHash) && SHA256.test(sessionProvenanceHash)
   if (!HUMAN_GATE_ID.test(gateId) || !CONTINUATION_GATE_TYPES.has(gateType)
       || !CONTINUATION_RESUME_KINDS.has(resumeKind)
       || !CONTINUATION_STATES.has(state) || !agentRunId || !agentKind
       || (resumeKind === 'role_review_decision' && gateType !== 'decision')
+      || (resumeKind === 'v4_human_gate'
+        && (gateType !== 'decision' || !hasStateEpoch || stateEpoch < 1))
+      || (resumeKind === 'v4_synthesis_recovery'
+        && (gateType !== 'decision' || !hasStateEpoch))
+      || (!['v4_human_gate', 'v4_synthesis_recovery'].includes(resumeKind) && hasStateEpoch)
       || (gateType === 'input' && !hasRequestBinding)
       || (!hasRequestBinding && [requestId, requestHash, sessionRefHash, sessionProvenanceHash]
         .some(Boolean))) return undefined
   return {
     gateId, gateType, resumeKind, state, agentRunId, agentKind,
     round, createdAt, updatedAt,
+    ...(hasStateEpoch ? { stateEpoch } : {}),
     ...(hasRequestBinding ? {
       requestId, requestHash, sessionRefHash, sessionProvenanceHash,
     } : {}),
@@ -396,6 +410,15 @@ function normalizeOrchestration(input) {
     return undefined
   }
   const version = boundedNumber(input.version, 0, 100)
+  if (version === 4) {
+    try {
+      const parsed = parseOrchestrationV4(input)
+      if (hasOwn(parsed, 'collaboration')) parseCollaborationState(parsed.collaboration)
+      return parsed
+    } catch {
+      return undefined
+    }
+  }
   const workflow = String(input.workflow || '')
   const currentKind = cleanId(input.currentKind)
   const pendingKinds = normalizeKinds(input.pendingKinds)
@@ -404,10 +427,16 @@ function normalizeOrchestration(input) {
   const agreementKinds = normalizeKinds(input.agreementKinds)
   const attachmentRecipients = normalizeKinds(input.attachmentRecipients)
   const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
+  const v4OnlyFields = [
+    'phase', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
+    'slots', 'deliveryWatermarks', 'deliveryState', 'commitState', 'challengeBindings',
+    'synthesisBinding', 'synthesisRecovery', 'convergence', 'candidateCommit',
+  ]
   if (![1, 2, 3].includes(version) || !ORCHESTRATION_WORKFLOWS.has(workflow)
       || (version === 1 && hasOwn(input, 'collaboration'))
       || (version === 2 && workflow !== 'auto')
       || (version < 3 && (hasOwn(input, 'template') || hasOwn(input, 'taskGraph')))
+      || (version < 4 && v4OnlyFields.some(field => hasOwn(input, field)))
       || (version === 3 && (workflow !== 'auto' || input.template !== 'task-graph'))) {
     return undefined
   }
@@ -441,6 +470,40 @@ function normalizeOrchestration(input) {
     ...(version >= 2 ? { collaboration } : {}),
     ...(version === 3 ? { template: 'task-graph', taskGraph } : {}),
   }
+}
+
+function orchestrationKinds(orchestration) {
+  if (!orchestration) return []
+  return [
+    orchestration.currentKind,
+    ...(orchestration.currentKinds || []),
+    ...(orchestration.pendingKinds || []),
+    ...(orchestration.activeKinds || []),
+    ...(orchestration.successfulKinds || []),
+    ...(orchestration.agreementKinds || []),
+    ...(orchestration.attachmentRecipients || []),
+    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
+    ...(orchestration.plan?.assignments?.map(assignment => assignment.agentKind) || []),
+    ...(orchestration.slots?.map(slot => slot.agentKind) || []),
+    ...(orchestration.deliveryWatermarks?.map(watermark => watermark.agentKind) || []),
+    ...(orchestration.commitState?.committedKinds || []),
+    ...(orchestration.commitState?.pendingKinds || []),
+    ...(orchestration.commitState?.writerKind ? [orchestration.commitState.writerKind] : []),
+    ...(orchestration.candidateCommit?.writerKind ? [orchestration.candidateCommit.writerKind] : []),
+    ...(orchestration.synthesisBinding?.candidates?.map(candidate => candidate.kind) || []),
+    ...(orchestration.synthesisBinding ? [
+      orchestration.synthesisBinding.writerKind,
+      ...orchestration.synthesisBinding.verificationKinds,
+    ] : []),
+    ...(orchestration.synthesisRecovery ? [
+      orchestration.synthesisRecovery.originalWriterKind,
+      orchestration.synthesisRecovery.activeWriterKind,
+      ...orchestration.synthesisRecovery.verificationKinds,
+      ...orchestration.synthesisRecovery.rankedKinds,
+      ...orchestration.synthesisRecovery.triedWriters,
+      ...orchestration.synthesisRecovery.attempts.map(attempt => attempt.writerKind),
+    ] : []),
+  ].filter(Boolean)
 }
 
 function hasValidStoredRecordShape(input) {
@@ -512,21 +575,21 @@ function hasValidStoredRecordShape(input) {
 
   const targetKinds = normalizeKinds(input.targetKinds)
   const orchestration = normalizeOrchestration(input.orchestration)
-  if (orchestration && [
-    orchestration.currentKind,
-    ...orchestration.pendingKinds,
-    ...orchestration.activeKinds,
-    ...orchestration.successfulKinds,
-    ...orchestration.agreementKinds,
-    ...orchestration.attachmentRecipients,
-    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
-  ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return false
+  if (orchestration && orchestrationKinds(orchestration)
+    .some(kind => !targetKinds.includes(kind))) return false
   const parent = {
     runId: cleanId(input.runId),
     groupId: cleanGroupId(input.groupId),
     threadRootId: cleanId(input.threadRootId),
     targetKinds,
   }
+  const candidateCommit = orchestration?.candidateCommit
+  if (candidateCommit && (
+    candidateCommit.runId !== parent.runId
+      || candidateCommit.taskId !== cleanId(input.taskId)
+      || candidateCommit.groupId !== parent.groupId
+      || candidateCommit.threadRootId !== parent.threadRootId
+  )) return false
   const fallbackTimestamp = safeTimestamp(input.startedAt, 0)
   return input.agentRuns.every(agentRun => {
     if (!isRecord(agentRun)) return false
@@ -759,16 +822,13 @@ function normalizeRecord(input, options = {}) {
   const rawOrchestration = selectedValue(input, existing, 'orchestration')
   const orchestration = normalizeOrchestration(rawOrchestration)
   if (orchestration === undefined) return null
-  if (orchestration && orchestration.workflow !== mode) return null
-  if (orchestration && [
-    orchestration.currentKind,
-    ...orchestration.pendingKinds,
-    ...orchestration.activeKinds,
-    ...orchestration.successfulKinds,
-    ...orchestration.agreementKinds,
-    ...orchestration.attachmentRecipients,
-    ...(orchestration.taskGraph?.graph.nodes.map(node => node.agentKind) || []),
-  ].filter(Boolean).some(kind => !targetKinds.includes(kind))) return null
+  if (orchestration && orchestration.version < 4 && orchestration.workflow !== mode) return null
+  if (orchestration && orchestration.version === 4) {
+    const expectedWorkflow = orchestration.template === 'discussion' ? 'auto' : 'manual'
+    if (![expectedWorkflow, orchestration.template].includes(orchestration.workflow)) return null
+  }
+  if (orchestration && orchestrationKinds(orchestration)
+    .some(kind => !targetKinds.includes(kind))) return null
 
   const record = {
     runId,

@@ -22,8 +22,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -33,7 +33,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -46,7 +46,7 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
   it('maps direct tasks onto the turn rail without group reply styling', async () => {
     const scrollIntoView = vi.fn()
     HTMLElement.prototype.scrollIntoView = scrollIntoView
@@ -58,7 +58,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex review',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -148,7 +148,7 @@ describe('RoundRelay workbench', () => {
         name: 'Focused review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -261,7 +261,7 @@ describe('RoundRelay workbench', () => {
         name: 'Terminal Agent rows',
         topic: '',
         agentKinds: ['codex', 'hermes', 'claude'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -321,7 +321,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -363,11 +363,12 @@ describe('RoundRelay workbench', () => {
     await flushPromises()
     expect(writeText).not.toHaveBeenCalled()
 
-    await wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').trigger('click')
+    expect(wrapper.find('.message-row.agent .message-meta-actions .message-copy-button').exists()).toBe(false)
+    await wrapper.get('.message-row.agent .message-footer-actions .message-copy-button').trigger('click')
     await flushPromises()
     expect(writeText).toHaveBeenCalledWith('[Open docs](https://example.com)\n\nCopy this answer.')
     expect(wrapper.get('.message-row.agent').classes()).toContain('copied')
-    expect(wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').attributes('aria-label')).toBe('Copied')
+    expect(wrapper.get('.message-row.agent .message-footer-actions .message-copy-button').attributes('aria-label')).toBe('Copied')
     expect(wrapper.get('.copy-toast-message').text()).toBe('Copied to clipboard')
 
     writeText.mockClear()
@@ -378,7 +379,7 @@ describe('RoundRelay workbench', () => {
     const execCommand = vi.fn(() => true)
     Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
     writeText.mockRejectedValueOnce(new Error('Clipboard permission denied'))
-    await wrapper.get('.message-row.agent .message-meta-actions .message-copy-button').trigger('click')
+    await wrapper.get('.message-row.agent .message-footer-actions .message-copy-button').trigger('click')
     await flushPromises()
     expect(execCommand).toHaveBeenCalledWith('copy')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
@@ -401,7 +402,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -439,7 +440,7 @@ describe('RoundRelay workbench', () => {
         name: 'Cleanup review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -552,7 +553,7 @@ describe('RoundRelay workbench', () => {
         name: 'Running cleanup',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -596,7 +597,7 @@ describe('RoundRelay workbench', () => {
         name: 'Implementation review',
         topic: '',
         agentKinds: ['codex', 'hermes', 'qwen'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -707,7 +708,7 @@ describe('RoundRelay workbench', () => {
           name: 'Codex review',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -718,7 +719,7 @@ describe('RoundRelay workbench', () => {
           name: 'Implementation review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -789,7 +790,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex trace',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -889,7 +890,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex approval',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-08-04T08:00:00.000Z',
         updatedAt: '2026-08-04T08:00:00.000Z',
@@ -979,7 +980,7 @@ describe('RoundRelay workbench', () => {
       state.groups.push({
         id: 'direct-input', conversationType: 'direct', directAgentKind: 'codex',
         name: 'Connector input', topic: '', agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace', allowWrite: false,
+        workdir: '/tmp/meldwork-workspace', allowWrite: false,
         createdAt: '2026-08-04T08:00:00.000Z', updatedAt: '2026-08-04T08:00:00.000Z',
       })
       state.messages.push({
@@ -1025,7 +1026,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex live trace',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1098,7 +1099,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex failure trace',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1167,7 +1168,7 @@ describe('RoundRelay workbench', () => {
           name: 'Stopped direct trace',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:02:00Z',
@@ -1178,7 +1179,7 @@ describe('RoundRelay workbench', () => {
           name: 'Interrupted group trace',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:03:00Z',
@@ -1273,7 +1274,7 @@ describe('RoundRelay workbench', () => {
         name: 'Interrupted direct trace',
         topic: '',
         agentKinds: ['hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:02:00Z',
@@ -1324,7 +1325,7 @@ describe('RoundRelay workbench', () => {
         name: 'Interrupted event',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:01:00Z',
@@ -1360,7 +1361,7 @@ describe('RoundRelay workbench', () => {
         name: 'Recovered terminal turns',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:08:00Z',
@@ -1570,7 +1571,7 @@ describe('RoundRelay workbench', () => {
         name: 'Recovered run outcomes',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt,
         updatedAt: createdAt,
@@ -1607,7 +1608,7 @@ describe('RoundRelay workbench', () => {
         name: 'Retry consensus',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:05:00Z',
@@ -1707,7 +1708,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex empty trace',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1765,7 +1766,7 @@ describe('RoundRelay workbench', () => {
         name: 'Versioned replies',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -1819,14 +1820,40 @@ describe('RoundRelay workbench', () => {
     expect(codexReply().text()).toContain('Codex regenerated response')
     expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
     expect(codexReply().findAll('.message-meta-actions > button').map(button => button.classes()[0]))
-      .toEqual(['message-copy-button', 'message-reply-toggle'])
+      .toEqual(['message-reply-toggle'])
     expect(codexReply().findAll('.message-footer-actions > button').map(button => button.classes()[0]))
+      .toEqual(['message-regenerate-button', 'message-copy-button', 'message-delete-button'])
+    expect(codexReply().get('.message-footer-actions .response-version-controls').text()).toContain('2/2')
+    expect(codexReply().find('.message-footer-actions .message-copy-button').exists()).toBe(true)
+    expect(hermesReply().find('.response-version-controls').exists()).toBe(false)
+    expect(hermesReply().findAll('.message-footer-actions > button').map(button => button.classes()[0]))
       .toEqual(['message-regenerate-button', 'message-copy-button', 'message-delete-button'])
 
     await codexReply().get('.message-reply-toggle').trigger('click')
     expect(codexReply().classes()).toContain('agent-reply-collapsed')
     expect(codexReply().find('.message-copy-surface').exists()).toBe(false)
     expect(hermesReply().text()).toContain('Hermes response remains visible')
+
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(styles).toMatch(/\.message-meta\s*\{[^}]*min-width:\s*0;[^}]*flex-wrap:\s*wrap;/s)
+    expect(styles).toMatch(/\.message-meta strong\s*\{[^}]*min-width:\s*0;[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;/s)
+    expect(styles).toMatch(/\.message-footer-actions\s*\{[^}]*left:\s*10px;[^}]*right:\s*8px;[^}]*min-width:\s*0;[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;/s)
+    expect(styles).toMatch(/\.message-footer-actions \.response-version-controls\s*\{[^}]*margin-right:\s*auto;/s)
+    expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-body\s*\{[^}]*padding-bottom:\s*34px;/s)
+    expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-footer-actions\s*\{[^}]*display:\s*inline-flex;/s)
+    expect(styles).toMatch(/\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-regenerate-button,[^}]+\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-copy-button,[^}]+\.message-row\.agent-reply-collapsed \.message-footer-actions > \.message-delete-button\s*\{[^}]*display:\s*none;/s)
+    expect(styles).toMatch(/\.response-version-controls button:hover::after,\s*\.response-version-controls button:focus-visible::after\s*\{[^}]*opacity:\s*1;[^}]*transform:\s*translate\(-50%, 0\);/s)
+    expect(styles).toMatch(/\.response-version-controls button:last-child::after\s*\{[^}]*right:\s*0;[^}]*left:\s*auto;[^}]*transform:\s*translateY\(-2px\);/s)
+    expect(styles).toMatch(/\.response-version-controls button:first-child:hover::after,[^}]+\.response-version-controls button:last-child:focus-visible::after\s*\{[^}]*transform:\s*translateY\(0\);/s)
+    const stylesheet = document.createElement('style')
+    stylesheet.textContent = styles
+    document.head.append(stylesheet)
+    expect(getComputedStyle(codexReply().get('.message-body').element).paddingBottom).toBe('34px')
+    expect(codexReply().get('.message-footer-actions .response-version-controls').isVisible()).toBe(true)
+    expect(codexReply().findAll('.message-footer-actions .response-version-controls button')).toHaveLength(2)
+    expect(codexReply().find('.message-footer-actions .message-regenerate-button').isVisible()).toBe(false)
+    expect(codexReply().find('.message-footer-actions .message-copy-button').isVisible()).toBe(false)
+    expect(codexReply().find('.message-footer-actions .message-delete-button').isVisible()).toBe(false)
 
     await codexReply().get('.response-version-controls button').trigger('click')
     expect(codexReply().classes()).toContain('agent-reply-collapsed')
@@ -1845,6 +1872,109 @@ describe('RoundRelay workbench', () => {
     })
     expect(codexReply().text()).toContain('Codex regenerated response')
     expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
+    stylesheet.remove()
+    wrapper.unmount()
+  })
+
+  it.each([
+    { conversationType: 'group', groupId: 'group-scroll-latest', openSelector: '.conversation-link' },
+    { conversationType: 'direct', groupId: 'direct-scroll-latest', openSelector: '.direct-session-open' },
+  ])('keeps one localized return-to-bottom control for a $conversationType timeline during streaming', async ({
+    conversationType,
+    groupId,
+    openSelector,
+  }) => {
+    const { wrapper, emitRunEvent } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: groupId,
+        conversationType,
+        ...(conversationType === 'direct' ? { directAgentKind: 'codex' } : {}),
+        name: 'Scroll latest',
+        topic: '',
+        agentKinds: conversationType === 'direct' ? ['codex'] : ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: `${groupId}-root`,
+        groupId,
+        role: 'user',
+        content: 'Keep reading above the latest message',
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = [groupId]
+      state.runs = [{
+        runId: `${groupId}-run`,
+        groupId,
+        threadRootId: `${groupId}-root`,
+        targetKinds: ['codex'],
+        agentRuns: [{
+          agentRunId: `${groupId}-agent-run`,
+          kind: 'codex',
+          round: 1,
+          status: 'running',
+          output: '',
+          events: [],
+        }],
+      }]
+    })
+
+    await wrapper.get(openSelector).trigger('click')
+    await flushPromises()
+    const scroller = wrapper.get('.message-scroll').element
+    let scrollTop = 360
+    Object.defineProperties(scroller, {
+      scrollHeight: { configurable: true, value: 1200 },
+      clientHeight: { configurable: true, value: 400 },
+      scrollTop: {
+        configurable: true,
+        get: () => scrollTop,
+        set: value => { scrollTop = value },
+      },
+    })
+    await wrapper.get('.message-scroll').trigger('scroll')
+
+    expect(wrapper.findAll('.conversation-jump-to-latest')).toHaveLength(1)
+    expect(wrapper.get('.conversation-jump-to-latest').attributes('aria-label')).toBe('Jump to latest message')
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.conversation-jump-to-latest').attributes('aria-label')).toBe('跳至最新消息')
+
+    emitRunEvent({
+      runId: `${groupId}-run`,
+      agentRunId: `${groupId}-agent-run`,
+      groupId,
+      threadRootId: `${groupId}-root`,
+      agentKind: 'codex',
+      round: 1,
+      seq: 1,
+      type: 'answer_delta',
+      status: 'running',
+      delta: 'continued streaming output',
+    })
+    await flushPromises()
+    expect(scrollTop).toBe(360)
+    expect(wrapper.findAll('.conversation-jump-to-latest')).toHaveLength(1)
+
+    scrollTop = 800
+    await wrapper.get('.message-scroll').trigger('scroll')
+    expect(wrapper.find('.conversation-jump-to-latest').exists()).toBe(false)
+
+    scrollTop = 650
+    await wrapper.get('.message-scroll').trigger('scroll')
+    expect(wrapper.findAll('.conversation-jump-to-latest')).toHaveLength(1)
+
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(styles).toMatch(/\.conversation-jump-to-latest-enter-active,[^}]+transition:\s*opacity 0\.16s ease, transform 0\.16s ease;/s)
+    expect(styles).toMatch(/@media \(max-width: 640px\)\s*\{[^}]*\.conversation-jump-to-latest\s*\{[^}]*right:\s*12px;[^}]*bottom:\s*12px;/s)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.conversation-jump-to-latest-enter-active,[^}]+transition:\s*none;/s)
+
+    await wrapper.get('.conversation-jump-to-latest').trigger('click')
+    await flushPromises()
+    expect(scrollTop).toBe(1200)
+    expect(wrapper.find('.conversation-jump-to-latest').exists()).toBe(false)
     wrapper.unmount()
   })
 })

@@ -154,6 +154,38 @@
               </span>
             </span>
           </div>
+          <section
+            v-if="selectedPhaseLabel"
+            class="trace-phase-feedback"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <header class="trace-section-heading">
+              <strong>{{ t('run.phaseFeedback') }}</strong>
+              <small v-if="selectedPhaseSlots.length">
+                {{ t('run.phaseSlots', {
+                  completed: selectedPhaseSlots.filter(slot => orchestrationSlotCompleted(slot.status)).length,
+                  total: selectedPhaseSlots.length,
+                }) }}
+              </small>
+            </header>
+            <div class="trace-phase-current">
+              <strong>{{ selectedPhaseLabel }}</strong>
+            </div>
+            <ul v-if="selectedPhaseSlots.length" class="trace-phase-slot-list">
+              <li v-for="slot in selectedPhaseSlots" :key="`${slot.agentKind}:${slot.slotId || slot.phase}`">
+                <span>{{ agentLabel(slot.agentKind) }}</span>
+                <small>
+                  <span v-if="slot.role" class="trace-phase-slot-role">
+                    {{ collaborationRoleLabel(slot.role) }}
+                  </span>
+                  <template v-if="slot.role"> · </template>
+                  {{ phaseLabel(slot.phase) }} / {{ statusLabel(slot.status) }}
+                </small>
+              </li>
+            </ul>
+          </section>
           <div v-if="selectedItem.context && hasTraceContext(selectedItem.context)" class="trace-context-disclosure">
             <div class="trace-context-stats" data-context-section="attempt">
               <span>{{ t('trace.attemptInjection') }}</span>
@@ -384,7 +416,13 @@ import {
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
 import { retainedTraceEvents } from '../conversationTimelineModel.js'
+import { orchestrationPhase, orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { locale, t } from '../i18n.js'
+
+const COLLABORATION_ROLES = new Set([
+  'primary', 'reviewer', 'arbiter', 'worker', 'integrator',
+  'synthesizer', 'verifier', 'writer', 'participant',
+])
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -420,6 +458,40 @@ const agentGroups = computed(() => {
 const selectedAgentRuns = computed(() => (
   agentGroups.value.find(group => group.agentKind === selectedItem.value?.agentKind)?.items || []
 ))
+const selectedOrchestration = computed(() => (
+  selectedItem.value?.orchestration && typeof selectedItem.value.orchestration === 'object'
+    ? selectedItem.value.orchestration
+    : null
+))
+const selectedPhase = computed(() => orchestrationPhase(selectedOrchestration.value?.phase))
+const selectedPhaseLabel = computed(() => (
+  selectedPhase.value ? t(`run.phase.${selectedPhase.value}`) : ''
+))
+const selectedPhaseSlots = computed(() => {
+  const orchestrationSlots = Array.isArray(selectedOrchestration.value?.slots)
+    ? selectedOrchestration.value.slots
+    : []
+  const kinds = orchestrationSlots.length
+    ? orchestrationSlots.map(slot => slot.agentKind)
+    : (Array.isArray(selectedOrchestration.value?.currentKinds)
+        ? selectedOrchestration.value.currentKinds
+        : [])
+  const seen = new Set()
+  return kinds.filter(Boolean).filter(kind => {
+    if (seen.has(kind)) return false
+    seen.add(kind)
+    return true
+  }).map(agentKind => {
+    const slot = orchestrationSlots.find(item => item.agentKind === agentKind)
+    return {
+      agentKind,
+      slotId: String(slot?.slotId || ''),
+      phase: String(slot?.phase || selectedPhase.value || '').toLowerCase(),
+      status: String(slot?.status || 'pending').toLowerCase(),
+      role: collaborationRole(slot?.role),
+    }
+  })
+})
 const orderedHumanGates = computed(() => [...props.humanGates].sort((left, right) => (
   Number(right.agentRunId === selectedItem.value?.agentRunId)
   - Number(left.agentRunId === selectedItem.value?.agentRunId)
@@ -446,6 +518,7 @@ const eventLiveStatus = computed(() => {
   if (!item || !event) return ''
   return [...new Set([
     agentLabel(item.agentKind),
+    phaseLabel(selectedPhase.value),
     eventTypeLabel(event.type),
     eventTitle(event),
     statusLabel(event.status),
@@ -675,7 +748,7 @@ function eventTitle(event) {
 
 function statusTone(status) {
   const value = String(status || '').toLowerCase()
-  if (['completed', 'succeeded'].includes(value)) return 'completed'
+  if (['completed', 'succeeded', 'settled', 'committed'].includes(value)) return 'completed'
   if (['failed', 'timeout', 'budget-exhausted', 'circuit-breaker'].includes(value)) return 'failed'
   if (['partial', 'cancelled', 'stopped', 'interrupted'].includes(value)) return 'partial'
   if (['running', 'in_progress', 'waiting'].includes(value)) return 'running'
@@ -686,12 +759,16 @@ function statusLabel(status) {
   const key = {
     pending: 'pending',
     queued: 'queued',
+    planned: 'queued',
+    prepared: 'preparing',
     preparing: 'preparing',
     running: 'running',
     streaming: 'streaming',
     waiting: 'waiting',
     completed: 'completed',
     succeeded: 'succeeded',
+    settled: 'completed',
+    committed: 'completed',
     failed: 'failed',
     partial: 'partial',
     cancelled: 'cancelled',
@@ -702,6 +779,21 @@ function statusLabel(status) {
     'circuit-breaker': 'circuitBreaker',
   }[String(status || '').toLowerCase()] || 'unknown'
   return t(`run.status.${key}`)
+}
+
+function phaseLabel(phase) {
+  const value = orchestrationPhase(phase)
+  return value ? t(`run.phase.${value}`) : ''
+}
+
+function collaborationRole(value) {
+  const role = String(value || '').trim().toLowerCase()
+  return COLLABORATION_ROLES.has(role) ? role : ''
+}
+
+function collaborationRoleLabel(value) {
+  const role = collaborationRole(value)
+  return role ? t(`run.role.${role}`) : ''
 }
 
 function roundLabel(item) {
@@ -780,6 +872,65 @@ defineExpose({ focus })
 
 .trace-summary-statuses {
   gap: 7px;
+}
+
+.trace-phase-feedback {
+  display: grid;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-soft) 52%, var(--surface-raised) 48%);
+}
+
+.trace-phase-current {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.trace-phase-current strong {
+  color: var(--accent-hover);
+  font-size: 11px;
+}
+
+.trace-phase-slot-list {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-phase-slot-list li {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-soft);
+  font-size: 10px;
+}
+
+.trace-phase-slot-list li > span {
+  min-width: 0;
+  flex: 1 1 88px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.trace-phase-slot-list li small {
+  min-width: 0;
+  flex: 1 1 142px;
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.35;
+  text-align: right;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .trace-waiting-state {

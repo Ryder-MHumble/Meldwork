@@ -8,7 +8,7 @@ import {
   translateSystemMessage,
 } from '../../i18n.js'
 
-describe('RoundRelay i18n', () => {
+describe('Meldwork i18n', () => {
   it('keeps English and Chinese keys in sync', () => {
     expect(messageKeys('en')).toEqual(messageKeys('zh'))
   })

@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 import { agentLabel } from '../catalog.js'
+import { normalizeOrchestration } from '../desktop-normalization.js'
 import {
   retainedTraceEvents,
   runStatusTone,
@@ -11,6 +12,10 @@ const CONTROLLER_TERMINAL_KEYS = new Set([
   'system.autoRoundLimit',
   'system.autoStopped',
 ])
+
+function orchestrationFor(run, agent) {
+  return normalizeOrchestration(agent?.orchestration || run?.orchestration)
+}
 
 export function useConversationTraceRuns({
   activeGroup,
@@ -56,6 +61,7 @@ export function useConversationTraceRuns({
         sources: traceSourceItems(agent.sourceMessageIds),
         truncated: agent.truncated === true,
         context: agent.context || {},
+        orchestration: orchestrationFor(activeRun.value, agent),
         threadRootId: activeRun.value?.threadRootId || '',
         createdAt: agent.startedAt,
         startedAt: agent.startedAt,
@@ -80,6 +86,7 @@ export function useConversationTraceRuns({
         sources: traceSourceItems(trace.sourceMessageIds),
         truncated: trace.truncated === true,
         context: trace.context || {},
+        orchestration: normalizeOrchestration(trace.orchestration || activeRun.value?.orchestration),
         messageId: message.id,
         threadRootId: messageThreadRootId(message),
         createdAt: message.createdAt,
@@ -97,6 +104,7 @@ export function useConversationTraceRuns({
           : durable.sourceMessageIds,
         sources: live.sources?.length ? live.sources : durable.sources,
         truncated: live.truncated || durable.truncated,
+        orchestration: live.orchestration || durable.orchestration,
         threadRootId: live.threadRootId || durable.threadRootId,
         createdAt: live.createdAt || durable.createdAt,
         startedAt: live.startedAt || durable.startedAt,
@@ -119,10 +127,12 @@ export function useConversationTraceRuns({
         runId: item.runId,
         threadRootId: item.threadRootId,
         agentRuns: [],
+        orchestration: item.orchestration || null,
         rootIndex: rootOrder.get(item.threadRootId) ?? -1,
         createdAt: 0,
       }
       current.agentRuns.push(item)
+      if (item.orchestration) current.orchestration = item.orchestration
       current.createdAt = Math.max(current.createdAt, Date.parse(item.createdAt || item.startedAt || '') || 0)
       runs.set(item.runId, current)
     }

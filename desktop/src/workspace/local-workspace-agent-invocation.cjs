@@ -37,6 +37,36 @@ const {
 
 const MAX_INHERITED_TASK_IDS = 64
 const MAX_ISOLATED_PROMPT_BYTES = 4 * 1024 * 1024
+const OUTCOME_REF_FIELDS = Object.freeze([
+  'artifactIds',
+  'evidenceIds',
+  'findingIds',
+  'reviewerFindingIds',
+  'adoptionIds',
+  'workflowOutcomeRefs',
+])
+
+function mergeOutcomeRefs(sources, options = {}) {
+  const merged = {}
+  const seen = new Map(OUTCOME_REF_FIELDS.map(field => [field, new Set()]))
+  for (const source of sources) {
+    const normalized = normalizeOutcomeRefs(
+      source,
+      options.strict === true ? { strict: true } : {},
+    )
+    for (const field of OUTCOME_REF_FIELDS) {
+      if (!Array.isArray(normalized[field])) continue
+      for (const value of normalized[field]) {
+        const key = field === 'workflowOutcomeRefs' ? canonicalJson(value) : value
+        if (seen.get(field).has(key)) continue
+        seen.get(field).add(key)
+        merged[field] = [...(merged[field] || []), value]
+      }
+    }
+  }
+  // Each source is validated strictly; later sources only fill remaining field capacity.
+  return normalizeOutcomeRefs(merged)
+}
 
 function canUseNativeMediaFallback(error) {
   const code = String(error?.code || error?.message || '')
@@ -51,6 +81,151 @@ function agentReturnedMediaProviderFailure(text) {
     || /provider.+(?:does not|do not).+(?:offer|support).+(?:media|image|audio|video).+model/i.test(normalized)
 }
 const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
+const SHA256 = /^[a-f0-9]{64}$/
+const V4_PHASES = new Set(['proposal', 'challenge', 'work', 'synthesis', 'verification'])
+const V4_RECEIPT_MARKER_PREFIX = '[[MELDWORK_COLLABORATION'
+const V4_RECEIPT_MARKER = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?:([\s\S]*?)\]\]\s*$/i
+const V4_RECEIPT_BLOCK = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?\]\]([\s\S]*?)\[\[\/MELDWORK_COLLABORATION(?:_JSON)?\]\]\s*$/i
+const LEGACY_CONSENSUS_MARKER = /^\s*\[\[MELDWORK_CONSENSUS:(?:agree|continue)\]\]\s*$/gim
+const V4_RECEIPT_MAX_TEXT = 800
+const V4_RECEIPT_MAX_ITEMS = 16
+const V4_RECEIPT_MAX_BYTES = 16 * 1024
+
+function boundedReceiptText(value, limit = V4_RECEIPT_MAX_TEXT) {
+  if (typeof value !== 'string' || value.trim().length > limit) return ''
+  const text = cleanText(value, limit)
+  return text && !text.includes('\u0000') ? text : ''
+}
+
+function boundedReceiptList(value) {
+  if (value == null) return []
+  if (!Array.isArray(value) || value.length > V4_RECEIPT_MAX_ITEMS) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  const result = value.map(item => boundedReceiptText(item))
+  if (result.some(item => !item)) throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  return result
+}
+
+function parseV4CollaborationReceipt(result, required = false, expectedPhase = '') {
+  const rawText = typeof result?.text === 'string' ? result.text : ''
+  if (!required) return { text: rawText, collaboration: null }
+  let text = rawText
+  let receipt = result?.collaboration
+  const block = rawText.match(V4_RECEIPT_BLOCK) || rawText.match(V4_RECEIPT_MARKER)
+  if (block) {
+    const encoded = String(block[1] || '').trim()
+    if (!encoded || Buffer.byteLength(encoded) > V4_RECEIPT_MAX_BYTES) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
+    try {
+      const parsed = JSON.parse(encoded)
+      if (receipt != null && canonicalJson(receipt) !== canonicalJson(parsed)) {
+        throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_MISMATCH')
+      }
+      receipt = parsed
+    } catch (error) {
+      if (error?.message === 'LOCAL_RUN_COLLABORATION_RECEIPT_MISMATCH') throw error
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
+    text = rawText.slice(0, rawText.length - block[0].length)
+  } else if (/\[\[MELDWORK_COLLABORATION/i.test(rawText)) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  text = text.replace(LEGACY_CONSENSUS_MARKER, '').replace(/\n{3,}/g, '\n\n').trim()
+  if (receipt == null) throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED')
+  if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  try {
+    if (Buffer.byteLength(canonicalJson(receipt)) > V4_RECEIPT_MAX_BYTES) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
+  } catch (error) {
+    if (error?.message === 'LOCAL_RUN_COLLABORATION_RECEIPT_INVALID') throw error
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  const phase = String(expectedPhase || '')
+  const summary = boundedReceiptText(receipt.summary)
+  const allowed = new Set([
+    'version', 'phase', 'summary',
+    ...(['challenge', 'verification'].includes(phase) ? ['verdict'] : []),
+    ...(phase === 'proposal'
+      ? ['capabilities', 'intendedWork', 'deliverables', 'dependencies'] : []),
+    ...(phase === 'challenge'
+      ? [
+          'proposedAssignments', 'finalizerKind', 'verifierKinds',
+          'supportedPlanHash', 'agreeToPlan',
+        ] : []),
+    ...(phase === 'work' ? ['workItemId', 'deliverables'] : []),
+    ...(phase === 'synthesis' ? ['resolvedIssueIds'] : []),
+  ])
+  if (!V4_PHASES.has(phase) || !summary
+      || Object.keys(receipt).some(key => !allowed.has(key))
+      || (receipt.version != null && receipt.version !== 1)
+      || (receipt.phase != null && receipt.phase !== phase)) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  if (['challenge', 'verification'].includes(phase)
+      && !['support', 'contradict'].includes(receipt.verdict)) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  const resolvedIssueIds = phase === 'synthesis'
+    ? boundedReceiptList(receipt.resolvedIssueIds)
+    : null
+  if (phase === 'synthesis' && !Array.isArray(receipt.resolvedIssueIds)) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  if (phase === 'challenge' && receipt.supportedPlanHash != null
+      && !SHA256.test(String(receipt.supportedPlanHash))) {
+    throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+  }
+  const proposalList = (field, requireItem = false) => {
+    if (!Array.isArray(receipt[field])) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
+    const list = boundedReceiptList(receipt[field])
+    if (requireItem && list.length === 0) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
+    return list
+  }
+  const boundedList = value => {
+    if (value == null) return []
+    if (!Array.isArray(value) || value.length > V4_RECEIPT_MAX_ITEMS) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
+    const result = value.map(item => boundedReceiptText(item))
+    if (result.some(item => !item)) throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    return result
+  }
+  const normalized = {
+    version: 1,
+    phase,
+    summary,
+    ...(['challenge', 'verification'].includes(phase) ? { verdict: receipt.verdict } : {}),
+    ...(phase === 'proposal' ? {
+      capabilities: proposalList('capabilities', true),
+      intendedWork: proposalList('intendedWork', true),
+      deliverables: proposalList('deliverables', true),
+      dependencies: proposalList('dependencies'),
+    } : {}),
+    ...(phase === 'challenge' ? {
+      ...(Array.isArray(receipt.proposedAssignments)
+        ? { proposedAssignments: receipt.proposedAssignments } : {}),
+      ...(receipt.finalizerKind ? { finalizerKind: boundedReceiptText(receipt.finalizerKind, 120) } : {}),
+      ...(Array.isArray(receipt.verifierKinds) ? { verifierKinds: boundedList(receipt.verifierKinds) } : {}),
+      ...(receipt.supportedPlanHash ? { supportedPlanHash: receipt.supportedPlanHash } : {}),
+      ...(typeof receipt.agreeToPlan === 'boolean' ? { agreeToPlan: receipt.agreeToPlan } : {}),
+    } : {}),
+    ...(phase === 'work' ? {
+      ...(receipt.workItemId ? { workItemId: boundedReceiptText(receipt.workItemId, 120) } : {}),
+      deliverables: boundedList(receipt.deliverables),
+    } : {}),
+    ...(phase === 'synthesis' ? { resolvedIssueIds } : {}),
+  }
+  return { text, collaboration: Object.freeze(JSON.parse(canonicalJson(normalized))) }
+}
 
 function attachInvocationFailure(error, input) {
   if (!error || (typeof error !== 'object' && typeof error !== 'function')) return error
@@ -71,7 +246,7 @@ function attachInvocationFailure(error, input) {
 }
 
 function isolatedInvocationContext(context) {
-  if (context?.sessionPolicy !== 'isolated') return null
+  if (!['isolated', 'frozen'].includes(context?.sessionPolicy)) return null
   const promptOverride = typeof context.promptOverride === 'string'
     ? context.promptOverride
     : ''
@@ -81,7 +256,11 @@ function isolatedInvocationContext(context) {
       || !contextPackId) {
     throw new Error('LOCAL_RUN_ISOLATED_CONTEXT_INVALID')
   }
-  return { promptOverride, contextPackId }
+  return {
+    promptOverride,
+    contextPackId,
+    policy: context.sessionPolicy,
+  }
 }
 
 function createdSessionProvenance(group, taskId, stateless = false) {
@@ -324,10 +503,21 @@ class LocalWorkspaceAgentInvocation {
     const agent = this.detectedAgents().find(item => item.kind === kind && item.available)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const reviewOnly = isCodeReviewAgentKind(kind)
-    const isolated = isolatedInvocationContext(context)
+    const invocationContext = isolatedInvocationContext(context)
+    const isolated = invocationContext?.policy === 'isolated'
+    const frozen = invocationContext?.policy === 'frozen'
     const internal = context.internal === true
     if (internal && !isolated) throw new Error('LOCAL_RUN_INTERNAL_CONTEXT_INVALID')
-    const allowWrite = group.allowWrite === true && !reviewOnly && !isolated
+    const requestedPermission = context.permissionMode == null
+      ? (group.allowWrite === true ? 'workspace-write' : 'read-only')
+      : (context.permissionMode === 'workspace-write' ? 'workspace-write' : 'read-only')
+    const writerKind = cleanText(context.singleWriterKind || context.writerKind, 80)
+    const writerAllowed = !writerKind || writerKind === kind
+    const allowWrite = group.allowWrite === true
+      && requestedPermission === 'workspace-write'
+      && writerAllowed
+      && !reviewOnly
+      && !isolated
     const skillInputTypes = new Set(['text'])
     for (const attachment of context.attachmentSnapshots || []) {
       const type = attachmentType(attachment?.mimeType)
@@ -349,7 +539,7 @@ class LocalWorkspaceAgentInvocation {
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
-    if (!isolated) {
+    if (!isolated && !frozen) {
       const requiredContext = this.packedPromptContext(
         group.id, '', threadRootId, context.contextOptions || {},
       )
@@ -433,6 +623,41 @@ class LocalWorkspaceAgentInvocation {
       sessionTransport = ''
       sessionRotated = true
     }
+    let v4Prompt = invocationContext?.promptOverride || ''
+    let v4Delivery = null
+    const buildV4Prompt = () => {
+      if (context.v4 !== true || typeof context.v4PromptBuilder !== 'function') return v4Prompt
+      const built = context.v4PromptBuilder({
+        sessionRefHash: sha256(sessionRef),
+        sessionProvenanceHash: connectorSessionBinding(sessionRef, sessionProvenance).sessionProvenanceHash,
+        sessionRotated,
+        hasSession: Boolean(sessionRef),
+      })
+      if (!built || typeof built.prompt !== 'string' || !built.prompt
+          || built.prompt.includes('\u0000') || Buffer.byteLength(built.prompt) > MAX_ISOLATED_PROMPT_BYTES) {
+        throw new Error('LOCAL_RUN_V4_PROMPT_INVALID')
+      }
+      v4Prompt = built.prompt
+      v4Delivery = built.delivery || null
+      return v4Prompt
+    }
+    try {
+      buildV4Prompt()
+    } catch (error) {
+      throw attachInvocationFailure(error, {
+        outcomeCertainty: 'not_started',
+        sideEffectsPossible: false,
+        operationId,
+        idempotencyMode,
+      })
+    }
+    if (typeof context.onLeaseAcquired === 'function') {
+      context.onLeaseAcquired({
+        operationId,
+        permissionMode: allowWrite ? 'workspace-write' : 'read-only',
+        sideEffectsPossible: allowWrite,
+      })
+    }
     let transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
       ? kind
       : ''
@@ -445,35 +670,39 @@ class LocalWorkspaceAgentInvocation {
       && sessionMeta.turns > 0
       ? 'continuation'
       : 'bootstrap'
-    let packedContext = isolated
+    let packedContext = isolated || frozen
       ? {
-          text: '',
-          sourceMessageIds: [],
-          sourceEntries: [],
+          text: v4Prompt,
+          sourceMessageIds: context.snapshotSourceMessageIds || [],
+          sourceEntries: context.snapshotSourceEntries || [],
           omittedCount: 0,
-          charCount: isolated.promptOverride.length,
+          charCount: v4Prompt.length,
           context: {
             includedCount: 0,
             omittedCount: 0,
-            charCount: isolated.promptOverride.length,
-            contextPackId: isolated.contextPackId,
+            charCount: v4Prompt.length,
+            contextPackId: invocationContext.contextPackId,
             contextPackState: 'captured',
           },
+          currentTaskText: v4Prompt,
+          stableText: '(frozen)',
+          recentText: '(frozen)',
+          continuationText: v4Prompt,
         }
       : this.packedPromptContext(
           group.id, transcriptAfterKind, threadRootId, context.contextOptions || {},
         )
-    if (!isolated) {
+    if (!isolated && !frozen) {
       packedContext = withCollaborationPackage(
         packedContext, context.collaborationPackage,
       )
     }
-    if (!isolated) assertRequiredContextFits(packedContext)
+    if (!isolated && !frozen) assertRequiredContextFits(packedContext)
     let deliveredContext = deliveredPackedContext(packedContext, promptMode)
     const harness = this.ensureRunHarness(group, activeRun, threadRootId)
     const harnessRun = harness?.beginAgent(kind, round, deliveredContext.sourceMessageIds)
     let deliveryContext = {
-      contextPackId: isolated?.contextPackId || activeRun?.contextPackId || '',
+      contextPackId: invocationContext?.contextPackId || activeRun?.contextPackId || '',
       deliveryRecordIds: [],
       sessionProvenance,
     }
@@ -578,7 +807,8 @@ class LocalWorkspaceAgentInvocation {
       pauseWatchdog()
       try {
         return invocation.lease?.suspend
-          ? await invocation.lease.suspend(operation)
+          ? await invocation.lease.suspend(operation, context.v4 === true
+            && context.parallelGraph === true ? { pauseTask: true } : undefined)
           : await operation()
       } finally {
         if (!agentController.signal.aborted) resumeWatchdog()
@@ -602,9 +832,11 @@ class LocalWorkspaceAgentInvocation {
       this.armAgentSilence(activeRun, kind, round, harnessRun?.agentRunId)
     }
     let autoDeltaBuffer = ''
+    let v4DeltaBuffer = ''
+    let v4ReceiptStarted = false
     const consensusMarkers = [
-      '[[ROUNDRELAY_CONSENSUS:agree]]',
-      '[[ROUNDRELAY_CONSENSUS:continue]]',
+      '[[MELDWORK_CONSENSUS:agree]]',
+      '[[MELDWORK_CONSENSUS:continue]]',
     ]
     const emitHarnessEvent = (rawEvent) => {
       if (agentCallbacksClosed || agentController.signal.aborted
@@ -619,11 +851,49 @@ class LocalWorkspaceAgentInvocation {
         this.emitChanged()
       }
     }
+    const emitV4AnswerDelta = (rawEvent) => {
+      if (v4ReceiptStarted) return
+      v4DeltaBuffer += String(rawEvent.delta || '')
+      const hiddenMarkers = [
+        ...consensusMarkers.map(marker => marker.toUpperCase()),
+        V4_RECEIPT_MARKER_PREFIX,
+      ]
+      let visible = ''
+      while (v4DeltaBuffer && !v4ReceiptStarted) {
+        const uppercaseBuffer = v4DeltaBuffer.toUpperCase()
+        const next = hiddenMarkers.reduce((candidate, marker) => {
+          const index = uppercaseBuffer.indexOf(marker)
+          return index >= 0 && (!candidate || index < candidate.index)
+            ? { index, marker }
+            : candidate
+        }, null)
+        if (next) {
+          visible += v4DeltaBuffer.slice(0, next.index)
+          v4DeltaBuffer = v4DeltaBuffer.slice(next.index + next.marker.length)
+          if (next.marker === V4_RECEIPT_MARKER_PREFIX) v4ReceiptStarted = true
+          continue
+        }
+        let hold = 0
+        for (const marker of hiddenMarkers) {
+          for (let size = 1; size < marker.length; size += 1) {
+            if (uppercaseBuffer.endsWith(marker.slice(0, size))) hold = Math.max(hold, size)
+          }
+        }
+        visible += hold ? v4DeltaBuffer.slice(0, -hold) : v4DeltaBuffer
+        v4DeltaBuffer = hold ? v4DeltaBuffer.slice(-hold) : ''
+        break
+      }
+      if (visible) emitHarnessEvent({ ...rawEvent, delta: visible })
+    }
     const emitRuntimeEvent = (rawEvent) => {
       if (agentCallbacksClosed || agentController.signal.aborted) return
       noteWatchdogProgress()
       if (!rawEvent || rawEvent.type !== 'answer_delta') {
         emitHarnessEvent(rawEvent)
+        return
+      }
+      if (context.v4 === true) {
+        emitV4AnswerDelta(rawEvent)
         return
       }
       if (mode !== 'auto') {
@@ -644,7 +914,15 @@ class LocalWorkspaceAgentInvocation {
       autoDeltaBuffer = hold ? autoDeltaBuffer.slice(-hold) : ''
       if (safe) emitHarnessEvent({ ...rawEvent, delta: safe })
     }
-    const flushRuntimeEvent = () => {
+    const flushRuntimeEvent = (finalText = '') => {
+      if (context.v4 === true) {
+        const suffix = v4DeltaBuffer
+        v4DeltaBuffer = ''
+        if (!v4ReceiptStarted && suffix && String(finalText).endsWith(suffix)) {
+          emitHarnessEvent({ type: 'answer_delta', status: 'running', delta: suffix })
+        }
+        return
+      }
       if (!autoDeltaBuffer) return
       const safe = consensusMarkers.reduce(
         (value, marker) => value.split(marker).join(''),
@@ -697,7 +975,7 @@ class LocalWorkspaceAgentInvocation {
     }
     const finishHarness = (status, finalText = '', runtimeContext = {}) => {
       if (!harness || !harnessRun || harnessFinished) return null
-      flushRuntimeEvent()
+      flushRuntimeEvent(finalText)
       agentCallbacksClosed = true
       this.clearAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       const finished = harness.finishAgent(kind, round, status, finalText, {
@@ -764,7 +1042,7 @@ class LocalWorkspaceAgentInvocation {
         0,
         Math.floor(Number(this.attachmentSupport(kind)?.image) || 0),
       )
-      stagedInputs = isolated
+      stagedInputs = isolated || frozen
         ? null
         : stageAgentInputs(group.workdir, context.attachmentSnapshots || [], nativeImageLimit)
       const runtimeInstruction = cleanText(context.runtimeInstruction, 3000)
@@ -778,8 +1056,8 @@ class LocalWorkspaceAgentInvocation {
             'Do not separately mention, summarize, continue, or complete any previous user task.',
             'Do not append an answer to an older task after the current-task conclusion.',
           ].join('\n')
-      const buildPrompt = (afterKind, contextPackage) => isolated
-        ? isolated.promptOverride
+      const buildPrompt = (afterKind, contextPackage) => isolated || frozen
+        ? v4Prompt
         : [
             this.promptFor(
               group, kind, context.completionPolicy === 'typed' ? 'manual' : mode,
@@ -828,9 +1106,9 @@ class LocalWorkspaceAgentInvocation {
           mode: group.conversationType === 'direct' ? 'direct' : mode,
           kind,
           packedContext: deliveredContext,
-          attachments: isolated ? [] : (context.attachmentSnapshots || []),
-          skillHints: isolated ? [] : (context.skillHints || []),
-          knowledgeBaseHints: isolated ? [] : (context.knowledgeBaseHints || []),
+          attachments: isolated || frozen ? [] : (context.attachmentSnapshots || []),
+          skillHints: isolated || frozen ? [] : (context.skillHints || []),
+          knowledgeBaseHints: isolated || frozen ? [] : (context.knowledgeBaseHints || []),
           // The prompt is context-budgeted, so delivery verification must use
           // the exact prompt scheduled for this Agent rather than the raw turn.
           // Verify against the prompt actually reported by the transport. This
@@ -845,7 +1123,7 @@ class LocalWorkspaceAgentInvocation {
           kind,
           outbound,
           permissionMode: allowWrite ? 'workspace-write' : 'read-only',
-          skills: isolated ? [] : (context.skillHints || []),
+          skills: isolated || frozen ? [] : (context.skillHints || []),
           runtimeAdditions: attempt.runtimeAdditions,
           sessionProvenance,
         })
@@ -858,7 +1136,7 @@ class LocalWorkspaceAgentInvocation {
           sessionProvenance,
           ...contextSourceProof(attempt.record),
           promptChars: deliveredPrompt.length,
-          promptBytes: Buffer.byteLength(deliveredPrompt),
+          promptBytes: Buffer.byteLength(deliveredPrompt, 'utf8'),
           promptHash: sha256(deliveredPrompt),
           wirePayloadBytes: delivery.wirePayloadBytes,
           wirePayloadHash: delivery.wirePayloadHash,
@@ -900,12 +1178,25 @@ class LocalWorkspaceAgentInvocation {
         sessionTransport = ''
         transcriptAfterKind = ''
         sessionRotated = true
-        packedContext = this.packedPromptContext(
-          group.id, '', threadRootId, context.contextOptions || {},
-        )
-        packedContext = withCollaborationPackage(
-          packedContext, context.collaborationPackage,
-        )
+        buildV4Prompt()
+        packedContext = frozen
+          ? {
+              text: v4Prompt,
+              sourceMessageIds: context.snapshotSourceMessageIds || [],
+              sourceEntries: context.snapshotSourceEntries || [],
+              omittedCount: 0,
+              charCount: v4Prompt.length,
+              context: {
+                includedCount: 0, omittedCount: 0, charCount: v4Prompt.length,
+                contextPackId: invocationContext.contextPackId, contextPackState: 'captured',
+              },
+              currentTaskText: v4Prompt,
+              stableText: '(frozen)', recentText: '(frozen)', continuationText: v4Prompt,
+            }
+          : withCollaborationPackage(
+              this.packedPromptContext(group.id, '', threadRootId, context.contextOptions || {}),
+              context.collaborationPackage,
+            )
         assertRequiredContextFits(packedContext)
         deliveredContext = deliveredPackedContext(packedContext, promptMode)
         const liveHarnessRun = harness?.current(
@@ -987,7 +1278,7 @@ class LocalWorkspaceAgentInvocation {
           return { status: decision.status, optionId: decision.optionId }
         },
         sessionTransport,
-        attachments: isolated ? [] : (stagedInputs?.nativeImagePaths || []),
+        attachments: isolated || frozen ? [] : (stagedInputs?.nativeImagePaths || []),
         ...(kind === 'hermes'
           ? {
               acpPersistenceKey: key,
@@ -1175,9 +1466,14 @@ class LocalWorkspaceAgentInvocation {
       result = requireTerminalAgentResult(result)
       this.markRuntimeCredential(kind, 'ready')
 
+      const collaborationReply = parseV4CollaborationReceipt(
+        result,
+        context.v4 === true,
+        context.phase || '',
+      )
       const reply = mode === 'auto' && context.completionPolicy !== 'typed'
-        ? parseAutoReply(result.text)
-        : { text: result.text, consensus: false }
+        ? parseAutoReply(collaborationReply.text)
+        : { text: collaborationReply.text, consensus: false }
       if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')
       if (allowWrite && context.mediaRequest && this.generateMedia && nativeMediaFallback
           && !generatedMedia && agentReturnedMediaProviderFailure(reply.text)) {
@@ -1273,6 +1569,14 @@ class LocalWorkspaceAgentInvocation {
         }
       }
       if (agentController.signal.aborted) throw agentStoppedError()
+      const requestedOutcomeRefs = !internal && context.outcomeRefs
+        && typeof context.outcomeRefs === 'object'
+        && !Array.isArray(context.outcomeRefs)
+        ? context.outcomeRefs
+        : {}
+      const reportedOutcomeRefs = !internal
+        ? normalizeOutcomeRefs(result.outcomeRefs, context.v4 === true ? { strict: true } : {})
+        : {}
       const capturedOutcomeRefs = internal
         ? { artifactIds: [], evidenceIds: [] }
         : this.recordAgentOutcomes({
@@ -1284,49 +1588,52 @@ class LocalWorkspaceAgentInvocation {
             conclusion: reply.text,
             descriptors,
           })
-      const requestedOutcomeRefs = !internal && context.outcomeRefs
-        && typeof context.outcomeRefs === 'object'
-        && !Array.isArray(context.outcomeRefs)
-        ? context.outcomeRefs
-        : {}
-      const outcomeRefs = normalizeOutcomeRefs({
-        ...requestedOutcomeRefs,
-        artifactIds: [
-          ...(Array.isArray(requestedOutcomeRefs.artifactIds)
-            ? requestedOutcomeRefs.artifactIds
-            : []),
-          ...(capturedOutcomeRefs.artifactIds || []),
-        ],
-        evidenceIds: [
-          ...(Array.isArray(requestedOutcomeRefs.evidenceIds)
-            ? requestedOutcomeRefs.evidenceIds
-            : []),
-          ...(capturedOutcomeRefs.evidenceIds || []),
-        ],
-      })
+      const producedOutcomeRefs = mergeOutcomeRefs(
+        [reportedOutcomeRefs, capturedOutcomeRefs],
+        { strict: context.v4 === true },
+      )
+      const auditOutcomeRefs = mergeOutcomeRefs([
+        producedOutcomeRefs,
+        capturedOutcomeRefs,
+        requestedOutcomeRefs,
+      ])
       const finalStatus = result.outcome
       const trace = finishHarness(finalStatus, reply.text, {
         promptChars: prompt.length,
+        promptBytes: Buffer.byteLength(prompt, 'utf8'),
+        promptHash: sha256(prompt),
         externalRunRef: result.externalRunRef,
-        outcomeRefs,
+        outcomeRefs: auditOutcomeRefs,
       })
-      const message = internal
+      const messageMetadata = {
+        elapsedMs: Date.now() - startedAt,
+        toolCalls,
+        attachments,
+        trace,
+        responseVersionRootId,
+      }
+      const pendingMessage = internal
         ? null
-        : this.addMessage(
-            group.id,
-            'agent',
-            reply.text,
-            kind,
+        : {
+            groupId: group.id,
+            role: 'agent',
+            content: reply.text,
+            agentKind: kind,
             threadRootId,
-            null,
-            {
-              elapsedMs: Date.now() - startedAt,
-              toolCalls,
-              attachments,
-              trace,
-              responseVersionRootId,
-            },
+            system: null,
+            metadata: messageMetadata,
+          }
+      const message = pendingMessage && context.deferMessage !== true
+        ? this.addMessage(
+            pendingMessage.groupId,
+            pendingMessage.role,
+            pendingMessage.content,
+            pendingMessage.agentKind,
+            pendingMessage.threadRootId,
+            pendingMessage.system,
+            pendingMessage.metadata,
           )
+        : null
       if (!reviewOnly && !isolated) {
         this.persistSessionState(key, result.sessionRef || sessionRef, completedSessionMeta(
           sessionMeta, sessionProvenance, taskId, {
@@ -1339,8 +1646,16 @@ class LocalWorkspaceAgentInvocation {
       }
       return {
         message,
-        outcomeRefs,
+        pendingMessage,
+        collaboration: collaborationReply.collaboration,
+        outcomeRefs: producedOutcomeRefs,
+        producedOutcomeRefs,
+        operationId,
         consensus: reply.consensus && result.outcome === 'completed',
+        ...(v4Delivery ? {
+          v4Delivery,
+          v4SessionBinding: connectorSessionBinding(result.sessionRef || sessionRef, sessionProvenance),
+        } : {}),
       }
     } catch (caughtError) {
       const parentTimedOut = Boolean(signal?.aborted && activeRun?.stopReason === 'timeout')
@@ -1448,4 +1763,4 @@ class LocalWorkspaceAgentInvocation {
   }
 }
 
-module.exports = { LocalWorkspaceAgentInvocation }
+module.exports = { LocalWorkspaceAgentInvocation, parseV4CollaborationReceipt }

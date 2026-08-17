@@ -4,6 +4,7 @@ import {
   groupIdentifier,
   identifier,
   normalizeMessageTrace,
+  normalizeOrchestration,
   normalizeRunAgent,
   normalizedAgentKinds,
   record,
@@ -28,6 +29,15 @@ const BUDGET_EXHAUSTION_FIELDS = new Set([
 ])
 const BUDGET_SOURCES = new Set(['reported', 'estimated', 'unknown'])
 const BUDGET_ENFORCEMENTS = new Set(['hard', 'soft'])
+const V4_RUN_PHASES = new Set([
+  'preparing', 'running', 'waiting', 'completed', 'succeeded', 'partial',
+  'failed', 'cancelled', 'stopped', 'timeout', 'interrupted',
+])
+const V4_RUN_MODES = new Set(['manual', 'auto'])
+const V4_RUN_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/
+const MAX_V4_CURRENT_ROUND = 100000
+const MAX_V4_CONFIGURED_ROUNDS = 10
+const MAX_DATE_TIMESTAMP = 8640000000000000
 
 export function emptySnapshot() {
   return {
@@ -41,6 +51,18 @@ function normalizeProgress(value) {
     title: String(item?.title || '').trim(),
     status: String(item?.status || '').trim(),
   })).filter(item => item.title)
+}
+
+function boundedV4RunInteger(value, maximum) {
+  return Number.isSafeInteger(value) && value >= 0 && value <= maximum ? value : null
+}
+
+function normalizedV4RunTimestamp(value) {
+  if (Number.isSafeInteger(value) && value >= 0 && value <= MAX_DATE_TIMESTAMP) return value
+  return typeof value === 'string' && value.length <= 40 && V4_RUN_TIMESTAMP.test(value)
+    && Number.isFinite(Date.parse(value))
+    ? value
+    : null
 }
 
 function exactRecord(value, fields) {
@@ -150,6 +172,17 @@ function normalizeHumanGate(value) {
 function scopeRunToTargetKinds(run, values) {
   const targetKinds = normalizedAgentKinds(values)
   const targets = new Set(targetKinds)
+  const orchestration = run.orchestration && run.orchestration.version === 4
+    ? {
+        ...run.orchestration,
+        ...(Array.isArray(run.orchestration.currentKinds)
+          ? { currentKinds: run.orchestration.currentKinds.filter(kind => targets.has(kind)) }
+          : {}),
+        ...(Array.isArray(run.orchestration.slots)
+          ? { slots: run.orchestration.slots.filter(slot => targets.has(slot.agentKind)) }
+          : {}),
+      }
+    : run.orchestration
   const scoped = {
     ...run,
     targetKinds,
@@ -157,6 +190,7 @@ function scopeRunToTargetKinds(run, values) {
     failedKinds: normalizedAgentKinds(run.failedKinds).filter(kind => targets.has(kind)),
     currentKind: targets.has(agentKind(run.currentKind)) ? agentKind(run.currentKind) : '',
     agentRuns: (Array.isArray(run.agentRuns) ? run.agentRuns : []).filter(agent => targets.has(agent.kind)),
+    ...(orchestration ? { orchestration } : {}),
   }
   delete scoped._targetKindsInferred
   return scoped
@@ -165,7 +199,24 @@ function scopeRunToTargetKinds(run, values) {
 function normalizeRun(value) {
   const input = record(value)
   if (!input) return null
-  const run = { ...input, progress: normalizeProgress(input.progress) }
+  const isV4 = record(input.orchestration)?.version === 4
+  const run = isV4
+    ? { progress: normalizeProgress(input.progress) }
+    : { ...input, progress: normalizeProgress(input.progress) }
+  if (isV4) {
+    if (V4_RUN_PHASES.has(input.phase)) run.phase = input.phase
+    if (V4_RUN_MODES.has(input.mode)) run.mode = input.mode
+    const currentRound = boundedV4RunInteger(input.currentRound, MAX_V4_CURRENT_ROUND)
+    const maxRounds = boundedV4RunInteger(input.maxRounds, MAX_V4_CONFIGURED_ROUNDS)
+    const startedAt = normalizedV4RunTimestamp(input.startedAt)
+    if (currentRound !== null) run.currentRound = currentRound
+    if (maxRounds !== null) run.maxRounds = maxRounds
+    if (typeof input.unlimitedRounds === 'boolean') run.unlimitedRounds = input.unlimitedRounds
+    if (startedAt !== null) run.startedAt = startedAt
+    const orchestration = normalizeOrchestration(input.orchestration)
+    if (orchestration) run.orchestration = orchestration
+    else delete run.orchestration
+  }
   const runId = identifier(input.runId)
   const groupId = groupIdentifier(input.groupId)
   const threadRootId = identifier(input.threadRootId)
@@ -178,6 +229,8 @@ function normalizeRun(value) {
   else delete run.threadRootId
   if (responseVersionRootId) run.responseVersionRootId = responseVersionRootId
   else delete run.responseVersionRootId
+  const declaredTargetKinds = normalizedAgentKinds(input.targetKinds)
+  run.targetKinds = declaredTargetKinds
   const rawAgentRuns = Array.isArray(input.agentRuns) ? input.agentRuns : input.agents
   run.agentRuns = Array.isArray(rawAgentRuns)
     ? rawAgentRuns.slice(0, MAX_RUN_AGENTS).map(agent => normalizeRunAgent(agent, run)).filter(Boolean)
@@ -189,9 +242,12 @@ function normalizeRun(value) {
   if (budget) run.budget = budget
   else delete run.budget
   delete run.agents
-  const declaredTargetKinds = normalizedAgentKinds(input.targetKinds)
   const inferredTargetKinds = normalizedAgentKinds([
     ...run.agentRuns.map(agent => agent.kind),
+    ...(Array.isArray(run.orchestration?.currentKinds) ? run.orchestration.currentKinds : []),
+    ...(Array.isArray(run.orchestration?.slots)
+      ? run.orchestration.slots.map(slot => slot.agentKind)
+      : []),
     input.currentKind,
     ...(Array.isArray(input.completedKinds) ? input.completedKinds : []),
     ...(Array.isArray(input.failedKinds) ? input.failedKinds : []),

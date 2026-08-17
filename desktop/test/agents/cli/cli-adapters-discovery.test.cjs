@@ -257,7 +257,7 @@ test('Linux executable resolution uses an allowlisted environment in the fallbac
       HOME: '/home/ryder',
       LANG: 'zh_CN.UTF-8',
       PATH: '/usr/bin:/bin',
-      ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+      MELDWORK_PRIVATE_VALUE: 'desktop-private-value',
       OPENAI_API_KEY: 'provider-secret',
     },
     accessFn: async (candidate) => {
@@ -269,7 +269,7 @@ test('Linux executable resolution uses an allowlisted environment in the fallbac
       assert.equal(options.env.HOME, '/home/ryder')
       assert.equal(options.env.LANG, 'zh_CN.UTF-8')
       assert.match(options.env.PATH, /\/usr\/bin:\/bin/)
-      assert.equal(options.env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+      assert.equal(options.env.MELDWORK_PRIVATE_VALUE, undefined)
       assert.equal(options.env.OPENAI_API_KEY, undefined)
       return { stdout: `${expected}\n`, stderr: '' }
     },
@@ -872,7 +872,7 @@ test('Agent detection passes only allowlisted system environment to version comm
       HOME: '/Users/Ryder',
       LANG: 'zh_CN.UTF-8',
       PATH: '/custom/bin',
-      ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+      MELDWORK_PRIVATE_VALUE: 'desktop-private-value',
       OPENAI_API_KEY: 'provider-secret',
     },
     resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
@@ -895,7 +895,7 @@ test('Agent detection passes only allowlisted system environment to version comm
     assert.equal(env.HOME, '/Users/Ryder')
     assert.equal(env.LANG, 'zh_CN.UTF-8')
     assert.match(env.PATH, /\/custom\/bin/)
-    assert.equal(env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+    assert.equal(env.MELDWORK_PRIVATE_VALUE, undefined)
     assert.equal(env.OPENAI_API_KEY, undefined)
   }
 })
@@ -953,7 +953,7 @@ test('runAgent hides executable paths from spawn failures', async () => {
 test('runAgent escalates cancellation when the CLI ignores SIGTERM', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-abort-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-abort-'))
   const readyFile = path.join(directory, 'ready')
   const cli = executable(directory, 'ignore-term.cjs', `
 const fs = require('node:fs')
@@ -982,7 +982,7 @@ setInterval(() => {}, 1000)
 test('runAgent cancellation closes pipes inherited by a descendant process', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-cli-tree-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-tree-'))
   const readyFile = path.join(directory, 'ready.json')
   const cli = executable(directory, 'spawn-descendant.cjs', `
 const fs = require('node:fs')

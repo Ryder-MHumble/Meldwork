@@ -21,8 +21,8 @@ const originalExecCommand = document.execCommand
 
 beforeEach(() => {
   localStorage.clear()
-  localStorage.setItem('roundrelay-theme', 'light')
-  localStorage.setItem('roundrelay-onboarding-seen-v1', '1')
+  localStorage.setItem('meldwork-theme', 'light')
+  localStorage.setItem('meldwork-onboarding-seen-v1', '1')
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: vi.fn(async () => {}) },
@@ -32,7 +32,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
   document.body.className = ''
   document.body.innerHTML = ''
   if (originalScrollIntoView) HTMLElement.prototype.scrollIntoView = originalScrollIntoView
@@ -43,7 +43,57 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-describe('RoundRelay workbench', () => {
+describe('Meldwork workbench', () => {
+  it('keeps a sanitized busy run shell stoppable while the composer stays locked', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-safe-run-shell',
+        conversationType: 'group',
+        name: 'Safe run shell',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.runningGroupIds = ['group-safe-run-shell']
+      state.runs = [{
+        groupId: 'group-safe-run-shell',
+        runId: 'run-safe-shell',
+        phase: 'running',
+        mode: 'manual',
+        targetKinds: ['codex', 'hermes'],
+        completedKinds: [],
+        failedKinds: [],
+        currentKind: '',
+        currentRound: 0,
+        maxRounds: 0,
+        unlimitedRounds: false,
+        progress: [],
+        threadRootId: '',
+        responseVersionRootId: '',
+        startedAt: '2026-07-29T08:01:00Z',
+        agentRuns: [],
+        waitingGateIds: [],
+        budget: null,
+        orchestration: { version: 4 },
+        terminalPersistence: { state: 'failed', privatePath: '/private/ledger' },
+        unexpectedTopLevel: 'must-not-cross-the-bridge',
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.composer-box textarea').attributes()).toHaveProperty('disabled')
+    expect(wrapper.find('.send-button').exists()).toBe(false)
+    expect(wrapper.get('.stop-button').attributes('aria-label')).toBe('Stop')
+    await wrapper.get('.stop-button').trigger('click')
+    expect(bridge.localWorkspace.stop).toHaveBeenCalledWith('group-safe-run-shell', 'run-safe-shell')
+    wrapper.unmount()
+  })
+
   it('keeps send state isolated while direct and group conversations run concurrently', async () => {
     const directSend = deferred()
     const groupSend = deferred()
@@ -56,7 +106,7 @@ describe('RoundRelay workbench', () => {
           name: 'Codex direct',
           topic: '',
           agentKinds: ['codex'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T08:00:00Z',
           updatedAt: '2026-07-29T08:00:00Z',
@@ -67,7 +117,7 @@ describe('RoundRelay workbench', () => {
           name: 'Concurrent review',
           topic: '',
           agentKinds: ['codex', 'hermes'],
-          workdir: '/tmp/roundrelay-workspace',
+          workdir: '/tmp/meldwork-workspace',
           allowWrite: false,
           createdAt: '2026-07-29T09:00:00Z',
           updatedAt: '2026-07-29T09:00:00Z',
@@ -116,6 +166,128 @@ describe('RoundRelay workbench', () => {
     wrapper.unmount()
   })
 
+  it('labels multi-Agent manual replies in both locales', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-manual-labels',
+        conversationType: 'group',
+        name: 'Manual labels',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('Concurrent responses')
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    expect(styles).toMatch(/@container \(max-width: 420px\)[\s\S]*\.mode-segmented button\s*\{[^}]*white-space:\s*normal;/s)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.composer-box\.unlimited-running,[\s\S]*animation:\s*none;/s)
+    setLocale('zh')
+    await flushPromises()
+    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('并发回复')
+
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
+    await wrapper.findAll('.target-chip')[1].trigger('click')
+    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('单轮回答')
+    wrapper.unmount()
+  })
+
+  it('keeps automatic round settings isolated per group', async () => {
+    const group = (id, name) => ({
+      id,
+      conversationType: 'group',
+      name,
+      topic: '',
+      agentKinds: ['codex', 'hermes'],
+      workdir: '/tmp/meldwork-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt: '2026-07-29T08:00:00Z',
+    })
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push(group('group-round-a', 'Round A'), group('group-round-b', 'Round B'))
+    })
+
+    wrapper.vm.selectGroup('group-round-a')
+    await flushPromises()
+    await wrapper.get('.round-settings-trigger').trigger('click')
+    await wrapper.get('.round-range-input').setValue(3)
+    await wrapper.get('.round-unlimited-button').trigger('click')
+    await wrapper.get('.confirmation-modal-footer .primary-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('No round limit')
+
+    wrapper.vm.selectGroup('group-round-b')
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('6 rounds')
+    await wrapper.get('.round-settings-trigger').trigger('click')
+    await wrapper.get('.round-range-input').setValue(9)
+    await flushPromises()
+
+    wrapper.vm.selectGroup('group-round-a')
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('No round limit')
+    wrapper.vm.selectGroup('group-round-b')
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('9 rounds')
+    wrapper.unmount()
+  })
+
+  it('cancels a stale unlimited confirmation when its originating group changes', async () => {
+    const group = (id, name, updatedAt) => ({
+      id,
+      conversationType: 'group',
+      name,
+      topic: '',
+      agentKinds: ['codex', 'hermes'],
+      workdir: '/tmp/meldwork-workspace',
+      allowWrite: false,
+      createdAt: '2026-07-29T08:00:00Z',
+      updatedAt,
+    })
+    const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
+      state.groups.push(
+        group('group-unlimited-a', 'Unlimited A', '2026-07-29T09:00:00Z'),
+        group('group-unlimited-b', 'Unlimited B', '2026-07-29T08:00:00Z'),
+      )
+    })
+
+    wrapper.vm.selectGroup('group-unlimited-a')
+    await flushPromises()
+    await wrapper.get('.round-settings-trigger').trigger('click')
+    await wrapper.get('.round-unlimited-button').trigger('click')
+    expect(wrapper.find('.confirmation-modal-body').exists()).toBe(true)
+
+    wrapper.vm.selectGroup('group-unlimited-b')
+    await flushPromises()
+    expect(wrapper.find('.confirmation-modal-body').exists()).toBe(false)
+
+    wrapper.vm.confirmUnlimitedRounds()
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('6 rounds')
+
+    wrapper.vm.selectGroup('group-unlimited-a')
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('6 rounds')
+
+    await wrapper.get('.round-settings-trigger').trigger('click')
+    await wrapper.get('.round-unlimited-button').trigger('click')
+    state.groups = state.groups.filter(group => group.id !== 'group-unlimited-a')
+    emitWorkspaceChanged()
+    await flushPromises()
+    expect(wrapper.find('.confirmation-modal-body').exists()).toBe(false)
+
+    wrapper.vm.confirmUnlimitedRounds()
+    wrapper.vm.selectGroup('group-unlimited-b')
+    await flushPromises()
+    expect(wrapper.get('.round-settings-trigger').text()).toContain('6 rounds')
+    wrapper.unmount()
+  })
+
   it('sends one mentioned Agent as a manual reply while the group defaults to automatic mode', async () => {
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
@@ -124,7 +296,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -200,7 +372,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -255,7 +427,7 @@ describe('RoundRelay workbench', () => {
         name: 'Review',
         topic: '',
         agentKinds: ['codex', 'hermes', 'qwen'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -283,6 +455,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'manual',
+      protocol: 'v4',
       maxRounds: 6,
     })
     wrapper.unmount()
@@ -303,7 +476,7 @@ describe('RoundRelay workbench', () => {
         name: 'Natural routing',
         topic: '',
         agentKinds: ['codex', 'hermes', 'qwen'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -352,7 +525,7 @@ describe('RoundRelay workbench', () => {
         name: 'Negated routing',
         topic: '',
         agentKinds: ['codex', 'openclaw', 'claude'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -398,7 +571,7 @@ describe('RoundRelay workbench', () => {
         name: 'Exact routing',
         topic: '',
         agentKinds: ['codex', 'openclaw', 'claude', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -498,6 +671,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'auto',
+      protocol: 'v4',
       maxRounds: 6,
     })
     expect(wrapper.findAll('.run-status-panel .run-agent-row').map(row => row.get('strong').text()))
@@ -543,7 +717,7 @@ describe('RoundRelay workbench', () => {
         name: 'Automatic routing',
         topic: '',
         agentKinds: ['codex', 'hermes', 'qwen', 'kimi', 'workbuddy'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -575,6 +749,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [],
       attachments: [],
       mode: 'auto',
+      protocol: 'v4',
       maxRounds: 6,
     })
     wrapper.unmount()
@@ -588,7 +763,7 @@ describe('RoundRelay workbench', () => {
         name: 'Knowledge review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -626,6 +801,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['codex', 'hermes'] }],
       attachments: [],
       mode: 'manual',
+      protocol: 'v4',
       maxRounds: 6,
     })
     expect(wrapper.find('.selected-knowledge-base').exists()).toBe(false)
@@ -640,7 +816,7 @@ describe('RoundRelay workbench', () => {
         name: 'Knowledge review',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -665,6 +841,7 @@ describe('RoundRelay workbench', () => {
       knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['codex', 'hermes'] }],
       attachments: [],
       mode: 'auto',
+      protocol: 'v4',
       maxRounds: 6,
     })
     wrapper.unmount()
@@ -678,7 +855,7 @@ describe('RoundRelay workbench', () => {
         name: 'Knowledge review',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -690,7 +867,7 @@ describe('RoundRelay workbench', () => {
         name: 'Codex direct',
         topic: '',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -733,7 +910,7 @@ describe('RoundRelay workbench', () => {
         name: 'Research',
         topic: '',
         agentKinds: ['codex', 'hermes'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',
@@ -770,7 +947,7 @@ describe('RoundRelay workbench', () => {
         directAgentKind: 'codex',
         name: 'Codex',
         agentKinds: ['codex'],
-        workdir: '/tmp/roundrelay-workspace',
+        workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
         updatedAt: '2026-07-29T08:00:00Z',

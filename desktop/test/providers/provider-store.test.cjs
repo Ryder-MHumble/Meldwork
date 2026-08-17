@@ -61,8 +61,8 @@ function encryptedSafeStorage(available = true) {
 }
 
 function fixture(safeStorage = encryptedSafeStorage(), allowedKinds = ['hermes', 'qwen', 'opencodereview']) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-provider-'))
-  const storagePath = path.join(directory, 'roundrelay-provider.json')
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-provider-'))
+  const storagePath = path.join(directory, 'meldwork-provider.json')
   return {
     directory,
     storagePath,

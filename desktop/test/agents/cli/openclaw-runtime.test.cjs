@@ -19,7 +19,7 @@ const {
 const { invocation } = require('../../../src/agents/cli/cli-invocations.cjs')
 
 function fixture() {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-runtime-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   return { directory, workdir }
@@ -66,15 +66,15 @@ test('managed runtime isolates OpenClaw state and keeps the API key out of confi
   const result = managedOpenClawOptions({
     storageRoot: directory,
     workdir,
-    sessionRef: 'agent:main:desktop-roundrelay-group-topic-openclaw',
+    sessionRef: 'agent:main:desktop-meldwork-group-topic-openclaw',
     provider: provider(),
   })
   const configText = fs.readFileSync(result.env.OPENCLAW_CONFIG_PATH, 'utf8')
   const config = JSON.parse(configText)
 
   assert.equal(configText.includes('test-openclaw-key'), false)
-  assert.deepEqual(config.models.providers['roundrelay-desktop'].apiKey, {
-    source: 'env', provider: 'default', id: 'ROUNDRELAY_OPENCLAW_API_KEY',
+  assert.deepEqual(config.models.providers['meldwork-desktop'].apiKey, {
+    source: 'env', provider: 'default', id: 'MELDWORK_OPENCLAW_API_KEY',
   })
   assert.equal(config.agents.defaults.workspace, workdir)
   assert.equal(config.agents.defaults.skipBootstrap, true)
@@ -83,7 +83,7 @@ test('managed runtime isolates OpenClaw state and keeps the API key out of confi
   ])
   assert.equal(config.tools.fs.workspaceOnly, true)
   assert.equal(config.tools.elevated.enabled, false)
-  assert.equal(result.env.ROUNDRELAY_OPENCLAW_API_KEY, 'test-openclaw-key')
+  assert.equal(result.env.MELDWORK_OPENCLAW_API_KEY, 'test-openclaw-key')
   assert.equal(result.env.OPENCLAW_WORKSPACE_DIR, workdir)
   assert.ok(result.env.OPENCLAW_STATE_DIR.startsWith(fs.realpathSync(directory)))
   assert.equal(fs.statSync(result.env.OPENCLAW_CONFIG_PATH).mode & 0o777, 0o600)
@@ -125,7 +125,7 @@ test('Gateway setup rewrites the guarded config without persisting credentials',
   assert.equal(config.update.checkOnStart, false)
   assert.equal(config.update.auto.enabled, false)
   assert.equal(config.logging.file, path.join(runtime.env.OPENCLAW_STATE_DIR, 'gateway.log'))
-  assert.equal(configText.includes(runtime.env.ROUNDRELAY_OPENCLAW_API_KEY), false)
+  assert.equal(configText.includes(runtime.env.MELDWORK_OPENCLAW_API_KEY), false)
   assert.equal(configText.includes(runtime.env.OPENCLAW_GATEWAY_TOKEN), false)
 })
 
@@ -339,7 +339,7 @@ if (args[commandOffset + 1] === 'health') {
 })
 
 test('OpenClaw ACP keeps deterministic global CLI flags before the subcommand', () => {
-  const sessionRef = 'agent:main:desktop-roundrelay-test-openclaw'
+  const sessionRef = 'agent:main:desktop-meldwork-test-openclaw'
   const spec = invocation('openclaw', '/tmp/openclaw', '/tmp/workspace', sessionRef, {
     sandbox: 'read-only',
   })
@@ -366,7 +366,7 @@ test('managed runtime defensively normalizes chat completion endpoints to the AP
   })
   const config = JSON.parse(fs.readFileSync(result.env.OPENCLAW_CONFIG_PATH, 'utf8'))
 
-  assert.equal(config.models.providers['roundrelay-desktop'].baseUrl, 'https://api.example.com/v1')
+  assert.equal(config.models.providers['meldwork-desktop'].baseUrl, 'https://api.example.com/v1')
 })
 
 test('write authorization uses an immutable config and preserves the topic state', (t) => {
@@ -376,7 +376,7 @@ test('write authorization uses an immutable config and preserves the topic state
   const input = {
     storageRoot: directory,
     workdir,
-    sessionRef: 'agent:main:desktop-roundrelay-group-topic-openclaw',
+    sessionRef: 'agent:main:desktop-meldwork-group-topic-openclaw',
     provider: provider(),
   }
   const readOnly = managedOpenClawOptions(input)
@@ -399,7 +399,7 @@ test('native auth uses the same isolated tool policy without importing user conf
   const common = {
     storageRoot: directory,
     workdir,
-    sessionRef: 'agent:main:desktop-roundrelay-native-openclaw',
+    sessionRef: 'agent:main:desktop-meldwork-native-openclaw',
   }
   const providerOptions = managedOpenClawOptions({ ...common, provider: provider() })
   const nativeOptions = nativeOpenClawOptions({
@@ -426,12 +426,12 @@ test('native auth uses the same isolated tool policy without importing user conf
   assert.equal(Object.hasOwn(nativeConfig, 'channels'), false)
   assert.deepEqual(Object.keys(nativeConfig.models.providers), ['native'])
   assert.deepEqual(nativeConfig.models.providers.native.apiKey, {
-    source: 'env', provider: 'default', id: 'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY',
+    source: 'env', provider: 'default', id: 'MELDWORK_OPENCLAW_NATIVE_API_KEY',
   })
   assert.equal(JSON.stringify(nativeConfig).includes('native-openclaw-key'), false)
   assert.equal(Object.hasOwn(nativeConfig.models.providers.native.models[0], 'params'), false)
-  assert.equal(nativeOptions.env.ROUNDRELAY_OPENCLAW_NATIVE_API_KEY, 'native-openclaw-key')
-  assert.equal(Object.hasOwn(nativeOptions.env, 'ROUNDRELAY_OPENCLAW_API_KEY'), false)
+  assert.equal(nativeOptions.env.MELDWORK_OPENCLAW_NATIVE_API_KEY, 'native-openclaw-key')
+  assert.equal(Object.hasOwn(nativeOptions.env, 'MELDWORK_OPENCLAW_API_KEY'), false)
   assert.ok(nativeOptions.env.OPENCLAW_STATE_DIR.startsWith(fs.realpathSync(directory)))
 })
 
@@ -698,12 +698,12 @@ test('runtime guard rejects in-place config and credential changes without expos
   })
   const serializedGuard = JSON.stringify(configOptions.openClawRuntimeGuard)
   const credentialDigest = crypto.createHash('sha256')
-    .update(configOptions.env.ROUNDRELAY_OPENCLAW_API_KEY)
+    .update(configOptions.env.MELDWORK_OPENCLAW_API_KEY)
     .digest('hex')
   const gatewayDigest = crypto.createHash('sha256')
     .update(configOptions.env.OPENCLAW_GATEWAY_TOKEN)
     .digest('hex')
-  assert.equal(serializedGuard.includes(configOptions.env.ROUNDRELAY_OPENCLAW_API_KEY), false)
+  assert.equal(serializedGuard.includes(configOptions.env.MELDWORK_OPENCLAW_API_KEY), false)
   assert.equal(serializedGuard.includes(configOptions.env.OPENCLAW_GATEWAY_TOKEN), false)
   assert.equal(serializedGuard.includes(credentialDigest), false)
   assert.equal(serializedGuard.includes(gatewayDigest), false)
@@ -728,7 +728,7 @@ test('runtime guard rejects in-place config and credential changes without expos
     credentialOptions.openClawRuntimeGuard,
     {
       ...credentialOptions.env,
-      ROUNDRELAY_OPENCLAW_API_KEY: 'tampered-openclaw-key',
+      MELDWORK_OPENCLAW_API_KEY: 'tampered-openclaw-key',
     },
   ), { message: 'OPENCLAW_RUNTIME_CREDENTIAL_SCOPE_INVALID' })
   assert.throws(() => validateOpenClawRuntimeGuard(
@@ -772,7 +772,7 @@ test('runtime paths are stable and isolated per topic and workspace', (t) => {
   const input = {
     storageRoot: directory,
     workdir,
-    sessionRef: 'agent:main:desktop-roundrelay-group-topic-openclaw',
+    sessionRef: 'agent:main:desktop-meldwork-group-topic-openclaw',
     provider: provider(),
   }
 

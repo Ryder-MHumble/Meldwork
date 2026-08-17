@@ -38,6 +38,19 @@ const EVENT_STATUSES = new Set([
   'pending', 'queued', 'preparing', 'in_progress', 'running', 'streaming', 'waiting',
   'completed', 'succeeded', 'failed', 'cancelled', 'stopped', 'partial', 'timeout', 'interrupted',
 ])
+const ORCHESTRATION_PHASES = new Set([
+  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification', 'committed',
+  'human-gate', 'stopped',
+])
+const ORCHESTRATION_SLOT_STATUSES = new Set([
+  'planned', 'prepared', 'queued', 'running', 'waiting', 'settled', 'completed', 'committed',
+  'partial', 'failed', 'stopped', 'timeout', 'interrupted', 'cancelled', 'unknown_outcome',
+])
+const ORCHESTRATION_SLOT_ROLES = new Set([
+  'primary', 'reviewer', 'arbiter', 'worker', 'integrator',
+  'synthesizer', 'verifier', 'writer', 'participant',
+])
+const MAX_ORCHESTRATION_SLOTS = 32
 
 export const MAX_RUN_AGENTS = 64
 export const MAX_TRACE_EVENTS = 200
@@ -79,6 +92,64 @@ export function normalizedAgentKinds(value) {
 
 function nonNegativeInteger(value, maximum = Number.MAX_SAFE_INTEGER) {
   return Number.isInteger(value) && value >= 0 && value <= maximum ? value : null
+}
+
+export function orchestrationPhase(value) {
+  const phase = boundedString(value, 40).toLowerCase()
+  if (phase === 'completed') return 'committed'
+  return ORCHESTRATION_PHASES.has(phase) ? phase : ''
+}
+
+export function orchestrationSlotCompleted(value) {
+  return ['completed', 'succeeded', 'settled', 'committed'].includes(
+    boundedString(value, 40).toLowerCase(),
+  )
+}
+
+function normalizeOrchestrationSlot(value, roleByAgentKind, orchestrationRound) {
+  const input = record(value)
+  if (!input) return null
+  const agentKindValue = agentKind(input.agentKind)
+  const phase = orchestrationPhase(input.phase)
+  const status = boundedString(input.status, 40).toLowerCase()
+  if (!agentKindValue || !phase || !ORCHESTRATION_SLOT_STATUSES.has(status)) {
+    return null
+  }
+  const output = { agentKind: agentKindValue, phase, status }
+  const role = boundedString(input.role, 40).toLowerCase()
+    || roleByAgentKind.get(agentKindValue)
+    || ''
+  if (ORCHESTRATION_SLOT_ROLES.has(role)) output.role = role
+  const round = nonNegativeInteger(input.round, 100000) ?? orchestrationRound
+  if (round !== null) output.round = round
+  return output
+}
+
+export function normalizeOrchestration(value) {
+  const input = record(value)
+  if (!input || input.version !== 4) return null
+  const output = { version: 4 }
+  const phase = orchestrationPhase(input.phase)
+  if (!phase) return output
+  output.phase = phase
+  const currentKinds = normalizedAgentKinds(input.currentKinds)
+  if (currentKinds.length) output.currentKinds = currentKinds
+  const roleByAgentKind = new Map(
+    (Array.isArray(input.plan?.assignments) ? input.plan.assignments : [])
+      .map(assignment => [
+        agentKind(assignment?.agentKind),
+        boundedString(assignment?.role, 40).toLowerCase(),
+      ])
+      .filter(([kind, role]) => kind && ORCHESTRATION_SLOT_ROLES.has(role)),
+  )
+  const orchestrationRound = nonNegativeInteger(input.round, 100000)
+  if (Array.isArray(input.slots)) {
+    const slots = input.slots.slice(0, MAX_ORCHESTRATION_SLOTS)
+      .map(slot => normalizeOrchestrationSlot(slot, roleByAgentKind, orchestrationRound))
+      .filter(Boolean)
+    if (slots.length) output.slots = slots
+  }
+  return output
 }
 
 function normalizedTimestamp(value) {
@@ -306,6 +377,20 @@ export function normalizeRunAgent(value, run = {}) {
   const output = boundedString(input.output, MAX_AGENT_OUTPUT, { trim: false })
   const startedAt = normalizedTimestamp(input.startedAt)
   const lastActivityAt = normalizedTimestamp(input.lastActivityAt)
+  let orchestration = normalizeOrchestration(input.orchestration)
+  const targetKinds = normalizedAgentKinds(parent.targetKinds)
+  if (orchestration && targetKinds.length) {
+    const targets = new Set(targetKinds)
+    orchestration = {
+      ...orchestration,
+      ...(Array.isArray(orchestration.currentKinds)
+        ? { currentKinds: orchestration.currentKinds.filter(kind => targets.has(kind)) }
+        : {}),
+      ...(Array.isArray(orchestration.slots)
+        ? { slots: orchestration.slots.filter(slot => targets.has(slot.agentKind)) }
+        : {}),
+    }
+  }
   const seenSeqs = [...new Set([
     ...events.map(event => event.seq),
     ...(Array.isArray(input.seenSeqs) ? input.seenSeqs : []),
@@ -320,6 +405,7 @@ export function normalizeRunAgent(value, run = {}) {
     events,
     sourceMessageIds: sourceMessageIds(input.sourceMessageIds),
     context: normalizeTraceContext(input.context),
+    ...(orchestration ? { orchestration } : {}),
     ...(startedAt !== '' ? { startedAt } : {}),
     ...(lastActivityAt !== '' ? { lastActivityAt } : {}),
     silent: input.silent === true,
@@ -337,6 +423,7 @@ export function normalizeMessageTrace(value, message = {}) {
   if (!runId || !agentRunId) return null
   const round = nonNegativeInteger(input.round, 100000)
   const context = normalizeTraceContext(input.context)
+  const orchestration = normalizeOrchestration(input.orchestration)
   const events = (Array.isArray(input.events) ? input.events : [])
     .slice(0, MAX_CAPSULE_EVENTS)
     .map(normalizeCapsuleEvent)
@@ -351,5 +438,6 @@ export function normalizeMessageTrace(value, message = {}) {
     sourceMessageIds: sourceMessageIds(input.sourceMessageIds),
     truncated: input.truncated === true,
     context,
+    ...(orchestration ? { orchestration } : {}),
   }
 }

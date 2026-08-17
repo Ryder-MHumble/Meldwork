@@ -1,11 +1,19 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
 const { agentRuntimeError } = require('../../src/agents/agent-runtime-contract.cjs')
 const { MAX_RUN_AGENT_ATTEMPTS } = require('../../src/runs/failure-policy.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
+const {
+  createCollaborationReceipt,
+  createOrchestrationV4,
+  hashValue,
+} = require('../../src/collaboration/orchestration-v4-records.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
+const { RunScheduler } = require('../../src/runs/run-scheduler.cjs')
+const { v4Snapshot } = require('../../src/workspace/local-workspace-context.cjs')
 const { deferred, fixture } = require('../support/local-workspace-test-helpers.cjs')
 
 function pendingHumanGate(workspace, timeoutMs = 2000) {
@@ -34,6 +42,137 @@ function graphNode(overrides = {}) {
     acceptance: { requireConclusion: true, minArtifactRefs: 1, minEvidenceRefs: 1 },
     terminal: false, parallel: false, decisionOptions: [],
     ...overrides,
+  }
+}
+
+function challengeBindingInput(workspace, targetKinds, round, bodyHash = 'a'.repeat(64), runId = 'run-binding') {
+  const controller = workspace.createRunController('auto', targetKinds, 'root-binding', 8, false)
+  controller.runId = runId
+  controller.taskId = 'task-binding'
+  controller.currentRound = round
+  const snapshotHash = 'b'.repeat(64)
+  const slots = targetKinds.map((kind, index) => ({
+    slotId: `slot-${index + 1}-${kind}`,
+    agentKind: kind,
+    operationId: workspace.autoRunner.v4OperationId(
+      controller, kind, 'challenge', `slot-${index + 1}-${kind}`,
+    ),
+  }))
+  const receiptRecords = slots.map((slot) => ({
+    receipt: createCollaborationReceipt({
+      phase: 'proposal',
+      agentKind: slot.agentKind,
+      slotId: slot.slotId,
+      operationId: `operation-proposal-${slot.agentKind}`,
+      status: 'completed',
+      summary: `${slot.agentKind} proposal`,
+      artifactIds: [`artifact-${slot.agentKind}-1`, `artifact-${slot.agentKind}-2`],
+      evidenceIds: [`evidence-${slot.agentKind}-1`, `evidence-${slot.agentKind}-2`],
+      snapshotHash,
+      deliveryWatermark: 1,
+    }),
+  }))
+  return {
+    controller,
+    targetKinds,
+    round,
+    snapshotRecord: { bodyHash },
+    slots,
+    receiptRecords,
+  }
+}
+
+function synthesisCandidates(targetKinds, overrides = {}) {
+  return targetKinds.map((kind, index) => ({
+    kind,
+    eligible: true,
+    exclusions: [],
+    score: overrides[kind]?.score ?? 500 - index,
+    ...(overrides[kind]?.evidence === null ? {} : {
+      evidence: overrides[kind]?.evidence || {
+        matrixVersion: 'fit-matrix-v1',
+        score: 80 - index,
+        confidence: 0.8,
+        sampleSize: 8,
+      },
+    }),
+  }))
+}
+
+function synthesisBindingInput(targetKinds, overrides = {}) {
+  return {
+    targetKinds,
+    snapshotRecord: { bodyHash: overrides.bodyHash || overrides.contentHash || 'a'.repeat(64) },
+    routingDecision: {
+      selectedKinds: [...targetKinds],
+      candidates: overrides.candidates || synthesisCandidates(targetKinds),
+    },
+  }
+}
+
+function agreedAssignments(targetKinds) {
+  const finalizerKind = targetKinds.at(-1)
+  const taskIds = new Map(targetKinds.map(kind => [kind, `work-${kind}`]))
+  return targetKinds.map(kind => ({
+    taskId: taskIds.get(kind),
+    ownerKind: kind,
+    role: kind === finalizerKind ? 'integrator' : 'worker',
+    objective: `Complete the agreed ${kind} work package.`,
+    expectedOutput: `${kind} work Artifact.`,
+    inputRefs: [],
+    artifactIds: [],
+    dependsOn: kind === finalizerKind
+      ? targetKinds.filter(candidate => candidate !== finalizerKind).map(candidate => taskIds.get(candidate))
+      : [],
+  }))
+}
+
+function v4ProposalCollaboration(agentKind, summary = `${agentKind} proposal`) {
+  return {
+    version: 1,
+    phase: 'proposal',
+    summary,
+    capabilities: [`${agentKind} capability`],
+    intendedWork: [`${agentKind} independent work package`],
+    deliverables: [`${agentKind} proposal Artifact`],
+    dependencies: [],
+  }
+}
+
+function agreedV4Collaboration(agentKind, phase, prompt, targetKinds, options = {}) {
+  const summary = options.summary || `${agentKind} ${phase}`
+  if (phase === 'proposal') return v4ProposalCollaboration(agentKind, summary)
+  if (phase === 'challenge') {
+    return {
+      version: 1,
+      phase,
+      verdict: 'support',
+      summary,
+      proposedAssignments: agreedAssignments(targetKinds),
+      finalizerKind: targetKinds.at(-1),
+      verifierKinds: targetKinds
+        .filter(kind => kind !== targetKinds.at(-1))
+        .slice(0, Math.min(2, targetKinds.length - 1)),
+      agreeToPlan: true,
+    }
+  }
+  if (phase === 'work') {
+    return {
+      version: 1,
+      phase,
+      summary,
+      workItemId: prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || '',
+      deliverables: [`${agentKind} work Artifact`],
+    }
+  }
+  if (phase === 'synthesis') {
+    return { version: 1, phase, summary, resolvedIssueIds: options.resolvedIssueIds || [] }
+  }
+  return {
+    version: 1,
+    phase,
+    verdict: options.verificationVerdict || 'support',
+    summary,
   }
 }
 
@@ -106,9 +245,9 @@ test('task graph runs independent branches in parallel and completes from typed 
   assert.deepEqual(calls.map(call => call.agent.kind), [
     'codex', 'hermes', 'workbuddy', 'kimi',
   ])
-  assert.equal(calls.every(call => !call.prompt.includes('ROUNDRELAY_CONSENSUS')), true)
+  assert.equal(calls.every(call => !call.prompt.includes('MELDWORK_CONSENSUS')), true)
   assert.equal(calls[2].runOptions.sessionRef, '')
-  assert.match(calls[2].prompt, /ROUNDRELAY_TASK_GRAPH_V1/)
+  assert.match(calls[2].prompt, /MELDWORK_TASK_GRAPH_V1/)
   assert.match(calls[2].prompt, /\[conflict\]/)
   assert.equal(calls[3].runOptions.sessionRef, '')
 
@@ -194,7 +333,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
       await firstCallGate.promise
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -248,7 +387,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
     threadRootId: run.threadRootId,
   })), [{ mode: 'auto', currentRound: 1, maxRounds: 2, threadRootId: root.id }])
   assert.equal(calls.length, 1)
-  assert.match(calls[0].prompt, /ROUNDRELAY_CONSENSUS/)
+  assert.match(calls[0].prompt, /MELDWORK_CONSENSUS/)
   assert.doesNotMatch(JSON.stringify(active), /sessionRef/)
 
   const pending = workspace.activeRuns.get(group.id).promise
@@ -256,7 +395,7 @@ test('auto send preflights atomically, persists one root, and starts at round on
   await pending
 
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
-  assert.equal(calls.every(call => call.prompt.includes('ROUNDRELAY_CONSENSUS')), true)
+  assert.equal(calls.every(call => call.prompt.includes('MELDWORK_CONSENSUS')), true)
   assert.deepEqual(calls.map(call => call.runOptions.attachments), [
     [path.join(directory, 'attachments', 'auto-send-image.png')],
     [path.join(directory, 'attachments', 'auto-send-image.png')],
@@ -288,7 +427,7 @@ test('automatic Primary Reviewer Arbiter flow uses selective typed collaboration
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${conclusions[agent.kind]}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${conclusions[agent.kind]}\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: `${agent.kind}-session`,
     }
   }
@@ -352,7 +491,7 @@ test('unlimited automatic discussion continues past a finite cap until consensus
     }
     const agreed = calls.length > 2
     return {
-      text: `${agent.kind} response\n[[ROUNDRELAY_CONSENSUS:${agreed ? 'agree' : 'continue'}]]`,
+      text: `${agent.kind} response\n[[MELDWORK_CONSENSUS:${agreed ? 'agree' : 'continue'}]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -401,7 +540,7 @@ test('unlimited automatic discussion gives every Agent an adversarial review con
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -424,12 +563,2193 @@ test('unlimited automatic discussion gives every Agent an adversarial review con
     'codex', 'hermes', 'codex', 'hermes',
   ])
   for (const call of calls) {
-    assert.match(call.prompt, /ROUNDRELAY_UNLIMITED_REVIEW_V1/)
+    assert.match(call.prompt, /MELDWORK_UNLIMITED_REVIEW_V1/)
     assert.match(call.prompt, /Do not accept another Agent's claim without independent support/)
     assert.match(call.prompt, /Complete at least one full cross-review pass before declaring consensus/)
     assert.match(call.prompt, /Raise every material defect immediately/)
     assert.match(call.prompt, /Do not reveal private chain-of-thought/)
   }
+})
+
+test('V4 unlimited discussion reaches the next round before marking Agents active', async (t) => {
+  const { directory, calls, options } = fixture()
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const secondRoundChallenge = deferred()
+  const releaseSecondRound = deferred()
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    releaseSecondRound.resolve()
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+      try { await controller.promise } catch {}
+    }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  let challengeCalls = 0
+  const challengeOperationIds = [new Map(), new Map()]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'challenge') {
+      challengeCalls += 1
+      const challengeRound = challengeCalls <= 3 ? 0 : 1
+      challengeOperationIds[challengeRound].set(agent.kind, runOptions.operationId)
+      if (challengeCalls > 3) {
+        if (challengeCalls === 4) secondRoundChallenge.resolve()
+        await releaseSecondRound.promise
+      }
+    }
+    const collaboration = phase === 'proposal'
+      ? v4ProposalCollaboration(agent.kind)
+      : phase === 'challenge'
+        ? { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` }
+        : phase === 'synthesis'
+          ? { version: 1, phase, summary: 'Candidate', resolvedIssueIds: [] }
+          : {
+              version: 1,
+              phase,
+              verdict: 'contradict',
+              summary: 'One issue remains',
+            }
+    return {
+      text: phase === 'synthesis' ? 'Candidate' : `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+      collaboration,
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 round transition',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue reviewing until the issue is resolved.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    unlimitedRounds: true,
+    protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  let timeout = null
+  const transition = await Promise.race([
+    secondRoundChallenge.promise.then(() => 'second-round'),
+    controller.promise.then(
+      () => 'finished',
+      error => error?.code || error?.message || 'failed',
+    ),
+    new Promise(resolve => {
+      timeout = setTimeout(() => resolve('timeout'), 5000)
+      timeout.unref?.()
+    }),
+  ])
+  clearTimeout(timeout)
+
+  assert.equal(transition, 'second-round')
+  const intermediate = new RunLedger({ storagePath: ledgerPath }).get(controller.runId)
+  assert.equal(intermediate.currentRound, 3)
+  assert.equal(intermediate.unlimitedRounds, true)
+  assert.equal(intermediate.maxRounds, 0)
+  assert.equal(intermediate.orchestration.phase, 'challenge')
+  assert.equal(intermediate.orchestration.round, 3)
+  assert.equal(intermediate.orchestration.currentKind, '')
+  assert.deepEqual(intermediate.orchestration.currentKinds, controller.targetKinds)
+  assert.deepEqual(intermediate.orchestration.pendingKinds, controller.targetKinds)
+  assert.deepEqual(intermediate.orchestration.activeKinds, controller.targetKinds)
+  assert.deepEqual(intermediate.orchestration.successfulKinds, [])
+  assert.equal(intermediate.orchestration.totalSuccesses, 0)
+  for (const slot of intermediate.orchestration.slots) {
+    const firstOperationId = challengeOperationIds[0].get(slot.agentKind)
+    const secondOperationId = challengeOperationIds[1].get(slot.agentKind)
+    const expectedOperationId = `operation-${createHash('sha256').update(JSON.stringify([
+      controller.runId,
+      controller.taskId,
+      slot.agentKind,
+      slot.slotId,
+      'challenge',
+      3,
+    ])).digest('hex')}`
+    const assignment = intermediate.orchestration.plan.assignments.find(item => (
+      item.agentKind === slot.agentKind
+    ))
+    assert.equal(slot.phase, 'challenge')
+    assert.equal(slot.status, 'running')
+    assert.equal(slot.finishedAt, null)
+    assert.equal(slot.commitStatus, 'pending')
+    assert.equal(slot.permission, 'read-only')
+    assert.equal(slot.attempt, 3)
+    assert.equal(
+      slot.deliveryWatermark,
+      2,
+      'delivery watermark advances only after an accepted result',
+    )
+    assert.equal(slot.operationId, expectedOperationId)
+    if (secondOperationId) assert.equal(slot.operationId, secondOperationId)
+    assert.notEqual(slot.operationId, firstOperationId)
+    assert.equal(assignment.role, 'participant')
+    assert.equal(assignment.operationId, slot.operationId)
+  }
+  assert.equal(workspace.stop(group.id, controller.runId), true)
+  releaseSecondRound.resolve()
+  await controller.promise
+  assert.equal(new RunLedger({ storagePath: ledgerPath }).get(controller.runId).status, 'stopped')
+})
+
+test('V4 Auto creates deterministic mutual and rotating challenge bindings for 2 and 3 Agents', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+
+  const mutual = workspace.autoRunner.v4ChallengeBindings(
+    challengeBindingInput(workspace, ['codex', 'hermes'], 2),
+  )
+  assert.deepEqual(mutual.map(binding => [binding.reviewerKind, binding.proposalKind]), [
+    ['codex', 'hermes'],
+    ['hermes', 'codex'],
+  ])
+  assert.equal(mutual.every(binding => binding.reviewerKind !== binding.proposalKind), true)
+  assert.deepEqual(mutual[0].artifactIds, ['artifact-hermes-1', 'artifact-hermes-2'])
+  assert.deepEqual(mutual[0].evidenceIds, ['evidence-hermes-1', 'evidence-hermes-2'])
+
+  const kinds = ['workbuddy', 'codex', 'hermes']
+  const rounds = [2, 3].map(round => workspace.autoRunner.v4ChallengeBindings(
+    challengeBindingInput(workspace, kinds, round, 'c'.repeat(64), `run-${round}`),
+  ))
+  for (const bindings of rounds) {
+    assert.deepEqual(new Set(bindings.map(binding => binding.reviewerKind)), new Set(kinds))
+    assert.deepEqual(new Set(bindings.map(binding => binding.proposalKind)), new Set(kinds))
+    assert.equal(bindings.every(binding => binding.reviewerKind !== binding.proposalKind), true)
+  }
+  for (const reviewerKind of kinds) {
+    assert.equal(new Set(rounds.map(bindings => (
+      bindings.find(binding => binding.reviewerKind === reviewerKind).proposalKind
+    ))).size, 2)
+  }
+  const repeated = workspace.autoRunner.v4ChallengeBindings(
+    challengeBindingInput(workspace, [...kinds].reverse(), 2, 'c'.repeat(64), 'other-run'),
+  )
+  assert.deepEqual(
+    Object.fromEntries(repeated.map(binding => [binding.reviewerKind, binding.proposalKind])),
+    Object.fromEntries(rounds[0].map(binding => [binding.reviewerKind, binding.proposalKind])),
+  )
+})
+
+test('V4 Auto retains a 32-Agent challenge-binding derangement without duplicates', async (t) => {
+  const { directory, options } = fixture()
+  const kinds = Array.from({ length: 32 }, (_value, index) => (
+    `custom-${(index + 1).toString(16).padStart(16, '0')}`
+  ))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => kinds.map((kind, index) => ({
+    kind, name: `Agent ${index + 1}`, executable: `/tmp/${kind}`, version: '1',
+  }))
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+
+  const bindings = workspace.autoRunner.v4ChallengeBindings(
+    challengeBindingInput(workspace, kinds, 2, 'd'.repeat(64)),
+  )
+  assert.equal(bindings.length, 32)
+  assert.deepEqual(new Set(bindings.map(binding => binding.reviewerKind)), new Set(kinds))
+  assert.deepEqual(new Set(bindings.map(binding => binding.proposalKind)), new Set(kinds))
+  assert.equal(bindings.every(binding => binding.reviewerKind !== binding.proposalKind), true)
+})
+
+test('V4 Auto bounds five-Agent long-output delivery and sends only acknowledged deltas', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const targetKinds = ['agent-1', 'agent-2', 'agent-3', 'agent-4', 'agent-5']
+  const snapshotHash = 'a'.repeat(64)
+  const longOutputs = new Map(targetKinds.map((agentKind, index) => {
+    const marker = `FULL_BODY_ONLY_${agentKind}_`
+    return [agentKind, `${marker}${'x'.repeat(3000 + (index * 700) - marker.length)}`]
+  }))
+  assert.equal([...longOutputs.values()].every(output => (
+    output.length >= 3000 && output.length <= 6000
+  )), true)
+  const receiptRecords = targetKinds.flatMap(agentKind => (
+    ['proposal', 'challenge'].map((phase, phaseIndex) => ({
+      receipt: createCollaborationReceipt({
+        phase,
+        agentKind,
+        slotId: `slot-${agentKind}`,
+        operationId: `operation-${phase}-${agentKind}`,
+        status: 'completed',
+        summary: `${agentKind} ${phase} ${'summary '.repeat(80)}`,
+        conclusion: '',
+        artifactIds: [`artifact-${createHash('sha256').update(
+          `${phase}:${longOutputs.get(agentKind)}`,
+        ).digest('hex')}`],
+        evidenceIds: [`evidence-${phase}-${agentKind}`],
+        snapshotHash,
+        deliveryWatermark: phaseIndex + 1,
+      }),
+    }))
+  ))
+  const sessionBinding = {
+    sessionRefHash: 'b'.repeat(64),
+    sessionProvenanceHash: 'c'.repeat(64),
+  }
+
+  const full = workspace.autoRunner.v4Package(receiptRecords, {
+    targetKinds,
+    recipientKind: 'agent-1',
+    sessionBinding,
+    forceFull: true,
+  })
+  assert.equal(full.receipts.length, targetKinds.length)
+  assert.ok(full.text.length <= 6000)
+  assert.doesNotMatch(full.text, /FULL_BODY_ONLY_/)
+
+  const deliveryState = full.receipts.map(receipt => ({
+    recipientKind: 'agent-1',
+    ...sessionBinding,
+    sourceAgentKind: receipt.agentKind,
+    sourcePhase: receipt.phase,
+    watermark: receipt.deliveryWatermark,
+    status: 'acknowledged',
+  }))
+  const unchanged = workspace.autoRunner.v4Package(receiptRecords, {
+    targetKinds,
+    recipientKind: 'agent-1',
+    sessionBinding,
+    deliveryState,
+  })
+  assert.equal(unchanged.receipts.length, 0)
+
+  const changed = createCollaborationReceipt({
+    phase: 'challenge',
+    agentKind: 'agent-3',
+    slotId: 'slot-agent-3',
+    operationId: 'operation-challenge-agent-3-revised',
+    status: 'completed',
+    summary: `agent-3 revised ${'summary '.repeat(80)}`,
+    conclusion: '',
+    artifactIds: [`artifact-${createHash('sha256').update(
+      `revised:${longOutputs.get('agent-3')}`,
+    ).digest('hex')}`],
+    evidenceIds: ['evidence-challenge-agent-3-revised'],
+    snapshotHash,
+    deliveryWatermark: 3,
+  })
+  const delta = workspace.autoRunner.v4Package([...receiptRecords, { receipt: changed }], {
+    targetKinds,
+    recipientKind: 'agent-1',
+    sessionBinding,
+    deliveryState,
+  })
+  assert.deepEqual(delta.receipts.map(receipt => receipt.agentKind), ['agent-3'])
+  assert.ok(delta.text.length <= 6000)
+
+  const rotated = workspace.autoRunner.v4Package([...receiptRecords, { receipt: changed }], {
+    targetKinds,
+    recipientKind: 'agent-1',
+    sessionBinding,
+    deliveryState,
+    forceFull: true,
+  })
+  assert.equal(rotated.receipts.length, targetKinds.length)
+  assert.ok(rotated.text.length <= 6000)
+})
+
+test('V4 package reconciles durable issue resolutions for full and delta delivery', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const targetKinds = ['codex', 'hermes']
+  const snapshotHash = 'a'.repeat(64)
+  const staleSnapshotHash = '0'.repeat(64)
+  const staleResolutionReceipt = createCollaborationReceipt({
+    phase: 'synthesis', agentKind: 'hermes', slotId: 'slot-hermes',
+    operationId: 'operation-hermes-stale-synthesis', status: 'completed',
+    summary: 'A prior snapshot resolved issue 2.', artifactIds: ['artifact-hermes-stale'],
+    evidenceIds: ['evidence-hermes-stale'], snapshotHash: staleSnapshotHash,
+    deliveryWatermark: 0,
+  })
+  const issueReceipt = createCollaborationReceipt({
+    phase: 'challenge', agentKind: 'hermes', slotId: 'slot-hermes',
+    operationId: 'operation-hermes-challenge', status: 'completed',
+    summary: 'Hermes identified two issues.', artifactIds: ['artifact-hermes'],
+    evidenceIds: ['evidence-hermes'], snapshotHash, deliveryWatermark: 1,
+    unresolved: [
+      { id: 'issue-1', summary: 'Resolved issue must not be delivered.', refs: [] },
+      { id: 'issue-2', summary: 'Open issue must remain visible.', refs: [] },
+    ],
+  })
+  const resolutionReceipt = createCollaborationReceipt({
+    phase: 'synthesis', agentKind: 'codex', slotId: 'slot-codex',
+    operationId: 'operation-codex-synthesis', status: 'completed',
+    summary: 'Codex resolved issue 1.', artifactIds: ['artifact-codex'],
+    evidenceIds: ['evidence-codex'], snapshotHash, deliveryWatermark: 2,
+  })
+  const followupReceipt = createCollaborationReceipt({
+    phase: 'synthesis', agentKind: 'codex', slotId: 'slot-codex',
+    operationId: 'operation-codex-synthesis-followup', status: 'completed',
+    summary: 'Codex follow-up retained the prior resolution.',
+    artifactIds: ['artifact-codex-followup'], evidenceIds: ['evidence-codex-followup'],
+    snapshotHash, deliveryWatermark: 3,
+  })
+  const receiptRecords = [
+    { receipt: staleResolutionReceipt, resolvedIssueIds: ['issue-2'] },
+    { receipt: issueReceipt, resolvedIssueIds: [] },
+    { receipt: resolutionReceipt, resolvedIssueIds: ['issue-1'] },
+    { receipt: followupReceipt, resolvedIssueIds: [] },
+  ]
+  const sessionBinding = {
+    sessionRefHash: 'b'.repeat(64),
+    sessionProvenanceHash: 'c'.repeat(64),
+  }
+  const render = deliveryState => workspace.autoRunner.v4Package(receiptRecords, {
+    recipientKind: 'codex', sessionBinding, deliveryState, targetKinds, snapshotHash,
+  })
+
+  const full = render([])
+  assert.ok(full.text.length <= 6000)
+  assert.doesNotMatch(full.text, /Unresolved: issue-1\b/)
+  assert.match(full.text, /Unresolved: issue-2\b/)
+
+  const delta = render([{
+    recipientKind: 'codex', ...sessionBinding,
+    sourceAgentKind: 'codex', sourcePhase: 'synthesis', watermark: 3,
+    status: 'acknowledged',
+  }])
+  assert.deepEqual(delta.receipts.map(receipt => receipt.agentKind), ['hermes'])
+  assert.ok(delta.text.length <= 6000)
+  assert.doesNotMatch(delta.text, /Unresolved: issue-1\b/)
+  assert.match(delta.text, /Unresolved: issue-2\b/)
+  assert.deepEqual(issueReceipt.unresolved.map(issue => issue.id), ['issue-1', 'issue-2'])
+})
+
+test('V4 delivery isolates five-Agent three-wave acknowledgement by native Session and Run', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const targetKinds = ['codex', 'hermes', 'workbuddy', 'kimi', 'openclaw']
+  const sessionA = {
+    sessionRefHash: 'a'.repeat(64),
+    sessionProvenanceHash: 'b'.repeat(64),
+  }
+  const rotatedSessionA = {
+    sessionRefHash: 'c'.repeat(64),
+    sessionProvenanceHash: 'd'.repeat(64),
+  }
+  const sessionB = {
+    sessionRefHash: 'e'.repeat(64),
+    sessionProvenanceHash: 'f'.repeat(64),
+  }
+  let deliveryStateA = []
+  let deliveryStateB = []
+  let receiptRecords = []
+  const acknowledged = (state, recipientKind, binding, packageRecord) => [
+    ...state.filter(entry => !packageRecord.receipts.some(receipt => (
+      entry.recipientKind === recipientKind
+        && entry.sessionRefHash === binding.sessionRefHash
+        && entry.sessionProvenanceHash === binding.sessionProvenanceHash
+        && entry.sourceAgentKind === receipt.agentKind
+        && entry.sourcePhase === receipt.phase
+    ))),
+    ...packageRecord.receipts.map(receipt => ({
+      recipientKind,
+      ...binding,
+      sourceAgentKind: receipt.agentKind,
+      sourcePhase: receipt.phase,
+      watermark: receipt.deliveryWatermark,
+      status: 'acknowledged',
+    })),
+  ]
+  const packageFor = (recipientKind, binding, deliveryState, forceFull = false) => (
+    workspace.autoRunner.v4Package(receiptRecords, {
+      recipientKind,
+      sessionBinding: binding,
+      deliveryState,
+      targetKinds,
+      forceFull,
+    })
+  )
+
+  for (let wave = 1; wave <= 3; wave += 1) {
+    const outputs = targetKinds.map((agentKind, index) => {
+      const marker = `RAW_WAVE_${wave}_${agentKind}_ONLY_`
+      return `${marker}${'x'.repeat(3000 + (index * 500) - marker.length)}`
+    })
+    assert.equal(outputs.every(output => output.length >= 3000 && output.length <= 6000), true)
+    receiptRecords = receiptRecords.concat(targetKinds.map((agentKind, index) => ({
+      output: outputs[index],
+      receipt: createCollaborationReceipt({
+        phase: 'proposal', agentKind, slotId: `slot-${agentKind}`,
+        operationId: `operation-wave-${wave}-${agentKind}`,
+        status: 'completed',
+        summary: `wave ${wave} ${agentKind} ${'summary '.repeat(80)}`,
+        conclusion: `WAVE_${wave}_${agentKind}_LATEST ${'conclusion '.repeat(60)}`,
+        artifactIds: [`artifact-${wave}-${agentKind}`],
+        evidenceIds: [`evidence-${wave}-${agentKind}`],
+        snapshotHash: '9'.repeat(64),
+        deliveryWatermark: wave,
+      }),
+    })))
+
+    const bindingA = wave === 1 ? sessionA : rotatedSessionA
+    const packageA = packageFor('codex', bindingA, deliveryStateA, wave <= 2)
+    const packageB = packageFor('hermes', sessionB, deliveryStateB, wave === 1)
+    for (const packageRecord of [packageA, packageB]) {
+      assert.equal(packageRecord.receipts.length, targetKinds.length)
+      assert.ok(packageRecord.text.length <= 6000)
+      assert.doesNotMatch(packageRecord.text, /RAW_WAVE_\d+_.*_ONLY_/)
+      for (const agentKind of targetKinds) {
+        assert.match(packageRecord.text, new RegExp(`WAVE_${wave}_${agentKind}_LATEST`))
+      }
+      if (wave > 1) assert.doesNotMatch(packageRecord.text, new RegExp(`WAVE_${wave - 1}_`))
+    }
+    deliveryStateA = acknowledged(deliveryStateA, 'codex', bindingA, packageA)
+    deliveryStateB = acknowledged(deliveryStateB, 'hermes', sessionB, packageB)
+
+    const acknowledgedA = packageFor('codex', bindingA, deliveryStateA)
+    const acknowledgedB = packageFor('hermes', sessionB, deliveryStateB)
+    assert.equal(acknowledgedA.receipts.length, 0)
+    assert.equal(acknowledgedB.receipts.length, 0)
+  }
+
+  const restartedStateA = JSON.parse(JSON.stringify(deliveryStateA))
+  assert.equal(packageFor('codex', rotatedSessionA, restartedStateA).receipts.length, 0)
+
+  const runBState = []
+  assert.equal(packageFor('codex', rotatedSessionA, deliveryStateA).receipts.length, 0)
+  assert.equal(packageFor('codex', rotatedSessionA, runBState).receipts.length, targetKinds.length)
+
+  const uncertainStateB = deliveryStateB.map(entry => (
+    entry.sourceAgentKind === 'kimi'
+      ? { ...entry, status: 'uncertain' }
+      : entry
+  ))
+  const retry = packageFor('hermes', sessionB, uncertainStateB)
+  assert.deepEqual(retry.receipts.map(receipt => receipt.agentKind), ['kimi'])
+})
+
+test('V4 invocation boundary resumes delta delivery from durable acknowledgement after restart', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger-delivery.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  let activeLedger = ledger
+  options.runLedger = ledger
+  const targetKinds = ['codex', 'hermes', 'workbuddy', 'kimi', 'openclaw']
+  const runsByTag = new Map()
+  const sessionGenerations = new Map()
+  const calls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const tag = prompt.includes('DELIVERY_RUN_B') ? 'B' : 'A'
+    const run = runsByTag.get(tag)
+    const attempt = prompt.match(/^Delivery attempt: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+    const durable = activeLedger.get(run.controller.runId)
+    const prepared = durable.orchestration.deliveryState || []
+    assert.ok(prepared.some(entry => (
+      entry.recipientKind === agent.kind && entry.status === 'prepared'
+    )))
+    assert.equal(prepared.every(entry => entry.recipientKind === agent.kind), true)
+    calls.push({ tag, attempt, prompt, sessionRef: runOptions.sessionRef })
+    const sessionKey = `${tag}:${agent.kind}`
+    const generation = runOptions.sessionRef
+      ? sessionGenerations.get(sessionKey) || 1
+      : (sessionGenerations.get(sessionKey) || 0) + 1
+    sessionGenerations.set(sessionKey, generation)
+    return {
+      text: `${tag} ${attempt} ${'output '.repeat(500)}`,
+      sessionRef: runOptions.sessionRef || `${tag}-${agent.kind}-native-${generation}`,
+      collaboration: {
+        version: 1, phase: 'verification', verdict: 'support',
+        summary: `${tag} ${attempt} verified`,
+      },
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+
+  const beginDeliveryRun = (tag) => {
+    const group = workspace.createGroup({
+      name: `Delivery ${tag}`, agentKinds: targetKinds, workdir: directory,
+    })
+    const task = workspace.addMessage(group.id, 'user', `DELIVERY_RUN_${tag}`)
+    const contextPack = workspace.createContextPack({
+      group, taskId: task.id, mode: 'manual', targetKinds, message: task,
+    })
+    const reservation = workspace.reserveRun(group.id, 'manual', targetKinds, task.id)
+    workspace.bindRunTask(
+      group.id, reservation, task.id, task.id, contextPack.contextPackId,
+    )
+    const controller = workspace.beginRun(
+      group.id, 'manual', targetKinds, task.id, reservation,
+    )
+    controller.orchestration = createOrchestrationV4({
+      workflow: 'manual', template: 'concurrent-batch', targetKinds,
+    }, { targetKinds, now: Date.now() })
+    workspace.checkpointRun(group.id, controller)
+    const run = { tag, group, task, contextPack, controller }
+    runsByTag.set(tag, run)
+    return run
+  }
+  const runA = beginDeliveryRun('A')
+  const runB = beginDeliveryRun('B')
+  assert.notEqual(runA.controller.runId, runB.controller.runId)
+
+  const receiptsFor = (run, wave) => targetKinds.map((agentKind, index) => ({
+    receipt: createCollaborationReceipt({
+      phase: 'proposal', agentKind, slotId: `slot-${agentKind}`,
+      operationId: `operation-${run.tag}-${wave}-${agentKind}`,
+      status: 'completed',
+      summary: `${run.tag} WAVE_${wave}_${agentKind}_LATEST ${'summary '.repeat(70)}`,
+      artifactIds: [`artifact-${run.tag}-${wave}-${agentKind}`],
+      evidenceIds: [`evidence-${run.tag}-${wave}-${agentKind}`],
+      snapshotHash: run.controller.orchestration.snapshotHash,
+      deliveryWatermark: wave,
+    }),
+    resolvedIssueIds: [],
+  }))
+  const deliver = async (activeWorkspace, run, receiptRecords, attempt) => {
+    let preparedDelivery = null
+    const slot = {
+      slotId: `slot-recipient-${run.tag}`,
+      operationId: `operation-recipient-${run.tag}-${attempt}`,
+    }
+    try {
+      const result = await activeWorkspace.invokeAgent(
+        run.group, 'codex', 'manual', run.controller.signal, run.task.id,
+        {
+          taskId: run.task.id,
+          v4: true,
+          phase: 'verification',
+          sessionPolicy: 'frozen',
+          promptOverride: `Delivery attempt: ${attempt}`,
+          contextPackId: run.contextPack.contextPackId,
+          snapshotSourceMessageIds: [run.task.id],
+          snapshotSourceEntries: [],
+          deferMessage: true,
+          operationId: slot.operationId,
+          v4PromptBuilder: (sessionBinding) => {
+            const built = activeWorkspace.autoRunner.v4DeliveryPrompt(run.group, run.controller, {
+              kind: 'codex', phase: 'verification',
+              snapshot: {
+                taskText: `DELIVERY_RUN_${run.tag}\nDelivery attempt: ${attempt}`,
+                group: { name: run.group.name, topic: '' }, history: [],
+              },
+              receiptRecords,
+              role: 'verifier',
+              targetKinds,
+              slot,
+              options: { extraContext: `Delivery attempt: ${attempt}` },
+              sessionBinding,
+            })
+            preparedDelivery = built.delivery
+            return built
+          },
+        },
+      )
+      if (result.v4Delivery) {
+        activeWorkspace.autoRunner.v4SetDeliveryStatus(
+          run.group, run.controller, result.v4Delivery, 'acknowledged',
+          result.v4SessionBinding,
+        )
+      }
+      return { result, preparedDelivery }
+    } catch (error) {
+      if (preparedDelivery) {
+        activeWorkspace.autoRunner.v4SetDeliveryStatus(
+          run.group, run.controller, preparedDelivery, 'uncertain',
+        )
+      }
+      return { error, preparedDelivery }
+    }
+  }
+
+  const [firstA, firstB] = await Promise.all([
+    deliver(workspace, runA, receiptsFor(runA, 1), 'wave-1'),
+    deliver(workspace, runB, receiptsFor(runB, 1), 'wave-1'),
+  ])
+  assert.ok(firstA.result && firstB.result)
+  assert.deepEqual(calls.filter(call => call.attempt === 'wave-1').map(call => call.sessionRef), ['', ''])
+  const durableA = ledger.get(runA.controller.runId).orchestration.deliveryState
+  const durableB = ledger.get(runB.controller.runId).orchestration.deliveryState
+  assert.equal(durableA.every(entry => entry.status === 'acknowledged'), true)
+  assert.equal(durableB.every(entry => entry.status === 'acknowledged'), true)
+  assert.equal(new Set(durableA.map(entry => entry.packageHash)).size, 1)
+  assert.equal(new Set(durableB.map(entry => entry.packageHash)).size, 1)
+  assert.notEqual(durableA[0].packageHash, durableB[0].packageHash)
+
+  const secondA = await deliver(workspace, runA, receiptsFor(runA, 2), 'wave-2')
+  assert.ok(secondA.result)
+  assert.equal(calls.find(call => call.tag === 'A' && call.attempt === 'wave-2').sessionRef,
+    'A-codex-native-1')
+  const sessionKeyA = workspace.sessionKey(runA.group.id, 'codex', runA.task.id)
+  workspace.state.sessionMeta[sessionKeyA] = {
+    ...workspace.state.sessionMeta[sessionKeyA],
+    turns: 1000,
+    estimatedChars: 1000000,
+  }
+  workspace.save()
+  const rotatedA = await deliver(workspace, runA, receiptsFor(runA, 3), 'wave-3-rotated')
+  assert.ok(rotatedA.result)
+  assert.equal(calls.find(call => call.tag === 'A' && call.attempt === 'wave-3-rotated').sessionRef, '')
+  assert.equal(workspace.state.sessions[sessionKeyA], 'A-codex-native-2')
+
+  const durableAAtRestart = ledger.get(runA.controller.runId)
+  const durableBAtRestart = ledger.get(runB.controller.runId)
+  assert.equal(durableAAtRestart.status, 'running')
+  assert.equal(durableBAtRestart.status, 'running')
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  activeLedger = restartedLedger
+  const recoveredController = restarted.createRunController(
+    durableAAtRestart.mode,
+    durableAAtRestart.targetKinds,
+    durableAAtRestart.threadRootId,
+    durableAAtRestart.maxRounds,
+    durableAAtRestart.unlimitedRounds,
+  )
+  recoveredController.runId = durableAAtRestart.runId
+  recoveredController.taskId = durableAAtRestart.taskId
+  recoveredController.contextPackId = durableAAtRestart.contextPackId
+  recoveredController.taskBound = true
+  recoveredController.groupId = durableAAtRestart.groupId
+  recoveredController.currentRound = durableAAtRestart.currentRound
+  recoveredController.orchestration = structuredClone(durableAAtRestart.orchestration)
+  recoveredController.v4 = true
+  const recoveredRunA = {
+    tag: 'A',
+    group: restarted.getGroup(durableAAtRestart.groupId),
+    task: restarted.snapshot().messages.find(message => message.id === durableAAtRestart.taskId),
+    contextPack: { contextPackId: durableAAtRestart.contextPackId },
+    controller: recoveredController,
+  }
+  restarted.activeRuns.set(recoveredRunA.group.id, recoveredController)
+  runsByTag.set('A', recoveredRunA)
+
+  const postRestartReceipts = [
+    ...receiptsFor(recoveredRunA, 3),
+    ...receiptsFor(recoveredRunA, 4).filter(record => record.receipt.agentKind === 'kimi'),
+  ]
+  const postRestart = await deliver(
+    restarted, recoveredRunA, postRestartReceipts, 'post-restart-delta',
+  )
+  assert.ok(postRestart.result)
+  assert.deepEqual(postRestart.preparedDelivery.entries.map(entry => ({
+    sourceAgentKind: entry.sourceAgentKind,
+    watermark: entry.watermark,
+  })), [{ sourceAgentKind: 'kimi', watermark: 4 }])
+  const postRestartCall = calls.find(call => call.attempt === 'post-restart-delta')
+  assert.equal(postRestartCall.sessionRef, 'A-codex-native-2')
+  assert.match(postRestartCall.prompt, /A WAVE_4_kimi_LATEST/)
+  assert.doesNotMatch(postRestartCall.prompt, /A WAVE_3_/)
+  assert.deepEqual(
+    restartedLedger.get(runB.controller.runId).orchestration.deliveryState,
+    durableBAtRestart.orchestration.deliveryState,
+  )
+  assert.deepEqual(
+    restartedLedger.get(recoveredController.runId).orchestration.deliveryState
+      .filter(entry => entry.sourceAgentKind === 'kimi'
+        && entry.sessionRefHash === postRestart.result.v4SessionBinding.sessionRefHash
+        && entry.sessionProvenanceHash
+          === postRestart.result.v4SessionBinding.sessionProvenanceHash)
+      .map(entry => ({ watermark: entry.watermark, status: entry.status })),
+    [{ watermark: 4, status: 'acknowledged' }],
+  )
+  assert.equal(restarted.state.sessions[sessionKeyA], 'A-codex-native-2')
+  restarted.activeRuns.delete(recoveredRunA.group.id)
+})
+
+test('V4 production callback keeps a newer acknowledgement after a late failed settlement', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const oldStarted = deferred()
+  const releaseOldFailure = deferred()
+  const retryStarted = deferred()
+  let invocationCount = 0
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    invocationCount += 1
+    if (invocationCount === 1) {
+      oldStarted.resolve()
+      await releaseOldFailure.promise
+      throw agentRuntimeError('LOCAL_AGENT_AUTH_REQUIRED', 'HTTP 401: expired test token')
+    }
+    retryStarted.resolve()
+    return {
+      text: 'Retry challenge completed.',
+      sessionRef: runOptions.sessionRef || 'codex-retry-session',
+      outcomeRefs: {
+        artifactIds: ['artifact-codex-retry'],
+        evidenceIds: ['evidence-codex-retry'],
+      },
+      collaboration: agreedV4Collaboration(
+        agent.kind, 'challenge', prompt, ['codex', 'hermes'],
+      ),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const targetKinds = ['codex', 'hermes']
+  const group = workspace.createGroup({
+    name: 'V4 stale delivery', agentKinds: targetKinds, workdir: directory,
+  })
+  const task = workspace.addMessage(group.id, 'user', 'Exercise the production delivery callback race.')
+  const contextPack = workspace.createContextPack({
+    group, taskId: task.id, mode: 'auto', targetKinds, message: task,
+  })
+  const reservation = workspace.reserveRun(group.id, 'auto', targetKinds, task.id, 4, false)
+  workspace.bindRunTask(
+    group.id, reservation, task.id, task.id, contextPack.contextPackId,
+  )
+  const controller = workspace.beginRun(
+    group.id, 'auto', targetKinds, task.id, reservation, 4, false,
+  )
+  controller.currentRound = 2
+  controller.v4 = true
+  controller.orchestration = {}
+  const snapshot = v4Snapshot({
+    state: workspace.state,
+    group,
+    taskId: task.id,
+    targetKinds,
+    message: task,
+    skillHintsByKind: new Map(targetKinds.map(kind => [kind, []])),
+    phase: 'proposal',
+    writerKind: 'hermes',
+  })
+  const builtSnapshot = workspace.autoRunner.v4SnapshotRecord(
+    controller, snapshot, targetKinds,
+  )
+  const slots = targetKinds.map((agentKind, index) => ({
+    slotId: `slot-${index + 1}-${agentKind}`,
+    agentKind,
+    phase: 'proposal',
+    status: 'completed',
+    operationId: `operation-proposal-${agentKind}`,
+    resultRefs: { artifactIds: [], evidenceIds: [], workflowOutcomeRefs: [] },
+  }))
+  const proposalArtifactIds = new Map(targetKinds.map((agentKind) => {
+    const contentRef = workspace.contentBlobStore.put(
+      `${agentKind} concrete proposal body.`, { mediaType: 'text/plain' },
+    )
+    const artifact = workspace.outcomeStore.putArtifact({
+      type: 'document',
+      name: `${agentKind}-proposal.txt`,
+      producedBy: {
+        runId: controller.runId,
+        agentRunId: `agent-run-${agentKind}-proposal`,
+        agentKind,
+      },
+      contentRef,
+      contentHash: contentRef.hash,
+    })
+    return [agentKind, artifact.artifactId]
+  }))
+  const receiptRecords = targetKinds.map((agentKind, index) => ({
+    receipt: createCollaborationReceipt({
+      phase: 'proposal', agentKind, slotId: slots[index].slotId,
+      operationId: slots[index].operationId, status: 'completed',
+      summary: `${agentKind} proposal`, artifactIds: [proposalArtifactIds.get(agentKind)],
+      evidenceIds: [`evidence-${agentKind}-proposal`],
+      snapshotHash: builtSnapshot.snapshotHash, deliveryWatermark: 1,
+    }),
+    resolvedIssueIds: [],
+  }))
+  const challengeBindings = workspace.autoRunner.v4ChallengeBindings({
+    controller,
+    targetKinds,
+    round: 2,
+    snapshotRecord: builtSnapshot.record,
+    slots,
+    receiptRecords,
+  })
+  const context = {
+    rootSkillsByKind: new Map(targetKinds.map(kind => [kind, []])),
+    rootKnowledgeBasesByKind: new Map(targetKinds.map(kind => [kind, []])),
+  }
+  const phaseInput = {
+    phase: 'challenge',
+    activeKinds: ['codex'],
+    targetKinds,
+    writerKind: 'hermes',
+    batchId: 'batch-production-callback-race',
+    snapshot,
+    snapshotRecord: builtSnapshot.record,
+    snapshotHash: builtSnapshot.snapshotHash,
+    slots,
+    receiptRecords,
+    challengeBindings,
+  }
+
+  const oldPhase = workspace.autoRunner.runV4Phase(
+    group, controller, task.id, context, phaseInput,
+  )
+  await oldStarted.promise
+  const oldDeliveryState = structuredClone(controller.orchestration.deliveryState)
+  assert.equal(oldDeliveryState.every(entry => entry.status === 'prepared'), true)
+  const oldDeliveryIds = new Set(oldDeliveryState.map(entry => entry.deliveryId))
+  while (Date.now() <= Math.max(...oldDeliveryState.map(entry => entry.updatedAt))) {
+    await new Promise(resolve => setImmediate(resolve))
+  }
+
+  let sharedOrchestration = controller.orchestration
+  Object.defineProperty(controller, 'orchestration', {
+    configurable: true,
+    get: () => sharedOrchestration,
+    set: value => { sharedOrchestration = value },
+  })
+  const retryWorkspace = new LocalWorkspace(options)
+  await retryWorkspace.refreshAgents()
+  const retryController = retryWorkspace.createRunController(
+    'auto', targetKinds, task.id, 4, false,
+  )
+  retryController.runId = controller.runId
+  retryController.taskId = controller.taskId
+  retryController.contextPackId = controller.contextPackId
+  retryController.taskBound = true
+  retryController.groupId = controller.groupId
+  retryController.currentRound = controller.currentRound
+  retryController.v4 = true
+  Object.defineProperty(retryController, 'orchestration', {
+    configurable: true,
+    get: () => sharedOrchestration,
+    set: value => { sharedOrchestration = value },
+  })
+  retryWorkspace.activeRuns.set(group.id, retryController)
+  const retryPhase = retryWorkspace.autoRunner.runV4Phase(
+    retryWorkspace.getGroup(group.id), retryController, task.id, context, phaseInput,
+  )
+  await retryStarted.promise
+  const retryResult = await retryPhase
+  assert.equal(retryResult.failures.length, 0)
+  const acknowledgedState = structuredClone(sharedOrchestration.deliveryState)
+  assert.equal(acknowledgedState.every(entry => entry.status === 'acknowledged'), true)
+  assert.equal(acknowledgedState.some(entry => oldDeliveryIds.has(entry.deliveryId)), false)
+
+  releaseOldFailure.resolve()
+  const oldResult = await oldPhase
+  assert.equal(oldResult.failures.length, 1)
+  assert.deepEqual(sharedOrchestration.deliveryState, acknowledgedState)
+  workspace.activeRuns.delete(group.id)
+  retryWorkspace.activeRuns.delete(group.id)
+})
+
+test('V4 legacy synthesis-binding helper ranks one writer and exact distinct verifiers for 2, 3, and 32 Agents', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+
+  for (const count of [2, 3, 32]) {
+    const kinds = Array.from({ length: count }, (_value, index) => `agent-${index + 1}`)
+    const candidates = synthesisCandidates(kinds, Object.fromEntries(
+      kinds.map(kind => [kind, { score: 500 }]),
+    ))
+    const binding = workspace.autoRunner.v4SynthesisBinding(synthesisBindingInput(
+      kinds, { candidates },
+    ))
+    assert.equal(binding.candidates.length, count)
+    assert.equal(binding.writerKind, 'agent-1')
+    assert.equal(binding.verificationKinds.length, Math.min(2, count - 1))
+    assert.equal(new Set(binding.verificationKinds).size, binding.verificationKinds.length)
+    assert.equal(binding.verificationKinds.includes(binding.writerKind), false)
+  }
+})
+
+test('V4 Auto fails a read-only agreed finalizer once without automatic replacement', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const synthesisKinds = []
+  let failedWriter = ''
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisKinds.push(agent.kind)
+      if (!failedWriter) {
+        failedWriter = agent.kind
+        throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+      }
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: agreedV4Collaboration(
+        agent.kind, phase, prompt, ['codex', 'hermes', 'workbuddy'],
+      ),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 read-only synthesis failover',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Produce and independently verify one candidate.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  await controller.promise
+  const durable = ledger.get(controller.runId)
+
+  assert.equal(durable.status, 'failed')
+  assert.equal(synthesisKinds.length, 1)
+  assert.equal(synthesisKinds[0], failedWriter)
+  assert.equal(durable.orchestration.coordinationPlan.finalizerKind, failedWriter)
+  assert.equal(durable.orchestration.synthesisRecovery.activeWriterKind, failedWriter)
+  assert.deepEqual(durable.orchestration.synthesisRecovery.triedWriters, synthesisKinds)
+  assert.deepEqual(
+    durable.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
+    ['failed'],
+  )
+  assert.deepEqual(
+    durable.orchestration.synthesisRecovery.verificationKinds,
+    durable.orchestration.coordinationPlan.verifierKinds,
+  )
+})
+
+test('V4 Auto gates an unknown writable synthesis outcome before dispatching another writer', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const synthesisCalls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+      throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: agreedV4Collaboration(
+        agent.kind, phase, prompt, ['codex', 'hermes', 'workbuddy'],
+      ),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 writable synthesis recovery',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingHumanGate(workspace)
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Produce one candidate without risking a duplicate workspace write.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  const gate = await gatePromise
+  const durable = ledger.get(controller.runId)
+  const coordinationPlan = durable.orchestration.coordinationPlan
+  const recovery = durable.orchestration.synthesisRecovery
+  const recoveryBinding = recovery.pendingGate
+
+  assert.equal(gate.type, 'decision')
+  assert.deepEqual(gate.options.map(option => option.optionId), [
+    'retry-original-writer', 'replace-next-writer', 'stop-discussion',
+  ])
+  assert.equal(coordinationPlan.finalizerKind, 'workbuddy')
+  assert.deepEqual(coordinationPlan.verifierKinds, ['codex', 'hermes'])
+  assert.equal(recoveryBinding.writerKind, coordinationPlan.finalizerKind)
+  assert.equal(recoveryBinding.proposedReplacementKind, 'codex')
+  assert.deepEqual(recovery.rankedKinds.slice(0, 2), ['workbuddy', 'codex'])
+  assert.equal(coordinationPlan.assignments.some(assignment => (
+    assignment.ownerKind === recoveryBinding.proposedReplacementKind
+  )), true)
+  assert.deepEqual(coordinationPlan.verifierKinds.filter(kind => (
+    kind !== recoveryBinding.proposedReplacementKind
+  )), ['hermes'])
+  assert.equal(recoveryBinding.rankingFingerprint, recovery.rankingFingerprint)
+  assert.equal(synthesisCalls.length, 1)
+  assert.equal(durable.status, 'waiting')
+  assert.equal(durable.continuation.resumeKind, 'v4_synthesis_recovery')
+  assert.equal(durable.orchestration.phase, 'human-gate')
+  assert.equal(durable.orchestration.synthesisRecovery.attempts.at(-1).status, 'unknown_outcome')
+  assert.equal(durable.orchestration.synthesisRecovery.pendingGate.operationId,
+    synthesisCalls[0].operationId)
+  assert.equal(workspace.listHumanGates({ pendingOnly: true }).length, 1)
+
+  workspace.decideHumanGate(gate.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  await controller.promise
+})
+
+test('V4 Auto retries the original writer with a new operation after recovery approval', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const synthesisCalls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+      if (synthesisCalls.length === 1) {
+        throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+      }
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: agreedV4Collaboration(
+        agent.kind, phase, prompt, ['codex', 'hermes', 'workbuddy'],
+      ),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 retry original synthesis writer',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingHumanGate(workspace)
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Retry the bound writer only after explicit approval.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  const gate = await gatePromise
+  workspace.decideHumanGate(gate.gateId, {
+    status: 'approved', optionId: 'retry-original-writer', actorId: 'local-user',
+  })
+  await controller.promise
+  const durable = ledger.get(controller.runId)
+
+  assert.equal(durable.status, 'completed')
+  assert.equal(synthesisCalls.length, 2)
+  assert.equal(synthesisCalls[0].kind, synthesisCalls[1].kind)
+  assert.notEqual(synthesisCalls[0].operationId, synthesisCalls[1].operationId)
+  assert.deepEqual(
+    durable.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
+    ['superseded', 'completed'],
+  )
+  assert.equal(durable.orchestration.synthesisRecovery.attempts[0].outcomeCertainty,
+    'unknown_outcome')
+  assert.equal(workspace.humanGateStore.list().length, 1)
+})
+
+test('V4 Auto rejects a late synthesis result after the discussion is stopped', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const synthesisStarted = deferred()
+  const lateSynthesis = deferred()
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisStarted.resolve({ kind: agent.kind, operationId: runOptions.operationId })
+      return lateSynthesis.promise
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: agreedV4Collaboration(
+        agent.kind, phase, prompt, ['codex', 'hermes', 'workbuddy'],
+      ),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 late synthesis result',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Stop before the synthesis candidate returns.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  const runningSynthesis = await synthesisStarted.promise
+
+  assert.equal(workspace.stop(group.id, controller.runId), true)
+  await controller.promise
+  lateSynthesis.resolve({
+    text: 'Late synthesis candidate must be ignored.',
+    sessionRef: `${runningSynthesis.kind}-late-synthesis`,
+    collaboration: agreedV4Collaboration(
+      runningSynthesis.kind,
+      'synthesis',
+      '',
+      ['codex', 'hermes', 'workbuddy'],
+      { summary: 'Late synthesis candidate' },
+    ),
+  })
+  await new Promise(resolve => setImmediate(resolve))
+  await new Promise(resolve => setImmediate(resolve))
+
+  const final = ledger.get(controller.runId)
+  const writerSlot = final.orchestration.slots.find(slot => (
+    slot.agentKind === runningSynthesis.kind
+  ))
+  assert.equal(final.status, 'stopped')
+  assert.equal(writerSlot.status, 'stopped')
+  assert.equal((writerSlot.resultRefs?.workflowOutcomeRefs || []).some(record => (
+    record.receipt?.phase === 'synthesis'
+  )), false)
+  assert.deepEqual(final.orchestration.commitState.committedKinds, [])
+  assert.deepEqual(final.orchestration.commitState.messageIds, [])
+  assert.deepEqual(final.orchestration.commitState.blackboardEntryIds, [])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'agent' && message.content === 'Late synthesis candidate must be ignored.'
+  )), false)
+})
+
+test('V4 legacy synthesis-binding helper is stable across run state, rounds, input order, and reconstruction', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const kinds = ['codex', 'hermes', 'workbuddy']
+  const candidates = synthesisCandidates(kinds, {
+    codex: { score: 700 }, hermes: { score: 700 }, workbuddy: { score: 700 },
+  })
+  const first = new LocalWorkspace(options)
+  const second = new LocalWorkspace(options)
+  const input = synthesisBindingInput(kinds, { candidates, contentHash: 'c'.repeat(64) })
+  const expected = first.autoRunner.v4SynthesisBinding(input)
+
+  const controller = first.createRunController('auto', kinds, 'root-binding', 8, false)
+  controller.runId = 'different-run'
+  controller.currentRound = 17
+  const reordered = second.autoRunner.v4SynthesisBinding(synthesisBindingInput(
+    [...kinds].reverse(),
+    { candidates: [...candidates].reverse(), contentHash: 'c'.repeat(64) },
+  ))
+
+  assert.deepEqual(reordered, expected)
+  assert.deepEqual(first.autoRunner.v4SynthesisBinding(input), expected)
+})
+
+test('V4 legacy synthesis-binding helper hashes semantic body instead of snapshot identifiers', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const first = new LocalWorkspace(options)
+  const second = new LocalWorkspace(options)
+  const kinds = ['codex', 'hermes', 'workbuddy']
+  const candidates = synthesisCandidates(kinds, {
+    codex: { score: 600, evidence: null },
+    hermes: { score: 600, evidence: null },
+    workbuddy: { score: 600, evidence: null },
+  })
+  const controllerA = first.createRunController('auto', kinds, 'root-a', 8, false)
+  controllerA.runId = 'run-a'
+  controllerA.taskId = 'task-a'
+  const controllerB = second.createRunController('auto', kinds, 'root-b', 8, false)
+  controllerB.runId = 'run-b'
+  controllerB.taskId = 'task-b'
+  const content = {
+    version: 1,
+    targetKinds: kinds,
+    skillHintsByKind: kinds.map(kind => ({ kind, skillHints: [] })),
+    phase: 'proposal',
+    writerKind: '',
+    taskText: 'Produce the same evidence-backed answer.',
+    group: { name: 'Semantic snapshot group', topic: 'Semantic snapshot topic' },
+    history: [
+      { id: 'history-a', role: 'user', agentKind: '', text: 'Keep the answer concise.' },
+      { id: 'history-agent-a', role: 'agent', agentKind: 'codex', text: 'Prior finding.' },
+    ],
+  }
+  const snapshotA = {
+    ...content, taskId: 'task-a', messageId: 'message-a',
+  }
+  const snapshotB = {
+    ...content,
+    taskId: 'task-b',
+    messageId: 'message-b',
+    history: content.history.map((item, index) => ({ ...item, id: `other-${index}` })),
+  }
+  const recordA = first.autoRunner.v4SnapshotRecord(controllerA, snapshotA, kinds).record
+  const recordB = second.autoRunner.v4SnapshotRecord(controllerB, snapshotB, kinds).record
+  const bindingA = first.autoRunner.v4SynthesisBinding({
+    targetKinds: kinds,
+    snapshotRecord: recordA,
+    routingDecision: { candidates },
+  })
+  const bindingB = second.autoRunner.v4SynthesisBinding({
+    targetKinds: kinds,
+    snapshotRecord: recordB,
+    routingDecision: { candidates: [...candidates].reverse() },
+  })
+
+  assert.notEqual(recordA.contentHash, recordB.contentHash)
+  assert.equal(recordA.bodyHash, recordB.bodyHash)
+  assert.deepEqual(bindingA, bindingB)
+  const tamperedRecord = { ...recordA, bodyHash: 'f'.repeat(64) }
+  assert.throws(() => first.autoRunner.v4LoadSnapshot({
+    snapshot: tamperedRecord,
+    snapshotHash: hashValue(tamperedRecord),
+  }, {
+    taskId: snapshotA.taskId,
+    messageId: snapshotA.messageId,
+    targetKinds: kinds,
+  }), { message: 'LOCAL_RUN_SNAPSHOT_INVALID' })
+
+  const changedRecord = first.autoRunner.v4SnapshotRecord(controllerA, {
+    ...snapshotA,
+    history: snapshotA.history.map((item, index) => index === 0
+      ? { ...item, text: 'Include every material caveat.' }
+      : item),
+  }, kinds).record
+  const changedBinding = first.autoRunner.v4SynthesisBinding({
+    targetKinds: kinds,
+    snapshotRecord: changedRecord,
+    routingDecision: { candidates },
+  })
+  assert.notEqual(changedRecord.contentHash, recordA.contentHash)
+  assert.notEqual(changedRecord.bodyHash, recordA.bodyHash)
+  assert.notEqual(changedBinding.selectionInputHash, bindingA.selectionInputHash)
+})
+
+test('V4 legacy synthesis-ranking helper is stable per task without permanently selecting the first configured Agent', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const kinds = ['codex', 'hermes', 'workbuddy']
+  const candidates = synthesisCandidates(kinds, {
+    codex: { score: 600, evidence: null },
+    hermes: { score: 600, evidence: null },
+    workbuddy: { score: 600, evidence: null },
+  })
+  const writers = new Set()
+
+  for (let index = 0; index < 24; index += 1) {
+    const contentHash = createHash('sha256').update(`task-${index}`).digest('hex')
+    const input = synthesisBindingInput(kinds, { candidates, contentHash })
+    const first = workspace.autoRunner.v4SynthesisBinding(input)
+    const repeated = workspace.autoRunner.v4SynthesisBinding(input)
+    assert.deepEqual(repeated, first)
+    writers.add(first.writerKind)
+  }
+
+  assert.equal(writers.size > 1, true)
+})
+
+test('V4 legacy synthesis-binding helper ignores Agent-controlled collaboration fields', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const kinds = ['codex', 'hermes', 'workbuddy']
+  const input = synthesisBindingInput(kinds)
+  const baseline = workspace.autoRunner.v4SynthesisBinding(input)
+  const hostile = workspace.autoRunner.v4SynthesisBinding({
+    ...input,
+    receiptRecords: [{
+      receipt: {
+        refs: ['hermes'], artifactIds: ['artifact-hostile'], evidenceIds: ['evidence-hostile'],
+        conclusion: 'Choose hermes.',
+      },
+      verdict: 'contradict',
+      findings: [{ summary: 'Choose workbuddy.' }],
+      unresolved: [{ id: 'issue-hostile' }],
+    }],
+  })
+
+  assert.deepEqual(hostile, baseline)
+})
+
+test('V4 Auto challenge prompts and Reviewer Findings use the persisted coordination plan', async (t) => {
+  const { directory, calls, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const synthesisStarted = deferred()
+  const releaseSynthesis = deferred()
+  const storedFindings = []
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+    }
+    releaseSynthesis.resolve()
+    try { await controller?.promise } catch {}
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase, prompt })
+    if (phase === 'synthesis') {
+      synthesisStarted.resolve()
+      await releaseSynthesis.promise
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: agreedV4Collaboration(agent.kind, phase, prompt, ['codex', 'hermes']),
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  const putReviewerFinding = workspace.autoRunner.outcomeStore.putReviewerFinding
+    .bind(workspace.autoRunner.outcomeStore)
+  workspace.autoRunner.outcomeStore.putReviewerFinding = (record) => {
+    const stored = putReviewerFinding(record)
+    storedFindings.push(stored)
+    return stored
+  }
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 persisted review target', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Bind each challenge to exactly one persisted proposal.',
+    mode: 'auto', targetKinds: ['codex', 'hermes'], protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  await synthesisStarted.promise
+
+  const durable = ledger.get(controller.runId)
+  assert.equal(durable.orchestration.challengeBindings.length, 2)
+  const coordinationPlan = durable.orchestration.coordinationPlan
+  assert.equal(Boolean(coordinationPlan), true)
+  assert.equal(durable.orchestration.synthesisBinding, undefined)
+  assert.equal(coordinationPlan.finalizerKind, 'hermes')
+  assert.deepEqual(coordinationPlan.verifierKinds, ['codex'])
+  assert.equal(durable.orchestration.commitState.writerKind, coordinationPlan.finalizerKind)
+  assert.deepEqual(
+    calls.filter(item => item.phase === 'synthesis').map(item => item.kind),
+    [coordinationPlan.finalizerKind],
+  )
+  for (const binding of durable.orchestration.challengeBindings) {
+    const call = calls.find(item => item.phase === 'challenge' && item.kind === binding.reviewerKind)
+    assert.match(
+      call.prompt,
+      new RegExp(`Coverage responsibility: explicitly incorporate or challenge ${binding.proposalKind}`),
+    )
+    const finding = storedFindings.find(item => item.reviewer.agentKind === binding.reviewerKind)
+    assert.equal(finding.artifactId, binding.artifactIds[0])
+  }
+
+  const invalid = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: path.join(directory, 'run-ledger-invalid-synthesis.json') }),
+  })
+  await invalid.refreshAgents()
+  invalid.autoRunner.v4SynthesisBinding = () => {
+    throw new Error('TEST_FRESH_SYNTHESIS_BINDING_DERIVED')
+  }
+  const assertMissingPlanFailsClosed = async (orchestration) => {
+    const candidate = invalid.createRunController(
+      'auto', durable.targetKinds, durable.threadRootId,
+      durable.maxRounds, durable.unlimitedRounds,
+    )
+    candidate.runId = durable.runId
+    candidate.taskId = durable.taskId
+    candidate.contextPackId = durable.contextPackId
+    candidate.taskBound = true
+    candidate.groupId = durable.groupId
+    candidate.currentRound = durable.currentRound
+    candidate.orchestration = orchestration
+    candidate.v4 = true
+    const invalidContext = await invalid.autoRunner.automaticContext(
+      invalid.getGroup(group.id), candidate, durable.threadRootId,
+    )
+    await assert.rejects(() => invalid.autoRunner.runV4Discussion(
+      invalid.getGroup(group.id), candidate, durable.threadRootId, invalidContext, true,
+    ), { message: 'LOCAL_RUN_V4_SYNTHESIS_BINDING_REQUIRED' })
+  }
+  for (const phase of ['verification', 'human-gate', 'commit', 'committed', 'completed']) {
+    const orchestration = structuredClone(durable.orchestration)
+    delete orchestration.coordinationPlan
+    orchestration.phase = phase
+    await assertMissingPlanFailsClosed(orchestration)
+  }
+
+  const observableSlot = structuredClone(durable.orchestration)
+  delete observableSlot.coordinationPlan
+  observableSlot.phase = 'challenge'
+  await assertMissingPlanFailsClosed(observableSlot)
+
+  const observableReceipt = structuredClone(durable.orchestration)
+  delete observableReceipt.coordinationPlan
+  observableReceipt.phase = 'challenge'
+  observableReceipt.slots = observableReceipt.slots.map(slot => ({
+    ...slot,
+    phase: 'challenge',
+    status: 'completed',
+    finishedAt: slot.finishedAt || Date.now(),
+  }))
+  const receiptSlot = observableReceipt.slots[0]
+  const startedReceipt = createCollaborationReceipt({
+    phase: 'synthesis',
+    agentKind: receiptSlot.agentKind,
+    slotId: receiptSlot.slotId,
+    operationId: receiptSlot.operationId,
+    status: 'completed',
+    summary: 'Synthesis already started.',
+    snapshotHash: observableReceipt.snapshotHash,
+    deliveryWatermark: 3,
+  })
+  observableReceipt.slots[0].resultRefs.workflowOutcomeRefs.push({ receipt: startedReceipt })
+  await assertMissingPlanFailsClosed(observableReceipt)
+
+  const commitObservableBase = structuredClone(durable.orchestration)
+  delete commitObservableBase.coordinationPlan
+  commitObservableBase.phase = 'proposal'
+  commitObservableBase.currentKind = ''
+  commitObservableBase.currentKinds = []
+  commitObservableBase.pendingKinds = []
+  commitObservableBase.slots = commitObservableBase.slots.map((slot) => {
+    const workflowOutcomeRefs = slot.resultRefs.workflowOutcomeRefs.filter(item => (
+      ['proposal', 'challenge'].includes(item.receipt.phase)
+    ))
+    const challengeReceipt = [...workflowOutcomeRefs].reverse().find(item => (
+      item.receipt.phase === 'challenge'
+    )).receipt
+    return {
+      ...slot,
+      phase: 'challenge',
+      status: 'completed',
+      operationId: challengeReceipt.operationId,
+      receiptId: challengeReceipt.receiptId,
+      finishedAt: slot.finishedAt || Date.now(),
+      commitStatus: 'pending',
+      permission: 'read-only',
+      resultRefs: { ...slot.resultRefs, workflowOutcomeRefs },
+    }
+  })
+  const pendingCommitState = {
+    ...commitObservableBase.commitState,
+    status: 'pending',
+    writerKind: null,
+    committedKinds: [],
+    pendingKinds: [...durable.targetKinds],
+    operationId: '',
+    attempt: 0,
+    committedSlotIds: [],
+    messageIds: [],
+    blackboardEntryIds: [],
+  }
+  for (const commitState of [
+    { ...pendingCommitState, status: 'committing' },
+    { ...pendingCommitState, writerKind: durable.targetKinds[0] },
+    { ...pendingCommitState, operationId: 'operation-commit-observable' },
+    { ...pendingCommitState, messageIds: ['message-commit-observable'] },
+  ]) {
+    await assertMissingPlanFailsClosed({
+      ...structuredClone(commitObservableBase),
+      commitState,
+    })
+  }
+  const recoveryLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-synthesis-recovery.json'),
+  })
+  recoveryLedger.checkpoint(durable)
+  const recoveredDurable = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-synthesis-recovery.json'),
+  }).get(durable.runId)
+  const recoveryCalls = []
+  const recovered = new LocalWorkspace({
+    ...options,
+    runLedger: null,
+    runAgent: async (agent, prompt) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      recoveryCalls.push({ kind: agent.kind, phase })
+      const artifactId = `artifact-${createHash('sha256').update(`${agent.kind}:${phase}:recovery`).digest('hex')}`
+      const evidenceId = `evidence-${createHash('sha256').update(`${agent.kind}:${phase}:recovery`).digest('hex')}`
+      return {
+        text: `${agent.kind} ${phase}`,
+        sessionRef: `${agent.kind}-${phase}-recovered`,
+        outcomeRefs: { artifactIds: [artifactId], evidenceIds: [evidenceId] },
+        collaboration: agreedV4Collaboration(
+          agent.kind,
+          phase,
+          prompt,
+          ['codex', 'hermes'],
+          { summary: phase === 'synthesis' ? 'Recovered candidate' : 'Recovered verification' },
+        ),
+      }
+    },
+  })
+  await recovered.refreshAgents()
+  const recoveredController = recovered.createRunController(
+    'auto', recoveredDurable.targetKinds, recoveredDurable.threadRootId,
+    recoveredDurable.maxRounds, recoveredDurable.unlimitedRounds,
+  )
+  recoveredController.runId = recoveredDurable.runId
+  recoveredController.taskId = recoveredDurable.taskId
+  recoveredController.contextPackId = recoveredDurable.contextPackId
+  recoveredController.taskBound = true
+  recoveredController.groupId = recoveredDurable.groupId
+  recoveredController.currentRound = recoveredDurable.currentRound
+  recoveredController.orchestration = structuredClone(recoveredDurable.orchestration)
+  recoveredController.v4 = true
+  recovered.activeRuns.set(group.id, recoveredController)
+  const recoveryGatePromise = pendingHumanGate(recovered)
+  const recoveryRun = recovered.autoRunner.runV4Discussion(
+    recovered.getGroup(group.id),
+    recoveredController,
+    durable.threadRootId,
+    await recovered.autoRunner.automaticContext(
+      recovered.getGroup(group.id), recoveredController, durable.threadRootId,
+    ),
+    true,
+  )
+  const recoveryGate = await recoveryGatePromise
+  const recovery = recoveredController.orchestration.synthesisRecovery
+  const recoveryBinding = recovery.pendingGate
+
+  assert.deepEqual(recoveryCalls, [])
+  assert.equal(recovery.attempts.length, 1)
+  assert.equal(recovery.attempts[0].status, 'unknown_outcome')
+  assert.equal(recoveryBinding.writerKind, coordinationPlan.finalizerKind)
+  assert.equal(recoveryBinding.proposedReplacementKind, '')
+  assert.deepEqual(recovery.verificationKinds, coordinationPlan.verifierKinds)
+  assert.equal(recoveryGate.agentKind, coordinationPlan.finalizerKind)
+  assert.equal(recoveryGate.agentRunId, recoveryBinding.operationId)
+  assert.deepEqual(recoveryGate.options.map(option => option.optionId), [
+    'retry-original-writer', 'stop-discussion',
+  ])
+  assert.equal(recovered.listHumanGates({ pendingOnly: true }).length, 1)
+
+  recovered.decideHumanGate(recoveryGate.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  assert.equal(await recoveryRun, 'stopped')
+  recovered.activeRuns.delete(group.id)
+})
+
+test('V4 Auto verification recovery invokes only the persisted verification kinds', async (t) => {
+  const { directory, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const verificationStarted = deferred()
+  const releaseVerification = deferred()
+  let verificationCalls = 0
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    releaseVerification.resolve()
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+      try { await controller.promise } catch {}
+    }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'verification') {
+      verificationCalls += 1
+      if (verificationCalls === 2) verificationStarted.resolve()
+      await releaseVerification.promise
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: agreedV4Collaboration(
+        agent.kind, phase, prompt, ['codex', 'hermes', 'workbuddy'],
+      ),
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 verification recovery',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Resume verification from the durable binding.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  await verificationStarted.promise
+  const checkpoint = ledger.get(controller.runId)
+  const coordinationPlan = checkpoint.orchestration.coordinationPlan
+  assert.equal(checkpoint.orchestration.phase, 'verification')
+  assert.equal(checkpoint.orchestration.synthesisBinding, undefined)
+  assert.equal(Boolean(coordinationPlan), true)
+  assert.equal(coordinationPlan.finalizerKind, 'workbuddy')
+  assert.deepEqual(coordinationPlan.verifierKinds, ['codex', 'hermes'])
+
+  workspace.stop(group.id, controller.runId)
+  releaseVerification.resolve()
+  await controller.promise
+
+  const recoveryPath = path.join(directory, 'run-ledger-verification-recovery.json')
+  new RunLedger({ storagePath: recoveryPath }).checkpoint(checkpoint)
+  const recoveredDurable = new RunLedger({ storagePath: recoveryPath }).get(checkpoint.runId)
+  const recoveryCalls = []
+  const recoveredVerificationStarted = deferred()
+  const releaseRecoveredVerification = deferred()
+  const recovered = new LocalWorkspace({
+    ...options,
+    runLedger: null,
+    runAgent: async (agent, prompt) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      recoveryCalls.push({ kind: agent.kind, phase })
+      if (recoveryCalls.length === coordinationPlan.verifierKinds.length) {
+        recoveredVerificationStarted.resolve()
+      }
+      await releaseRecoveredVerification.promise
+      return {
+        text: `${agent.kind} ${phase}`,
+        sessionRef: `${agent.kind}-${phase}-recovered`,
+        collaboration: agreedV4Collaboration(
+          agent.kind,
+          phase,
+          prompt,
+          ['codex', 'hermes', 'workbuddy'],
+          { summary: 'Recovered review' },
+        ),
+      }
+    },
+  })
+  await recovered.refreshAgents()
+  const recoveredController = recovered.createRunController(
+    'auto', recoveredDurable.targetKinds, recoveredDurable.threadRootId,
+    recoveredDurable.maxRounds, recoveredDurable.unlimitedRounds,
+  )
+  recoveredController.runId = recoveredDurable.runId
+  recoveredController.taskId = recoveredDurable.taskId
+  recoveredController.contextPackId = recoveredDurable.contextPackId
+  recoveredController.taskBound = true
+  recoveredController.groupId = recoveredDurable.groupId
+  recoveredController.currentRound = recoveredDurable.currentRound
+  recoveredController.orchestration = structuredClone(recoveredDurable.orchestration)
+  recoveredController.v4 = true
+  recovered.activeRuns.set(group.id, recoveredController)
+  const recoveryRun = recovered.autoRunner.runV4Discussion(
+    recovered.getGroup(group.id), recoveredController, recoveredDurable.threadRootId,
+    await recovered.autoRunner.automaticContext(
+      recovered.getGroup(group.id), recoveredController, recoveredDurable.threadRootId,
+    ), true,
+  )
+  await recoveredVerificationStarted.promise
+
+  assert.deepEqual(
+    new Set(recoveryCalls.map(call => call.kind)),
+    new Set(coordinationPlan.verifierKinds),
+  )
+  assert.equal(recoveryCalls.every(call => call.phase === 'verification'), true)
+  recoveredController.abort()
+  releaseRecoveredVerification.resolve()
+  await recoveryRun
+  recovered.activeRuns.delete(group.id)
+
+  const invalidController = recovered.createRunController(
+    'auto', recoveredDurable.targetKinds, recoveredDurable.threadRootId,
+    recoveredDurable.maxRounds, recoveredDurable.unlimitedRounds,
+  )
+  invalidController.orchestration = structuredClone(recoveredDurable.orchestration)
+  delete invalidController.orchestration.coordinationPlan
+  invalidController.v4 = true
+  await assert.rejects(() => recovered.autoRunner.runV4Discussion(
+    recovered.getGroup(group.id), invalidController, recoveredDurable.threadRootId,
+    {}, true,
+  ), { message: 'LOCAL_RUN_V4_SYNTHESIS_BINDING_REQUIRED' })
+})
+
+test('V4 Auto round one runs concurrent primary proposals before round-two challenges', async (t) => {
+  const { directory, calls, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const firstChallenge = deferred()
+  const releaseChallenges = deferred()
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+    }
+    releaseChallenges.resolve()
+    try { await controller?.promise } catch {}
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 2, globalLimit: 2 })
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase, prompt, runOptions })
+    if (phase === 'challenge') {
+      firstChallenge.resolve()
+      await releaseChallenges.promise
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4ProposalCollaboration(agent.kind)
+        : { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` },
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 Auto proposal barrier', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Produce independent proposals before review.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  await firstChallenge.promise
+
+  assert.deepEqual(calls.slice(0, 2).map(call => call.phase), ['proposal', 'proposal'])
+  assert.equal(calls.slice(0, 2).every(call => /Role: participant/.test(call.prompt)), true)
+  assert.equal(calls.slice(0, 2).every(call => !/Role: (?:primary|reviewer|worker|synthesizer|verifier)/.test(call.prompt)), true)
+  const firstChallengeCall = calls.find(call => call.phase === 'challenge')
+  const firstChallengeIndex = ['codex', 'hermes'].indexOf(firstChallengeCall.kind)
+  assert.equal(firstChallengeCall.runOptions.operationId, (
+    `operation-${createHash('sha256').update(JSON.stringify([
+      controller.runId,
+      controller.taskId,
+      firstChallengeCall.kind,
+      `slot-${firstChallengeIndex + 1}-${firstChallengeCall.kind}`,
+      'challenge',
+      2,
+    ])).digest('hex')}`
+  ))
+  const durable = ledger.get(controller.runId)
+  assert.equal(durable.currentRound, 2)
+  assert.equal(durable.orchestration.phase, 'challenge')
+  assert.equal(durable.orchestration.plan.assignments.every(assignment => assignment.role === 'participant'), true)
+})
+
+test('V4 Auto maxRounds one settles proposals without later phases or a final answer', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase, prompt })
+    return {
+      text: `${agent.kind} proposal`,
+      sessionRef: `${agent.kind}-proposal`,
+      collaboration: v4ProposalCollaboration(agent.kind),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 one proposal round', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Stop after independent proposals.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    maxRounds: 1,
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  await controller.promise
+
+  assert.deepEqual(calls.map(call => call.phase), ['proposal', 'proposal'])
+  assert.equal(calls.every(call => /Role: participant/.test(call.prompt)), true)
+  assert.equal(calls.every(call => !/Role: (?:primary|reviewer|worker|synthesizer|verifier)/.test(call.prompt)), true)
+  assert.equal(ledger.get(controller.runId).status, 'round-limit')
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent'),
+    [],
+  )
+})
+
+test('V4 Auto freezes all thirty-two proposal dispatches before the first constrained lease', async (t) => {
+  const { directory, calls, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const kinds = Array.from({ length: 32 }, (_value, index) => (
+    `custom-${(index + 1).toString(16).padStart(16, '0')}`
+  ))
+  const promptsBuilt = []
+  let promptsAtFirstDispatch = 0
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => kinds.map((kind, index) => ({
+    kind, name: `Agent ${index + 1}`, executable: `/tmp/${kind}`, version: '1',
+  }))
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 1, globalLimit: 1 })
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase, prompt })
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: v4ProposalCollaboration(agent.kind),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const buildPrompt = workspace.autoRunner.v4PhasePrompt.bind(workspace.autoRunner)
+  workspace.autoRunner.v4PhasePrompt = (...args) => {
+    if (args[2] === 'proposal') promptsBuilt.push(args[1])
+    return buildPrompt(...args)
+  }
+  const invokeProposal = workspace.autoRunner.invokeWithUnauthorizedRecovery
+    .bind(workspace.autoRunner)
+  workspace.autoRunner.invokeWithUnauthorizedRecovery = (input) => {
+    if (input.context?.phase === 'proposal' && !promptsAtFirstDispatch) {
+      promptsAtFirstDispatch = promptsBuilt.length
+    }
+    return invokeProposal(input)
+  }
+  const group = workspace.createGroup({ name: 'V4 thirty-two proposals', agentKinds: kinds, workdir: directory })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Produce independent proposals before any review.',
+    mode: 'auto', targetKinds: kinds, maxRounds: 1, protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  await controller.promise
+
+  assert.equal(promptsAtFirstDispatch, 32, 'all proposal prompts existed before the first dispatch')
+  assert.equal(promptsBuilt.length, 32)
+  assert.equal(new Set(promptsBuilt).size, 32)
+  assert.equal(calls[0].kind, kinds[0])
+  assert.equal(calls.length, 32)
+  assert.equal(calls.every(call => call.phase === 'proposal'), true)
+  assert.equal(new Set(calls.map(call => call.kind)).size, 32)
+  assert.equal(new Set(
+    ledger.get(controller.runId).orchestration.slots.map(slot => slot.snapshotHash),
+  ).size, 1)
+})
+
+test('V4 Auto checkpoints a completed proposal before a queued peer and recovers only the peer', async (t) => {
+  const { directory, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const codexReturned = deferred()
+  const releaseHermes = deferred()
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+    }
+    releaseHermes.resolve()
+    try { await controller?.promise } catch {}
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 1, globalLimit: 1 })
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (agent.kind === 'codex') codexReturned.resolve()
+    if (agent.kind === 'hermes') await releaseHermes.promise
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: v4ProposalCollaboration(agent.kind),
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 partial proposal checkpoint', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Persist each safe proposal before the barrier completes.',
+    mode: 'auto', targetKinds: ['codex', 'hermes'], maxRounds: 1, protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  await codexReturned.promise
+  await new Promise(resolve => setImmediate(resolve))
+
+  const partial = ledger.get(controller.runId)
+  assert.equal(partial.orchestration.phase, 'proposal')
+  assert.equal(partial.orchestration.slots.find(slot => slot.agentKind === 'codex').status, 'completed')
+  assert.match(
+    partial.orchestration.slots.find(slot => slot.agentKind === 'hermes').status,
+    /^(?:planned|queued|running)$/,
+  )
+
+  const recoveryLedger = new RunLedger({ storagePath: path.join(directory, 'run-ledger-recovery.json') })
+  recoveryLedger.checkpoint(partial)
+  workspace.stop(group.id, controller.runId)
+  releaseHermes.resolve()
+  await controller.promise
+  const recoveryCalls = []
+  const recovered = new LocalWorkspace({
+    ...options,
+    runLedger: recoveryLedger,
+    runAgent: async (agent, prompt) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      recoveryCalls.push({ kind: agent.kind, phase })
+      return {
+        text: `${agent.kind} ${phase}`,
+        sessionRef: `${agent.kind}-${phase}-recovered`,
+        outcome: 'completed',
+        collaboration: v4ProposalCollaboration(agent.kind, `${agent.kind} recovered proposal`),
+      }
+    },
+  })
+  await recovered.refreshAgents()
+  const recoveredController = recovered.createRunController(
+    'auto', partial.targetKinds, partial.threadRootId, partial.maxRounds, partial.unlimitedRounds,
+  )
+  recoveredController.runId = partial.runId
+  recoveredController.taskId = partial.taskId
+  recoveredController.contextPackId = partial.contextPackId
+  recoveredController.taskBound = true
+  recoveredController.groupId = partial.groupId
+  recoveredController.currentRound = partial.currentRound
+  recoveredController.orchestration = structuredClone(partial.orchestration)
+  recoveredController.v4 = true
+  recovered.activeRuns.set(group.id, recoveredController)
+  const status = await recovered.autoRunner.runV4Discussion(
+    recovered.getGroup(group.id), recoveredController, partial.threadRootId,
+    {
+      rootAttachments: [],
+      rootSkillsByKind: new Map(partial.targetKinds.map(kind => [kind, []])),
+      rootKnowledgeBasesByKind: new Map(partial.targetKinds.map(kind => [kind, []])),
+      rootMediaRequest: null,
+    }, true,
+  )
+
+  assert.equal(status, 'round-limit')
+  assert.deepEqual(recoveryCalls.map(call => call.kind), ['hermes'])
+  assert.deepEqual(recoveryCalls.map(call => call.phase), ['proposal'])
+})
+
+test('V4 Auto rejects unsuccessful proposal receipts before the round-two barrier', async (t) => {
+  for (const proposalStatus of ['rejected', 'needs-review']) {
+    await t.test(proposalStatus, async (t) => {
+      const { directory, calls, options } = fixture()
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+      options.runLedger = ledger
+      options.runAgent = async (agent, prompt) => {
+        const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+        calls.push({ kind: agent.kind, phase })
+        return {
+          text: `${agent.kind} ${phase}`,
+          sessionRef: `${agent.kind}-${phase}`,
+          collaboration: v4ProposalCollaboration(agent.kind),
+        }
+      }
+      const workspace = new LocalWorkspace(options)
+      await workspace.refreshAgents()
+      const receiptForResult = workspace.autoRunner.v4ReceiptForResult.bind(workspace.autoRunner)
+      workspace.autoRunner.v4ReceiptForResult = (...args) => {
+        const receiptRecord = receiptForResult(...args)
+        return args[1] === 'proposal' && args[2] === 'hermes'
+          ? {
+              ...receiptRecord,
+              receipt: { ...receiptRecord.receipt, status: proposalStatus },
+            }
+          : receiptRecord
+      }
+      const group = workspace.createGroup({
+        name: `V4 ${proposalStatus} proposal barrier`, agentKinds: ['codex', 'hermes'], workdir: directory,
+      })
+      await workspace.sendMessage({
+        groupId: group.id,
+        text: 'Do not advance rejected proposals.',
+        mode: 'auto', targetKinds: ['codex', 'hermes'], protocol: 'v4',
+      })
+      const controller = workspace.activeRuns.get(group.id)
+      await controller.promise
+
+      assert.deepEqual(calls.map(call => call.phase), ['proposal', 'proposal'])
+      assert.equal(ledger.get(controller.runId).status, 'failed')
+      assert.equal(ledger.get(controller.runId).orchestration.phase, 'proposal')
+    })
+  }
+})
+
+test('V4 Auto recovery resumes completed proposal barriers at round-two challenges', async (t) => {
+  const { directory, options } = fixture()
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const firstChallenge = deferred()
+  const releaseFirstChallenges = deferred()
+  const initialCalls = []
+  let initial = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    releaseFirstChallenges.resolve()
+    if (initial && group && controller && initial.activeRuns.has(group.id)) {
+      initial.stop(group.id, controller.runId)
+      try { await controller.promise } catch {}
+    }
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 2, globalLimit: 2 })
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    initialCalls.push({ kind: agent.kind, phase })
+    if (phase === 'challenge') {
+      firstChallenge.resolve()
+      await releaseFirstChallenges.promise
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4ProposalCollaboration(agent.kind)
+        : { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` },
+    }
+  }
+  initial = new LocalWorkspace(options)
+  await initial.refreshAgents()
+  group = initial.createGroup({
+    name: 'V4 restart proposal barrier', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+  await initial.sendMessage({
+    groupId: group.id,
+    text: 'Resume only after the proposal barrier.',
+    mode: 'auto', targetKinds: ['codex', 'hermes'], protocol: 'v4',
+  })
+  controller = initial.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  await firstChallenge.promise
+  const checkpoint = ledger.get(controller.runId)
+  assert.equal(checkpoint.orchestration.phase, 'challenge')
+  assert.equal(checkpoint.orchestration.round, 2)
+  assert.equal(checkpoint.orchestration.challengeBindings.length, 2)
+  assert.equal(checkpoint.orchestration.synthesisBinding, undefined)
+  const checkpointBindings = structuredClone(checkpoint.orchestration.challengeBindings)
+  assert.deepEqual(initialCalls.map(call => call.phase), ['proposal', 'proposal', 'challenge', 'challenge'])
+
+  const recoveryLedger = new RunLedger({ storagePath: path.join(directory, 'run-ledger-recovery.json') })
+  recoveryLedger.checkpoint(checkpoint)
+  initial.stop(group.id, controller.runId)
+  releaseFirstChallenges.resolve()
+  await controller.promise
+  const recoveryCalls = []
+  const recoveredChallenge = deferred()
+  const releaseRecoveredChallenge = deferred()
+  const recovered = new LocalWorkspace({
+    ...options,
+    runLedger: recoveryLedger,
+    runAgent: async (agent, prompt) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      recoveryCalls.push({ kind: agent.kind, phase, prompt })
+      if (phase === 'challenge') {
+        recoveredChallenge.resolve()
+        await releaseRecoveredChallenge.promise
+      }
+      return {
+        text: `${agent.kind} ${phase}`,
+        sessionRef: `${agent.kind}-${phase}-recovered`,
+        collaboration: phase === 'challenge'
+          ? { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` }
+          : v4ProposalCollaboration(agent.kind),
+      }
+    },
+  })
+  await recovered.refreshAgents()
+  const recoveredController = recovered.createRunController(
+    'auto', checkpoint.targetKinds, checkpoint.threadRootId,
+    checkpoint.maxRounds, checkpoint.unlimitedRounds,
+  )
+  recoveredController.runId = checkpoint.runId
+  recoveredController.taskId = checkpoint.taskId
+  recoveredController.contextPackId = checkpoint.contextPackId
+  recoveredController.taskBound = true
+  recoveredController.groupId = checkpoint.groupId
+  recoveredController.currentRound = checkpoint.currentRound
+  recoveredController.orchestration = structuredClone(checkpoint.orchestration)
+  recoveredController.v4 = true
+  recovered.activeRuns.set(group.id, recoveredController)
+  const resumed = recovered.autoRunner.runV4Discussion(
+    recovered.getGroup(group.id),
+    recoveredController,
+    checkpoint.threadRootId,
+    await recovered.autoRunner.automaticContext(
+      recovered.getGroup(group.id), recoveredController, checkpoint.threadRootId,
+    ),
+    true,
+  )
+  await recoveredChallenge.promise
+
+  assert.equal(recoveryCalls.length >= 1, true)
+  assert.equal(recoveryCalls.every(call => call.phase === 'challenge'), true)
+  assert.deepEqual(recoveredController.orchestration.challengeBindings, checkpointBindings)
+  for (const call of recoveryCalls) {
+    const binding = checkpointBindings.find(item => item.reviewerKind === call.kind)
+    assert.match(
+      call.prompt,
+      new RegExp(`Coverage responsibility: explicitly incorporate or challenge ${binding.proposalKind}`),
+    )
+  }
+  assert.equal(recoveredController.currentRound, 2)
+  recoveredController.abort()
+  releaseRecoveredChallenge.resolve()
+  await resumed
+
+  const invalid = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: path.join(directory, 'run-ledger-invalid.json') }),
+  })
+  await invalid.refreshAgents()
+  const invalidController = invalid.createRunController(
+    'auto', checkpoint.targetKinds, checkpoint.threadRootId,
+    checkpoint.maxRounds, checkpoint.unlimitedRounds,
+  )
+  invalidController.runId = checkpoint.runId
+  invalidController.taskId = checkpoint.taskId
+  invalidController.contextPackId = checkpoint.contextPackId
+  invalidController.taskBound = true
+  invalidController.groupId = checkpoint.groupId
+  invalidController.currentRound = checkpoint.currentRound
+  invalidController.orchestration = structuredClone(checkpoint.orchestration)
+  delete invalidController.orchestration.challengeBindings
+  invalidController.v4 = true
+  const invalidContext = await invalid.autoRunner.automaticContext(
+    invalid.getGroup(group.id), invalidController, checkpoint.threadRootId,
+  )
+  await assert.rejects(() => invalid.autoRunner.runV4Discussion(
+    invalid.getGroup(group.id),
+    invalidController,
+    checkpoint.threadRootId,
+    invalidContext,
+    true,
+  ), { message: 'LOCAL_RUN_V4_CHALLENGE_BINDING_REQUIRED' })
 })
 
 test('unlimited task graphs give isolated reviewers the adversarial review contract too', async (t) => {
@@ -468,7 +2788,7 @@ test('unlimited task graphs give isolated reviewers the adversarial review contr
     'codex', 'hermes', 'workbuddy', 'kimi',
   ])
   for (const call of calls) {
-    assert.match(call.prompt, /ROUNDRELAY_UNLIMITED_REVIEW_V1/)
+    assert.match(call.prompt, /MELDWORK_UNLIMITED_REVIEW_V1/)
     assert.match(call.prompt, /Raise every material defect immediately/)
   }
 })
@@ -479,7 +2799,7 @@ test('bounded automatic discussion does not use the unlimited adversarial review
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -500,7 +2820,7 @@ test('bounded automatic discussion does not use the unlimited adversarial review
 
   assert.equal(calls.length, 2)
   for (const call of calls) {
-    assert.doesNotMatch(call.prompt, /ROUNDRELAY_UNLIMITED_REVIEW_V1/)
+    assert.doesNotMatch(call.prompt, /MELDWORK_UNLIMITED_REVIEW_V1/)
   }
 })
 
@@ -512,7 +2832,7 @@ test('unlimited automatic discussion stops at the mandatory Agent-attempt circui
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} keeps going\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      text: `${agent.kind} keeps going\n[[MELDWORK_CONSENSUS:continue]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -599,7 +2919,7 @@ test('later group rounds use a compact Harness continuation instead of the boots
     calls.push({ agent, prompt, workdir, runOptions })
     const consensus = calls.length > 2 ? 'agree' : 'continue'
     return {
-      text: `${agent.kind} round ${calls.length}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      text: `${agent.kind} round ${calls.length}\n[[MELDWORK_CONSENSUS:${consensus}]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -760,10 +3080,10 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const replies = [
-    'Codex still has one edge case.\n[[ROUNDRELAY_CONSENSUS:continue]]',
-    'Hermes agrees that clarification is needed.\n[[ROUNDRELAY_CONSENSUS:continue]]',
-    'Codex accepts the current conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
-    'Hermes accepts the current conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+    'Codex still has one edge case.\n[[MELDWORK_CONSENSUS:continue]]',
+    'Hermes agrees that clarification is needed.\n[[MELDWORK_CONSENSUS:continue]]',
+    'Codex accepts the current conclusion.\n[[MELDWORK_CONSENSUS:agree]]',
+    'Hermes accepts the current conclusion.\n[[MELDWORK_CONSENSUS:agree]]',
   ]
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
@@ -787,7 +3107,7 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
     '', '', 'codex-session', 'hermes-session',
   ])
-  assert.equal(calls.every(call => call.prompt.includes('[[ROUNDRELAY_CONSENSUS:agree]]')), true)
+  assert.equal(calls.every(call => call.prompt.includes('[[MELDWORK_CONSENSUS:agree]]')), true)
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent')
       .map(message => message.threadRootId),
@@ -830,7 +3150,7 @@ test('automatic dialogue persists attempts beyond the live Harness window', asyn
     calls.push({ agent, prompt, workdir, runOptions })
     const consensus = calls.length > 60 ? 'agree' : 'continue'
     return {
-      text: `${agent.kind} round result\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      text: `${agent.kind} round result\n[[MELDWORK_CONSENSUS:${consensus}]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -870,7 +3190,7 @@ test('automatic dialogue reuses Kimi ACP sessions across rounds', async (t) => {
       await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
     }
     return {
-      text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      text: `${agent.kind} ${consensus}\n[[MELDWORK_CONSENSUS:${consensus}]]`,
       sessionRef,
     }
   }
@@ -911,7 +3231,7 @@ test('automatic dialogue keeps Hermes on one persistent ACP session across round
       await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
     }
     return {
-      text: `${agent.kind} ${consensus}\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      text: `${agent.kind} ${consensus}\n[[MELDWORK_CONSENSUS:${consensus}]]`,
       sessionRef,
     }
   }
@@ -949,7 +3269,7 @@ test('automatic dialogue queues only the explicitly targeted group members', asy
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: `${agent.kind}-session`,
     }
   }
@@ -1025,7 +3345,7 @@ test('automatic dialogue falls back to staged image files beyond native limits',
     }
     const consensus = calls.length >= 4 ? 'agree' : 'continue'
     return {
-      text: `${agent.kind} reply\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      text: `${agent.kind} reply\n[[MELDWORK_CONSENSUS:${consensus}]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1088,12 +3408,12 @@ test('automatic dialogue requires one final standalone consensus marker', async 
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const replies = [
     [
-      'Codex quoted [[ROUNDRELAY_CONSENSUS:agree]] but still has a reservation.',
-      '[[ROUNDRELAY_CONSENSUS:agree]]',
+      'Codex quoted [[MELDWORK_CONSENSUS:agree]] but still has a reservation.',
+      '[[MELDWORK_CONSENSUS:agree]]',
     ].join('\n'),
-    'Hermes accepts the current conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
-    'Codex has resolved the reservation.\n[[ROUNDRELAY_CONSENSUS:agree]]',
-    'Hermes confirms the final conclusion.\n[[ROUNDRELAY_CONSENSUS:agree]]',
+    'Hermes accepts the current conclusion.\n[[MELDWORK_CONSENSUS:agree]]',
+    'Codex has resolved the reservation.\n[[MELDWORK_CONSENSUS:agree]]',
+    'Hermes confirms the final conclusion.\n[[MELDWORK_CONSENSUS:agree]]',
   ]
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
@@ -1114,7 +3434,7 @@ test('automatic dialogue requires one final standalone consensus marker', async 
 
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes', 'codex', 'hermes'])
   assert.equal(workspace.snapshot().messages.some(message => (
-    message.content.includes('[[ROUNDRELAY_CONSENSUS:')
+    message.content.includes('[[MELDWORK_CONSENSUS:')
   )), false)
   assert.equal(workspace.snapshot().messages.some(message => (
     message.system?.key === 'system.autoRoundLimit'
@@ -1127,7 +3447,7 @@ test('automatic dialogue does not count an incomplete Agent turn as agreement', 
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} agrees.\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees.\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
       outcome: calls.length !== 1 ? 'completed' : 'partial',
     }
@@ -1158,7 +3478,7 @@ test('stopping automatic dialogue cancels the active round without a limit messa
     calls.push({ agent, prompt, workdir, runOptions })
     if (calls.length < 3) {
       return {
-        text: `${agent.kind} continue\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+        text: `${agent.kind} continue\n[[MELDWORK_CONSENSUS:continue]]`,
         sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
       }
     }
@@ -1213,7 +3533,7 @@ test('automatic HTTP 401 completes without a retry delay or recovery handoff', a
     calls.push({ agent, prompt, workdir, runOptions })
     if (agent.kind !== 'hermes') {
       return {
-        text: 'codex agrees\n[[ROUNDRELAY_CONSENSUS:agree]]',
+        text: 'codex agrees\n[[MELDWORK_CONSENSUS:agree]]',
         sessionRef: runOptions.sessionRef || 'codex-session',
       }
     }
@@ -1261,7 +3581,7 @@ test('per-Agent retry restarts only the interrupted Agent attempt', async (t) =>
       })
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1315,7 +3635,7 @@ test('per-Agent cancel preserves the Task and lets later Agents continue', async
       })
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1361,7 +3681,7 @@ test('per-Agent replace makes the selected Agent take over the interrupted slot'
       })
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1412,7 +3732,7 @@ test('automatic dialogue honors bounded Retry-After backoff and recovers', async
       })
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1454,7 +3774,7 @@ test('write-capable unknown outcomes wait for approval before replaying', async 
       }
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1510,7 +3830,7 @@ test('automatic dialogue exhausts bounded transient retries before continuing', 
       throw Object.assign(new Error('Provider temporarily unavailable'), { statusCode: 503 })
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1547,7 +3867,7 @@ test('automatic dialogue fails HTTP 401 once, retains the Agent, and continues h
       throw agentRuntimeError('LOCAL_AGENT_AUTH_REQUIRED', 'HTTP 401: Invalid token')
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1620,7 +3940,7 @@ test('automatic dialogue does not send an authentication recovery handoff to ano
       }
     }
     return {
-      text: `${agent.kind} ${prompt.includes('Harness recovery task') ? 'repaired auth' : 'agrees'}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} ${prompt.includes('Harness recovery task') ? 'repaired auth' : 'agrees'}\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1655,7 +3975,7 @@ test('automatic dialogue keeps a failed authentication slot out of later group c
     }
     const recovery = prompt.includes('Harness recovery task')
     return {
-      text: `${agent.kind} ${recovery ? 'repaired auth' : 'agrees'}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} ${recovery ? 'repaired auth' : 'agrees'}\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-task-session`,
     }
   }
@@ -1696,7 +4016,7 @@ test('automatic dialogue persists one failed 401 attempt without removing the Ag
       throw agentRuntimeError('LOCAL_AGENT_AUTH_REQUIRED', 'HTTP 401: Invalid token')
     }
     return {
-      text: `${agent.kind} ${prompt.includes('Harness recovery task') ? 'checked auth' : 'agrees'}\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} ${prompt.includes('Harness recovery task') ? 'checked auth' : 'agrees'}\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1761,7 +4081,7 @@ test('automatic dialogue treats HTTP 403 as terminal without removing the Agent'
       throw agentRuntimeError('LOCAL_AGENT_AUTH_REQUIRED', 'HTTP 403: Provider rejected the request')
     }
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1802,7 +4122,7 @@ test('automatic dialogue isolates duplicate failures and retries every Agent nex
     }
     const consensus = calls.length >= 7 ? 'agree' : 'continue'
     return {
-      text: `${agent.kind} reply\n[[ROUNDRELAY_CONSENSUS:${consensus}]]`,
+      text: `${agent.kind} reply\n[[MELDWORK_CONSENSUS:${consensus}]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1883,7 +4203,7 @@ test('automatic dialogue retains distinct streamed conclusions for the same fail
       throw new Error('LOCAL_AGENT_PROCESS_FAILED')
     }
     return {
-      text: `${agent.kind} continue\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      text: `${agent.kind} continue\n[[MELDWORK_CONSENSUS:continue]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1957,7 +4277,7 @@ test('automatic dialogue resumes a session captured before a failed turn', async
       throw new Error('LOCAL_AGENT_PROCESS_FAILED')
     }
     return {
-      text: `${agent.kind} reply\n[[ROUNDRELAY_CONSENSUS:${calls.length > 2 ? 'agree' : 'continue'}]]`,
+      text: `${agent.kind} reply\n[[MELDWORK_CONSENSUS:${calls.length > 2 ? 'agree' : 'continue'}]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -1986,7 +4306,7 @@ test('automatic dialogue defaults to six rounds and hides consensus markers at t
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} has not agreed.\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      text: `${agent.kind} has not agreed.\n[[MELDWORK_CONSENSUS:continue]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -2008,7 +4328,7 @@ test('automatic dialogue defaults to six rounds and hides consensus markers at t
     'codex', 'hermes', 'codex', 'hermes', 'codex', 'hermes',
   ])
   assert.equal(workspace.snapshot().messages.some(message => (
-    message.content.includes('[[ROUNDRELAY_CONSENSUS:')
+    message.content.includes('[[MELDWORK_CONSENSUS:')
   )), false)
   const limit = workspace.snapshot().messages.find(message => (
     message.system?.key === 'system.autoRoundLimit'
@@ -2030,7 +4350,7 @@ test('automatic dialogue accepts legacy maxTurns as a round limit', async (t) =>
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} continue\n[[ROUNDRELAY_CONSENSUS:continue]]`,
+      text: `${agent.kind} continue\n[[MELDWORK_CONSENSUS:continue]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -2054,7 +4374,7 @@ test('automatic dialogue caps both round parameters at ten', async (t) => {
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -2080,7 +4400,7 @@ test('automatic dialogue has no total runtime limit', async (t) => {
     calls.push({ agent, prompt, workdir, runOptions })
     if (calls.length === 1) await new Promise(resolve => setTimeout(resolve, 20))
     return {
-      text: `${agent.kind} agrees\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+      text: `${agent.kind} agrees\n[[MELDWORK_CONSENSUS:agree]]`,
       sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
     }
   }
@@ -2143,7 +4463,7 @@ test('automatic dialogue requires a topic root and accepts an explicit one', asy
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => ({
-    text: `${agent.kind} agrees.\n[[ROUNDRELAY_CONSENSUS:agree]]`,
+    text: `${agent.kind} agrees.\n[[MELDWORK_CONSENSUS:agree]]`,
     sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
   })
   const workspace = new LocalWorkspace(options)

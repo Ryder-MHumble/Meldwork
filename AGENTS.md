@@ -1,4 +1,4 @@
-# RoundRelay Development Rules
+# Meldwork Development Rules
 
 ## Working Style
 
@@ -9,7 +9,7 @@
 
 ## Product Boundaries
 
-- RoundRelay is a local-first desktop application. Do not introduce a required server, container, or cluster dependency unless the task explicitly calls for it.
+- Meldwork is a local-first desktop application. Do not introduce a required server, container, or cluster dependency unless the task explicitly calls for it.
 - Keep Agent execution in the Electron main process. Renderer access must go through narrow, validated preload APIs.
 - Never expose executable paths, tokens, provider credentials, or unrestricted shell execution to renderer code.
 - Store secrets only through operating-system-backed secure storage. Do not add plaintext fallbacks.

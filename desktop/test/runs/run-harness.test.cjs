@@ -59,6 +59,35 @@ test('normalizes bounded Outcome references independently from trace events', ()
   assert.equal(finished.capsule.events.length, 0)
 })
 
+test('normalizes every Outcome reference field to its independent V4 boundary', () => {
+  const hashes = Array.from({ length: 64 }, (_value, index) => (
+    index.toString(16).padStart(64, '0')
+  ))
+  const input = {
+    artifactIds: hashes.map(hash => `artifact-${hash}`),
+    evidenceIds: hashes.map(hash => `evidence-${hash}`),
+    findingIds: hashes.map(hash => `reviewer-finding-${hash}`),
+    reviewerFindingIds: hashes.map(hash => `reviewer-finding-${hash}`),
+    adoptionIds: hashes.map(hash => `adoption-${hash}`),
+    workflowOutcomeRefs: hashes.map(hash => ({
+      algorithm: 'sha256', hash, size: 1, mediaType: 'application/json',
+    })),
+  }
+
+  assert.deepEqual(normalizeOutcomeRefs(input), input)
+})
+
+test('strict V4 Outcome reference normalization rejects an over-cap field', () => {
+  const artifactIds = Array.from({ length: 65 }, (_value, index) => (
+    `artifact-${index.toString(16).padStart(64, '0')}`
+  ))
+
+  assert.throws(
+    () => normalizeOutcomeRefs({ artifactIds }, { strict: true }),
+    { message: 'RUN_HARNESS_V4_OUTCOME_REFS_INVALID' },
+  )
+})
+
 test('normalizes public events through an allowlist and redacts private diagnostics', () => {
   assert.deepEqual(normalizeRawEvent({
     id: 'tool-1',

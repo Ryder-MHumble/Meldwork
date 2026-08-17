@@ -11,7 +11,7 @@ const {
 } = require('../../src/agents/agent-input-staging.cjs')
 
 test('stages non-image inputs as temporary relative paths and cleans them up', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-input-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-input-'))
   const sourceRoot = path.join(directory, 'private')
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(sourceRoot)
@@ -41,7 +41,7 @@ test('stages non-image inputs as temporary relative paths and cleans them up', (
 })
 
 test('stages images beyond the native limit as temporary file inputs', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-input-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-input-'))
   const sourceRoot = path.join(directory, 'private')
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(sourceRoot)
@@ -67,7 +67,7 @@ test('stages images beyond the native limit as temporary file inputs', (t) => {
 test('rejects unsafe staged sources without leaving an input directory', {
   skip: process.platform === 'win32',
 }, (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-agent-input-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-agent-input-'))
   const workdir = path.join(directory, 'workspace')
   const source = path.join(directory, 'source.pdf')
   const link = path.join(directory, 'link.pdf')

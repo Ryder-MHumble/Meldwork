@@ -220,10 +220,108 @@
   white-space: nowrap;
 }
 
+.conversation-timeline {
+  min-height: 0;
+  position: relative;
+}
+
 .message-scroll {
+  height: 100%;
   min-height: 0;
   overflow: auto;
   scroll-behavior: smooth;
+}
+
+.conversation-jump-to-latest {
+  width: 32px;
+  height: 32px;
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  background: var(--surface-raised);
+  box-shadow: 0 4px 12px rgb(32 43 53 / 0.18);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.14s ease, background 0.14s ease, transform 0.16s ease, opacity 0.16s ease;
+}
+
+.conversation-jump-to-latest:hover,
+.conversation-jump-to-latest:focus-visible {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.conversation-jump-to-latest:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.conversation-jump-to-latest svg {
+  width: 16px;
+  height: 16px;
+}
+
+.conversation-jump-to-latest::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  padding: 5px 7px;
+  border-radius: 4px;
+  background: var(--surface-raised);
+  box-shadow: 0 6px 18px rgb(32 43 53 / 0.16);
+  color: var(--text);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.conversation-jump-to-latest:hover::after,
+.conversation-jump-to-latest:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.conversation-jump-to-latest-enter-active,
+.conversation-jump-to-latest-leave-active {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+
+.conversation-jump-to-latest-enter-from,
+.conversation-jump-to-latest-leave-to {
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+@media (max-width: 640px) {
+  .conversation-jump-to-latest {
+    right: 12px;
+    bottom: 12px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .message-scroll {
+    scroll-behavior: auto;
+  }
+
+  .conversation-jump-to-latest,
+  .conversation-jump-to-latest::after,
+  .conversation-jump-to-latest-enter-active,
+  .conversation-jump-to-latest-leave-active {
+    transition: none;
+  }
 }
 
 .conversation-empty {

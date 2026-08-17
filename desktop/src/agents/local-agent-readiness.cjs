@@ -27,7 +27,7 @@ const OPENCLAW_MODEL_INPUTS = new Set(['text', 'image', 'audio', 'video'])
 const MAX_CREDENTIAL_FILE_BYTES = 2 * 1024 * 1024
 const MAX_SHELL_ENV_BYTES = 256 * 1024
 const SHELL_ENV_CACHE_TTL_MS = 30000
-const SHELL_ENV_MARKER = '__ROUNDRELAY_NATIVE_ENV_V1__'
+const SHELL_ENV_MARKER = '__MELDWORK_NATIVE_ENV_V1__'
 const CREDENTIAL_ENV_KEYS = Object.freeze({
   codex: ['OPENAI_API_KEY'],
   hermes: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'],
@@ -156,10 +156,10 @@ function nativeShellCommand() {
   const keys = SHELL_ENV_KEYS.join(' ')
   return [
     `printf '${SHELL_ENV_MARKER}\\0'`,
-    `for __roundrelay_key in ${keys}; do`,
-    '  eval "__roundrelay_value=\\${$__roundrelay_key-}"',
-    '  if [ -n "$__roundrelay_value" ]; then',
-    "    printf '%s=%s\\0' \"$__roundrelay_key\" \"$__roundrelay_value\"",
+    `for __meldwork_key in ${keys}; do`,
+    '  eval "__meldwork_value=\\${$__meldwork_key-}"',
+    '  if [ -n "$__meldwork_value" ]; then',
+    "    printf '%s=%s\\0' \"$__meldwork_key\" \"$__meldwork_value\"",
     '  fi',
     'done',
   ].join('\n')

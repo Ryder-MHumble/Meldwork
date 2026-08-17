@@ -71,7 +71,7 @@ export function useOverlayLifecycle({
     }
     if (!blockingOverlayOpen.value) return
     if (modal.value && saving.value) {
-      history.pushState({ roundrelayOverlay: true }, '', window.location.href)
+      history.pushState({ meldworkOverlay: true }, '', window.location.href)
       historyPushed = true
       return
     }
@@ -111,13 +111,13 @@ export function useOverlayLifecycle({
     const reusedTraceHistory = value && !previous && tracePanelOpen.value
       ? closeTracePanel({
           fromHistory: true,
-          replacementState: { roundrelayOverlay: true },
+          replacementState: { meldworkOverlay: true },
         })
       : false
     document.body.classList.toggle('modal-open', Boolean(value))
     if (value && !previous) {
       if (!reusedTraceHistory) {
-        history.pushState({ roundrelayOverlay: true }, '', window.location.href)
+        history.pushState({ meldworkOverlay: true }, '', window.location.href)
       }
       historyPushed = true
     } else if (!value && previous && historyPushed) {

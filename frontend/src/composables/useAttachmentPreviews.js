@@ -1,6 +1,6 @@
 import { onBeforeUnmount, reactive } from 'vue'
 
-const ELEMENT_ATTACHMENT = Symbol('roundrelayAttachment')
+const ELEMENT_ATTACHMENT = Symbol('meldworkAttachment')
 const MAX_IGNORED_ENTRIES = 64
 const PREVIEW_ATTEMPTS = 2
 

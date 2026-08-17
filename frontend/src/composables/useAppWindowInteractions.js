@@ -89,6 +89,10 @@ export function useAppWindowInteractions({
     }
     if (event.isComposing || event.altKey || event.ctrlKey || !event.metaKey) return
     const key = String(event.key || '').toLowerCase()
+    if (modal.value && (key === '[' || key === ']')) {
+      event.preventDefault()
+      return
+    }
     if (key === 'b') {
       event.preventDefault()
       closeCollapsedGroupMenu()

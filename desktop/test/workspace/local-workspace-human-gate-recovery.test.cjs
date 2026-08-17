@@ -3,6 +3,9 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 
+const {
+  createCollaborationReceipt,
+} = require('../../src/collaboration/orchestration-v4-records.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const { fixture } = require('../support/local-workspace-test-helpers.cjs')
@@ -24,6 +27,58 @@ function pendingGate(workspace, timeoutMs = 2000) {
     }
     workspace.on('changed', changed)
   })
+}
+
+function v4Proposal(agentKind) {
+  return {
+    version: 1,
+    phase: 'proposal',
+    summary: `${agentKind} proposal`,
+    capabilities: [`${agentKind} capability`],
+    intendedWork: [`${agentKind} work`],
+    deliverables: [`${agentKind} Artifact`],
+    dependencies: [],
+  }
+}
+
+function v4Challenge(agentKind) {
+  return {
+    version: 1,
+    phase: 'challenge',
+    verdict: 'support',
+    summary: `${agentKind} supports the negotiated plan`,
+    proposedAssignments: [
+      {
+        taskId: 'codex-work', ownerKind: 'codex', role: 'worker',
+        objective: 'Complete the Codex work package.', expectedOutput: 'Codex Artifact.',
+        inputRefs: [], artifactIds: [], dependsOn: [],
+      },
+      {
+        taskId: 'hermes-work', ownerKind: 'hermes', role: 'worker',
+        objective: 'Complete the Hermes work package.', expectedOutput: 'Hermes Artifact.',
+        inputRefs: [], artifactIds: [], dependsOn: [],
+      },
+      {
+        taskId: 'workbuddy-integration', ownerKind: 'workbuddy', role: 'integrator',
+        objective: 'Integrate the agreed work packages.', expectedOutput: 'Integrated Artifact.',
+        inputRefs: [], artifactIds: [], dependsOn: ['codex-work', 'hermes-work'],
+      },
+    ],
+    finalizerKind: 'workbuddy',
+    verifierKinds: ['codex', 'hermes'],
+    agreeToPlan: true,
+  }
+}
+
+function v4Work(agentKind, prompt) {
+  const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+  return {
+    version: 1,
+    phase: 'work',
+    summary: `${agentKind} completed ${workItemId}`,
+    workItemId,
+    deliverables: [`${agentKind} Artifact`],
+  }
 }
 
 async function waitForRunStatus(ledger, runId, status, timeoutMs = 5000) {
@@ -145,7 +200,7 @@ test('task-graph Human decisions resume from the durable v3 cursor after restart
   })
   const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
 
-  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.status, 'completed', terminal.reason)
   assert.equal(terminal.continuation.state, 'completed')
   assert.equal(terminal.orchestration.taskGraph.terminalState, 'accepted')
   assert.equal(
@@ -222,7 +277,7 @@ test('task-graph Agent slots resume into typed acceptance after a permission Gat
   })
   const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
 
-  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.status, 'completed', terminal.reason)
   assert.equal(terminal.orchestration.taskGraph.nodeStates[0].status, 'accepted')
   assert.equal(terminal.orchestration.taskGraph.nodeStates[0].artifactIds.length, 1)
   assert.equal(terminal.orchestration.taskGraph.nodeStates[0].evidenceIds.length, 1)
@@ -252,7 +307,7 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
       const completed = (completedTurns.get(agent.kind) || 0) + 1
       completedTurns.set(agent.kind, completed)
       const consensus = maxRounds > 1 && completed === maxRounds
-        ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+        ? '\n[[MELDWORK_CONSENSUS:agree]]'
         : ''
       return {
         text: `${agent.kind} completed its automatic slot${consensus}`,
@@ -263,7 +318,7 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
       const completed = (completedTurns.get(agent.kind) || 0) + 1
       completedTurns.set(agent.kind, completed)
       const consensus = maxRounds > 1 && completed === maxRounds
-        ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+        ? '\n[[MELDWORK_CONSENSUS:agree]]'
         : ''
       return {
         text: `Kimi completed its later automatic slot${consensus}`,
@@ -282,7 +337,7 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
     const completed = (completedTurns.get(agent.kind) || 0) + 1
     completedTurns.set(agent.kind, completed)
     const consensus = maxRounds > 1 && completed === maxRounds
-      ? '\n[[ROUNDRELAY_CONSENSUS:agree]]'
+      ? '\n[[MELDWORK_CONSENSUS:agree]]'
       : ''
     return {
       text: `Kimi resumed:${decision.optionId}${consensus}`,
@@ -374,6 +429,987 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(invokedKinds.length, invocationCount)
 }
+
+test('approved V4 Human Gate resumes the next coordinated round once after restart', async (t) => {
+  const { directory, calls, options } = fixture()
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  let workspace = null
+  let restarted = null
+  let restartedLedger = null
+  let restartedMode = false
+  let pendingRunId = ''
+  const restartedPhaseRecords = []
+  const restartedPhases = []
+  t.after(async () => {
+    try { await workspace?.stopAll() } catch {}
+    try { await restarted?.stopAll() } catch {}
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (restartedMode) restartedPhases.push(phase)
+    if (restartedMode && ['synthesis', 'verification'].includes(phase)) {
+      restartedPhaseRecords.push(restartedLedger.get(pendingRunId))
+    }
+    const synthesisText = restartedMode ? 'Revised stable candidate' : 'Stable candidate'
+    const collaboration = phase === 'proposal'
+      ? v4Proposal(agent.kind)
+      : phase === 'challenge'
+        ? v4Challenge(agent.kind)
+        : phase === 'work'
+          ? v4Work(agent.kind, prompt)
+        : phase === 'synthesis'
+          ? { version: 1, phase, summary: synthesisText, resolvedIssueIds: [] }
+          : {
+              version: 1,
+              phase,
+              verdict: 'contradict',
+              summary: 'One issue remains',
+            }
+    return {
+      text: phase === 'synthesis' ? synthesisText : `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+      collaboration,
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart V4 stable Gate',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Keep reviewing the stable unresolved candidate.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    unlimitedRounds: true,
+    protocol: 'v4',
+  })
+  const pending = await pendingGate(workspace, 5000)
+  pendingRunId = pending.runId
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.equal(waiting.status, 'waiting')
+  assert.equal(waiting.currentRound, 3)
+  assert.equal(waiting.orchestration.phase, 'human-gate')
+  assert.equal(Object.hasOwn(waiting.orchestration, 'challengeBindings'), false)
+  assert.equal(waiting.continuation.resumeKind, 'v4_human_gate')
+  assert.equal(waiting.continuation.state, 'pending')
+  assert.equal(waiting.continuation.stateEpoch, waiting.orchestration.convergence.stateEpoch)
+  assert.equal(waiting.orchestration.convergence.consecutiveStableRounds, 2)
+  assert.equal(waiting.orchestration.convergence.acknowledgedGateEpoch, 0)
+  const acknowledgedConvergence = {
+    ...waiting.orchestration.convergence,
+    acknowledgedGateEpoch: waiting.orchestration.convergence.stateEpoch,
+  }
+
+  options.now = () => '2026-07-29T00:00:00.000Z'
+  restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  restartedMode = true
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'continue-discussion', actorId: 'local-user',
+  })
+
+  const nextGate = await pendingGate(restarted, 5000)
+  assert.notEqual(nextGate.gateId, pending.gateId)
+  const nextWaiting = restartedLedger.get(pending.runId)
+  assert.equal(nextWaiting.status, 'waiting')
+  assert.equal(nextWaiting.orchestration.phase, 'human-gate')
+  assert.equal(nextWaiting.currentRound, waiting.currentRound + 2)
+  assert.equal(nextWaiting.orchestration.convergence.consecutiveStableRounds, 2)
+  assert.equal(
+    nextWaiting.orchestration.convergence.stateEpoch > acknowledgedConvergence.stateEpoch,
+    true,
+  )
+  assert.equal(Object.hasOwn(nextWaiting.orchestration, 'challengeBindings'), false)
+  assert.deepEqual(nextWaiting.orchestration.coordinationPlan, waiting.orchestration.coordinationPlan)
+  assert.equal(restartedPhaseRecords.some(record => record?.orchestration?.phase === 'synthesis'), true)
+  assert.equal(restartedPhaseRecords.some(record => record?.orchestration?.phase === 'verification'), true)
+  assert.equal(restartedPhases.includes('challenge'), false)
+  assert.equal(restartedPhaseRecords.every(record => (
+    record?.orchestration?.round > waiting.currentRound
+      && !Object.hasOwn(record.orchestration, 'challengeBindings')
+      && record.orchestration.coordinationPlan.planHash
+        === waiting.orchestration.coordinationPlan.planHash
+  )), true)
+  restarted.decideHumanGate(nextGate.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+  assert.equal(terminal.status, 'stopped')
+  assert.equal(terminal.continuation.state, 'cancelled')
+})
+
+test('V4 synthesis recovery reuses the failed writer Gate after a real ambiguous write crash', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const persistedGateClock = '2026-07-28T01:00:00.000Z'
+  const restartGateClock = '2026-07-28T02:00:00.000Z'
+  const initialSynthesisCalls = []
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      initialSynthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+      throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4Proposal(agent.kind)
+        : phase === 'challenge'
+          ? v4Challenge(agent.kind)
+          : v4Work(agent.kind, prompt),
+    }
+  }
+  const workspace = new LocalWorkspace({ ...options, now: () => persistedGateClock })
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart real ambiguous V4 synthesis writer',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  let resolvePersistedGateCrash
+  const persistedGateCrash = new Promise(resolve => { resolvePersistedGateCrash = resolve })
+  const markHumanGateWaiting = workspace.markHumanGateWaiting.bind(workspace)
+  workspace.markHumanGateWaiting = (record, continuation) => {
+    if (continuation?.resumeKind === 'v4_synthesis_recovery') {
+      resolvePersistedGateCrash({
+        gate: structuredClone(workspace.humanGateStore.get(record.gateId)),
+        run: structuredClone(ledger.get(record.runId)),
+      })
+      throw new Error('TEST_CRASH:V4_SYNTHESIS_GATE_PERSISTED_AFTER_AMBIGUOUS_WRITE')
+    }
+    return markHumanGateWaiting(record, continuation)
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Recover one real ambiguous workspace-write synthesis failure without duplicating Gates.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  let persistedGateTimeout
+  const persisted = await Promise.race([
+    persistedGateCrash,
+    new Promise((resolve, reject) => {
+      persistedGateTimeout = setTimeout(
+        () => reject(new Error('TEST_REAL_AMBIGUOUS_SYNTHESIS_GATE_WAS_NOT_PERSISTED')),
+        5000,
+      )
+    }),
+  ]).finally(() => clearTimeout(persistedGateTimeout))
+  const binding = persisted.run.orchestration.synthesisRecovery.pendingGate
+  const writerSlot = persisted.run.orchestration.slots.find(slot => (
+    slot.slotId === binding.slotId
+  ))
+
+  assert.equal(initialSynthesisCalls.length, 1)
+  assert.equal(initialSynthesisCalls[0].operationId, binding.operationId)
+  assert.equal(persisted.gate.status, 'pending')
+  assert.equal(persisted.run.continuation, undefined)
+  assert.equal(persisted.run.orchestration.phase, 'human-gate')
+  assert.equal(writerSlot.agentKind, binding.writerKind)
+  assert.equal(writerSlot.operationId, binding.operationId)
+  assert.equal(writerSlot.permission, 'workspace-write')
+  assert.equal(writerSlot.status, 'failed')
+  assert.equal(
+    persisted.run.orchestration.synthesisRecovery.attempts.at(-1).status,
+    'unknown_outcome',
+  )
+  assert.deepEqual(
+    workspace.listHumanGates({ runId: persisted.run.runId }).map(item => item.gateId),
+    [persisted.gate.gateId],
+  )
+
+  const recoveryLedgerPath = path.join(directory, 'run-ledger-real-ambiguous-recovery.json')
+  const recoveryLedger = new RunLedger({ storagePath: recoveryLedgerPath })
+  recoveryLedger.checkpoint(persisted.run)
+  const restartedCalls = []
+  assert.notEqual(persistedGateClock, restartGateClock)
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: recoveryLedger,
+    now: () => restartGateClock,
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_BEFORE_REAL_SYNTHESIS_RECOVERY_GATE')
+    },
+  })
+  await restarted.refreshAgents()
+  const waiting = await waitForRunStatus(recoveryLedger, persisted.run.runId, 'waiting')
+  const gates = restarted.listHumanGates({ runId: persisted.run.runId })
+
+  assert.deepEqual(restartedCalls, [])
+  assert.equal(gates.length, 1)
+  assert.equal(gates[0].status, 'pending')
+  assert.equal(gates[0].gateId, persisted.gate.gateId)
+  assert.equal(waiting.continuation.gateId, persisted.gate.gateId)
+  assert.equal(waiting.continuation.resumeKind, 'v4_synthesis_recovery')
+
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: recoveryLedgerPath }),
+    now: () => '2026-07-28T03:00:00.000Z',
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_WHILE_REAL_SYNTHESIS_GATE_IS_PENDING')
+    },
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(restartedCalls, [])
+  assert.deepEqual(
+    secondRestart.listHumanGates({ runId: persisted.run.runId }).map(item => item.gateId),
+    [persisted.gate.gateId],
+  )
+  assert.equal(
+    secondRestart.runLedger.get(persisted.run.runId).continuation.gateId,
+    persisted.gate.gateId,
+  )
+
+  restarted.decideHumanGate(persisted.gate.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  await waitForTerminalRun(recoveryLedger, persisted.run.runId)
+})
+
+test('V4 synthesis recovery reuses one durable Gate after its continuation checkpoint crashes', async (t) => {
+  const { directory, options } = fixture()
+  let workspace = null
+  let restarted = null
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const synthesisCalls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') synthesisCalls.push(agent.kind)
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4Proposal(agent.kind)
+        : phase === 'challenge'
+          ? v4Challenge(agent.kind)
+          : phase === 'work'
+            ? v4Work(agent.kind, prompt)
+            : phase === 'synthesis'
+              ? { version: 1, phase, summary: `${agent.kind} candidate`, resolvedIssueIds: [] }
+              : { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` },
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart leased V4 synthesis writer',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  let crashRecord = null
+  let resolveLeasedCrash
+  const leasedCrash = new Promise(resolve => { resolveLeasedCrash = resolve })
+  const checkpointRun = workspace.checkpointRun.bind(workspace)
+  workspace.checkpointRun = (groupId, controller, status = '') => {
+    const persisted = checkpointRun(groupId, controller, status)
+    const attempt = controller.orchestration?.synthesisRecovery?.attempts?.at(-1)
+    if (!crashRecord && controller.orchestration?.phase === 'synthesis'
+        && attempt?.status === 'leased' && attempt.permission === 'workspace-write') {
+      crashRecord = structuredClone(ledger.get(controller.runId))
+      resolveLeasedCrash()
+      throw new Error('TEST_CRASH:V4_SYNTHESIS_LEASED')
+    }
+    return persisted
+  }
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Gate a leased synthesis attempt after restart before invoking any Agent.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  await leasedCrash
+  assert.ok(crashRecord)
+  assert.deepEqual(synthesisCalls, [])
+  const leased = crashRecord.orchestration.synthesisRecovery.attempts.at(-1)
+  assert.equal(leased.status, 'leased')
+  assert.equal(leased.permission, 'workspace-write')
+  assert.equal(leased.leaseAcquired, true)
+  assert.equal(Object.hasOwn(crashRecord.orchestration.synthesisRecovery, 'pendingGate'), false)
+
+  const unrelatedContentRef = workspace.contentBlobStore.put(
+    'Unrelated durable output placed in another slot.',
+    { mediaType: 'text/plain' },
+  )
+  const unrelatedArtifact = workspace.outcomeStore.putArtifact({
+    type: 'document',
+    name: 'foreign-synthesis.txt',
+    producedBy: {
+      runId: crashRecord.runId,
+      agentRunId: 'agent-run-unrelated-synthesis',
+      agentKind: leased.writerKind,
+    },
+    contentRef: unrelatedContentRef,
+    contentHash: unrelatedContentRef.hash,
+  })
+  const unrelatedEvidence = workspace.outcomeStore.putEvidence({
+    kind: 'observation',
+    level: 'observed',
+    subject: { type: 'artifact', artifactId: unrelatedArtifact.artifactId },
+    summary: 'Meldwork captured the unrelated durable output.',
+    recordedBy: { kind: 'system', actorId: 'meldwork-main' },
+    refs: [
+      { type: 'artifact', artifactId: unrelatedArtifact.artifactId },
+      {
+        type: 'blob',
+        contentRef: unrelatedContentRef,
+        contentHash: unrelatedContentRef.hash,
+      },
+    ],
+  })
+  const foreignSlotReceipt = createCollaborationReceipt({
+    phase: 'synthesis',
+    agentKind: leased.writerKind,
+    slotId: leased.slotId,
+    operationId: leased.operationId,
+    status: 'completed',
+    summary: 'Foreign slot claims the leased synthesis result completed.',
+    artifactIds: [unrelatedArtifact.artifactId],
+    evidenceIds: [unrelatedEvidence.evidenceId],
+    snapshotHash: crashRecord.orchestration.snapshotHash,
+    deliveryWatermark: 1,
+  })
+  const foreignSlot = crashRecord.orchestration.slots.find(slot => (
+    slot.slotId !== leased.slotId
+  ))
+  assert.ok(foreignSlot)
+  foreignSlot.resultRefs.artifactIds.push(unrelatedArtifact.artifactId)
+  foreignSlot.resultRefs.evidenceIds.push(unrelatedEvidence.evidenceId)
+  foreignSlot.resultRefs.workflowOutcomeRefs.push({ receipt: foreignSlotReceipt })
+
+  const recoveryStoragePath = path.join(directory, 'workspace-recovery.json')
+  fs.copyFileSync(options.storagePath, recoveryStoragePath)
+  const recoveryLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-recovery.json'),
+  })
+  recoveryLedger.checkpoint(crashRecord)
+  await workspace.stopAll()
+  const restartedCalls = []
+  const gateCheckpointReached = new Promise((resolve) => {
+    const gateCheckpointWorkspace = new LocalWorkspace({
+      ...options,
+      storagePath: recoveryStoragePath,
+      runLedger: recoveryLedger,
+      runAgent: async (agent) => {
+        restartedCalls.push(agent.kind)
+        throw new Error('TEST_AGENT_MUST_NOT_RUN_BEFORE_SYNTHESIS_RECOVERY_GATE')
+      },
+    })
+    const checkpointRun = gateCheckpointWorkspace.checkpointRun.bind(gateCheckpointWorkspace)
+    gateCheckpointWorkspace.checkpointRun = (groupId, controller, status = '') => {
+      const persisted = checkpointRun(groupId, controller, status)
+      if (controller.orchestration?.phase === 'human-gate'
+          && controller.orchestration.synthesisRecovery?.pendingGate
+          && !controller.continuation) {
+        resolve(structuredClone(recoveryLedger.get(controller.runId)))
+        throw new Error('TEST_CRASH:V4_SYNTHESIS_GATE_CHECKPOINTED')
+      }
+      return persisted
+    }
+    gateCheckpointWorkspace.refreshAgents()
+  })
+  let gateCheckpointTimeout
+  const gateCheckpointRecord = await Promise.race([
+    gateCheckpointReached,
+    new Promise((resolve, reject) => {
+      gateCheckpointTimeout = setTimeout(
+        () => reject(new Error('TEST_SYNTHESIS_HISTORY_DID_NOT_OPEN_RECOVERY_GATE')),
+        2000,
+      )
+    }),
+  ]).finally(() => clearTimeout(gateCheckpointTimeout))
+
+  assert.deepEqual(restartedCalls, [])
+  assert.equal(gateCheckpointRecord.status, 'running')
+  assert.equal(gateCheckpointRecord.orchestration.phase, 'human-gate')
+  assert.equal(gateCheckpointRecord.continuation, undefined)
+  assert.equal(gateCheckpointRecord.orchestration.synthesisRecovery.attempts.length, 1)
+  assert.equal(
+    gateCheckpointRecord.orchestration.synthesisRecovery.attempts[0].status,
+    'unknown_outcome',
+  )
+
+  const postGateCrashLedgerPath = path.join(directory, 'run-ledger-post-gate-crash.json')
+  const postGateCrashLedger = new RunLedger({ storagePath: postGateCrashLedgerPath })
+  postGateCrashLedger.checkpoint(gateCheckpointRecord)
+  const persistedGateClock = '2026-07-28T01:00:00.000Z'
+  const restartGateClock = '2026-07-28T02:00:00.000Z'
+  let resolvePersistedGateCrash
+  const persistedGateCrash = new Promise(resolve => { resolvePersistedGateCrash = resolve })
+  restarted = new LocalWorkspace({
+    ...options,
+    storagePath: recoveryStoragePath,
+    runLedger: postGateCrashLedger,
+    now: () => persistedGateClock,
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_BEFORE_SYNTHESIS_RECOVERY_GATE')
+    },
+  })
+  const markHumanGateWaiting = restarted.markHumanGateWaiting.bind(restarted)
+  restarted.markHumanGateWaiting = (record, continuation) => {
+    if (continuation?.resumeKind === 'v4_synthesis_recovery') {
+      resolvePersistedGateCrash({
+        gate: structuredClone(restarted.humanGateStore.get(record.gateId)),
+        run: structuredClone(postGateCrashLedger.get(record.runId)),
+      })
+      throw new Error('TEST_CRASH:V4_SYNTHESIS_GATE_PERSISTED')
+    }
+    return markHumanGateWaiting(record, continuation)
+  }
+  await restarted.refreshAgents()
+  let persistedGateTimeout
+  const persisted = await Promise.race([
+    persistedGateCrash,
+    new Promise((resolve, reject) => {
+      persistedGateTimeout = setTimeout(
+        () => reject(new Error('TEST_SYNTHESIS_GATE_WAS_NOT_PERSISTED_BEFORE_CRASH')),
+        2000,
+      )
+    }),
+  ]).finally(() => clearTimeout(persistedGateTimeout))
+
+  assert.deepEqual(restartedCalls, [])
+  assert.equal(persisted.gate.status, 'pending')
+  assert.equal(persisted.run.continuation, undefined)
+  assert.deepEqual(
+    restarted.listHumanGates({ runId: crashRecord.runId }).map(item => item.gateId),
+    [persisted.gate.gateId],
+  )
+
+  const postPersistenceLedgerPath = path.join(
+    directory, 'run-ledger-post-gate-persistence-crash.json',
+  )
+  const postPersistenceLedger = new RunLedger({ storagePath: postPersistenceLedgerPath })
+  postPersistenceLedger.checkpoint(persisted.run)
+  assert.notEqual(persistedGateClock, restartGateClock)
+  const recovered = new LocalWorkspace({
+    ...options,
+    storagePath: recoveryStoragePath,
+    runLedger: postPersistenceLedger,
+    now: () => restartGateClock,
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_BEFORE_SYNTHESIS_RECOVERY_GATE')
+    },
+  })
+  await recovered.refreshAgents()
+  const waiting = await waitForRunStatus(postPersistenceLedger, crashRecord.runId, 'waiting')
+  const gates = recovered.listHumanGates({ runId: crashRecord.runId })
+
+  assert.deepEqual(restartedCalls, [])
+  assert.equal(gates.length, 1)
+  const gate = gates[0]
+  assert.equal(gate.status, 'pending')
+  assert.equal(gate.gateId, persisted.gate.gateId)
+  assert.equal(waiting.continuation.gateId, gate.gateId)
+  assert.equal(waiting.continuation.resumeKind, 'v4_synthesis_recovery')
+  assert.equal(waiting.continuation.agentRunId, leased.operationId)
+  assert.equal(waiting.orchestration.synthesisRecovery.attempts.length, 1)
+  assert.equal(waiting.orchestration.synthesisRecovery.attempts[0].status, 'unknown_outcome')
+  assert.equal(waiting.orchestration.synthesisRecovery.pendingGate.operationId, leased.operationId)
+  assert.equal(gate.agentRunId, leased.operationId)
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    storagePath: recoveryStoragePath,
+    runLedger: new RunLedger({ storagePath: postPersistenceLedgerPath }),
+    now: () => '2026-07-28T03:00:00.000Z',
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_WHILE_SYNTHESIS_RECOVERY_GATE_IS_PENDING')
+    },
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  const replayed = secondRestart.runLedger.get(crashRecord.runId)
+  assert.deepEqual(restartedCalls, [])
+  assert.deepEqual(
+    secondRestart.listHumanGates({ runId: crashRecord.runId }).map(item => item.gateId),
+    [gate.gateId],
+  )
+  assert.equal(replayed.continuation.gateId, gate.gateId)
+  assert.equal(replayed.orchestration.synthesisRecovery.attempts.length, 1)
+  assert.equal(replayed.orchestration.synthesisRecovery.pendingGate.bindingHash,
+    waiting.orchestration.synthesisRecovery.pendingGate.bindingHash)
+  recovered.decideHumanGate(gate.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  await waitForTerminalRun(postPersistenceLedger, crashRecord.runId)
+})
+
+test('V4 synthesis recovery replaces the unknown writer once after restart', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  const synthesisCalls = []
+  const phaseCalls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    phaseCalls.push({ kind: agent.kind, phase, sandbox: runOptions.sandbox })
+    if (phase === 'synthesis') {
+      synthesisCalls.push({
+        kind: agent.kind,
+        operationId: runOptions.operationId,
+        sandbox: runOptions.sandbox,
+      })
+      if (synthesisCalls.length === 1) {
+        throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+      }
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4Proposal(agent.kind)
+        : phase === 'challenge'
+          ? v4Challenge(agent.kind)
+          : phase === 'work'
+            ? v4Work(agent.kind, prompt)
+          : phase === 'synthesis'
+          ? { version: 1, phase, summary: `${agent.kind} candidate`, resolvedIssueIds: [] }
+          : { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` },
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart V4 synthesis recovery',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace, 5000)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Replace an uncertain synthesis writer only after restart approval.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+
+  const waiting = new RunLedger({ storagePath: ledgerPath }).get(pending.runId)
+  assert.equal(waiting.status, 'waiting')
+  assert.equal(waiting.continuation.resumeKind, 'v4_synthesis_recovery')
+  assert.equal(waiting.orchestration.synthesisRecovery.attempts.at(-1).status, 'unknown_outcome')
+  assert.equal(
+    waiting.orchestration.synthesisRecovery.pendingGate.proposedReplacementKind,
+    'codex',
+  )
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  let replacementCheckpoint = null
+  const checkpointRun = restarted.checkpointRun.bind(restarted)
+  restarted.checkpointRun = (groupId, controller, status = '') => {
+    const persisted = checkpointRun(groupId, controller, status)
+    const recovery = controller.orchestration?.synthesisRecovery
+    if (!replacementCheckpoint && controller.orchestration?.phase === 'synthesis'
+        && recovery?.activeWriterKind === waiting.orchestration.synthesisRecovery
+          .pendingGate.proposedReplacementKind
+        && recovery.attempts.at(-1)?.status === 'intent') {
+      replacementCheckpoint = structuredClone(restartedLedger.get(controller.runId))
+    }
+    return persisted
+  }
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'replace-next-writer', actorId: 'local-user',
+  })
+  const terminal = await waitForTerminalRun(restartedLedger, pending.runId)
+
+  assert.equal(terminal.status, 'completed')
+  assert.equal(terminal.continuation.state, 'completed')
+  assert.equal(synthesisCalls.length, 2)
+  assert.notEqual(synthesisCalls[0].kind, synthesisCalls[1].kind)
+  assert.notEqual(synthesisCalls[0].operationId, synthesisCalls[1].operationId)
+  const replacementRecovery = terminal.orchestration.synthesisRecovery
+  const effectiveWriterKind = synthesisCalls[1].kind
+  assert.equal(replacementRecovery.activeWriterKind, effectiveWriterKind)
+  assert.equal(replacementRecovery.verificationKinds.includes(effectiveWriterKind), false)
+  assert.equal(replacementRecovery.verificationKinds.length >= 1, true)
+  assert.deepEqual(
+    terminal.orchestration.coordinationPlan,
+    waiting.orchestration.coordinationPlan,
+  )
+  assert.equal(
+    terminal.orchestration.coordinationPlan.planHash,
+    waiting.orchestration.coordinationPlan.planHash,
+  )
+  assert.equal(Object.hasOwn(terminal.orchestration, 'synthesisBinding'), false)
+  assert.equal(terminal.orchestration.coordinationPlan.finalizerKind, 'workbuddy')
+  assert.deepEqual(synthesisCalls.map(call => call.kind), ['workbuddy', effectiveWriterKind])
+  assert.equal(synthesisCalls[1].sandbox, 'workspace-write')
+  assert.ok(replacementCheckpoint)
+  assert.deepEqual(
+    replacementCheckpoint.orchestration.slots
+      .filter(slot => slot.permission === 'workspace-write')
+      .map(slot => slot.agentKind),
+    [effectiveWriterKind],
+  )
+  assert.equal(phaseCalls
+    .filter(call => call.phase === 'verification')
+    .every(call => call.sandbox === 'read-only'), true)
+  assert.equal(terminal.orchestration.slots
+    .every(slot => slot.permission === 'read-only'), true)
+  assert.equal(terminal.orchestration.commitState.writerKind, effectiveWriterKind)
+  const finalEntry = terminal.orchestration.collaboration.entries.at(-1)
+  const assignment = terminal.orchestration.coordinationPlan.assignments.find(candidate => (
+    candidate.ownerKind === effectiveWriterKind
+  ))
+  assert.deepEqual(finalEntry.owner, {
+    type: 'agent', agentKind: effectiveWriterKind, role: assignment.role,
+  })
+  assert.deepEqual(
+    terminal.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
+    ['superseded', 'completed'],
+  )
+
+  const secondRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: ledgerPath }),
+  })
+  await secondRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(synthesisCalls.length, 2)
+})
+
+test('V4 synthesis recovery retries the original writer once after restart', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  options.runLedger = new RunLedger({ storagePath: ledgerPath })
+  const synthesisCalls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+      if (synthesisCalls.length === 1) {
+        throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+      }
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4Proposal(agent.kind)
+        : phase === 'challenge'
+          ? v4Challenge(agent.kind)
+          : phase === 'work'
+            ? v4Work(agent.kind, prompt)
+          : phase === 'synthesis'
+          ? { version: 1, phase, summary: `${agent.kind} candidate`, resolvedIssueIds: [] }
+          : { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` },
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Restart original V4 synthesis writer',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace, 5000)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Retry the uncertain writer only after restart approval.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+
+  const restartedLedger = new RunLedger({ storagePath: ledgerPath })
+  const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
+  await restarted.refreshAgents()
+  let resolveApprovalCrash
+  const approvalCrash = new Promise(resolve => { resolveApprovalCrash = resolve })
+  const completeHumanGateContinuation = restarted.completeHumanGateContinuation.bind(restarted)
+  restarted.completeHumanGateContinuation = (runId, gateId, state) => {
+    const durable = restartedLedger.get(runId)
+    if (gateId === pending.gateId && durable.orchestration.phase === 'synthesis'
+        && durable.orchestration.synthesisRecovery.attempts.at(-1)?.status === 'intent') {
+      resolveApprovalCrash(structuredClone(durable))
+      throw new Error('TEST_CRASH:V4_SYNTHESIS_APPROVAL_CHECKPOINTED')
+    }
+    return completeHumanGateContinuation(runId, gateId, state)
+  }
+  restarted.decideHumanGate(pending.gateId, {
+    status: 'approved', optionId: 'retry-original-writer', actorId: 'local-user',
+  })
+  const approvalCrashRecord = await approvalCrash
+
+  assert.equal(approvalCrashRecord.orchestration.phase, 'synthesis')
+  assert.equal(approvalCrashRecord.continuation.state, 'resuming')
+  assert.deepEqual(
+    approvalCrashRecord.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
+    ['superseded', 'intent'],
+  )
+  assert.equal(new Set(
+    approvalCrashRecord.orchestration.synthesisRecovery.attempts.map(attempt => attempt.operationId),
+  ).size, 2)
+
+  const postApprovalCrashPath = path.join(directory, 'run-ledger-post-approval-crash.json')
+  const postApprovalCrashLedger = new RunLedger({ storagePath: postApprovalCrashPath })
+  postApprovalCrashLedger.checkpoint(approvalCrashRecord)
+  const secondRestart = new LocalWorkspace({ ...options, runLedger: postApprovalCrashLedger })
+  await secondRestart.refreshAgents()
+  const terminal = await waitForTerminalRun(postApprovalCrashLedger, pending.runId)
+
+  assert.equal(terminal.status, 'completed', terminal.reason)
+  assert.equal(terminal.continuation.state, 'completed')
+  assert.equal(synthesisCalls.length, 2)
+  assert.equal(synthesisCalls[0].kind, synthesisCalls[1].kind)
+  assert.notEqual(synthesisCalls[0].operationId, synthesisCalls[1].operationId)
+  assert.deepEqual(
+    terminal.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
+    ['superseded', 'completed'],
+  )
+  assert.equal(
+    terminal.orchestration.synthesisRecovery.attempts[0].outcomeCertainty,
+    'unknown_outcome',
+  )
+  assert.equal(terminal.orchestration.synthesisRecovery.attempts[1].permission, 'workspace-write')
+  assert.equal(terminal.orchestration.synthesisRecovery.attempts[1].leaseAcquired, true)
+  assert.equal(new Set(
+    terminal.orchestration.synthesisRecovery.attempts.map(attempt => attempt.operationId),
+  ).size, 2)
+
+  const thirdRestart = new LocalWorkspace({
+    ...options,
+    runLedger: new RunLedger({ storagePath: postApprovalCrashPath }),
+  })
+  await thirdRestart.refreshAgents()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(synthesisCalls.length, 2)
+})
+
+test('V4 synthesis Stop survives a crash before continuation completion', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const synthesisCalls = []
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+      throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4Proposal(agent.kind)
+        : phase === 'challenge'
+          ? v4Challenge(agent.kind)
+          : v4Work(agent.kind, prompt),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Crash-safe V4 synthesis Stop',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace, 5000)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Stop the uncertain writer without replaying after restart.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+
+  const decisionLedger = new RunLedger({ storagePath: ledgerPath })
+  const decisionWorkspace = new LocalWorkspace({ ...options, runLedger: decisionLedger })
+  await decisionWorkspace.refreshAgents()
+  let resolveStopCrash
+  const stopCrash = new Promise(resolve => { resolveStopCrash = resolve })
+  let stopCrashCaptured = false
+  const completeHumanGateContinuation = decisionWorkspace.completeHumanGateContinuation
+    .bind(decisionWorkspace)
+  decisionWorkspace.completeHumanGateContinuation = (runId, gateId, state) => {
+    const durable = decisionLedger.get(runId)
+    if (gateId === pending.gateId && state === 'cancelled'
+        && !stopCrashCaptured
+        && durable.orchestration.synthesisRecovery.attempts.at(-1)?.status === 'cancelled') {
+      stopCrashCaptured = true
+      resolveStopCrash(structuredClone(durable))
+      throw new Error('TEST_CRASH:V4_SYNTHESIS_STOP_CHECKPOINTED')
+    }
+    return completeHumanGateContinuation(runId, gateId, state)
+  }
+  decisionWorkspace.decideHumanGate(pending.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  const stopCrashRecord = await stopCrash
+
+  assert.equal(stopCrashRecord.orchestration.phase, 'human-gate')
+  assert.equal(stopCrashRecord.continuation.state, 'resuming')
+  assert.equal(
+    stopCrashRecord.orchestration.synthesisRecovery.attempts.at(-1).status,
+    'cancelled',
+  )
+  const stoppedBinding = stopCrashRecord.orchestration.synthesisRecovery.pendingGate
+  assert.ok(stoppedBinding)
+  assert.equal(stoppedBinding.operationId, stopCrashRecord.continuation.agentRunId)
+  assert.equal(decisionWorkspace.canResumeAutoOrchestration(stopCrashRecord), true)
+
+  const postStopCrashPath = path.join(directory, 'run-ledger-post-stop-crash.json')
+  const postStopCrashLedger = new RunLedger({ storagePath: postStopCrashPath })
+  postStopCrashLedger.checkpoint(stopCrashRecord)
+  const restartedCalls = []
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: postStopCrashLedger,
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_AFTER_SYNTHESIS_STOP')
+    },
+  })
+  await restarted.refreshAgents()
+  const terminal = await waitForTerminalRun(postStopCrashLedger, pending.runId)
+
+  assert.equal(terminal.status, 'stopped', terminal.reason)
+  assert.equal(terminal.continuation.state, 'cancelled')
+  assert.deepEqual(restartedCalls, [])
+  assert.equal(synthesisCalls.length, 1)
+})
+
+test('V4 synthesis Stop survives a crash after continuation cancellation', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledgerPath = path.join(directory, 'run-ledger-late-stop.json')
+  const ledger = new RunLedger({ storagePath: ledgerPath })
+  const synthesisCalls = []
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'synthesis') {
+      synthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+      throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4Proposal(agent.kind)
+        : phase === 'challenge'
+          ? v4Challenge(agent.kind)
+          : v4Work(agent.kind, prompt),
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Late crash-safe V4 synthesis Stop',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  const gatePromise = pendingGate(workspace, 5000)
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Persist the terminal Stop after its continuation is cancelled.',
+    mode: 'auto',
+    maxRounds: 2,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  })
+  const pending = await gatePromise
+  await workspace.stopAll()
+
+  const decisionLedger = new RunLedger({ storagePath: ledgerPath })
+  const decisionWorkspace = new LocalWorkspace({ ...options, runLedger: decisionLedger })
+  await decisionWorkspace.refreshAgents()
+  let resolveLateStopCrash
+  const lateStopCrash = new Promise(resolve => { resolveLateStopCrash = resolve })
+  let lateStopCrashRecord = null
+  const finishRun = decisionWorkspace.finishRun.bind(decisionWorkspace)
+  decisionWorkspace.finishRun = async (groupId, controller, status) => {
+    if (!lateStopCrashRecord && status === 'stopped'
+        && controller.continuation?.state === 'cancelled') {
+      lateStopCrashRecord = structuredClone(decisionLedger.get(controller.runId))
+      resolveLateStopCrash(lateStopCrashRecord)
+      throw new Error('TEST_CRASH:V4_SYNTHESIS_STOP_CONTINUATION_CANCELLED')
+    }
+    return finishRun(groupId, controller, status)
+  }
+  decisionWorkspace.decideHumanGate(pending.gateId, {
+    status: 'rejected', optionId: 'stop-discussion', actorId: 'local-user',
+  })
+  const stopCrashRecord = await lateStopCrash
+
+  assert.equal(stopCrashRecord.continuation.state, 'cancelled')
+  assert.equal(stopCrashRecord.orchestration.phase, 'human-gate')
+  assert.equal(
+    stopCrashRecord.orchestration.synthesisRecovery.attempts.at(-1).status,
+    'cancelled',
+  )
+  assert.equal(['completed', 'partial', 'failed', 'stopped', 'timeout', 'interrupted']
+    .includes(stopCrashRecord.status), false)
+
+  const restartLedger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger-post-late-stop-crash.json'),
+  })
+  restartLedger.checkpoint(stopCrashRecord)
+  const restartedCalls = []
+  const restarted = new LocalWorkspace({
+    ...options,
+    runLedger: restartLedger,
+    runAgent: async (agent) => {
+      restartedCalls.push(agent.kind)
+      throw new Error('TEST_AGENT_MUST_NOT_RUN_AFTER_LATE_SYNTHESIS_STOP')
+    },
+  })
+  await restarted.refreshAgents()
+  const terminal = await waitForTerminalRun(restartLedger, pending.runId)
+
+  assert.equal(terminal.status, 'stopped', terminal.reason)
+  assert.equal(terminal.continuation.state, 'cancelled')
+  assert.deepEqual(restartedCalls, [])
+  assert.equal(synthesisCalls.length, 1)
+})
 
 test('legacy Role Review continuations fail closed without reading workflow data', async (t) => {
   const { directory, calls, options } = fixture()

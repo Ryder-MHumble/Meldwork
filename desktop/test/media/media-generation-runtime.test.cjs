@@ -18,7 +18,7 @@ function response(body, options = {}) {
 }
 
 function fixture(t, fetchFn, provider = {}) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-generation-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-media-generation-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -59,7 +59,7 @@ test('writes a base64 image response to the controlled output directory and trac
 
 test('accepts non-Codex Agents and resolves media independently from the chat runtime', async (t) => {
   const providerRequests = []
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-generation-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-media-generation-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -280,7 +280,7 @@ test('stops after three transient provider failures without writing an attachmen
 
 test('falls back to another secure Provider when the first lacks the media model', async (t) => {
   const providerRequests = []
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-generation-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-media-generation-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -324,7 +324,7 @@ test('falls back to another secure Provider when the first lacks the media model
 })
 
 test('reports a stable model-unavailable error after all secure Providers are exhausted', async (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-generation-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-media-generation-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -355,7 +355,7 @@ test('reports a stable model-unavailable error after all secure Providers are ex
 
 test('falls back to another secure Provider after transient retries are exhausted', async (t) => {
   const providerRequests = []
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-media-generation-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-media-generation-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

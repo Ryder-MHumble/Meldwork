@@ -168,6 +168,7 @@ function loadMain(userData, options = {}) {
       this.stopCount = 0
       this.deleteMessageCalls = []
       this.stopCalls = []
+      this.sendMessageCalls = []
       this.agentControlCalls = []
       this.humanGateDecisionCalls = []
       workspaceInstances.push(this)
@@ -215,7 +216,10 @@ function loadMain(userData, options = {}) {
       }
       this.state.messages = this.state.messages.filter(message => !deletedIds.has(message.id))
     }
-    sendMessage() { return Promise.resolve(this.snapshot()) }
+    sendMessage(input) {
+      this.sendMessageCalls.push(structuredClone(input))
+      return Promise.resolve(this.snapshot())
+    }
     startAuto() { return this.snapshot() }
     stop(groupId, runId) {
       this.stopCalls.push({ groupId, runId })

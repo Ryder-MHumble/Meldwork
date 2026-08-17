@@ -73,6 +73,11 @@ export function useComposerContext({
     if (activeGroup.value?.conversationType === 'direct') return 'manual'
     return addressedAgentKinds.value.length === 1 ? 'manual' : discussionMode.value
   })
+  const manualModeLabel = computed(() => (
+    activeGroup.value?.conversationType !== 'direct' && composerTargetKinds.value.length > 1
+      ? t('composer.concurrentResponses')
+      : t('composer.manual')
+  ))
   const sendButtonLabel = computed(() => t(composerMode.value === 'auto' ? 'composer.startAuto' : 'composer.send'))
   const skillTargetSignature = computed(() => composerTargetKinds.value.join('\u0000'))
   watch([
@@ -273,6 +278,7 @@ export function useComposerContext({
     handleComposerInput,
     handleComposerKeydown,
     isComposerTargetSelected,
+    manualModeLabel,
     openSkillMenu,
     removeAgentMention,
     removeKnowledgeBase,

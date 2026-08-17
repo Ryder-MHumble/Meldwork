@@ -17,6 +17,7 @@ import {
   terminalSystemFallback,
   traceRound,
 } from '../conversationTimelineModel.js'
+import { orchestrationPhase, orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { messageScopedTargetKinds } from '../messageContext.js'
 import { useConversationTimelineLabels } from './useConversationTimelineLabels.js'
 import { useConversationTimelineUiState } from './useConversationTimelineUiState.js'
@@ -240,6 +241,55 @@ export function useConversationTimeline({
   const displayedRunTargetKinds = computed(() => (
     activeRun.value ? runTargetKinds.value : historicalGroupRun.value?.targetKinds || []
   ))
+  const displayedRunOrchestration = computed(() => (
+    displayedRun.value?.orchestration && typeof displayedRun.value.orchestration === 'object'
+      ? displayedRun.value.orchestration
+      : null
+  ))
+  const displayedRunPhase = computed(() => {
+    return orchestrationPhase(
+      displayedRunOrchestration.value?.phase
+      || activeRun.value?.phase,
+    )
+  })
+  const displayedRunPhaseLabel = computed(() => (
+    displayedRunPhase.value ? t(`run.phase.${displayedRunPhase.value}`) : ''
+  ))
+  const displayedRunPhaseSlots = computed(() => {
+    const orchestrationSlots = Array.isArray(displayedRunOrchestration.value?.slots)
+      ? displayedRunOrchestration.value.slots
+      : []
+    const kinds = orchestrationSlots.length
+      ? orchestrationSlots.map(slot => slot.agentKind)
+      : (Array.isArray(displayedRunOrchestration.value?.currentKinds)
+          && displayedRunOrchestration.value.currentKinds.length
+        ? displayedRunOrchestration.value.currentKinds
+        : displayedRunTargetKinds.value)
+    const seen = new Set()
+    return kinds.filter(Boolean).filter(kind => {
+      if (seen.has(kind)) return false
+      seen.add(kind)
+      return true
+    }).map(kind => {
+      const slot = orchestrationSlots.find(item => item.agentKind === kind)
+      const status = String(slot?.status || displayedRunAgentStatusForKind(kind) || 'pending').toLowerCase()
+      return {
+        agentKind: kind,
+        phase: slot?.phase || displayedRunPhase.value,
+        status,
+        statusLabel: runStatusLabel(status),
+      }
+    })
+  })
+  const displayedRunPhaseLiveStatus = computed(() => {
+    if (!displayedRunPhaseLabel.value) return ''
+    const slots = displayedRunPhaseSlots.value
+    const completed = slots.filter(slot => orchestrationSlotCompleted(slot.status)).length
+    return [
+      displayedRunPhaseLabel.value,
+      slots.length ? t('run.phaseSlots', { completed, total: slots.length }) : '',
+    ].filter(Boolean).join(' / ')
+  })
   const isDisplayedCoordinatedRun = computed(() => (
     activeGroup.value?.conversationType !== 'direct' && displayedRunTargetKinds.value.length > 1
   ))
@@ -490,6 +540,11 @@ export function useConversationTimeline({
     displayedRunAgentToneForKind,
     displayedRunAgentTraceLabel,
     displayedRunLabel,
+    displayedRunOrchestration,
+    displayedRunPhase,
+    displayedRunPhaseLabel,
+    displayedRunPhaseLiveStatus,
+    displayedRunPhaseSlots,
     displayedRunTargetKinds,
     displayedRunTopicRootId,
     focusRunTopic,

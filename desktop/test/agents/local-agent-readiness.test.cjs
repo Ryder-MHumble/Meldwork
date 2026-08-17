@@ -26,7 +26,7 @@ function openClawModelsCatalog(apiKey, baseUrl = 'https://provider.example/v1') 
 }
 
 test('Hermes readiness detects a native credential without returning its value', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-hermes-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-hermes-readiness-'))
   const secret = 'hermes-secret-value'
   fs.mkdirSync(path.join(home, '.hermes'), { recursive: true })
   fs.writeFileSync(path.join(home, '.hermes', '.env'), `OPENAI_API_KEY=${secret}\n`)
@@ -41,7 +41,7 @@ test('Hermes readiness detects a native credential without returning its value',
 })
 
 test('custom Provider config is recognized while unresolved Env references remain unverified', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-custom-provider-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-custom-provider-readiness-'))
   const config = path.join(home, '.hermes', 'config.yaml')
   fs.mkdirSync(path.dirname(config), { recursive: true })
   try {
@@ -74,13 +74,13 @@ test('login shell discovery returns only allowlisted Agent Provider values', asy
     env: {
       PATH: '/usr/bin',
       GITHUB_TOKEN: 'ambient-secret',
-      ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+      MELDWORK_PRIVATE_VALUE: 'desktop-private-value',
     },
     execFileFn: async (command, args, options) => {
       calls.push({ command, args, options })
       return {
         stdout: [
-          'shell startup banner\n__ROUNDRELAY_NATIVE_ENV_V1__',
+          'shell startup banner\n__MELDWORK_NATIVE_ENV_V1__',
           'PATH=/opt/custom/bin:/usr/bin',
           'OPENROUTER_API_KEY=openrouter-secret',
           'OPENAI_BASE_URL=https://openrouter.ai/api/v1',
@@ -96,7 +96,7 @@ test('login shell discovery returns only allowlisted Agent Provider values', asy
   assert.equal(calls[0].command, '/bin/zsh')
   assert.equal(calls[0].args[0], '-lic')
   assert.equal(calls[0].options.env.GITHUB_TOKEN, undefined)
-  assert.equal(calls[0].options.env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+  assert.equal(calls[0].options.env.MELDWORK_PRIVATE_VALUE, undefined)
   assert.equal(calls[0].args[1].includes('ambient-secret'), false)
   assert.deepEqual(result, {
     source: 'native-shell',
@@ -118,7 +118,7 @@ test('shell discovery failure falls back to allowlisted process Provider values'
       PATH: '/usr/bin',
       OPENAI_API_KEY: 'process-provider-key',
       OPENAI_BASE_URL: 'https://gateway.example/v1',
-      ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+      MELDWORK_PRIVATE_VALUE: 'desktop-private-value',
     },
     execFileFn: async () => { throw new Error('shell unavailable') },
   })
@@ -147,7 +147,7 @@ test('OpenRouter credentials loaded from the native shell mark Hermes ready', as
 })
 
 test('WorkBuddy readiness checks configured model keys without exposing them', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-workbuddy-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-workbuddy-readiness-'))
   const secret = 'workbuddy-secret-value'
   fs.mkdirSync(path.join(home, '.workbuddy'), { recursive: true })
   fs.writeFileSync(path.join(home, '.workbuddy', 'models.json'), JSON.stringify([
@@ -164,7 +164,7 @@ test('WorkBuddy readiness checks configured model keys without exposing them', (
 })
 
 test('native readiness recognizes credential files for every supported CLI', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-native-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-native-readiness-'))
   const fixtures = [
     ['codex', ['.codex', 'auth.json'], { tokens: { access_token: 'codex-secret' } }],
     ['hermes', ['.hermes', 'auth.json'], { access_token: 'hermes-secret' }],
@@ -194,12 +194,12 @@ test('native readiness recognizes credential files for every supported CLI', () 
 })
 
 test('Claude readiness uses the official auth status without exposing OAuth data', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-claude-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-claude-readiness-'))
   const calls = []
   try {
     const result = await resolveNativeCredentialState('claude', {
       home,
-      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      env: { PATH: '/usr/bin', MELDWORK_PRIVATE_VALUE: 'desktop-private-value' },
       executable: '/tmp/claude',
       execFileFn: async (command, args, options) => {
         calls.push({ command, args, env: options.env })
@@ -209,14 +209,14 @@ test('Claude readiness uses the official auth status without exposing OAuth data
 
     assert.deepEqual(result, { state: 'ready', source: 'native-auth-status' })
     assert.deepEqual(calls[0].args, ['auth', 'status', '--json'])
-    assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+    assert.equal(calls[0].env.MELDWORK_PRIVATE_VALUE, undefined)
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
 
 test('OpenClaw readiness uses the official model status when auth is stored outside its config', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-readiness-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
@@ -233,7 +233,7 @@ test('OpenClaw readiness uses the official model status when auth is stored outs
   try {
     const result = await resolveNativeCredentialState('openclaw', {
       home,
-      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      env: { PATH: '/usr/bin', MELDWORK_PRIVATE_VALUE: 'desktop-private-value' },
       executable: '/tmp/openclaw',
       execFileFn: async (command, args, options) => {
         calls.push({ command, args, env: options.env })
@@ -250,14 +250,14 @@ test('OpenClaw readiness uses the official model status when auth is stored outs
 
     assert.deepEqual(result, { state: 'ready', source: 'native-auth-status' })
     assert.deepEqual(calls[0].args, ['models', 'status', '--check', '--json'])
-    assert.equal(calls[0].env.ROUNDRELAY_PRIVATE_VALUE, undefined)
+    assert.equal(calls[0].env.MELDWORK_PRIVATE_VALUE, undefined)
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
 })
 
 test('OpenClaw native runtime extracts only the current validated Provider', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-status-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-runtime-status-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   t.after(() => fs.rmSync(home, { recursive: true, force: true }))
@@ -329,7 +329,7 @@ test('OpenClaw native runtime extracts only the current validated Provider', asy
 })
 
 test('OpenClaw native runtime resolves allowlisted Env SecretRefs from the shell environment', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-env-runtime-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-env-runtime-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog({
@@ -352,7 +352,7 @@ test('OpenClaw native runtime resolves allowlisted Env SecretRefs from the shell
 })
 
 test('OpenClaw native runtime rejects Env SecretRefs without reading unrelated process secrets', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-env-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-runtime-env-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
@@ -384,7 +384,7 @@ test('OpenClaw native runtime rejects Env SecretRefs without reading unrelated p
 })
 
 test('OpenClaw native runtime rejects every structured and string SecretRef marker', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-secretrefs-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-secretrefs-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   t.after(() => fs.rmSync(home, { recursive: true, force: true }))
@@ -430,7 +430,7 @@ test('OpenClaw native runtime rejects every structured and string SecretRef mark
 test('OpenClaw native runtime rejects ancestor path changes while reading models', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-model-path-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-model-path-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   const external = path.join(home, 'external-agent')
   fs.mkdirSync(agentDir, { recursive: true })
@@ -471,7 +471,7 @@ test('OpenClaw native runtime rejects ancestor path changes while reading models
 test('OpenClaw native runtime rejects models file identity changes after opening', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-model-inode-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-model-inode-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog('inside-key'))
@@ -508,7 +508,7 @@ test('OpenClaw native runtime rejects models file identity changes after opening
 test('OpenClaw native runtime rejects in-place models changes while reading', {
   skip: process.platform === 'win32',
 }, async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-model-content-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-model-content-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   fs.writeFileSync(path.join(agentDir, 'models.json'), openClawModelsCatalog('inside-key'))
@@ -544,7 +544,7 @@ test('OpenClaw native runtime rejects in-place models changes while reading', {
 })
 
 test('OpenClaw native runtime rejects unsafe status and Provider descriptors', async (t) => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-runtime-invalid-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-runtime-invalid-'))
   const agentDir = path.join(home, '.openclaw', 'agents', 'main', 'agent')
   fs.mkdirSync(agentDir, { recursive: true })
   t.after(() => fs.rmSync(home, { recursive: true, force: true }))
@@ -617,7 +617,7 @@ test('OpenClaw native runtime rejects unsafe status and Provider descriptors', a
 })
 
 test('OpenClaw model status overrides a stale gateway token without exposing auth details', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-stale-auth-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-stale-auth-'))
   const configPath = path.join(home, '.openclaw', 'openclaw.json')
   fs.mkdirSync(path.dirname(configPath), { recursive: true })
   fs.writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: 'gateway-only-token' } } }))
@@ -650,7 +650,7 @@ test('MiMo readiness uses the installed CLI identity without forwarding private 
     'Provider: MiMo\nType: OAuth',
   ]) {
     const result = await resolveNativeCredentialState('mimo', {
-      env: { PATH: '/usr/bin', ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value' },
+      env: { PATH: '/usr/bin', MELDWORK_PRIVATE_VALUE: 'desktop-private-value' },
       executable: '/tmp/mimo',
       execFileFn: async (command, args, options) => {
         calls.push({ command, args, env: options.env })
@@ -664,7 +664,7 @@ test('MiMo readiness uses the installed CLI identity without forwarding private 
     ['providers', 'whoami'],
     ['providers', 'whoami'],
   ])
-  assert.equal(calls.every(call => call.env.ROUNDRELAY_PRIVATE_VALUE === undefined), true)
+  assert.equal(calls.every(call => call.env.MELDWORK_PRIVATE_VALUE === undefined), true)
 })
 
 test('MiMo readiness recognizes ANSI-colored logged-out output even when the CLI exits zero', async () => {
@@ -701,7 +701,7 @@ test('MiMo readiness remains unknown for missing or malformed identity output', 
 })
 
 test('Claude auth status overrides a stale credential file', async () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-claude-stale-auth-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-claude-stale-auth-'))
   const credentialPath = path.join(home, '.claude', '.credentials.json')
   fs.mkdirSync(path.dirname(credentialPath), { recursive: true })
   fs.writeFileSync(credentialPath, JSON.stringify({ oauth: { accessToken: 'expired-token' } }))
@@ -725,7 +725,7 @@ test('Claude auth status overrides a stale credential file', async () => {
 })
 
 test('an installed Agent without credential evidence remains unverified', () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-missing-readiness-'))
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-missing-readiness-'))
   try {
     assert.deepEqual(nativeCredentialState('workbuddy', { home }), {
       state: 'unknown', source: 'unverified',
@@ -739,7 +739,7 @@ test('native environment forwarding includes only the current Agent credential k
   assert.deepEqual(nativeCredentialEnvironment('claude', {
     ANTHROPIC_API_KEY: 'claude-key',
     OPENAI_API_KEY: 'unrelated-openai-key',
-    ROUNDRELAY_PRIVATE_VALUE: 'desktop-private-value',
+    MELDWORK_PRIVATE_VALUE: 'desktop-private-value',
   }), {
     ANTHROPIC_API_KEY: 'claude-key',
   })

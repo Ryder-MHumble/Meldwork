@@ -8,10 +8,11 @@ import {
   normalizeRunEvent,
   normalizeSnapshot,
 } from '../../desktop.js'
+import { normalizeOrchestration } from '../../desktop-normalization.js'
 import * as desktop from '../../desktop.js'
 
 afterEach(() => {
-  delete window.roundrelayDesktop
+  delete window.meldworkDesktop
 })
 
 describe('desktop bridge access', () => {
@@ -29,13 +30,13 @@ describe('desktop bridge access', () => {
     ])
   })
 
-  it('reads the RoundRelay preload bridge', () => {
+  it('reads the Meldwork preload bridge', () => {
     const bridge = {
       localWorkspace: { get() {} },
       agentInstaller: { catalog() {} },
       localAgentProvider: { status() {} },
     }
-    window.roundrelayDesktop = bridge
+    window.meldworkDesktop = bridge
 
     expect(desktopApi()).toBe(bridge)
   })
@@ -322,6 +323,286 @@ describe('run event normalization', () => {
     expect(snapshot.runs[0].agentRuns[0].output).toBe('Streaming answer')
     expect(snapshot.messages[0].trace.agentRunId).toBe('agent-run-1')
     expect(snapshot.messages[0].trace.round).toBe(2)
+  })
+
+  it('retains only allowlisted public V4 orchestration fields on runs, agents, and durable traces', () => {
+    const snapshotHash = 'a'.repeat(64)
+    const orchestration = {
+      version: 4,
+      workflow: 'manual',
+      template: 'concurrent-batch',
+      phase: 'proposal',
+      batchId: 'batch-1',
+      currentKinds: ['codex', 'hermes', '../private'],
+      snapshotHash,
+      slots: [
+        {
+          slotId: 'slot-1',
+          agentKind: 'codex',
+          phase: 'proposal',
+          status: 'running',
+          operationId: 'operation-1',
+          queuePosition: 0,
+          deliveryWatermark: 3,
+          snapshotHash,
+          receiptId: 'receipt-1',
+          resultHash: 'b'.repeat(64),
+          attempt: 2,
+          role: 'reviewer',
+          round: 3,
+          executable: '/private/bin/codex',
+        },
+        { agentKind: 'hermes', phase: 'invalid', status: 'running' },
+      ],
+      deliveryWatermarks: [
+        {
+          agentKind: 'codex',
+          phase: 'proposal',
+          watermark: 3,
+          operationId: 'operation-1',
+          snapshotHash,
+          updatedAt: '2026-08-14T00:00:00.000Z',
+        },
+        { agentKind: 'hermes', phase: 'proposal', watermark: -1 },
+      ],
+      commitState: {
+        status: 'committing',
+        writerKind: 'codex',
+        committedKinds: ['codex'],
+        pendingKinds: ['hermes'],
+        operationId: 'operation-commit',
+        attempt: 1,
+        updatedAt: '2026-08-14T00:00:00.000Z',
+      },
+      privatePayload: 'must-not-cross-the-bridge',
+    }
+
+    expect(normalizeOrchestration(orchestration)).toEqual({
+      version: 4,
+      phase: 'proposal',
+      currentKinds: ['codex', 'hermes'],
+      slots: [{
+        agentKind: 'codex',
+        phase: 'proposal',
+        status: 'running',
+        role: 'reviewer',
+        round: 3,
+      }],
+    })
+
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [{
+        id: 'trace-message',
+        groupId: 'group-v4',
+        role: 'agent',
+        agentKind: 'codex',
+        trace: {
+          runId: 'run-v4',
+          agentRunId: 'agent-v4',
+          status: 'completed',
+          orchestration,
+        },
+      }],
+      runningGroupIds: ['group-v4'],
+      runs: [{
+        runId: 'run-v4',
+        groupId: 'group-v4',
+        targetKinds: ['codex'],
+        taskId: 'private-task-id',
+        contextPackId: `context-pack-${'c'.repeat(64)}`,
+        contextPackState: 'captured',
+        workspacePath: '/private/workspace',
+        prompt: 'must not cross the bridge',
+        rawReceipt: { secret: true },
+        terminalPersistence: { state: 'failed', privatePath: '/private/ledger' },
+        unexpectedTopLevel: 'must-not-cross-the-bridge',
+        orchestration,
+        agentRuns: [{
+          agentRunId: 'agent-v4',
+          kind: 'codex',
+          status: 'completed',
+          orchestration,
+        }],
+      }],
+    })
+
+    expect(snapshot.runs[0].orchestration).toEqual(expect.objectContaining({
+      version: 4,
+      phase: 'proposal',
+      currentKinds: ['codex'],
+      slots: [expect.objectContaining({ agentKind: 'codex' })],
+    }))
+    expect(snapshot.runs[0].agentRuns[0].orchestration).toEqual(expect.objectContaining({
+      version: 4,
+      currentKinds: ['codex'],
+      slots: [expect.objectContaining({ agentKind: 'codex' })],
+    }))
+    expect(snapshot.messages[0].trace.orchestration).toEqual(expect.objectContaining({
+      version: 4,
+      phase: 'proposal',
+    }))
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('privatePayload')
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('workflow')
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('batchId')
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('snapshotHash')
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('deliveryWatermarks')
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('template')
+    expect(snapshot.runs[0].orchestration).not.toHaveProperty('commitState')
+    expect(snapshot.runs[0].orchestration.slots[0]).not.toHaveProperty('executable')
+    expect(snapshot.runs[0].orchestration.slots[0]).not.toHaveProperty('operationId')
+    expect(snapshot.runs[0].orchestration.slots[0]).not.toHaveProperty('slotId')
+    expect(snapshot.runs[0].orchestration.slots[0]).not.toHaveProperty('attempt')
+    expect(snapshot.runs[0]).not.toHaveProperty('taskId')
+    expect(snapshot.runs[0]).not.toHaveProperty('contextPackId')
+    expect(snapshot.runs[0]).not.toHaveProperty('contextPackState')
+    expect(snapshot.runs[0]).not.toHaveProperty('workspacePath')
+    expect(snapshot.runs[0]).not.toHaveProperty('prompt')
+    expect(snapshot.runs[0]).not.toHaveProperty('rawReceipt')
+    expect(snapshot.runs[0]).not.toHaveProperty('terminalPersistence')
+    expect(snapshot.runs[0]).not.toHaveProperty('unexpectedTopLevel')
+    expect(normalizeOrchestration({ version: 4, phase: 'unknown', privatePayload: 'secret' }))
+      .toEqual({ version: 4 })
+    expect(normalizeOrchestration({ version: 4, phase: 'completed', currentKinds: ['codex'] }))
+      .toEqual({ version: 4, phase: 'committed', currentKinds: ['codex'] })
+  })
+
+  it('keeps a version-only V4 run shell strict under hostile renderer input', () => {
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-v4-shell'],
+      runs: [{
+        groupId: 'group-v4-shell',
+        runId: 'run-v4-shell',
+        phase: 'running',
+        mode: 'manual',
+        targetKinds: ['codex'],
+        completedKinds: [],
+        failedKinds: [],
+        currentKind: '',
+        currentRound: 0,
+        maxRounds: 0,
+        unlimitedRounds: false,
+        progress: [],
+        startedAt: '2026-08-16T00:00:00.000Z',
+        agentRuns: [],
+        waitingGateIds: [],
+        orchestration: { version: 4 },
+        terminalPersistence: { state: 'failed', privatePath: '/private/ledger' },
+        template: 'private-template',
+        attempt: 9,
+        commitState: { privateReceipt: true },
+        unexpectedTopLevel: 'must-not-cross-the-bridge',
+      }],
+    })
+
+    expect(snapshot.runningGroupIds).toEqual(['group-v4-shell'])
+    expect(snapshot.runs).toHaveLength(1)
+    expect(snapshot.runs[0]).toEqual(expect.objectContaining({
+      groupId: 'group-v4-shell',
+      runId: 'run-v4-shell',
+      phase: 'running',
+      mode: 'manual',
+      targetKinds: ['codex'],
+      orchestration: { version: 4 },
+    }))
+    expect(snapshot.runs[0]).not.toHaveProperty('terminalPersistence')
+    expect(snapshot.runs[0]).not.toHaveProperty('template')
+    expect(snapshot.runs[0]).not.toHaveProperty('attempt')
+    expect(snapshot.runs[0]).not.toHaveProperty('commitState')
+    expect(snapshot.runs[0]).not.toHaveProperty('unexpectedTopLevel')
+  })
+
+  it('drops hostile or out-of-range values nested under allowed V4 run keys', () => {
+    const privateValue = {
+      prompt: 'must not cross the bridge',
+      workspacePath: '/private/workspace',
+      sessionId: 'private-session',
+    }
+    const snapshot = normalizeSnapshot({
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-v4-values'],
+      runs: [
+        {
+          groupId: 'group-v4-values',
+          runId: 'run-v4-object-values',
+          targetKinds: ['codex'],
+          phase: { ...privateValue },
+          mode: { ...privateValue },
+          currentRound: { ...privateValue },
+          maxRounds: { ...privateValue },
+          unlimitedRounds: { ...privateValue },
+          startedAt: { ...privateValue },
+          orchestration: { version: 4 },
+        },
+        {
+          groupId: 'group-v4-values',
+          runId: 'run-v4-invalid-primitives',
+          targetKinds: ['codex'],
+          phase: 'private-phase',
+          mode: 'private-mode',
+          currentRound: 100001,
+          maxRounds: 11,
+          unlimitedRounds: 1,
+          startedAt: 'not-a-timestamp',
+          orchestration: { version: 4 },
+        },
+      ],
+    })
+
+    expect(snapshot.runs).toHaveLength(2)
+    for (const run of snapshot.runs) {
+      expect(run).toEqual(expect.objectContaining({
+        groupId: 'group-v4-values',
+        targetKinds: ['codex'],
+        orchestration: { version: 4 },
+      }))
+      for (const key of [
+        'phase', 'mode', 'currentRound', 'maxRounds', 'unlimitedRounds', 'startedAt',
+      ]) {
+        expect(run).not.toHaveProperty(key)
+      }
+    }
+    expect(JSON.stringify(snapshot.runs)).not.toContain('must not cross the bridge')
+    expect(JSON.stringify(snapshot.runs)).not.toContain('/private/workspace')
+    expect(JSON.stringify(snapshot.runs)).not.toContain('private-session')
+  })
+
+  it('normalizes coordination and work V4 phases without private orchestration data', () => {
+    const coordination = normalizeOrchestration({
+      version: 4,
+      template: 'discussion',
+      phase: 'coordination',
+      slots: [{
+        agentKind: 'codex',
+        phase: 'coordination',
+        status: 'running',
+        sessionId: 'private-session',
+      }],
+      prompt: 'must not cross the bridge',
+    })
+    const work = normalizeOrchestration({
+      version: 4,
+      phase: 'work',
+      slots: [{ agentKind: 'codex', phase: 'work', status: 'running' }],
+      privatePath: '/private/workspace',
+    })
+
+    expect(coordination).toEqual({
+      version: 4,
+      phase: 'coordination',
+      slots: [{ agentKind: 'codex', phase: 'coordination', status: 'running' }],
+    })
+    expect(work).toEqual({
+      version: 4,
+      phase: 'work',
+      slots: [{ agentKind: 'codex', phase: 'work', status: 'running' }],
+    })
   })
 
   it('drops malformed Context Pack and Session provenance fields', () => {
@@ -623,23 +904,23 @@ describe('run event normalization', () => {
       type: 'status', delta: undefined, status: 'running',
     }))
 
-    for (const candidate of [existing, synthetic]) {
-      expect(mergeRunEvent(candidate, event({
+    for (const snapshot of [existing, synthetic]) {
+      expect(mergeRunEvent(snapshot, event({
         runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
         groupId: 'group-2', threadRootId: 'root-2', round: 1, seq: 21,
-      }))).toBe(candidate)
-      expect(mergeRunEvent(candidate, event({
+      }))).toBe(snapshot)
+      expect(mergeRunEvent(snapshot, event({
         runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
         groupId: 'group-1', threadRootId: 'root-1-other', round: 1, seq: 22,
-      }))).toBe(candidate)
-      expect(mergeRunEvent(candidate, event({
+      }))).toBe(snapshot)
+      expect(mergeRunEvent(snapshot, event({
         runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'codex',
         groupId: 'group-1', threadRootId: 'root-1', round: 1, seq: 23,
-      }))).toBe(candidate)
-      expect(mergeRunEvent(candidate, event({
+      }))).toBe(snapshot)
+      expect(mergeRunEvent(snapshot, event({
         runId: 'run-bound', agentRunId: 'agent-bound', agentKind: 'hermes',
         groupId: 'group-1', threadRootId: 'root-1', round: 2, seq: 24,
-      }))).toBe(candidate)
+      }))).toBe(snapshot)
     }
   })
 
@@ -677,7 +958,10 @@ describe('run event normalization', () => {
 
   it('keeps tool and warning terminal statuses local until an Agent terminal event arrives', () => {
     const base = normalizeSnapshot({
-      agents: [], messages: [], groups: [], runningGroupIds: ['group-1'],
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-1'],
       runs: [{
         runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
         targetKinds: ['codex'], agentRuns: [],
@@ -695,18 +979,16 @@ describe('run event normalization', () => {
       id: 'warning-partial', seq: 22, type: 'warning', delta: undefined,
       status: 'partial', title: 'rate limit', summary: 'Continue streaming',
     }))
-    const streaming = mergeRunEvent(warned, event({
-      seq: 23, type: 'answer_delta', status: 'running', delta: 'Reply',
-    }))
+    const streaming = mergeRunEvent(warned, event({ seq: 23, type: 'answer_delta', status: 'running', delta: 'Reply' }))
     const completed = mergeRunEvent(streaming, event({
       id: 'agent-status', seq: 24, type: 'status', delta: undefined, status: 'completed',
     }))
 
-    for (const candidate of [toolSucceeded, toolFailed, warned, streaming]) {
-      expect(candidate.runs[0].agentRuns[0].status).toBe('running')
-      expect(candidate.runs[0].completedKinds).toEqual([])
-      expect(candidate.runs[0].failedKinds).toEqual([])
-      expect(candidate.runningGroupIds).toContain('group-1')
+    for (const snapshot of [toolSucceeded, toolFailed, warned, streaming]) {
+      expect(snapshot.runs[0].agentRuns[0].status).toBe('running')
+      expect(snapshot.runs[0].completedKinds).toEqual([])
+      expect(snapshot.runs[0].failedKinds).toEqual([])
+      expect(snapshot.runningGroupIds).toContain('group-1')
     }
     expect(completed.runs[0].agentRuns[0].status).toBe('completed')
     expect(completed.runs[0].completedKinds).toEqual(['codex'])
@@ -759,10 +1041,16 @@ describe('run event normalization', () => {
 
   it('replaces every lifecycle family by family and public id without cross-family collisions', () => {
     const base = normalizeSnapshot({
-      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-1'],
       runs: [{
-        runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
-        targetKinds: ['codex'], agentRuns: [],
+        runId: 'run-1',
+        groupId: 'group-1',
+        threadRootId: 'root-1',
+        targetKinds: ['codex'],
+        agentRuns: [],
       }],
     })
     const lifecycles = [
@@ -810,7 +1098,10 @@ describe('run event normalization', () => {
 
   it('keeps interleaved lifecycle replacements in strictly increasing sequence order', () => {
     const base = normalizeSnapshot({
-      agents: [], groups: [], messages: [], runningGroupIds: ['group-1'],
+      agents: [],
+      groups: [],
+      messages: [],
+      runningGroupIds: ['group-1'],
       runs: [{
         runId: 'run-1', groupId: 'group-1', threadRootId: 'root-1',
         targetKinds: ['codex'], agentRuns: [],
@@ -1018,18 +1309,23 @@ describe('run event normalization', () => {
   it('drops late events after the durable traced message has replaced the active run', () => {
     const snapshot = normalizeSnapshot({
       agents: [],
-      groups: [],
+      groups: [{ id: 'group-1', agentKinds: ['codex'] }],
       runningGroupIds: [],
       runs: [],
-      messages: [{
-        id: 'message-1',
-        groupId: 'group-1',
-        role: 'agent',
-        agentKind: 'codex',
-        trace: {
-          runId: 'run-1', agentRunId: 'agent-run-1', status: 'completed', context: {},
+      messages: [
+        {
+          id: 'root-1', groupId: 'group-1', role: 'user', content: 'Review this', targetKinds: ['codex'],
         },
-      }],
+        {
+          id: 'message-1',
+          groupId: 'group-1',
+          role: 'agent',
+          agentKind: 'codex',
+          trace: {
+            runId: 'run-1', agentRunId: 'agent-run-1', status: 'completed', context: {},
+          },
+        },
+      ],
     })
 
     expect(mergeRunEvent(snapshot, event({ seq: 99, delta: 'late' }))).toBe(snapshot)

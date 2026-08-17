@@ -13,6 +13,12 @@ const {
   SAMPLE_CREDENTIAL_AGENT_CONNECTOR_MANIFEST,
   semanticVersionFrom,
 } = require('../../../src/agents/connectors/agent-connector-local.cjs')
+const { runAgent } = require('../../../src/agents/cli/cli-adapters.cjs')
+const {
+  executable,
+  readWhenReady,
+  within,
+} = require('../../support/cli-adapters-test-helpers.cjs')
 
 function fakeSafeStorage() {
   return {
@@ -60,9 +66,9 @@ function fixture(t, options = {}) {
   }
 }
 
-function codex(version = 'codex-cli 0.147.0') {
+function codex(version = 'codex-cli 0.147.0', executablePath = '/private/bin/codex') {
   return {
-    kind: 'codex', name: 'Codex CLI', version, executable: '/private/bin/codex',
+    kind: 'codex', name: 'Codex CLI', version, executable: executablePath,
     compatibilityState: 'compatible',
   }
 }
@@ -110,6 +116,140 @@ test('discovers an explicitly installed approved sample and exposes generic sani
   assert.equal(calls.length, 1)
   assert.equal(calls[0][0].executable, '/private/bin/codex')
   assert.equal(calls[0][3].sandbox, 'read-only')
+})
+
+test('delegated local Connector receives a streaming profile event before completion', async (t) => {
+  const releaseFile = path.join(os.tmpdir(), `meldwork-connector-release-${process.pid}-${Date.now()}`)
+  t.after(async () => {
+    try { fs.writeFileSync(releaseFile, 'release') } catch { /* test cleanup */ }
+    await new Promise(resolve => setTimeout(resolve, 30))
+    fs.rmSync(releaseFile, { force: true })
+  })
+  const { connectors, directory } = fixture(t, { seedSample: true, runAgent })
+  const cli = executable(directory, 'delegated-codex.cjs', `
+const fs = require('node:fs')
+const start = {
+  type: 'item.started',
+  item: {
+    id: 'delegated-tool', type: 'command_execution',
+    command: 'rg target /Users/private/workspace', status: 'in_progress',
+  },
+}
+process.stdout.write(JSON.stringify({ type: 'thread.started', thread_id: 'delegated-session' }) + '\\n')
+process.stdout.write(JSON.stringify(start) + '\\n')
+const finish = () => {
+  if (!fs.existsSync(${JSON.stringify(releaseFile)})) return setTimeout(finish, 10)
+  process.stdout.write(JSON.stringify({
+    type: 'item.completed',
+    item: {
+      ...start.item, aggregated_output: 'one match', exit_code: 0, status: 'completed',
+    },
+  }) + '\\n')
+  process.stdout.write(JSON.stringify({
+    type: 'item.completed', item: { id: 'answer', type: 'agent_message', text: 'Delegated result' },
+  }) + '\\n')
+  process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n')
+}
+finish()
+`)
+  connectors.refresh([codex('codex-cli 0.147.0', cli)])
+  connectors.configure({
+    manifestId: SAMPLE_AGENT_CONNECTOR_MANIFEST.manifestId,
+    label: 'Codex delegated runtime',
+    credentials: null,
+  })
+  const [agent] = connectors.detectAgents()
+  const events = []
+  let firstRuntimeEventResolve
+  const firstRuntimeEvent = new Promise(resolve => { firstRuntimeEventResolve = resolve })
+  let resultResolved = false
+  const resultPromise = connectors.run(agent, 'Review this', directory, {
+    runId: 'run-runtime-event',
+    agentRunId: 'agent-run-runtime-event',
+    sandbox: 'read-only',
+    onEvent: event => {
+      events.push(event)
+      if (event.type === 'tool_start') firstRuntimeEventResolve(event)
+    },
+  }).then((result) => {
+    resultResolved = true
+    return result
+  })
+
+  const runtimeEvent = await within(firstRuntimeEvent)
+  assert.equal(resultResolved, false)
+  assert.deepEqual(runtimeEvent, {
+    id: 'delegated-tool',
+    type: 'tool_start',
+    title: 'search',
+    status: 'running',
+    summary: 'Bash: operation: rg (2 hidden arguments)',
+  })
+  assert.doesNotMatch(JSON.stringify(runtimeEvent), /Users|private|workspace/)
+  fs.writeFileSync(releaseFile, 'release')
+  const result = await resultPromise
+  assert.equal(result.text, 'Delegated result')
+  assert.equal(result.connectorEventState.status, 'completed')
+  assert.equal(events[0], runtimeEvent)
+})
+
+test('delegated local Connector keeps a final-only profile silent until close', async (t) => {
+  const { connectors, directory } = fixture(t, {
+    seedSample: true,
+    runAgent: (upstream, prompt, workdir, options) => runAgent({
+      ...upstream,
+      kind: 'opencodereview',
+      executable: finalOnlyCli,
+      name: 'OpenCodeReview',
+    }, prompt, workdir, options),
+  })
+  const readyFile = path.join(directory, 'final-only-ready')
+  const releaseFile = path.join(directory, 'final-only-release')
+  const finalOnlyCli = executable(directory, 'delegated-final-only.cjs', `
+const fs = require('node:fs')
+process.stdout.write(JSON.stringify({
+  status: 'complete', message: 'Delegated final result', comments: [],
+  manifest: { schema_version: 'ocr.run-manifest/v1', operation: 'review', terminal_state: 'complete' },
+}))
+fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready')
+const finish = () => {
+  if (!fs.existsSync(${JSON.stringify(releaseFile)})) return setTimeout(finish, 10)
+}
+finish()
+`)
+  t.after(() => {
+    try { fs.writeFileSync(releaseFile, 'release') } catch { /* test cleanup */ }
+  })
+  connectors.refresh([codex()])
+  connectors.configure({
+    manifestId: SAMPLE_AGENT_CONNECTOR_MANIFEST.manifestId,
+    label: 'Final-only delegated runtime',
+    credentials: null,
+  })
+  const [agent] = connectors.detectAgents()
+  const events = []
+  let resultResolved = false
+  const resultPromise = connectors.run(agent, 'Review this', directory, {
+    runId: 'run-final-only',
+    agentRunId: 'agent-run-final-only',
+    sandbox: 'read-only',
+    onEvent: event => events.push(event),
+  }).then((result) => {
+    resultResolved = true
+    return result
+  })
+
+  await readWhenReady(readyFile)
+  assert.equal(resultResolved, false)
+  assert.equal(events.some(event => event.type === 'answer_delta'), false)
+  fs.writeFileSync(releaseFile, 'release')
+  const result = await resultPromise
+
+  assert.equal(result.text, 'Delegated final result')
+  assert.equal(result.connectorEventState.status, 'completed')
+  assert.deepEqual(events.filter(event => event.type === 'answer_delta'), [{
+    type: 'answer_delta', status: 'completed', delta: 'Delegated final result',
+  }])
 })
 
 test('delegate failures preserve the upstream classification in the terminal Connector state', async (t) => {

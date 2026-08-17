@@ -252,8 +252,11 @@ const saving = ref(false)
 const humanGateDecisionPendingIds = ref([])
 const modal = ref('')
 const composerContextVersion = ref(0)
-const maxRounds = ref(6)
+const DEFAULT_MAX_ROUNDS = 6
+const maxRounds = ref(DEFAULT_MAX_ROUNDS)
 const unlimitedRounds = ref(false)
+const unlimitedConfirmationGroupId = ref('')
+const roundSettingsByGroupId = new Map()
 const roundSettingsOpen = ref(false)
 const formError = ref('')
 const customAgentDeleteArmed = ref(false)
@@ -519,6 +522,8 @@ const tracePanelWaiting = computed(() => (
 const {
   handleMessageScroll,
   messageScroller,
+  scrollToLatest,
+  showScrollToLatest,
 } = useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId })
 const { index: emptyShowcaseIndex } = useEmptyShowcasePlayback({
   visible: conversationEmptyVisible,
@@ -789,6 +794,8 @@ const {
     saving,
     sendMessage,
     sending,
+    scrollToLatest,
+    showScrollToLatest,
     shortcutDefinitions,
     shortcutMenuOpen,
     stopRun,
@@ -964,12 +971,44 @@ function selectSystemSettingsSection(section) {
 
 function requestUnlimitedRounds() {
   if (unlimitedRounds.value) return
+  const groupId = roundSettingsGroupId()
+  if (!groupId) return
+  unlimitedConfirmationGroupId.value = groupId
   modal.value = 'unlimited-confirm'
 }
 
 function confirmUnlimitedRounds() {
+  const groupId = unlimitedConfirmationGroupId.value
+  if (
+    !groupId
+    || groupId !== roundSettingsGroupId()
+    || !snapshot.value.groups.some(group => group.id === groupId)
+  ) {
+    closeModal()
+    return
+  }
   unlimitedRounds.value = true
   closeModal()
+}
+
+function roundSettingsGroupId(group = activeGroup.value) {
+  if (!group || group.conversationType === 'direct') return ''
+  return String(group.id || '')
+}
+
+function persistRoundSettings(groupId = roundSettingsGroupId()) {
+  if (!groupId) return
+  roundSettingsByGroupId.set(groupId, {
+    maxRounds: Math.max(1, Math.min(10, Number(maxRounds.value) || DEFAULT_MAX_ROUNDS)),
+    unlimitedRounds: unlimitedRounds.value === true,
+  })
+}
+
+function restoreRoundSettings(group = activeGroup.value) {
+  const groupId = roundSettingsGroupId(group)
+  const saved = groupId ? roundSettingsByGroupId.get(groupId) : null
+  maxRounds.value = Math.max(1, Math.min(10, Number(saved?.maxRounds) || DEFAULT_MAX_ROUNDS))
+  unlimitedRounds.value = saved?.unlimitedRounds === true
 }
 
 function openProvider(kind = '') {
@@ -987,6 +1026,7 @@ function closeModal(options = {}) {
   providerRemoveArmed.value = false
   installConfirmKind.value = ''
   focusedAgentKind.value = ''
+  unlimitedConfirmationGroupId.value = ''
   resetAgentDetailSkills()
   return true
 }
@@ -1000,7 +1040,18 @@ watch(() => snapshot.value.messages.map(message => message.id).join('\u0000'), (
     messageDeleteArmedId.value = ''
   }
 })
-watch(activeGroupMemberSignature, () => {
+watch([maxRounds, unlimitedRounds], () => {
+  persistRoundSettings()
+})
+watch(activeGroupMemberSignature, (value, previous) => {
+  const currentGroupId = String(value || '').split('\u0000')[0]
+  const previousGroupId = String(previous || '').split('\u0000')[0]
+  if (
+    modal.value === 'unlimited-confirm'
+    && unlimitedConfirmationGroupId.value !== currentGroupId
+  ) closeModal()
+  if (previousGroupId && previousGroupId !== currentGroupId) persistRoundSettings(previousGroupId)
+  restoreRoundSettings(activeGroup.value)
   composerContextVersion.value += 1
   const abandonedAttachments = composerAttachments.value
   const group = activeGroup.value

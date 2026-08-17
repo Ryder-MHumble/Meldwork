@@ -86,6 +86,9 @@ export function useConversationExecution({
     const { mentionedAgentKinds, skillHints, knowledgeBaseHints } = serializeComposerContext(targets)
     const previousComposerContext = captureComposerContext()
     const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
+    const v4GroupRun = group.conversationType !== 'direct'
+      && (mode === 'manual' || mode === 'auto')
+      && (targets.length > 1 || automaticTeamFormation.value)
     clearComposerContext()
     composerAttachments.value = []
     roundSettingsOpen.value = false
@@ -101,6 +104,7 @@ export function useConversationExecution({
         knowledgeBaseHints,
         attachments,
         mode,
+        ...(v4GroupRun ? { protocol: 'v4' } : {}),
         maxRounds: maxRounds.value,
         ...(mode === 'auto' && unlimitedRounds.value ? { unlimitedRounds: true } : {}),
       })

@@ -8,7 +8,7 @@ const { childEnvironment } = require('../../../src/agents/cli/cli-process-suppor
 const { managedOpenClawOptions } = require('../../../src/agents/cli/openclaw-runtime.cjs')
 
 test('OpenClaw child environment keeps only its guarded runtime and selected credential', (t) => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'roundrelay-openclaw-child-env-'))
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-child-env-'))
   const workdir = path.join(directory, 'workspace')
   fs.mkdirSync(workdir)
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -46,7 +46,7 @@ test('OpenClaw child environment keeps only its guarded runtime and selected cre
       ...runtime,
       env: {
         ...runtime.env,
-        ROUNDRELAY_OPENCLAW_NATIVE_API_KEY: 'wrong-openclaw-key',
+        MELDWORK_OPENCLAW_NATIVE_API_KEY: 'wrong-openclaw-key',
         GITHUB_TOKEN: 'caller-secret',
         ANTHROPIC_API_KEY: 'caller-anthropic-secret',
         XDG_CONFIG_HOME: '/tmp/caller-config',
@@ -55,10 +55,10 @@ test('OpenClaw child environment keeps only its guarded runtime and selected cre
     process.platform,
   )
 
-  assert.equal(env.ROUNDRELAY_OPENCLAW_API_KEY, 'selected-openclaw-key')
+  assert.equal(env.MELDWORK_OPENCLAW_API_KEY, 'selected-openclaw-key')
   assert.equal(env.OPENCLAW_GATEWAY_TOKEN, runtime.env.OPENCLAW_GATEWAY_TOKEN)
   assert.equal(env.OPENCLAW_DISABLE_BONJOUR, '1')
-  assert.equal(Object.hasOwn(env, 'ROUNDRELAY_OPENCLAW_NATIVE_API_KEY'), false)
+  assert.equal(Object.hasOwn(env, 'MELDWORK_OPENCLAW_NATIVE_API_KEY'), false)
   assert.equal(Object.hasOwn(env, 'GITHUB_TOKEN'), false)
   assert.equal(Object.hasOwn(env, 'ANTHROPIC_API_KEY'), false)
   assert.equal(env.OPENCLAW_WORKSPACE_DIR, workdir)

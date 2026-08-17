@@ -132,11 +132,11 @@ test('persisted message normalization keeps collection ordering and terminal lim
 
 test('runtime contracts preserve consensus and cleanup semantics', async () => {
   assert.deepEqual(
-    inputs.parseAutoReply('done\n[[ROUNDRELAY_CONSENSUS:agree]]'),
+    inputs.parseAutoReply('done\n[[MELDWORK_CONSENSUS:agree]]'),
     { text: 'done', consensus: true },
   )
   assert.deepEqual(
-    inputs.parseAutoReply('[[ROUNDRELAY_CONSENSUS:agree]]\ndone'),
+    inputs.parseAutoReply('[[MELDWORK_CONSENSUS:agree]]\ndone'),
     { text: 'done', consensus: false },
   )
 
