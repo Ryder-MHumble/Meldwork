@@ -702,7 +702,7 @@ function normalizePlan(input, snapshotHash, targetKinds, now) {
 
 function normalizeSlot(input, targetKinds, topPhase, index, template) {
   if (!isRecord(input) || !exactFields(input, [
-    'slotId', 'agentKind', 'phase', 'status', 'operationId', 'queuePosition',
+    'slotId', 'agentKind', 'phase', 'status', 'operationId', 'agentRunId', 'queuePosition',
     'snapshotHash', 'deliveryWatermark', 'receiptId', 'resultHash',
     'assignedAt', 'startedAt', 'finishedAt', 'commitStatus', 'attempt', 'permission',
     'resultRefs', 'resultBodyArtifactId', 'commitId', 'messageId', 'blackboardEntryId',
@@ -710,9 +710,12 @@ function normalizeSlot(input, targetKinds, topPhase, index, template) {
   const slotId = cleanId(input.slotId)
   const agentKind = cleanId(input.agentKind)
   const operationId = cleanId(input.operationId)
+  const hasAgentRunId = hasOwn(input, 'agentRunId')
+  const agentRunId = cleanId(input.agentRunId)
   const phase = String(input.phase || '')
   const status = String(input.status || '')
   if (!slotId || !agentKind || !targetKinds.includes(agentKind) || !operationId
+      || (hasAgentRunId && !agentRunId)
       || !V4_PHASES.has(phase) || !V4_SLOT_STATUSES.has(status)) {
     fail('ORCHESTRATION_V4_SLOT_INVALID')
   }
@@ -782,7 +785,9 @@ function normalizeSlot(input, targetKinds, topPhase, index, template) {
     fail('ORCHESTRATION_V4_SLOT_INVALID')
   }
   return {
-    slotId, agentKind, phase, status, operationId, queuePosition, snapshotHash,
+    slotId, agentKind, phase, status, operationId,
+    ...(hasAgentRunId ? { agentRunId } : {}),
+    queuePosition, snapshotHash,
     deliveryWatermark, receiptId, resultHash, assignedAt, startedAt, finishedAt, commitStatus,
     attempt,
     ...(permission ? { permission } : {}),

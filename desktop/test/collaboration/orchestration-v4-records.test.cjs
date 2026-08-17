@@ -2401,3 +2401,33 @@ test('round-trips bounded recipient delivery acknowledgement without a native Se
     deliveryState: [{ ...record.deliveryState[0], sessionRef: 'must-not-persist' }],
   }, { targetKinds: ['codex', 'hermes'] }), { code: 'ORCHESTRATION_V4_DELIVERY_STATE_INVALID' })
 })
+
+test('round-trips an optional private Harness attempt binding without changing older slots', () => {
+  const legacy = orchestration()
+  assert.equal(Object.hasOwn(legacy.slots[0], 'agentRunId'), false)
+  assert.deepEqual(parseOrchestrationV4(legacy, {
+    targetKinds: ['codex', 'hermes'],
+  }), legacy)
+
+  const bound = parseOrchestrationV4({
+    ...legacy,
+    slots: legacy.slots.map((slot, index) => index === 0
+      ? { ...slot, agentRunId: 'agent-run-private-codex' }
+      : slot),
+  }, { targetKinds: ['codex', 'hermes'] })
+
+  assert.equal(bound.slots[0].agentRunId, 'agent-run-private-codex')
+  assert.equal(Object.hasOwn(bound.slots[1], 'agentRunId'), false)
+})
+
+test('rejects malformed private Harness attempt bindings on V4 slots', () => {
+  const record = orchestration()
+  for (const agentRunId of ['', 'private attempt', '\u0000invalid']) {
+    assert.throws(() => parseOrchestrationV4({
+      ...record,
+      slots: record.slots.map((slot, index) => index === 0
+        ? { ...slot, agentRunId }
+        : slot),
+    }, { targetKinds: ['codex', 'hermes'] }), { code: 'ORCHESTRATION_V4_SLOT_INVALID' })
+  }
+})

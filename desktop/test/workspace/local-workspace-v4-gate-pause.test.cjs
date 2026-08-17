@@ -1028,9 +1028,14 @@ test('Manual V4 rejects approved Gate continuations with mismatched slot binding
       await restarted.refreshAgents()
       assert.throws(() => restarted.decideHumanGate(gate.gateId, {
         status: 'approved', optionId: 'allow-once', actorId: 'local-user',
-      }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+      }), { message: tamper === 'slot'
+        ? 'HUMAN_GATE_ALREADY_DECIDED'
+        : 'RUN_LEDGER_RECORD_INVALID' })
       assert.equal(invocations.length, beforeDecisionCalls)
-      assert.equal(restarted.humanGateStore.get(gate.gateId).status, 'pending')
+      assert.equal(
+        restarted.humanGateStore.get(gate.gateId).status,
+        tamper === 'slot' ? 'rejected' : 'pending',
+      )
     })
   }
 })

@@ -55,6 +55,7 @@ const HUMAN_GATE_ID = /^human-gate-[a-f0-9]{64}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const CONTINUATION_FIELDS = new Set([
   'gateId', 'gateType', 'resumeKind', 'state', 'agentRunId', 'agentKind',
+  'publicAgentRunId',
   'round', 'createdAt', 'updatedAt', 'requestId', 'requestHash',
   'sessionRefHash', 'sessionProvenanceHash', 'stateEpoch',
   'phase', 'slotId', 'operationId', 'snapshotHash',
@@ -70,6 +71,7 @@ const CONTINUATION_RESUME_KINDS = new Set([
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
 ])
+const ACTIVE_CONTINUATION_STATES = new Set(['pending', 'ready', 'resuming'])
 const ORCHESTRATION_FIELDS = new Set([
   'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
@@ -375,6 +377,8 @@ function normalizeContinuation(input) {
   const resumeKind = String(input.resumeKind || '')
   const state = String(input.state || '')
   const agentRunId = cleanId(input.agentRunId)
+  const hasPublicAgentRunId = hasOwn(input, 'publicAgentRunId')
+  const publicAgentRunId = cleanId(input.publicAgentRunId)
   const agentKind = cleanId(input.agentKind)
   const round = boundedNumber(input.round, 0, 100000)
   const createdAt = safeTimestamp(input.createdAt, 0)
@@ -397,6 +401,7 @@ function normalizeContinuation(input) {
   if (!HUMAN_GATE_ID.test(gateId) || !CONTINUATION_GATE_TYPES.has(gateType)
       || !CONTINUATION_RESUME_KINDS.has(resumeKind)
       || !CONTINUATION_STATES.has(state) || !agentRunId || !agentKind
+      || (hasPublicAgentRunId && !publicAgentRunId)
       || (resumeKind === 'role_review_decision' && gateType !== 'decision')
       || (resumeKind === 'v4_human_gate'
         && (gateType !== 'decision' || !hasStateEpoch || stateEpoch < 1))
@@ -411,7 +416,9 @@ function normalizeContinuation(input) {
       || (!hasRequestBinding && [requestId, requestHash, sessionRefHash, sessionProvenanceHash]
         .some(Boolean))) return undefined
   return {
-    gateId, gateType, resumeKind, state, agentRunId, agentKind,
+    gateId, gateType, resumeKind, state, agentRunId,
+    ...(hasPublicAgentRunId ? { publicAgentRunId } : {}),
+    agentKind,
     round, createdAt, updatedAt,
     ...(hasStateEpoch ? { stateEpoch } : {}),
     ...(hasInvocationBinding ? { phase, slotId, operationId, snapshotHash } : {}),
@@ -422,6 +429,16 @@ function normalizeContinuation(input) {
 }
 
 function continuationBindingMatchesOrchestration(continuation, orchestration) {
+  if (continuation?.publicAgentRunId && ACTIVE_CONTINUATION_STATES.has(continuation.state)) {
+    if (orchestration?.version !== 4) return false
+    const slots = orchestration.slots.filter(slot => (
+      slot.agentKind === continuation.agentKind
+        && slot.agentRunId === continuation.publicAgentRunId
+    ))
+    if (slots.length !== 1) return false
+    if (continuation.resumeKind === 'agent_slot'
+        && slots[0].slotId !== continuation.slotId) return false
+  }
   const hasBinding = CONTINUATION_INVOCATION_FIELDS.every(field => hasOwn(continuation || {}, field))
   if (!hasBinding) return true
   if (continuation.resumeKind !== 'agent_slot' || orchestration?.version !== 4) return false
@@ -438,6 +455,15 @@ function continuationBindingMatchesOrchestration(continuation, orchestration) {
     && slots[0].phase === continuation.phase
     && slots[0].operationId === continuation.operationId
     && slots[0].snapshotHash === continuation.snapshotHash
+}
+
+function continuationPublicAttemptMatches(continuation, agentRuns) {
+  if (!continuation?.publicAgentRunId
+      || !ACTIVE_CONTINUATION_STATES.has(continuation.state)) return true
+  return agentRuns.filter(agentRun => (
+    agentRun?.agentRunId === continuation.publicAgentRunId
+      && agentRun?.kind === continuation.agentKind
+  )).length === 1
 }
 
 function normalizeOrchestration(input) {
@@ -611,7 +637,8 @@ function hasValidStoredRecordShape(input) {
     !Array.isArray(input.targetKinds)
     || input.targetKinds.some(kind => typeof kind !== 'string' || !cleanId(kind))
   )) return false
-  if (!hasOwn(input, 'agentRuns')) return true
+  if (!hasOwn(input, 'agentRuns')) return !continuation?.publicAgentRunId
+    || !ACTIVE_CONTINUATION_STATES.has(continuation.state)
   if (!Array.isArray(input.agentRuns)) return false
 
   const targetKinds = normalizeKinds(input.targetKinds)
@@ -632,7 +659,7 @@ function hasValidStoredRecordShape(input) {
       || candidateCommit.threadRootId !== parent.threadRootId
   )) return false
   const fallbackTimestamp = safeTimestamp(input.startedAt, 0)
-  return input.agentRuns.every(agentRun => {
+  const validAgentRuns = input.agentRuns.every(agentRun => {
     if (!isRecord(agentRun)) return false
     if (!hasStoredFieldTypes(agentRun, [
       'agentRunId', 'kind', 'output', 'reason',
@@ -762,6 +789,7 @@ function hasValidStoredRecordShape(input) {
       }, normalized.lastActivityAt).length === 1
     ))
   })
+  return validAgentRuns && continuationPublicAttemptMatches(continuation, input.agentRuns)
 }
 
 function selectedValue(input, existing, key) {
@@ -864,6 +892,7 @@ function normalizeRecord(input, options = {}) {
   const orchestration = normalizeOrchestration(rawOrchestration)
   if (orchestration === undefined) return null
   if (!continuationBindingMatchesOrchestration(continuation, orchestration)) return null
+  if (!continuationPublicAttemptMatches(continuation, agentRuns)) return null
   if (orchestration && orchestration.version < 4 && orchestration.workflow !== mode) return null
   if (orchestration && orchestration.version === 4) {
     const expectedWorkflow = orchestration.template === 'discussion' ? 'auto' : 'manual'

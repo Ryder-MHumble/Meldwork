@@ -243,6 +243,7 @@ class LocalWorkspace extends EventEmitter {
       armAgentSilence: (...args) => this.armAgentSilence(...args),
       clearAgentSilence: (...args) => this.clearAgentSilence(...args),
       checkpointRun: (...args) => this.checkpointRun(...args),
+      hasRunLedger: () => Boolean(this.runLedger),
       scheduleRunCheckpoint: (...args) => this.scheduleRunCheckpoint(...args),
       emitChanged: () => this.emitChanged(),
       promptFor: (...args) => this.promptFor(...args),
@@ -755,6 +756,7 @@ class LocalWorkspace extends EventEmitter {
         resumeKind: input.resumeKind,
         state: 'pending',
         agentRunId: input.agentRunId,
+        ...(input.publicAgentRunId ? { publicAgentRunId: input.publicAgentRunId } : {}),
         agentKind: input.agentKind,
         round: input.round || 0,
         ...(['v4_human_gate', 'v4_synthesis_recovery'].includes(input.resumeKind)
@@ -837,8 +839,9 @@ class LocalWorkspace extends EventEmitter {
         || (!allowTerminalContinuation && runRecord.continuation) || orchestration?.version !== 4
         || orchestration.workflow !== 'auto' || orchestration.template !== 'discussion'
         || orchestration.phase !== 'human-gate' || !binding) return null
+    const terminalState = allowTerminalContinuation ? runRecord.continuation?.state : ''
     const matchingAttempts = recovery.attempts?.filter(attempt => (
-      attempt.status === (allowTerminalContinuation ? 'cancelled' : 'unknown_outcome')
+      attempt.status === (terminalState === 'cancelled' ? 'cancelled' : 'unknown_outcome')
       && attempt.outcomeCertainty === 'unknown_outcome'
       && attempt.permission === 'workspace-write'
       && attempt.leaseAcquired === true
@@ -903,7 +906,24 @@ class LocalWorkspace extends EventEmitter {
       ? Reflect.ownKeys(request)
       : []
     const continuation = runRecord.continuation
-    if (gate.status !== (allowTerminalContinuation ? 'rejected' : 'pending')
+    const terminalPublicAttempts = allowTerminalContinuation
+      ? (runRecord.agentRuns || []).filter(attempt => (
+          attempt?.agentRunId === continuation?.publicAgentRunId
+            && attempt?.kind === continuation?.agentKind
+        ))
+      : []
+    const terminalPublicSlots = allowTerminalContinuation
+      ? orchestration.slots.filter(candidate => (
+          candidate.slotId === binding.slotId
+            && candidate.agentKind === continuation?.agentKind
+            && candidate.operationId === binding.operationId
+            && candidate.agentRunId === continuation?.publicAgentRunId
+        ))
+      : []
+    const expectedGateStatus = terminalState === 'cancelled'
+      ? 'rejected'
+      : (terminalState === 'completed' ? 'approved' : 'pending')
+    if (gate.status !== expectedGateStatus
         || gate.type !== 'decision'
         || gate.runId !== runRecord.runId || gate.agentRunId !== binding.operationId
         || gate.agentKind !== binding.writerKind || gate.summary !== expectedSummary
@@ -912,7 +932,7 @@ class LocalWorkspace extends EventEmitter {
         || !requestFields.every(field => expectedRequestFields.includes(field))
         || hashValue(request) !== hashValue(expectedRequest)
         || (allowTerminalContinuation && (
-          continuation?.state !== 'cancelled'
+          !['completed', 'cancelled'].includes(continuation?.state)
           || continuation.gateId !== gate.gateId
           || continuation.gateType !== gate.type
           || continuation.resumeKind !== 'v4_synthesis_recovery'
@@ -920,6 +940,9 @@ class LocalWorkspace extends EventEmitter {
           || continuation.agentKind !== binding.writerKind
           || continuation.round !== binding.round
           || continuation.stateEpoch !== binding.stateEpoch
+          || !continuation.publicAgentRunId
+          || terminalPublicAttempts.length !== 1
+          || terminalPublicSlots.length !== 1
         ))) return null
     if (gateInput) {
       const expectedInputFields = [
@@ -941,15 +964,23 @@ class LocalWorkspace extends EventEmitter {
     return { gate, binding }
   }
 
-  v4SynthesisTerminalRecovery(runRecord) {
+  v4SynthesisTerminalRecovery(runRecord, gateInput = null) {
     const continuation = runRecord?.continuation
-    if (continuation?.state !== 'cancelled'
+    if (!['completed', 'cancelled'].includes(continuation?.state)
         || continuation.resumeKind !== 'v4_synthesis_recovery') return null
     let gate
     try { gate = this.humanGateStore.get(continuation.gateId) } catch { return null }
-    const match = this.v4SynthesisRecoveryGateMatch(runRecord, gate, null, true)
-    if (!match || gate.decision?.status !== 'rejected'
-        || gate.decision.optionId !== 'stop-discussion') return null
+    const match = this.v4SynthesisRecoveryGateMatch(runRecord, gate, gateInput, true)
+    if (!match) return null
+    const cancelled = continuation.state === 'cancelled'
+      && gate.decision?.status === 'rejected'
+      && gate.decision.optionId === 'stop-discussion'
+    const completed = continuation.state === 'completed'
+      && gate.decision?.status === 'approved'
+      && ['retry-original-writer', 'replace-next-writer'].includes(gate.decision.optionId)
+      && (gate.decision.optionId !== 'replace-next-writer'
+        || Boolean(match.binding.proposedReplacementKind))
+    if (!cancelled && !completed) return null
     return { ...match, state: continuation.state }
   }
 
@@ -1059,6 +1090,13 @@ class LocalWorkspace extends EventEmitter {
       let waitInput = input
       try {
         const durable = this.runLedger?.get?.(runId)
+        const terminalRecovery = this.v4SynthesisTerminalRecovery(durable, input)
+        if (terminalRecovery?.state === 'completed') {
+          return {
+            ...terminalRecovery.gate.decision,
+            gateId: terminalRecovery.gate.gateId,
+          }
+        }
         const matches = this.humanGateStore.list({ runId, pendingOnly: true })
           .map(gate => this.v4SynthesisRecoveryGateMatch(durable, gate, input)
             || this.v4ManualRecoveryGateMatch(durable, gate, input))
@@ -1103,6 +1141,46 @@ class LocalWorkspace extends EventEmitter {
     if (gate.runId !== runRecord.runId || gate.type !== continuation.gateType
         || gate.agentRunId !== continuation.agentRunId
         || gate.agentKind !== continuation.agentKind) return false
+    if (runRecord.orchestration?.version === 4) {
+      const agentRuns = Array.isArray(runRecord.agentRuns) ? runRecord.agentRuns : []
+      const privateV4Gate = ['v4_human_gate', 'v4_synthesis_recovery']
+        .includes(continuation.resumeKind)
+        || (continuation.resumeKind === 'agent_slot'
+          && continuation.operationId === gate.agentRunId
+          && continuation.operationId === continuation.agentRunId)
+      if (privateV4Gate) {
+        const publicAgentRunId = continuation.publicAgentRunId
+        const publicAttempts = agentRuns.filter(agentRun => (
+          agentRun?.agentRunId === publicAgentRunId
+            && agentRun?.kind === continuation.agentKind
+        ))
+        const publicSlots = runRecord.orchestration.slots.filter(slot => (
+          slot.agentKind === continuation.agentKind
+            && slot.agentRunId === publicAgentRunId
+            && (continuation.resumeKind !== 'agent_slot'
+              || (slot.slotId === continuation.slotId
+                && slot.operationId === continuation.operationId))
+        ))
+        if (!publicAgentRunId || publicAttempts.length !== 1 || publicSlots.length !== 1) {
+          return false
+        }
+      } else {
+        const directAttempts = agentRuns.filter(agentRun => (
+          agentRun?.agentRunId === gate.agentRunId && agentRun?.kind === gate.agentKind
+        ))
+        const directSlots = continuation.resumeKind === 'agent_slot'
+          ? runRecord.orchestration.slots.filter(slot => (
+              slot.slotId === continuation.slotId
+                && slot.agentKind === continuation.agentKind
+                && slot.agentRunId === gate.agentRunId
+            ))
+          : []
+        if (directAttempts.length !== 1
+            || (continuation.resumeKind === 'agent_slot' && directSlots.length !== 1)) {
+          return false
+        }
+      }
+    }
     if (continuation.state !== 'pending' && gate.status === 'pending') return false
     try {
       const request = this.humanGateStore.request(gate.gateId)
@@ -1722,6 +1800,11 @@ class LocalWorkspace extends EventEmitter {
           ? binding.proposedReplacementKind
           : binding.writerKind
         if (!writerKind) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        if (controller.continuation?.gateId === gate.gateId
+            && ['pending', 'ready', 'resuming'].includes(controller.continuation.state)
+            && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
+          throw new Error('LOCAL_RUN_PERSIST_FAILED')
+        }
         const appliedAttempt = recovery.attempts.find(attempt => (
           attempt.operationId === binding.operationId
         ))
@@ -1741,19 +1824,22 @@ class LocalWorkspace extends EventEmitter {
               writerKind,
             )
         const nextAttempt = this.autoRunner.v4ActiveSynthesisAttempt(nextRecovery)
-        const nextSlots = durable.orchestration.slots.map(slot => slot.agentKind === writerKind
-          ? approvedActionApplied ? { ...slot, permission: 'workspace-write' } : {
-              ...slot,
-              phase: 'synthesis',
-              status: 'planned',
-              operationId: nextAttempt.operationId,
-              receiptId: '',
-              resultHash: '',
-              finishedAt: null,
-              commitStatus: 'pending',
-              permission: 'workspace-write',
-            }
-          : { ...slot, permission: 'read-only' })
+        const nextSlots = durable.orchestration.slots.map((slot) => {
+          if (slot.agentKind !== writerKind) return { ...slot, permission: 'read-only' }
+          if (approvedActionApplied) return { ...slot, permission: 'workspace-write' }
+          const { agentRunId: _agentRunId, ...retainedSlot } = slot
+          return {
+            ...retainedSlot,
+            phase: 'synthesis',
+            status: 'planned',
+            operationId: nextAttempt.operationId,
+            receiptId: '',
+            resultHash: '',
+            finishedAt: null,
+            commitStatus: 'pending',
+            permission: 'workspace-write',
+          }
+        })
         controller.currentKind = writerKind
         controller.v4Watermarks = durable.orchestration.deliveryWatermarks.map(item => ({
           ...item,
@@ -1777,10 +1863,6 @@ class LocalWorkspace extends EventEmitter {
             coordinationPlan: durable.orchestration.coordinationPlan,
             workReceipts: durable.orchestration.workReceipts,
           })
-        }
-        if (controller.continuation?.gateId === gate.gateId
-            && !this.completeHumanGateContinuation(durable.runId, gate.gateId, 'completed')) {
-          throw new Error('LOCAL_RUN_PERSIST_FAILED')
         }
         const finalStatus = await this.autoRunner.resume(group, durable, controller)
         await this.finishRun(durable.groupId, controller, finalStatus)

@@ -648,6 +648,7 @@ class LocalWorkspaceMessageSubmission {
         phase: normalizedPhase,
         status,
         operationId: slot.operationId,
+        ...(slot.agentRunId ? { agentRunId: slot.agentRunId } : {}),
         queuePosition: index,
         snapshotHash,
         deliveryWatermark: Number(slot.deliveryWatermark?.watermark ?? slot.deliveryWatermark)
@@ -877,6 +878,7 @@ class LocalWorkspaceMessageSubmission {
       const index = targetKinds.indexOf(kind)
       const slot = slots[index]
       slot.status = 'queued'
+      delete slot.agentRunId
       slot.finishedAt = null
       slot.commitStatus = 'pending'
       controller.orchestration = this.v4Orchestration({
@@ -917,9 +919,11 @@ class LocalWorkspaceMessageSubmission {
             parallelGraph: true,
             deferMessage: true,
             operationId: slot.operationId,
-            onLeaseAcquired: () => {
+            onLeaseAcquired: (leaseState) => {
               if (leaseAcquired) return
               leaseAcquired = true
+              if (!leaseState?.agentRunId) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+              slot.agentRunId = leaseState.agentRunId
               slot.status = 'running'
               if (resumedGate?.type !== 'permission') slot.attempt += 1
               slot.startedAt = Date.now()
@@ -1258,6 +1262,9 @@ class LocalWorkspaceMessageSubmission {
             continuation: {
               resumeKind: 'agent_slot',
               agentRunId: unknownWriter.operationId,
+              ...(unknownWriter.agentRunId
+                ? { publicAgentRunId: unknownWriter.agentRunId }
+                : {}),
               agentKind: unknownWriter.agentKind,
               round: orchestration.snapshot?.round || 0,
               phase: orchestration.phase,
@@ -1275,7 +1282,11 @@ class LocalWorkspaceMessageSubmission {
           return { status: 'stopped', failures: [] }
         }
         if (gate.optionId !== 'retry-once') throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        if (this.completeHumanGateContinuation?.(
+          controller.runId, gate.gateId, 'completed',
+        ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
         unknownWriter.status = 'queued'
+        delete unknownWriter.agentRunId
         unknownWriter.finishedAt = null
         unknownWriter.commitStatus = 'pending'
         controller.orchestration = this.v4Orchestration({
@@ -1292,9 +1303,6 @@ class LocalWorkspaceMessageSubmission {
           commitState: orchestration.commitState,
         })
         this.checkpointV4Manual(group, controller)
-        if (this.completeHumanGateContinuation?.(
-          controller.runId, gate.gateId, 'completed',
-        ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
         effectiveOnlyKind = unknownWriter.agentKind
         effectiveResumedGate = {
           gateId: gate.gateId,

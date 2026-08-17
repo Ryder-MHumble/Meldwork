@@ -94,7 +94,18 @@ test('Manual V4 freezes one durable snapshot and checkpoints each queued slot in
   options.runScheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 2, globalLimit: 2 })
   const calls = []
   options.runAgent = async (agent, prompt, _workdir, runOptions) => {
-    calls.push({ kind: agent.kind, prompt, sandbox: runOptions.sandbox })
+    const running = ledger.list(group.id)[0]
+    const slot = running.orchestration.slots.find(candidate => candidate.agentKind === agent.kind)
+    const attempt = running.agentRuns.find(candidate => (
+      candidate.agentRunId === slot.agentRunId && candidate.kind === agent.kind
+    ))
+    calls.push({
+      kind: agent.kind,
+      prompt,
+      sandbox: runOptions.sandbox,
+      persistedAgentRunId: slot.agentRunId,
+      persistedAttemptStatus: attempt?.status || '',
+    })
     await delay({ codex: 35, hermes: 5, workbuddy: 15 }[agent.kind])
     return {
       text: `${agent.kind} durable proposal`,
@@ -142,6 +153,10 @@ test('Manual V4 freezes one durable snapshot and checkpoints each queued slot in
   assert.equal(frozenBody.history.some(item => /durable proposal/.test(item.text)), false)
   assert.equal(calls.length, 3)
   assert.equal(calls.every(call => call.sandbox === 'read-only'), true)
+  assert.equal(calls.every(call => call.persistedAgentRunId), true)
+  assert.equal(
+    calls.every(call => call.persistedAttemptStatus === 'running'), true,
+  )
   assert.equal(calls.every(call => !/durable proposal/.test(call.prompt)), true)
   assert.match(calls.find(call => call.kind === 'hermes').prompt, /global\/frozen-review: Frozen Review/)
   assert.match(calls.find(call => call.kind === 'hermes').prompt, new RegExp(selectedSkill.entryPath))

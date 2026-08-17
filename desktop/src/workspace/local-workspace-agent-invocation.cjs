@@ -426,6 +426,9 @@ class LocalWorkspaceAgentInvocation {
     this.armAgentSilence = options.armAgentSilence
     this.clearAgentSilence = options.clearAgentSilence
     this.checkpointRun = options.checkpointRun
+    this.hasRunLedger = typeof options.hasRunLedger === 'function'
+      ? options.hasRunLedger
+      : (() => false)
     this.scheduleRunCheckpoint = options.scheduleRunCheckpoint
     this.emitChanged = options.emitChanged
     this.promptFor = options.promptFor
@@ -686,13 +689,6 @@ class LocalWorkspaceAgentInvocation {
         idempotencyMode,
       })
     }
-    if (typeof context.onLeaseAcquired === 'function') {
-      context.onLeaseAcquired({
-        operationId,
-        permissionMode: allowWrite ? 'workspace-write' : 'read-only',
-        sideEffectsPossible: allowWrite,
-      })
-    }
     let transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
       ? kind
       : ''
@@ -753,7 +749,6 @@ class LocalWorkspaceAgentInvocation {
       }
       this.emitRunEvent(harnessRun)
       this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
-      this.checkpointRun(group.id, activeRun)
       this.emitChanged()
     }
     const agentController = invocation.agentController instanceof AbortController
@@ -1028,6 +1023,18 @@ class LocalWorkspaceAgentInvocation {
       return finished.capsule
     }
     try {
+      const persisted = this.checkpointRun(group.id, activeRun)
+      if (this.hasRunLedger() && persisted !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+      if (typeof context.onLeaseAcquired === 'function') {
+        context.onLeaseAcquired({
+          operationId,
+          agentRunId: harnessRun?.agentRunId || '',
+          permissionMode: allowWrite ? 'workspace-write' : 'read-only',
+          sideEffectsPossible: allowWrite,
+        })
+      }
       if (allowWrite) {
         artifactCapturePromise = Promise.resolve().then(() => this.captureArtifactOutputs(
           group.workdir,

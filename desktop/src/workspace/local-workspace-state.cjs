@@ -32,6 +32,9 @@ const V4_SLOT_ROLES = new Set([
   'primary', 'reviewer', 'arbiter', 'worker', 'integrator',
   'synthesizer', 'verifier', 'writer', 'participant',
 ])
+const V4_PRIVATE_GATE_RESUME_KINDS = new Set([
+  'v4_human_gate', 'v4_synthesis_recovery',
+])
 const PUBLIC_AGENT_KIND = /^[A-Za-z0-9][A-Za-z0-9_-]{0,39}$/
 
 function publicOrchestrationSnapshot(orchestration) {
@@ -87,6 +90,51 @@ function terminalPersistenceSnapshot(value) {
       : 0,
     code: value.code === 'LOCAL_RUN_PERSIST_FAILED' ? value.code : '',
   }
+}
+
+function exactGateAgentAttempt(gate, agentRuns) {
+  const matches = agentRuns.filter(agentRun => (
+    agentRun?.agentRunId === gate.agentRunId && agentRun?.kind === gate.agentKind
+  ))
+  return matches.length === 1 ? matches[0] : null
+}
+
+function isV4PrivateGate(run, gate) {
+  const continuation = run?.continuation
+  if (run?.orchestration?.version !== 4 || continuation?.state !== 'pending'
+      || continuation.gateId !== gate.gateId
+      || continuation.agentRunId !== gate.agentRunId
+      || continuation.agentKind !== gate.agentKind) return false
+  if (V4_PRIVATE_GATE_RESUME_KINDS.has(continuation.resumeKind)) return true
+  return continuation.resumeKind === 'agent_slot'
+    && continuation.operationId === gate.agentRunId
+    && continuation.operationId === continuation.agentRunId
+}
+
+function publicHumanGateSnapshot(gate, run, publicRun) {
+  const agentRuns = Array.isArray(publicRun?.agentRuns) ? publicRun.agentRuns : []
+  if (run?.orchestration?.version !== 4) return gate
+  if (!isV4PrivateGate(run, gate)) {
+    return exactGateAgentAttempt(gate, agentRuns) ? gate : null
+  }
+  const continuation = run.continuation
+  if (typeof continuation.publicAgentRunId !== 'string'
+      || !continuation.publicAgentRunId) return null
+  const slots = run.orchestration.slots.filter(slot => (
+    slot?.agentKind === continuation.agentKind
+      && slot.agentRunId === continuation.publicAgentRunId
+      && (continuation.resumeKind !== 'agent_slot'
+        || (slot.slotId === continuation.slotId
+          && slot.operationId === continuation.operationId))
+  ))
+  if (slots.length !== 1) return null
+  const matches = agentRuns.filter(agentRun => (
+    agentRun?.agentRunId === continuation.publicAgentRunId
+      && agentRun?.kind === continuation.agentKind
+  ))
+  return matches.length === 1
+    ? { ...gate, agentRunId: continuation.publicAgentRunId }
+    : null
 }
 
 function loadWorkspaceState(storagePath) {
@@ -202,7 +250,7 @@ function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds
   const groupIds = new Set(state.groups.map(group => group.id))
   const pendingById = new Map(pendingGates.map(gate => [gate.gateId, gate]))
   const projectedGroupIds = new Set()
-  const snapshots = []
+  const entries = []
 
   for (const record of records) {
     const continuation = record?.continuation
@@ -230,38 +278,41 @@ function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds
     const orchestration = publicOrchestrationSnapshot(record.orchestration)
     const publicOrchestration = orchestration || (isV4 ? { version: 4 } : null)
     projectedGroupIds.add(record.groupId)
-    snapshots.push({
-      groupId: record.groupId,
-      runId: record.runId,
-      ...(!isV4 ? {
-        taskId: record.taskId || '',
-        contextPackId: record.contextPackId || '',
-        contextPackState: record.contextPackState || (record.contextPackId
-          ? 'captured'
-          : 'legacy-unavailable'),
-      } : {}),
-      phase: 'running',
-      mode,
-      targetKinds: record.targetKinds || [],
-      completedKinds: [...latestAgentStatuses.keys()],
-      failedKinds: [...latestAgentStatuses]
-        .filter(([, status]) => FAILED_AGENT_STATUSES.has(status))
-        .map(([kind]) => kind),
-      currentKind: continuation.agentKind,
-      currentRound: cleanCurrentRound(record.currentRound, maxRounds, unlimitedRounds),
-      maxRounds,
-      unlimitedRounds,
-      progress: [],
-      threadRootId: record.threadRootId || '',
-      responseVersionRootId: record.responseVersionRootId || '',
-      startedAt: record.startedAt || Date.now(),
-      agentRuns: Array.isArray(record.agentRuns) ? record.agentRuns : [],
-      waitingGateIds: [gate.gateId],
-      budget: record.budget || null,
-      ...(publicOrchestration ? { orchestration: publicOrchestration } : {}),
+    entries.push({
+      run: record,
+      snapshot: {
+        groupId: record.groupId,
+        runId: record.runId,
+        ...(!isV4 ? {
+          taskId: record.taskId || '',
+          contextPackId: record.contextPackId || '',
+          contextPackState: record.contextPackState || (record.contextPackId
+            ? 'captured'
+            : 'legacy-unavailable'),
+        } : {}),
+        phase: 'running',
+        mode,
+        targetKinds: record.targetKinds || [],
+        completedKinds: [...latestAgentStatuses.keys()],
+        failedKinds: [...latestAgentStatuses]
+          .filter(([, status]) => FAILED_AGENT_STATUSES.has(status))
+          .map(([kind]) => kind),
+        currentKind: continuation.agentKind,
+        currentRound: cleanCurrentRound(record.currentRound, maxRounds, unlimitedRounds),
+        maxRounds,
+        unlimitedRounds,
+        progress: [],
+        threadRootId: record.threadRootId || '',
+        responseVersionRootId: record.responseVersionRootId || '',
+        startedAt: record.startedAt || Date.now(),
+        agentRuns: Array.isArray(record.agentRuns) ? record.agentRuns : [],
+        waitingGateIds: [gate.gateId],
+        budget: record.budget || null,
+        ...(publicOrchestration ? { orchestration: publicOrchestration } : {}),
+      },
     })
   }
-  return snapshots
+  return entries
 }
 
 function workspaceSnapshot({
@@ -278,38 +329,20 @@ function workspaceSnapshot({
   const pendingGates = humanGateCoordinator?.list?.({ pendingOnly: true }) || []
   const liveRunIds = new Set(runEntries.map(([, run]) => run.runId).filter(Boolean))
   const liveGroupIds = new Set(busyEntries.map(([groupId]) => groupId))
-  const durableRuns = durableWaitingRunSnapshots({
+  const durableRunEntries = durableWaitingRunSnapshots({
     state, runLedger, pendingGates, liveRunIds, liveGroupIds,
   })
-  const visibleRunIds = new Set([
-    ...liveRunIds,
-    ...durableRuns.map(run => run.runId),
-  ])
-  return {
-    agents: detectedAgents.map(({ executable, ...agent }) => agent),
-    groups: state.groups,
-    messages: state.messages,
-    ...(workspaceRecovery?.trusted === false ? {
-      recovery: {
-        state: 'read-only',
-        status: workspaceRecovery.status,
-        diagnostic: workspaceRecovery.diagnostic,
-      },
-    } : {}),
-    runningGroupIds: [...new Set([
-      ...busyEntries.map(([groupId]) => groupId),
-      ...durableRuns.map(run => run.groupId),
-    ])],
-    humanGates: pendingGates.filter(gate => visibleRunIds.has(gate.runId)),
-    runs: [...runEntries.map(([groupId, run, phase]) => {
-      const mode = run.mode === 'auto' ? 'auto' : 'manual'
-      const unlimitedRounds = mode === 'auto' && run.unlimitedRounds === true
-      const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
-      const terminalPersistence = terminalPersistenceSnapshot(run.terminalPersistence)
-      const isV4 = run.orchestration?.version === 4
-      const orchestration = publicOrchestrationSnapshot(run.orchestration)
-      const publicOrchestration = orchestration || (isV4 ? { version: 4 } : null)
-      return {
+  const liveRunEntries = runEntries.map(([groupId, run, phase]) => {
+    const mode = run.mode === 'auto' ? 'auto' : 'manual'
+    const unlimitedRounds = mode === 'auto' && run.unlimitedRounds === true
+    const maxRounds = mode === 'auto' && !unlimitedRounds ? cleanRunMaxRounds(run.maxRounds) : 0
+    const terminalPersistence = terminalPersistenceSnapshot(run.terminalPersistence)
+    const isV4 = run.orchestration?.version === 4
+    const orchestration = publicOrchestrationSnapshot(run.orchestration)
+    const publicOrchestration = orchestration || (isV4 ? { version: 4 } : null)
+    return {
+      run,
+      snapshot: {
         groupId,
         runId: run.runId || '',
         ...(!isV4 ? {
@@ -335,8 +368,42 @@ function workspaceSnapshot({
         budget: run.budget?.snapshot?.() || null,
         ...(publicOrchestration ? { orchestration: publicOrchestration } : {}),
         ...(!isV4 && terminalPersistence ? { terminalPersistence } : {}),
-      }
-    }), ...durableRuns],
+      },
+    }
+  })
+  const publicRunEntries = [...liveRunEntries, ...durableRunEntries]
+  const publicGates = []
+  for (const gate of pendingGates) {
+    const matches = publicRunEntries.filter(({ snapshot }) => snapshot.runId === gate.runId)
+    if (matches.length !== 1) continue
+    const publicGate = publicHumanGateSnapshot(gate, matches[0].run, matches[0].snapshot)
+    if (publicGate) publicGates.push(publicGate)
+  }
+  const publicGatesById = new Map(publicGates.map(gate => [gate.gateId, gate]))
+  const publicRuns = publicRunEntries.map(({ snapshot }) => ({
+    ...snapshot,
+    waitingGateIds: snapshot.waitingGateIds.filter((gateId) => {
+      const gate = publicGatesById.get(gateId)
+      return gate?.runId === snapshot.runId
+    }),
+  }))
+  return {
+    agents: detectedAgents.map(({ executable, ...agent }) => agent),
+    groups: state.groups,
+    messages: state.messages,
+    ...(workspaceRecovery?.trusted === false ? {
+      recovery: {
+        state: 'read-only',
+        status: workspaceRecovery.status,
+        diagnostic: workspaceRecovery.diagnostic,
+      },
+    } : {}),
+    runningGroupIds: [...new Set([
+      ...busyEntries.map(([groupId]) => groupId),
+      ...durableRunEntries.map(({ snapshot }) => snapshot.groupId),
+    ])],
+    humanGates: publicGates,
+    runs: publicRuns,
   }
 }
 

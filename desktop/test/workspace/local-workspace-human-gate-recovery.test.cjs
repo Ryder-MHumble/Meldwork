@@ -102,6 +102,20 @@ async function waitForTerminalRun(ledger, runId, timeoutMs = 5000) {
   throw new Error(`TEST_RUN_TERMINAL_TIMEOUT:${runId}`)
 }
 
+async function waitForTerminalOrFreshGate(workspace, ledger, runId, gateId, timeoutMs = 5000) {
+  const terminal = new Set(['completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit'])
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const record = ledger.get(runId)
+    if (terminal.has(record?.status)) return { terminal: record }
+    const freshGate = workspace.listHumanGates({ runId, pendingOnly: true })
+      .find(candidate => candidate.gateId !== gateId)
+    if (freshGate) return { freshGate }
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  throw new Error(`TEST_RUN_OR_GATE_TIMEOUT:${runId}`)
+}
+
 async function stoppedBudgetGate(options, directory, text) {
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
@@ -1031,15 +1045,27 @@ test('V4 synthesis recovery replaces the unknown writer once after restart', asy
   const restarted = new LocalWorkspace({ ...options, runLedger: restartedLedger })
   await restarted.refreshAgents()
   let replacementCheckpoint = null
+  let replacementLeaseCheckpoint = null
   const checkpointRun = restarted.checkpointRun.bind(restarted)
   restarted.checkpointRun = (groupId, controller, status = '') => {
     const persisted = checkpointRun(groupId, controller, status)
     const recovery = controller.orchestration?.synthesisRecovery
+    const selectedSlot = controller.orchestration?.slots?.find(slot => (
+      slot.agentKind === recovery?.activeWriterKind
+    ))
     if (!replacementCheckpoint && controller.orchestration?.phase === 'synthesis'
         && recovery?.activeWriterKind === waiting.orchestration.synthesisRecovery
           .pendingGate.proposedReplacementKind
-        && recovery.attempts.at(-1)?.status === 'intent') {
+        && recovery.attempts.at(-1)?.status === 'intent'
+        && selectedSlot?.status === 'planned') {
       replacementCheckpoint = structuredClone(restartedLedger.get(controller.runId))
+    }
+    if (!replacementLeaseCheckpoint && controller.orchestration?.phase === 'synthesis'
+        && recovery?.activeWriterKind === waiting.orchestration.synthesisRecovery
+          .pendingGate.proposedReplacementKind
+        && recovery.attempts.at(-1)?.status === 'leased'
+        && selectedSlot?.status === 'running') {
+      replacementLeaseCheckpoint = structuredClone(restartedLedger.get(controller.runId))
     }
     return persisted
   }
@@ -1071,11 +1097,32 @@ test('V4 synthesis recovery replaces the unknown writer once after restart', asy
   assert.deepEqual(synthesisCalls.map(call => call.kind), ['workbuddy', effectiveWriterKind])
   assert.equal(synthesisCalls[1].sandbox, 'workspace-write')
   assert.ok(replacementCheckpoint)
+  const plannedReplacementSlot = replacementCheckpoint.orchestration.slots.find(slot => (
+    slot.agentKind === effectiveWriterKind
+  ))
+  assert.equal(Object.hasOwn(plannedReplacementSlot, 'agentRunId'), false)
+  assert.equal(
+    plannedReplacementSlot.operationId,
+    replacementCheckpoint.orchestration.synthesisRecovery.attempts.at(-1).operationId,
+  )
   assert.deepEqual(
     replacementCheckpoint.orchestration.slots
       .filter(slot => slot.permission === 'workspace-write')
       .map(slot => slot.agentKind),
     [effectiveWriterKind],
+  )
+  assert.ok(replacementLeaseCheckpoint)
+  const leasedReplacementSlot = replacementLeaseCheckpoint.orchestration.slots.find(slot => (
+    slot.agentKind === effectiveWriterKind
+  ))
+  const leasedReplacementAttempt = replacementLeaseCheckpoint.agentRuns.find(attempt => (
+    attempt.agentRunId === leasedReplacementSlot.agentRunId
+  ))
+  assert.ok(leasedReplacementAttempt)
+  assert.equal(leasedReplacementAttempt.kind, effectiveWriterKind)
+  assert.notEqual(
+    leasedReplacementSlot.agentRunId,
+    waiting.continuation.publicAgentRunId,
   )
   assert.equal(phaseCalls
     .filter(call => call.phase === 'verification')
@@ -1157,15 +1204,20 @@ test('V4 synthesis recovery retries the original writer once after restart', asy
   await restarted.refreshAgents()
   let resolveApprovalCrash
   const approvalCrash = new Promise(resolve => { resolveApprovalCrash = resolve })
-  const completeHumanGateContinuation = restarted.completeHumanGateContinuation.bind(restarted)
-  restarted.completeHumanGateContinuation = (runId, gateId, state) => {
-    const durable = restartedLedger.get(runId)
-    if (gateId === pending.gateId && durable.orchestration.phase === 'synthesis'
-        && durable.orchestration.synthesisRecovery.attempts.at(-1)?.status === 'intent') {
-      resolveApprovalCrash(structuredClone(durable))
+  const checkpointRun = restarted.checkpointRun.bind(restarted)
+  restarted.checkpointRun = (groupId, controller, status = '') => {
+    const persisted = checkpointRun(groupId, controller, status)
+    const recovery = controller.orchestration?.synthesisRecovery
+    const selectedSlot = controller.orchestration?.slots?.find(slot => (
+      slot.agentKind === recovery?.activeWriterKind
+    ))
+    if (controller.orchestration?.phase === 'synthesis'
+        && recovery?.attempts.at(-1)?.status === 'intent'
+        && selectedSlot?.status === 'planned') {
+      resolveApprovalCrash(structuredClone(restartedLedger.get(controller.runId)))
       throw new Error('TEST_CRASH:V4_SYNTHESIS_APPROVAL_CHECKPOINTED')
     }
-    return completeHumanGateContinuation(runId, gateId, state)
+    return persisted
   }
   restarted.decideHumanGate(pending.gateId, {
     status: 'approved', optionId: 'retry-original-writer', actorId: 'local-user',
@@ -1173,7 +1225,7 @@ test('V4 synthesis recovery retries the original writer once after restart', asy
   const approvalCrashRecord = await approvalCrash
 
   assert.equal(approvalCrashRecord.orchestration.phase, 'synthesis')
-  assert.equal(approvalCrashRecord.continuation.state, 'resuming')
+  assert.equal(approvalCrashRecord.continuation.state, 'completed')
   assert.deepEqual(
     approvalCrashRecord.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
     ['superseded', 'intent'],
@@ -1181,11 +1233,34 @@ test('V4 synthesis recovery retries the original writer once after restart', asy
   assert.equal(new Set(
     approvalCrashRecord.orchestration.synthesisRecovery.attempts.map(attempt => attempt.operationId),
   ).size, 2)
+  const plannedRetrySlot = approvalCrashRecord.orchestration.slots.find(slot => (
+    slot.agentKind === approvalCrashRecord.orchestration.synthesisRecovery.activeWriterKind
+  ))
+  assert.equal(Object.hasOwn(plannedRetrySlot, 'agentRunId'), false)
+  assert.equal(
+    plannedRetrySlot.operationId,
+    approvalCrashRecord.orchestration.synthesisRecovery.attempts.at(-1).operationId,
+  )
 
   const postApprovalCrashPath = path.join(directory, 'run-ledger-post-approval-crash.json')
   const postApprovalCrashLedger = new RunLedger({ storagePath: postApprovalCrashPath })
   postApprovalCrashLedger.checkpoint(approvalCrashRecord)
   const secondRestart = new LocalWorkspace({ ...options, runLedger: postApprovalCrashLedger })
+  let retryLeaseCheckpoint = null
+  const secondCheckpointRun = secondRestart.checkpointRun.bind(secondRestart)
+  secondRestart.checkpointRun = (groupId, controller, status = '') => {
+    const persisted = secondCheckpointRun(groupId, controller, status)
+    const recovery = controller.orchestration?.synthesisRecovery
+    const selectedSlot = controller.orchestration?.slots?.find(slot => (
+      slot.agentKind === recovery?.activeWriterKind
+    ))
+    if (!retryLeaseCheckpoint && controller.orchestration?.phase === 'synthesis'
+        && recovery?.attempts.at(-1)?.status === 'leased'
+        && selectedSlot?.status === 'running') {
+      retryLeaseCheckpoint = structuredClone(postApprovalCrashLedger.get(controller.runId))
+    }
+    return persisted
+  }
   await secondRestart.refreshAgents()
   const terminal = await waitForTerminalRun(postApprovalCrashLedger, pending.runId)
 
@@ -1204,6 +1279,19 @@ test('V4 synthesis recovery retries the original writer once after restart', asy
   )
   assert.equal(terminal.orchestration.synthesisRecovery.attempts[1].permission, 'workspace-write')
   assert.equal(terminal.orchestration.synthesisRecovery.attempts[1].leaseAcquired, true)
+  assert.ok(retryLeaseCheckpoint)
+  const leasedRetrySlot = retryLeaseCheckpoint.orchestration.slots.find(slot => (
+    slot.agentKind === retryLeaseCheckpoint.orchestration.synthesisRecovery.activeWriterKind
+  ))
+  const leasedRetryAttempt = retryLeaseCheckpoint.agentRuns.find(attempt => (
+    attempt.agentRunId === leasedRetrySlot.agentRunId
+  ))
+  assert.ok(leasedRetryAttempt)
+  assert.equal(leasedRetryAttempt.kind, leasedRetrySlot.agentKind)
+  assert.notEqual(
+    leasedRetrySlot.agentRunId,
+    approvalCrashRecord.continuation.publicAgentRunId,
+  )
   assert.equal(new Set(
     terminal.orchestration.synthesisRecovery.attempts.map(attempt => attempt.operationId),
   ).size, 2)
@@ -1216,6 +1304,181 @@ test('V4 synthesis recovery retries the original writer once after restart', asy
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(synthesisCalls.length, 2)
 })
+
+for (const scenario of [
+  {
+    name: 'retry approval',
+    optionId: 'retry-original-writer',
+    expectsReplacement: false,
+  },
+  {
+    name: 'replacement approval',
+    optionId: 'replace-next-writer',
+    expectsReplacement: true,
+  },
+]) {
+  test(`V4 synthesis ${scenario.name} survives a crash after only continuation completion`, async (t) => {
+    const { directory, options } = fixture()
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+    const ledgerPath = path.join(directory, `run-ledger-${scenario.optionId}.json`)
+    let gateClock = '2026-07-28T04:00:00.000Z'
+    options.now = () => gateClock
+    options.runLedger = new RunLedger({ storagePath: ledgerPath })
+    const synthesisCalls = []
+    options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+      const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+      if (phase === 'synthesis') {
+        synthesisCalls.push({ kind: agent.kind, operationId: runOptions.operationId })
+        if (synthesisCalls.length === 1) {
+          throw Object.assign(new Error('socket reset after write'), { code: 'ECONNRESET' })
+        }
+      }
+      return {
+        text: `${agent.kind} ${phase}`,
+        sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}`,
+        collaboration: phase === 'proposal'
+          ? v4Proposal(agent.kind)
+          : phase === 'challenge'
+            ? v4Challenge(agent.kind)
+            : phase === 'work'
+              ? v4Work(agent.kind, prompt)
+              : phase === 'synthesis'
+                ? { version: 1, phase, summary: `${agent.kind} candidate`, resolvedIssueIds: [] }
+                : { version: 1, phase, verdict: 'support', summary: `${agent.kind} review` },
+      }
+    }
+    const workspace = new LocalWorkspace(options)
+    await workspace.refreshAgents()
+    const group = workspace.createGroup({
+      name: `Approval-only crash ${scenario.optionId}`,
+      agentKinds: ['codex', 'hermes', 'workbuddy'],
+      workdir: directory,
+      allowWrite: true,
+    })
+    const gatePromise = pendingGate(workspace, 5000)
+    await workspace.sendMessage({
+      groupId: group.id,
+      text: `Consume the durable ${scenario.name} without asking twice.`,
+      mode: 'auto',
+      maxRounds: 2,
+      targetKinds: ['codex', 'hermes', 'workbuddy'],
+      protocol: 'v4',
+    })
+    const pending = await gatePromise
+    await workspace.stopAll()
+
+    gateClock = '2026-07-28T04:01:00.000Z'
+    const decisionLedger = new RunLedger({ storagePath: ledgerPath })
+    const decisionWorkspace = new LocalWorkspace({ ...options, runLedger: decisionLedger })
+    await decisionWorkspace.refreshAgents()
+    let resolveApprovalOnlyCrash
+    const approvalOnlyCrash = new Promise(resolve => { resolveApprovalOnlyCrash = resolve })
+    const completeHumanGateContinuation = decisionWorkspace.completeHumanGateContinuation
+      .bind(decisionWorkspace)
+    decisionWorkspace.completeHumanGateContinuation = (runId, gateId, state) => {
+      const persisted = completeHumanGateContinuation(runId, gateId, state)
+      const durable = decisionLedger.get(runId)
+      if (gateId === pending.gateId && state === 'completed'
+          && durable.continuation.state === 'completed'
+          && durable.orchestration.phase === 'human-gate'
+          && durable.orchestration.synthesisRecovery.attempts.at(-1)?.status
+            === 'unknown_outcome') {
+        resolveApprovalOnlyCrash(structuredClone(durable))
+        throw new Error('TEST_CRASH:V4_SYNTHESIS_APPROVAL_ONLY_CHECKPOINTED')
+      }
+      return persisted
+    }
+    decisionWorkspace.decideHumanGate(pending.gateId, {
+      status: 'approved', optionId: scenario.optionId, actorId: 'local-user',
+    })
+    const approvalOnlyRecord = await approvalOnlyCrash
+
+    assert.equal(approvalOnlyRecord.continuation.state, 'completed')
+    assert.equal(approvalOnlyRecord.orchestration.phase, 'human-gate')
+    assert.deepEqual(
+      approvalOnlyRecord.orchestration.synthesisRecovery.attempts.map(attempt => attempt.status),
+      ['unknown_outcome'],
+    )
+    assert.equal(
+      approvalOnlyRecord.orchestration.synthesisRecovery.pendingGate.operationId,
+      approvalOnlyRecord.continuation.agentRunId,
+    )
+    await decisionWorkspace.stopAll()
+
+    const recoveryLedgerPath = path.join(directory, `recovery-${scenario.optionId}.json`)
+    const recoveryLedger = new RunLedger({ storagePath: recoveryLedgerPath })
+    recoveryLedger.checkpoint(approvalOnlyRecord)
+    gateClock = '2026-07-28T04:02:00.000Z'
+    const restarted = new LocalWorkspace({ ...options, runLedger: recoveryLedger })
+    let plannedCheckpoint = null
+    let leaseCheckpoint = null
+    const checkpointRun = restarted.checkpointRun.bind(restarted)
+    restarted.checkpointRun = (groupId, controller, status = '') => {
+      const persisted = checkpointRun(groupId, controller, status)
+      const recovery = controller.orchestration?.synthesisRecovery
+      const selectedSlot = controller.orchestration?.slots?.find(slot => (
+        slot.agentKind === recovery?.activeWriterKind
+      ))
+      if (!plannedCheckpoint && controller.orchestration?.phase === 'synthesis'
+          && recovery?.attempts.at(-1)?.status === 'intent'
+          && selectedSlot?.status === 'planned') {
+        plannedCheckpoint = structuredClone(recoveryLedger.get(controller.runId))
+      }
+      if (!leaseCheckpoint && controller.orchestration?.phase === 'synthesis'
+          && recovery?.attempts.at(-1)?.status === 'leased'
+          && selectedSlot?.status === 'running') {
+        leaseCheckpoint = structuredClone(recoveryLedger.get(controller.runId))
+      }
+      return persisted
+    }
+    await restarted.refreshAgents()
+    const outcome = await waitForTerminalOrFreshGate(
+      restarted, recoveryLedger, pending.runId, pending.gateId,
+    )
+
+    assert.equal(outcome.freshGate, undefined, outcome.freshGate?.gateId)
+    const terminal = outcome.terminal
+    assert.equal(terminal.status, 'completed', terminal.reason)
+    assert.equal(terminal.continuation.state, 'completed')
+    assert.equal(synthesisCalls.length, 2)
+    assert.equal(
+      synthesisCalls[0].kind === synthesisCalls[1].kind,
+      !scenario.expectsReplacement,
+    )
+    assert.notEqual(synthesisCalls[0].operationId, synthesisCalls[1].operationId)
+    assert.deepEqual(
+      restarted.listHumanGates({ runId: pending.runId }).map(gate => gate.gateId),
+      [pending.gateId],
+    )
+    assert.ok(plannedCheckpoint)
+    const plannedSlot = plannedCheckpoint.orchestration.slots.find(slot => (
+      slot.agentKind === plannedCheckpoint.orchestration.synthesisRecovery.activeWriterKind
+    ))
+    assert.equal(Object.hasOwn(plannedSlot, 'agentRunId'), false)
+    assert.equal(
+      plannedSlot.operationId,
+      plannedCheckpoint.orchestration.synthesisRecovery.attempts.at(-1).operationId,
+    )
+    assert.ok(leaseCheckpoint)
+    const leasedSlot = leaseCheckpoint.orchestration.slots.find(slot => (
+      slot.agentKind === leaseCheckpoint.orchestration.synthesisRecovery.activeWriterKind
+    ))
+    const leasedAttempt = leaseCheckpoint.agentRuns.find(attempt => (
+      attempt.agentRunId === leasedSlot.agentRunId
+    ))
+    assert.ok(leasedAttempt)
+    assert.equal(leasedAttempt.kind, leasedSlot.agentKind)
+    assert.notEqual(leasedSlot.agentRunId, approvalOnlyRecord.continuation.publicAgentRunId)
+
+    const thirdRestart = new LocalWorkspace({
+      ...options,
+      runLedger: new RunLedger({ storagePath: recoveryLedgerPath }),
+    })
+    await thirdRestart.refreshAgents()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(synthesisCalls.length, 2)
+  })
+}
 
 test('V4 synthesis Stop survives a crash before continuation completion', async (t) => {
   const { directory, options } = fixture()

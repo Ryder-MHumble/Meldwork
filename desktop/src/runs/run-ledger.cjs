@@ -107,8 +107,9 @@ function journalRun(record, existing = null, includeAllAgents = false) {
   const previous = new Map((existing?.agentRuns || []).map(agentRun => [
     agentRun.agentRunId, agentRun,
   ]))
+  const publicAgentRunId = record.continuation?.publicAgentRunId || ''
   const agentRuns = record.agentRuns.filter((agentRun) => {
-    if (includeAllAgents) return true
+    if (includeAllAgents || agentRun.agentRunId === publicAgentRunId) return true
     const prior = previous.get(agentRun.agentRunId)
     return !prior || journalAgentSignature(prior) !== journalAgentSignature(agentRun)
   }).map(journalAgentRun)

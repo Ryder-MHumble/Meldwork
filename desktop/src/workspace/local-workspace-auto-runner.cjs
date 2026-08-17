@@ -2626,8 +2626,12 @@ class LocalWorkspaceAutoRunner {
         ? (operationIds?.get(slot.agentKind)
           || this.v4OperationId(controller, slot.agentKind, phase, slot.slotId))
         : slot.operationId
+      const { agentRunId: previousAgentRunId, ...retainedSlot } = slot
       return {
-        ...slot,
+        ...retainedSlot,
+        ...(!running && operationId === slot.operationId && previousAgentRunId
+          ? { agentRunId: previousAgentRunId }
+          : {}),
         slotId: slot.slotId || `slot-${index + 1}-${slot.agentKind}`,
         phase: running ? phase : (slot.phase || phase),
         status: running ? 'planned' : (slot.status || 'completed'),
@@ -2877,7 +2881,15 @@ class LocalWorkspaceAutoRunner {
           controller,
           activeKinds: targetKinds,
           threadRootId,
-          context,
+          context: {
+            ...context,
+            onLeaseAcquired: (leaseState) => {
+              if (!leaseState?.agentRunId) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+              slot.agentRunId = leaseState.agentRunId
+              slot.status = 'running'
+              checkpoint()
+            },
+          },
         })
         if (controller.signal.aborted) {
           slot.status = 'stopped'
@@ -3198,18 +3210,18 @@ class LocalWorkspaceAutoRunner {
     const activeSet = new Set(activeKinds)
     const phaseReceipts = []
     const snapshotSourceMessageIds = [snapshot.messageId, ...snapshot.history.map(item => item.id)]
+    for (const slot of phaseSlots) {
+      if (activeSet.has(slot.agentKind)) {
+        slot.status = phase === 'synthesis' ? 'queued' : 'running'
+      }
+    }
     this.v4CheckpointPhase(group, controller, {
       targetKinds,
       phase,
       batchId,
       snapshotRecord,
       snapshotHash,
-      slots: phaseSlots.map(slot => ({
-        ...slot,
-        status: activeSet.has(slot.agentKind)
-          ? (phase === 'synthesis' ? 'queued' : 'running')
-          : slot.status,
-      })),
+      slots: phaseSlots,
       writerKind,
       currentKinds: activeKinds,
       pendingKinds: activeKinds,
@@ -3364,45 +3376,47 @@ class LocalWorkspaceAutoRunner {
             operationId: slot.operationId,
             ...(resumedSlotGate ? { resumedGate: resumedSlotGate } : {}),
             v4SynthesisRecovery: phase === 'synthesis',
-            onLeaseAcquired: phase === 'synthesis'
-              ? (leaseState) => {
-                  const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
-                  if (!activeAttempt || activeAttempt.operationId !== slot.operationId) {
-                    throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
-                  }
-                  synthesisRecovery = this.v4UpdateSynthesisAttempt(
-                    synthesisRecovery,
-                    activeAttempt.operationId,
-                    {
-                      status: 'leased',
-                      permission: leaseState?.permissionMode === 'workspace-write'
-                        ? 'workspace-write' : 'read-only',
-                      leaseAcquired: true,
-                      sideEffectsPossible: leaseState?.sideEffectsPossible === true,
-                      outcomeCertainty: leaseState?.sideEffectsPossible === true
-                        ? 'unknown_outcome' : 'not_started',
-                    },
-                  )
-                  slot.status = 'running'
-                  this.v4CheckpointPhase(group, controller, {
-                    targetKinds,
-                    phase,
-                    batchId,
-                    snapshotRecord,
-                    snapshotHash,
-                    slots: phaseSlots,
-                    writerKind,
-                    currentKinds: activeKinds,
-                    pendingKinds: activeKinds,
-                    receipts: receiptRecords,
-                    challengeBindings,
-                    synthesisRecovery,
-                    coordinationPlan,
-                    workReceipts,
-                    workAssignments,
-                  })
+            onLeaseAcquired: (leaseState) => {
+              if (!leaseState?.agentRunId) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+              slot.agentRunId = leaseState.agentRunId
+              if (phase === 'synthesis') {
+                const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
+                if (!activeAttempt || activeAttempt.operationId !== slot.operationId) {
+                  throw new Error('LOCAL_RUN_V4_SYNTHESIS_RECOVERY_INVALID')
                 }
-              : undefined,
+                synthesisRecovery = this.v4UpdateSynthesisAttempt(
+                  synthesisRecovery,
+                  activeAttempt.operationId,
+                  {
+                    status: 'leased',
+                    permission: leaseState?.permissionMode === 'workspace-write'
+                      ? 'workspace-write' : 'read-only',
+                    leaseAcquired: true,
+                    sideEffectsPossible: leaseState?.sideEffectsPossible === true,
+                    outcomeCertainty: leaseState?.sideEffectsPossible === true
+                      ? 'unknown_outcome' : 'not_started',
+                  },
+                )
+              }
+              slot.status = 'running'
+              this.v4CheckpointPhase(group, controller, {
+                targetKinds,
+                phase,
+                batchId,
+                snapshotRecord,
+                snapshotHash,
+                slots: phaseSlots,
+                writerKind,
+                currentKinds: activeKinds,
+                pendingKinds: activeKinds,
+                receipts: receiptRecords,
+                challengeBindings,
+                synthesisRecovery,
+                coordinationPlan,
+                workReceipts,
+                workAssignments,
+              })
+            },
             v4PromptBuilder: (sessionBinding) => {
               const built = this.v4DeliveryPrompt(group, controller, {
                 kind, phase, snapshot, receiptRecords: deliveryReceiptRecords,
@@ -4772,6 +4786,7 @@ class LocalWorkspaceAutoRunner {
       if (!this.requestHumanGate) return 'round-limit'
       const gateAgentRunId = this.v4OperationId(controller, writerKind, 'human-gate',
         slots.find(slot => slot.agentKind === writerKind)?.slotId || '')
+      const publicAgentRunId = slots.find(slot => slot.agentKind === writerKind)?.agentRunId || ''
       checkpointPhase('human-gate', [], slots)
       const gate = await this.requestHumanGate({
         type: 'decision',
@@ -4796,6 +4811,7 @@ class LocalWorkspaceAutoRunner {
         continuation: {
           resumeKind: 'v4_human_gate',
           agentRunId: gateAgentRunId,
+          ...(publicAgentRunId ? { publicAgentRunId } : {}),
           agentKind: writerKind,
           round: convergence.lastCompletedRound,
           stateEpoch: convergence.stateEpoch,
@@ -4824,6 +4840,9 @@ class LocalWorkspaceAutoRunner {
     const requestSynthesisRecoveryGate = async () => {
       const binding = synthesisRecovery?.pendingGate
       if (!binding || !this.requestHumanGate) return 'failed'
+      const publicAgentRunId = slots.find(slot => (
+        slot.slotId === binding.slotId && slot.agentKind === binding.writerKind
+      ))?.agentRunId || ''
       const permissionContinuation = controller.continuation
       if (permissionContinuation?.gateType === 'permission'
           && permissionContinuation.resumeKind === 'agent_slot'
@@ -4870,6 +4889,7 @@ class LocalWorkspaceAutoRunner {
         continuation: {
           resumeKind: 'v4_synthesis_recovery',
           agentRunId: binding.operationId,
+          ...(publicAgentRunId ? { publicAgentRunId } : {}),
           agentKind: binding.writerKind,
           round: binding.round,
           stateEpoch: binding.stateEpoch,
@@ -4890,26 +4910,30 @@ class LocalWorkspaceAutoRunner {
         ? binding.proposedReplacementKind
         : binding.writerKind
       if (!nextWriterKind) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+      if (gate.gateId && this.completeHumanGateContinuation?.(
+        controller.runId, gate.gateId, 'completed',
+      ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
       synthesisRecovery = this.v4AppendSynthesisAttempt(
         controller, coordinationPlan || synthesisBinding, synthesisRecovery, slots, nextWriterKind,
       )
       writerKind = synthesisRecovery.activeWriterKind
       const nextAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
-      slots = slots.map(slot => slot.agentKind === writerKind ? {
-        ...slot,
-        phase: 'synthesis',
-        status: 'planned',
-        operationId: nextAttempt.operationId,
-        receiptId: '',
-        resultHash: '',
-        finishedAt: null,
-        commitStatus: 'pending',
-        permission: group.allowWrite === true ? 'workspace-write' : 'read-only',
-      } : { ...slot, permission: 'read-only' })
+      slots = slots.map((slot) => {
+        if (slot.agentKind !== writerKind) return { ...slot, permission: 'read-only' }
+        const { agentRunId: _agentRunId, ...retainedSlot } = slot
+        return {
+          ...retainedSlot,
+          phase: 'synthesis',
+          status: 'planned',
+          operationId: nextAttempt.operationId,
+          receiptId: '',
+          resultHash: '',
+          finishedAt: null,
+          commitStatus: 'pending',
+          permission: group.allowWrite === true ? 'workspace-write' : 'read-only',
+        }
+      })
       checkpointPhase('synthesis', [writerKind], slots)
-      if (gate.gateId && this.completeHumanGateContinuation?.(
-        controller.runId, gate.gateId, 'completed',
-      ) !== true && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
       return 'continue'
     }
 
@@ -5003,18 +5027,23 @@ class LocalWorkspaceAutoRunner {
         }
 
         if (!challengeBindings || challengeBindings[0]?.round !== round) {
-          slots = slots.map((slot) => ({
-            ...slot,
-            phase: 'challenge',
-            status: 'planned',
-            operationId: this.v4OperationId(controller, slot.agentKind, 'challenge', slot.slotId),
-            receiptId: '',
-            resultHash: '',
-            startedAt: Date.now(),
-            finishedAt: null,
-            commitStatus: 'pending',
-            permission: 'read-only',
-          }))
+          slots = slots.map((slot) => {
+            const { agentRunId: _agentRunId, ...retainedSlot } = slot
+            return {
+              ...retainedSlot,
+              phase: 'challenge',
+              status: 'planned',
+              operationId: this.v4OperationId(
+                controller, slot.agentKind, 'challenge', slot.slotId,
+              ),
+              receiptId: '',
+              resultHash: '',
+              startedAt: Date.now(),
+              finishedAt: null,
+              commitStatus: 'pending',
+              permission: 'read-only',
+            }
+          })
           challengeBindings = this.v4ChallengeBindings({
             controller,
             targetKinds,

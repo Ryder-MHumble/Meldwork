@@ -497,6 +497,83 @@ test('roundtrips V4 agent-slot invocation bindings and rejects legacy or tampere
   }), { message: 'RUN_LEDGER_RECORD_INVALID' })
 })
 
+test('roundtrips the optional public Harness attempt frozen for a private V4 Gate', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  const targetKinds = ['codex']
+  const base = createOrchestrationV4({
+    workflow: 'auto', template: 'discussion', targetKinds, phase: 'proposal', round: 1,
+    snapshot: discussionSnapshot(targetKinds, 1),
+  }, { targetKinds, now: 1000 })
+  const orchestration = {
+    ...base,
+    slots: [{ ...base.slots[0], agentRunId: 'agent-run-private-gate' }],
+  }
+  const continuation = {
+    gateId: `human-gate-${'d'.repeat(64)}`,
+    gateType: 'decision',
+    resumeKind: 'v4_human_gate',
+    state: 'pending',
+    agentRunId: 'operation-private-gate',
+    publicAgentRunId: 'agent-run-private-gate',
+    agentKind: 'codex',
+    round: 1,
+    stateEpoch: 1,
+    createdAt: 1000,
+    updatedAt: 1000,
+  }
+  const running = ledger.checkpoint({
+    ...runRecord('run-private-gate-binding', 'group-private-gate-binding'),
+    mode: 'auto', targetKinds, status: 'running', currentRound: 1, maxRounds: 3,
+    agentRuns: [{
+      agentRunId: 'agent-run-private-gate', kind: 'codex', round: 1, status: 'waiting',
+    }],
+    orchestration,
+  })
+  const saved = ledger.checkpoint({
+    runId: running.runId,
+    status: 'waiting',
+    continuation,
+  })
+
+  assert.deepEqual(saved.continuation, continuation)
+  assert.equal(saved.orchestration.slots[0].agentRunId, 'agent-run-private-gate')
+  assert.deepEqual(
+    new RunLedger({ storagePath, now: () => 1100 }).get(saved.runId).continuation,
+    continuation,
+  )
+
+  for (const publicAgentRunId of ['', 'not valid', '\u0000invalid']) {
+    assert.throws(() => ledger.checkpoint({
+      runId: saved.runId,
+      continuation: { ...continuation, publicAgentRunId },
+    }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+  }
+  for (const agentRuns of [
+    [{ agentRunId: 'agent-run-other', kind: 'codex', round: 1, status: 'waiting' }],
+    [
+      { agentRunId: 'agent-run-private-gate', kind: 'codex', round: 1, status: 'waiting' },
+      { agentRunId: 'agent-run-private-gate', kind: 'codex', round: 1, status: 'waiting' },
+    ],
+  ]) {
+    assert.throws(() => ledger.checkpoint({
+      runId: saved.runId,
+      agentRuns,
+    }), { message: 'RUN_LEDGER_RECORD_INVALID' })
+  }
+
+  const completed = ledger.checkpoint({
+    runId: saved.runId,
+    continuation: { ...continuation, state: 'completed', updatedAt: 1100 },
+    orchestration: {
+      ...orchestration,
+      slots: [{ ...orchestration.slots[0], agentRunId: 'agent-run-next-operation' }],
+    },
+  })
+  assert.equal(completed.continuation.publicAgentRunId, 'agent-run-private-gate')
+  assert.equal(completed.orchestration.slots[0].agentRunId, 'agent-run-next-operation')
+})
+
 test('roundtrips Manual V4 invocation bindings and rejects a coherently rewritten cursor', (t) => {
   const { storagePath } = fixture(t)
   const ledger = new RunLedger({ storagePath, now: () => 1000 })
