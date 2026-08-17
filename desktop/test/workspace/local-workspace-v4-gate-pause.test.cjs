@@ -1251,3 +1251,86 @@ test('Auto V4 atomically checkpoints a resumed receipt with its completed contin
   assert.equal(calls.filter(call => call.phase === 'proposal' && call.kind === 'workbuddy').length,
     proposalCallsBeforeRecovery.filter(call => call.kind === 'workbuddy').length + 1)
 })
+
+test('Auto V4 rejects a terminal proposal while its live permission Gate is pending', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger.json'), now: () => Date.now(),
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 3, workspaceLimit: 3, globalLimit: 3 })
+  const calls = []
+  const permissionRequest = {
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ],
+    operation: { kind: 'read', path: 'live-proposal.txt' },
+  }
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    const workItemId = prompt.match(/^Work item: ([A-Za-z0-9._:-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase, operationId: runOptions.operationId })
+    if (agent.kind === 'codex' && phase === 'proposal') {
+      await runOptions.onSessionRef('codex-live-permission-session', { transport: 'acp' })
+      void runOptions.onPermissionRequest(permissionRequest, { signal: runOptions.signal })
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-${phase}-session`,
+      outcome: 'completed',
+      collaboration: autoV4Receipt(agent.kind, phase, workItemId),
+    }
+  }
+
+  const workspace = new LocalWorkspace(options)
+  t.after(() => workspace.stopAll())
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Auto V4 live permission terminal race',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Do not advance beyond a pending proposal Gate.',
+    mode: 'auto',
+    maxRounds: 3,
+    targetKinds: ['codex', 'hermes', 'workbuddy'],
+    protocol: 'v4',
+  }).then(value => ({ value }), error => ({ error }))
+  const gate = await pendingGate(workspace)
+  await waitFor(() => calls.filter(call => call.phase === 'proposal').length === 3,
+    'all proposal Agents dispatched')
+
+  assert.doesNotThrow(() => workspace.decideHumanGate(gate.gateId, {
+    status: 'rejected', optionId: 'reject-once', actorId: 'local-user',
+  }))
+  const outcome = await send
+  assert.notEqual(outcome.error?.message, 'LOCAL_RUN_PERSIST_FAILED')
+  const terminal = await waitFor(() => {
+    const record = ledger.get(gate.runId)
+    return ['failed', 'partial', 'stopped'].includes(record?.status) ? record : null
+  }, 'terminal live permission race')
+
+  assert.equal(workspace.humanGateStore.get(gate.gateId).status, 'rejected')
+  assert.equal(terminal.orchestration.phase, 'proposal')
+  assert.equal(terminal.orchestration.round, 1)
+  assert.notEqual(terminal.reason, 'LOCAL_RUN_PERSIST_FAILED')
+  assert.equal(calls.some(call => call.phase === 'challenge'), false)
+
+  const previousOrchestration = { version: 4, phase: 'proposal', round: 1 }
+  const checkpointController = { orchestration: previousOrchestration }
+  const checkpointRun = workspace.autoRunner.checkpointRun
+  workspace.autoRunner.checkpointRun = () => false
+  try {
+    assert.throws(() => workspace.autoRunner.checkpointOrchestration(
+      group, checkpointController, { phase: 'challenge' },
+    ), { message: 'LOCAL_RUN_PERSIST_FAILED' })
+    assert.equal(checkpointController.orchestration, previousOrchestration)
+  } finally {
+    workspace.autoRunner.checkpointRun = checkpointRun
+  }
+})

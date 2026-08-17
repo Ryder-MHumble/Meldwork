@@ -568,6 +568,82 @@ test('ACP permission callback uses sanitized requests and fail-closed decisions'
   })
 })
 
+test('ACP rejects a terminal prompt response while its permission handler is pending', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-permission-race-'))
+  const terminalFile = path.join(directory, 'terminal-sent.txt')
+  const cli = executable(directory, 'kimi-acp-permission-race.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId: 'permission-race-session' } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send({
+      jsonrpc: '2.0', id: 77, method: 'session/request_permission',
+      params: {
+        sessionId: 'permission-race-session',
+        toolCall: { toolCallId: 'tool-1', title: 'read file', kind: 'read', status: 'pending' },
+        options: [
+          { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+        ],
+      },
+    })
+    send({
+      jsonrpc: '2.0', method: 'session/update',
+      params: {
+        sessionId: 'permission-race-session',
+        update: {
+          sessionUpdate: 'agent_message_chunk',
+          content: { type: 'text', text: 'must not be accepted' },
+        },
+      },
+    })
+    setImmediate(() => {
+      send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+      fs.writeFileSync(process.env.MELDWORK_TEST_TERMINAL_FILE, 'sent')
+    })
+  }
+})
+`)
+  let releaseDecision
+  let signalRequested
+  const requested = new Promise(resolve => { signalRequested = resolve })
+  const decision = new Promise(resolve => { releaseDecision = resolve })
+  let settled = false
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const outcome = runAgent(
+    { kind: 'kimi', executable: cli, name: 'Kimi' },
+    'race terminal against permission',
+    directory,
+    {
+      env: { MELDWORK_TEST_TERMINAL_FILE: terminalFile },
+      onPermissionRequest: async () => {
+        signalRequested()
+        return decision
+      },
+    },
+  ).then(value => ({ value }), error => ({ error })).finally(() => { settled = true })
+
+  await requested
+  await readWhenReady(terminalFile)
+  try {
+    assert.equal(settled, false)
+  } finally {
+    releaseDecision({ status: 'approved', optionId: 'allow-once' })
+  }
+  const result = await within(outcome)
+  assert.equal(result.error?.message, 'LOCAL_AGENT_PERMISSION_TERMINAL_RACE')
+})
+
 test('Kimi ACP preserves new sessions across failures and keeps diagnostics private', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-kimi-acp-session-ref-'))
   const promptFailureCli = executable(directory, 'kimi-acp-prompt-failure.cjs', `

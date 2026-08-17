@@ -1,6 +1,6 @@
 const { spawn } = require('node:child_process')
 const { createHash } = require('node:crypto')
-const { Readable, Writable } = require('node:stream')
+const { PassThrough, Readable, Writable } = require('node:stream')
 const { AGENT_PROFILES, prepareCommand } = require('./cli-discovery.cjs')
 const {
   outcomeForAcpStopReason,
@@ -28,6 +28,7 @@ const ACP_MAX_INPUT_BYTES = 16 * 1024 * 1024
 const ACP_MAX_REPLY_BYTES = 10 * 1024 * 1024
 const ACP_PERSISTENT_RUNTIME_LIMIT = 16
 const ACP_PERMISSION_OPTION_LIMIT = 16
+const ACP_PERMISSION_ORDERING_SETTLE_MS = 25
 const ACP_PERMISSION_OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 const ACP_PERMISSION_OPTION_KINDS = new Set([
   'allow_once', 'allow_always', 'reject_once', 'reject_always',
@@ -139,9 +140,64 @@ function validateAcpInboundMessage(message, validators, replyState, protocolLabe
   return message
 }
 
+function createObservedAcpInput(input, replyState, protocolLabel) {
+  const output = new PassThrough()
+  let pending = Buffer.alloc(0)
+  const cleanup = () => {
+    input.removeListener('data', onData)
+    input.removeListener('end', onEnd)
+    input.removeListener('error', onError)
+  }
+  const onData = (chunk) => {
+    replyState.observedInputBytes += chunk.length
+    if (replyState.observedInputBytes > ACP_MAX_INPUT_BYTES) {
+      output.destroy(acpTransportError(`${protocolLabel} input exceeded the safe total limit.`))
+      return
+    }
+    pending = pending.length
+      ? Buffer.concat([pending, chunk], pending.length + chunk.length)
+      : Buffer.from(chunk)
+    if (pending.length <= ACP_MAX_LINE_BYTES) {
+      let newline
+      while ((newline = pending.indexOf(0x0a)) !== -1) {
+        const line = pending.subarray(0, newline).toString('utf8').trim()
+        pending = pending.subarray(newline + 1)
+        if (!line) continue
+        let message
+        try { message = JSON.parse(line) } catch { continue }
+        if (message?.method === 'session/request_permission') {
+          replyState.pendingPermissionRequestIds.add(message.id)
+        } else if (replyState.collecting && !message?.method
+            && replyState.promptRequestId != null && message?.id === replyState.promptRequestId
+            && replyState.pendingPermissionRequestIds.size) {
+          replyState.permissionPendingAtPromptTerminal = true
+        }
+      }
+    } else {
+      pending = Buffer.alloc(0)
+    }
+    output.write(chunk)
+  }
+  const onEnd = () => output.end()
+  const onError = error => output.destroy(error)
+  input.on('data', onData)
+  input.once('end', onEnd)
+  input.once('error', onError)
+  output.once('close', cleanup)
+  return output
+}
+
 function boundedAcpStream(
   output, input, validators,
-  replyState = { bytes: 0, inputBytes: 0, collecting: true, pendingUpdateSequences: [] },
+  replyState = {
+    bytes: 0,
+    inputBytes: 0,
+    collecting: true,
+    pendingUpdateSequences: [],
+    pendingPermissionRequestIds: new Set(),
+    permissionPendingAtPromptTerminal: false,
+    observedInputBytes: 0,
+  },
   protocolLabel = 'ACP Agent', beforeWrite = null, onActivity = null,
 ) {
   const textEncoder = new TextEncoder()
@@ -162,11 +218,17 @@ function boundedAcpStream(
         const validated = validateAcpInboundMessage(
           message, validators, replyState, protocolLabel,
         )
-        if (message.method === 'session/update' && message.params?.update) {
+        if (message.method === 'session/request_permission') {
+          replyState.pendingPermissionRequestIds.add(message.id)
+        } else if (message.method === 'session/update' && message.params?.update) {
           replyState.pendingUpdateSequences.push(++updateSequence)
-        } else if (replyState.collecting && replyState.promptRequestId != null
-            && !message.method && message.id === replyState.promptRequestId) {
-          replyState.promptTerminalSequence = updateSequence
+        } else if (replyState.collecting && !message.method) {
+          if (replyState.promptRequestId != null && message.id === replyState.promptRequestId) {
+            replyState.promptTerminalSequence = updateSequence
+          }
+          if (replyState.pendingPermissionRequestIds.size) {
+            replyState.permissionPendingAtPromptTerminal = true
+          }
         }
         controller.enqueue(validated)
       }
@@ -213,17 +275,27 @@ function boundedAcpStream(
   const writable = new WritableStream({
     async write(message) {
       const bytes = textEncoder.encode(`${JSON.stringify(message)}\n`)
+      const permissionRequestId = !message?.method
+        && replyState.pendingPermissionRequestIds.has(message?.id)
+        ? message.id
+        : null
       if (typeof beforeWrite === 'function') {
         await beforeWrite(
           message,
           Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
         )
       }
+      if (permissionRequestId != null) {
+        await new Promise(resolve => setTimeout(resolve, ACP_PERMISSION_ORDERING_SETTLE_MS))
+      }
       const writer = output.getWriter()
       try {
         await writer.write(bytes)
       } finally {
         writer.releaseLock()
+        if (permissionRequestId != null) {
+          replyState.pendingPermissionRequestIds.delete(permissionRequestId)
+        }
       }
     },
   })
@@ -544,6 +616,9 @@ async function createAcpRuntime(input) {
       promptRequestId: null,
       promptTerminalSequence: null,
       pendingUpdateSequences: [],
+      pendingPermissionRequestIds: new Set(),
+      permissionPendingAtPromptTerminal: false,
+      observedInputBytes: 0,
     },
     stderr: [],
     stderrBytes: 0,
@@ -575,6 +650,9 @@ async function createAcpRuntime(input) {
     runtime.stderrBytes += chunk.length
     if (runtime.stderrBytes <= 1024 * 1024) runtime.stderr.push(chunk)
   })
+  runtime.observedStdout = createObservedAcpInput(
+    child.stdout, runtime.replyState, protocolLabel,
+  )
 
   const client = {
     async requestPermission(params) {
@@ -596,7 +674,7 @@ async function createAcpRuntime(input) {
   }
   const stream = boundedAcpStream(
     Writable.toWeb(child.stdin),
-    Readable.toWeb(child.stdout),
+    Readable.toWeb(runtime.observedStdout),
     validators,
     runtime.replyState,
     protocolLabel,
@@ -640,6 +718,7 @@ async function closeAcpRuntime(runtime) {
   if (!runtime) return
   if (!runtime.closed) {
     runtime.closed = true
+    runtime.observedStdout?.destroy()
     runtime.failRuntime?.(agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED'))
     runtime.ending = true
     runtime.replyState.collecting = false
@@ -678,9 +757,12 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
   runtime.activeTurn = turn
   runtime.replyState.bytes = 0
   runtime.replyState.inputBytes = 0
+  runtime.replyState.observedInputBytes = 0
   runtime.replyState.collecting = false
   runtime.replyState.promptRequestId = null
   runtime.replyState.promptTerminalSequence = null
+  runtime.replyState.pendingPermissionRequestIds.clear()
+  runtime.replyState.permissionPendingAtPromptTerminal = false
   let protocolSessionRef = runtime.protocolSessionRef
   let visibleSessionRef = String(
     runtime.publicSessionRef || spec.publicSessionRef || options.sessionRef || '',
@@ -762,6 +844,9 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
     } finally {
       runtime.replyState.collecting = false
     }
+    if (runtime.replyState.permissionPendingAtPromptTerminal) {
+      throw agentExecutionError('LOCAL_AGENT_PERMISSION_TERMINAL_RACE')
+    }
     const structuredResult = turn.structuredOutput.end({
       sessionRef: visibleSessionRef,
       stopReason: promptResult?.stopReason,
@@ -797,6 +882,8 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
     runtime.replyState.collecting = false
     runtime.replyState.promptRequestId = null
     runtime.replyState.promptTerminalSequence = null
+    runtime.replyState.pendingPermissionRequestIds.clear()
+    runtime.replyState.permissionPendingAtPromptTerminal = false
     runtime.activeTurn = null
     runtime.lastUsedAt = Date.now()
     if (abortRequested) await settleWithin(cancelPromise, ACP_CANCEL_GRACE_MS)

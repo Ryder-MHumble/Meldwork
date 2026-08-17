@@ -777,6 +777,7 @@ class LocalWorkspaceAgentInvocation {
     let outcomeCapturePromise = null
     let attemptProgress = []
     const resolvedGateIds = []
+    const pendingPermissionCallbacks = new Set()
     let resumedPermissionUsed = false
     let resumedPermissionError = null
     const startedAt = Date.now()
@@ -1287,44 +1288,52 @@ class LocalWorkspaceAgentInvocation {
         onProgress,
         onEvent: emitRuntimeEvent,
         onOutboundPayload: recordOutboundPayload,
-        onPermissionRequest: async (request, permissionContext = {}) => {
-          if (resumedPermission && !resumedPermissionUsed) {
-            if (!matchesResumedPermission(request, resumedPermission)) {
-              resumedPermissionError = new Error('LOCAL_RUN_PERMISSION_REQUEST_MISMATCH')
-              throw resumedPermissionError
+        onPermissionRequest: (request, permissionContext = {}) => {
+          const pending = Promise.resolve().then(async () => {
+            if (resumedPermission && !resumedPermissionUsed) {
+              if (!matchesResumedPermission(request, resumedPermission)) {
+                resumedPermissionError = new Error('LOCAL_RUN_PERMISSION_REQUEST_MISMATCH')
+                throw resumedPermissionError
+              }
+              resumedPermissionUsed = true
+              return {
+                status: resumedPermission.status,
+                optionId: resumedPermission.optionId,
+              }
             }
-            resumedPermissionUsed = true
-            return {
-              status: resumedPermission.status,
-              optionId: resumedPermission.optionId,
-            }
-          }
-          const requestHash = sha256(canonicalJson(request))
-          const binding = connectorSessionBinding(sessionRef, sessionProvenance)
-          const decision = await waitForHumanGate(() => this.requestHumanGate({
-            type: 'permission',
-            runId: activeRun.runId,
-            agentRunId: harnessRun.agentRunId,
-            agentKind: kind,
-            summary: 'Agent requests permission to continue a tool action.',
-            options: request.options,
-            request,
-          }, {
-            signal: permissionContext.signal || agentController.signal,
-            preserveOnAbort: () => activeRun.stopReason === 'shutdown',
-            continuation: {
-              resumeKind: 'agent_slot',
+            const requestHash = sha256(canonicalJson(request))
+            const binding = connectorSessionBinding(sessionRef, sessionProvenance)
+            const decision = await waitForHumanGate(() => this.requestHumanGate({
+              type: 'permission',
+              runId: activeRun.runId,
               agentRunId: harnessRun.agentRunId,
               agentKind: kind,
-              round,
-              ...(v4AgentSlotBinding || {}),
-              requestId: permissionContinuationRequestId(requestHash, binding),
-              requestHash,
-              ...binding,
-            },
-          }))
-          if (decision.gateId) resolvedGateIds.push(decision.gateId)
-          return { status: decision.status, optionId: decision.optionId }
+              summary: 'Agent requests permission to continue a tool action.',
+              options: request.options,
+              request,
+            }, {
+              signal: permissionContext.signal || agentController.signal,
+              preserveOnAbort: () => activeRun.stopReason === 'shutdown',
+              continuation: {
+                resumeKind: 'agent_slot',
+                agentRunId: harnessRun.agentRunId,
+                agentKind: kind,
+                round,
+                ...(v4AgentSlotBinding || {}),
+                requestId: permissionContinuationRequestId(requestHash, binding),
+                requestHash,
+                ...binding,
+              },
+            }))
+            if (decision.gateId) resolvedGateIds.push(decision.gateId)
+            return { status: decision.status, optionId: decision.optionId }
+          })
+          pendingPermissionCallbacks.add(pending)
+          pending.then(
+            () => pendingPermissionCallbacks.delete(pending),
+            () => pendingPermissionCallbacks.delete(pending),
+          )
+          return pending
         },
         sessionTransport,
         attachments: isolated || frozen ? [] : (stagedInputs?.nativeImagePaths || []),
@@ -1510,6 +1519,10 @@ class LocalWorkspaceAgentInvocation {
             : { status: decision.status, optionId: decision.optionId }),
         }
         result = await raceCurrentSession()
+      }
+      if (pendingPermissionCallbacks.size) {
+        await Promise.allSettled([...pendingPermissionCallbacks])
+        throw new Error('LOCAL_AGENT_PERMISSION_TERMINAL_RACE')
       }
       terminalFailureKnown = ['failed', 'cancelled']
         .includes(String(result?.outcome || ''))

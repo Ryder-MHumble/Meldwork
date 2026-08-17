@@ -792,10 +792,32 @@ class LocalWorkspaceAutoRunner {
   }
 
   checkpointOrchestration(group, controller, updates = {}) {
-    controller.orchestration = { ...controller.orchestration, ...updates }
-    const persisted = this.checkpointRun?.(group.id, controller)
-    if (this.hasRunLedger() && persisted !== true) {
-      throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    const previous = controller.orchestration
+    controller.orchestration = { ...previous, ...updates }
+    try {
+      const persisted = this.checkpointRun?.(group.id, controller)
+      if (this.hasRunLedger() && persisted !== true) {
+        throw new Error('LOCAL_RUN_PERSIST_FAILED')
+      }
+    } catch (error) {
+      controller.orchestration = previous
+      throw error
+    }
+  }
+
+  v4PhaseAdvanceBlocked(controller) {
+    const orchestration = controller.orchestration
+    const continuation = controller.continuation
+    return orchestration?.version === 4
+      && continuation?.resumeKind === 'agent_slot'
+      && continuation.phase === orchestration.phase
+      && continuation.round === orchestration.round
+      && ['pending', 'ready', 'resuming'].includes(continuation.state)
+  }
+
+  assertV4PhaseCanAdvance(controller) {
+    if (this.v4PhaseAdvanceBlocked(controller)) {
+      throw new Error('LOCAL_RUN_V4_PHASE_GATE_PENDING')
     }
   }
 
@@ -2676,6 +2698,11 @@ class LocalWorkspaceAutoRunner {
     candidateCommit = controller.orchestration?.candidateCommit || null,
     workAssignments = [],
   }) {
+    const current = controller.orchestration
+    if (current?.version === 4
+        && (current.phase !== phase || current.round !== controller.currentRound)) {
+      this.assertV4PhaseCanAdvance(controller)
+    }
     const workAssignmentsByKind = new Map(workAssignments.map(assignment => (
       [assignment.ownerKind, assignment]
     )))
@@ -4945,6 +4972,7 @@ class LocalWorkspaceAutoRunner {
       && controller.continuation?.resumeKind === 'v4_human_gate'
       && controller.continuation?.state === 'completed'
     if (acknowledgedGateResume) {
+      this.assertV4PhaseCanAdvance(controller)
       round += 1
       controller.currentRound = round
       challengeBindings = null
@@ -5022,6 +5050,7 @@ class LocalWorkspaceAutoRunner {
             addRoundLimitNotice()
             return 'round-limit'
           }
+          this.assertV4PhaseCanAdvance(controller)
           round = 2
           controller.currentRound = round
         }
@@ -5081,6 +5110,7 @@ class LocalWorkspaceAutoRunner {
             addRoundLimitNotice()
             return 'round-limit'
           }
+          this.assertV4PhaseCanAdvance(controller)
           round += 1
           controller.currentRound = round
           challengeBindings = null
@@ -5321,6 +5351,7 @@ class LocalWorkspaceAutoRunner {
         return 'round-limit'
       }
       if (controller.signal.aborted) break
+      this.assertV4PhaseCanAdvance(controller)
       round += 1
       controller.currentRound = round
       if (coordinationPlan) {
