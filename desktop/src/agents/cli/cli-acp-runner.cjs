@@ -42,6 +42,7 @@ const acpSessionRuntimes = new Map()
 const acpRuntimeLocks = new Map()
 const acpRuntimePreparations = new Set()
 const acpInitializingRuntimes = new Set()
+const acpDisposableRuntimes = new Set()
 let acpShutdownGeneration = 0
 
 function loadAcpSdk() {
@@ -847,13 +848,32 @@ async function runPersistentAcpAgent(agent, prompt, workdir, options, spec, prof
 }
 
 async function runDisposableAcpAgent(agent, prompt, workdir, options, spec, profile) {
-  const input = await prepareAcpRuntime(agent, workdir, options, spec, profile)
-  input.options = options
-  const runtime = await createAcpRuntime(input)
+  const shutdownGeneration = acpShutdownGeneration
+  const preparation = prepareAcpRuntime(agent, workdir, options, spec, profile)
+  acpRuntimePreparations.add(preparation)
+  let input
   try {
+    input = await preparation
+  } finally {
+    acpRuntimePreparations.delete(preparation)
+  }
+  if (shutdownGeneration !== acpShutdownGeneration) {
+    throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+  }
+  input.options = options
+  let runtime
+  try {
+    runtime = await createAcpRuntime(input)
+    if (shutdownGeneration !== acpShutdownGeneration) {
+      throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
+    }
+    acpDisposableRuntimes.add(runtime)
     return await runAcpTurn(runtime, prompt, options, spec, profile, false)
   } finally {
-    await closeAcpRuntime(runtime)
+    if (runtime) {
+      acpDisposableRuntimes.delete(runtime)
+      await closeAcpRuntime(runtime)
+    }
   }
 }
 
@@ -871,6 +891,7 @@ async function shutdownAcpSessionRuntime() {
   const runtimes = [...new Set([
     ...acpSessionRuntimes.values(),
     ...acpInitializingRuntimes,
+    ...acpDisposableRuntimes,
   ])]
   acpSessionRuntimes.clear()
   await Promise.allSettled([

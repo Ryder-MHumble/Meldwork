@@ -122,7 +122,7 @@ function boundarySensitiveSuffixLength(value, secrets) {
 }
 
 function pendingAnswerDeltaIsSensitive(value, secrets) {
-  if (secrets.some(secret => secret.startsWith(value))) return true
+  if (value.length >= 8 && secrets.some(secret => secret.startsWith(value))) return true
   if (/\bAKIA[0-9A-Z]*$/.test(value)) return true
   if (/\bbearer\s+[A-Za-z0-9._~+\/-]+$/i.test(value)) return true
   if (/(["']?)(?:[A-Za-z0-9_.-]*(?:api[_-]?key|access[_-]?key(?:[_-]?id)?|secret[_-]?access[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|database[_-]?url|connection[_-]?string|dsn|token|secret|password|credential|authorization|private[_-]?key)[A-Za-z0-9_.-]*)\1\s*[:=]\s*[^\s,;}\]]*$/i.test(value)) return true

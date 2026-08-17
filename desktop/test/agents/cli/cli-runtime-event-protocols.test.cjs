@@ -479,6 +479,21 @@ test('runtime answer delivery preserves conclusively safe pending text at termin
   }
 })
 
+test('terminal answers preserve safe text ending in a one-character secret prefix', () => {
+  const emitted = []
+  const runtimeEvents = createRuntimeEventEmitter(
+    { onEvent: event => emitted.push(event) },
+    { OPENCLAW_GATEWAY_TOKEN: 'y0123456789abcdefghijklmnopqrstuvwxyz' },
+  )
+
+  runtimeEvents.emitFinalAnswer('OpenClaw fixture reply')
+
+  assert.equal(
+    emitted.filter(event => event.type === 'answer_delta').map(event => event.delta).join(''),
+    'OpenClaw fixture reply',
+  )
+})
+
 test('runtime answer delivery reconciles empty and incomplete deltas with the terminal answer', () => {
   for (const deltas of [[], [''], ['authoritative ']]) {
     const emitted = []

@@ -261,6 +261,75 @@ input.on('line', (line) => {
   assert.equal(outcome.status, 'rejected')
 })
 
+test('shutdown waits for disposable ACP preparation and prevents a later spawn', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-disposable-shutdown-sdk-'))
+  const spawnFile = path.join(directory, 'spawned.txt')
+  const cli = executable(directory, 'disposable-acp-delayed-sdk.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+fs.writeFileSync(${JSON.stringify(spawnFile)}, 'spawned')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'disposable-delayed-sdk-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+  }
+})
+`)
+  const sdkPromise = Promise.all([
+    import('@agentclientprotocol/sdk'),
+    import('@agentclientprotocol/sdk/dist/schema/zod.gen.js'),
+  ]).then(([sdk, validators]) => ({ ...sdk, validators }))
+  let releaseSdk
+  let noteSdkStarted
+  const sdkStarted = new Promise(resolve => { noteSdkStarted = resolve })
+  const sdkGate = new Promise(resolve => { releaseSdk = resolve })
+  let settledRun
+  t.after(async () => {
+    releaseSdk(await sdkPromise)
+    await settledRun
+    await adapters.shutdownAcpSessionRuntime?.()
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  settledRun = adapters.runAgent(
+    { kind: 'hermes', executable: cli, name: 'Hermes' },
+    'do not spawn after shutdown',
+    directory,
+    {
+      loadAcpSdkFn: () => {
+        noteSdkStarted()
+        return sdkGate
+      },
+    },
+  ).then(
+    value => ({ status: 'fulfilled', value }),
+    reason => ({ status: 'rejected', reason }),
+  )
+
+  await sdkStarted
+  let shutdownSettled = false
+  const shutdown = adapters.shutdownAcpSessionRuntime().then(() => { shutdownSettled = true })
+  await new Promise(resolve => setImmediate(resolve))
+  const settledBeforeSdk = shutdownSettled
+  assert.equal(settledBeforeSdk, false)
+
+  releaseSdk(await sdkPromise)
+  await shutdown
+  const outcome = await settledRun
+
+  assert.equal(fs.existsSync(spawnFile), false)
+  assert.equal(outcome.status, 'rejected')
+})
+
 test('shutdown closes a persistent ACP child that is still initializing', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-shutdown-initialize-'))
   const initializingFile = path.join(directory, 'initializing.txt')
@@ -533,7 +602,12 @@ input.on('line', (line) => {
   }
 })
 `)
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let resultPromise
+  t.after(async () => {
+    await adapters.shutdownAcpSessionRuntime?.()
+    await resultPromise?.catch(() => {})
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
   const stableSessionRef = 'agent:main:desktop-meldwork-openclaw-acp'
   const spec = adapters.invocation('openclaw', cli, workdir, stableSessionRef)
   assert.equal(spec.eventTransport, 'acp')
@@ -550,7 +624,7 @@ input.on('line', (line) => {
   })
   const events = []
   let resolved = false
-  const resultPromise = adapters.runAgent(
+  resultPromise = adapters.runAgent(
     { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
     'hello',
     workdir,
@@ -611,4 +685,95 @@ input.on('line', (line) => {
   assert.equal(config.update.checkOnStart, false)
   assert.equal(config.logging.file.startsWith(runtime.env.OPENCLAW_STATE_DIR), true)
   await readWhenReady(stoppedFile)
+})
+
+test('shutdown closes an active disposable OpenClaw ACP runtime and Gateway without a release file', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-acp-shutdown-'))
+  const workdir = path.join(directory, 'workspace')
+  const readyFile = path.join(directory, 'acp-ready')
+  const acpStoppedFile = path.join(directory, 'acp-stopped')
+  const gatewayStoppedFile = path.join(directory, 'gateway-stopped')
+  const releaseFile = path.join(directory, 'release')
+  fs.mkdirSync(workdir)
+  const cli = executable(directory, 'openclaw-acp-shutdown.cjs', `
+const fs = require('node:fs')
+const readline = require('node:readline')
+const args = process.argv.slice(2)
+const commandOffset = args[0] === '--no-color'
+  && args[1] === '--log-level'
+  && args[2] === 'info' ? 3 : 0
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'health') {
+  process.stdout.write(JSON.stringify({ ok: true }))
+  process.exit(0)
+}
+if (args[commandOffset] === 'gateway' && args[commandOffset + 1] === 'run') {
+  process.stdout.write('[gateway] ready\\n')
+  process.on('SIGTERM', () => {
+    fs.writeFileSync(${JSON.stringify(gatewayStoppedFile)}, 'stopped')
+    process.exit(0)
+  })
+  setInterval(() => {}, 1000)
+  return
+}
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('close', () => {
+  fs.writeFileSync(${JSON.stringify(acpStoppedFile)}, 'stopped')
+  process.exit(0)
+})
+input.on('line', (line) => {
+  const message = JSON.parse(line)
+  const sessionId = message.params?.sessionId || 'openclaw-shutdown-session'
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/new') {
+    send({ jsonrpc: '2.0', id: message.id, result: { sessionId } })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready')
+    const finish = () => {
+      if (!fs.existsSync(${JSON.stringify(releaseFile)})) return setTimeout(finish, 10)
+      send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
+    }
+    finish()
+  }
+})
+`)
+  let settled = false
+  const runtime = managedOpenClawOptions({
+    storageRoot: directory,
+    workdir,
+    provider: {
+      OPENAI_API_KEY: 'adapter-openclaw-key',
+      OPENAI_BASE_URL: 'https://api.example.com/v1',
+      OPENAI_MODEL: 'adapter-model',
+    },
+  })
+  const resultPromise = adapters.runAgent(
+    { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
+    'hold until shutdown',
+    workdir,
+    runtime,
+  ).then(
+    value => { settled = true; return value },
+    error => { settled = true; throw error },
+  )
+  t.after(async () => {
+    if (!settled) fs.writeFileSync(releaseFile, 'release')
+    await adapters.shutdownAcpSessionRuntime?.()
+    await resultPromise.catch(() => {})
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+
+  await within(readWhenReady(readyFile))
+  await adapters.shutdownAcpSessionRuntime()
+
+  await assert.rejects(
+    () => within(resultPromise),
+    error => error?.message === 'LOCAL_AGENT_EXECUTION_STOPPED',
+  )
+  assert.equal(fs.existsSync(releaseFile), false)
+  assert.equal(await within(readWhenReady(acpStoppedFile)), 'stopped')
+  assert.equal(await within(readWhenReady(gatewayStoppedFile)), 'stopped')
 })
