@@ -26,7 +26,7 @@ The current preview is a local work cell for supported Agent CLIs. It keeps part
   · <a href="LICENSE">License</a>
 </p>
 
-## The missing layer
+## The missing layer in the Agent workforce
 
 Agent supply is growing quickly. The organization around it is not.
 
@@ -40,45 +40,28 @@ Meldwork is focused on the work between them:
 - artifacts and evidence that survive Agent changes;
 - a human-controlled adoption decision.
 
-## What works today
-
-- **Supported local Agent CLIs:** detect, inspect, and invoke approved Agents without exposing unrestricted shell execution to the renderer.
-- **Persistent direct work:** keep local conversation history, attachments, permissions, compatible native sessions, and sanitized execution details together.
-- **Concurrent responses:** send one message to multiple selected Agents, freeze the same task context before execution, and publish their independent replies as one stable batch.
-- **Agent-negotiated collaboration:** start with independent proposals, let the selected Agents challenge proposals and unanimously agree one responsibility graph, execute distinct work packages, integrate through one writer, and verify through different Agents.
-- **Inspectable execution:** preserve bounded run events, warnings, completion states, checkpoints, and recovery actions without exposing credentials or private reasoning.
-- **Local control:** keep Meldwork conversations and orchestration state on the computer; workspace writes remain opt-in.
-
-Capability still depends on the selected Agent, installed version, authentication state, Provider, and declared tool or attachment support.
-
 ## What Meldwork is building
 
 The collaboration mechanism is not a hidden preset A → B → C assignment. The user selects the participants; those Agents expose the solution space, negotiate responsibilities, and execute inside Harness-enforced context, permission, budget, recovery, and evidence boundaries.
 
-~~~mermaid
-flowchart LR
-  G["Goal + outcome contract"] --> P["Independent proposals"]
-  P --> C["Visible challenge"]
-  C --> B["Role claims + team bids"]
-  B --> R["Responsibility contract"]
-  R --> X["Bounded execution"]
-  X --> E["Artifact + evidence"]
-  E --> H["Human adoption"]
-  H --> O["Outcome receipt"]
-  O -. "Agent fit + team fit" .-> P
-~~~
-
 The selected-Agent proposal, challenge, responsibility, work, integration, and verification loop is available today. Automatic participant selection from a broader roster, remote Agents, enterprise governance, and outcome-driven reputation remain future direction.
 
-## The Harness
+### Demo
+
+| Local Agent discovery | Direct multimodal work | Concurrent multi-Agent work |
+| --- | --- | --- |
+| [![Meldwork detecting supported local Agent CLIs](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![A direct Agent conversation returning local files and media](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) | [![A group conversation with user-selected Agent replies](assets/meldwork-group-collaboration.png)](assets/meldwork-group-collaboration.png) |
+| See which supported Agents are ready. | Keep prompts, files, permissions, and compatible sessions together. | Run concurrent replies or an Agent-negotiated collaboration with the participants you selected. |
+
+## What makes Meldwork different
+
+### Harness design
 
 The Harness is the control plane that keeps conversations, context, adapters, streams, and durable state aligned in one workspace. It is what makes a run continuous across sessions, timeouts, recovery, and Agent changes.
 
 <p align="center">
   <img src="frontend/public/logos/Harness-readme.png" alt="Meldwork Harness" width="100%">
 </p>
-
-## Where Meldwork fits
 
 This is a comparison of working models, not a feature-scorecard claiming Meldwork should replace every tool.
 
@@ -92,25 +75,6 @@ This is a comparison of working models, not a feature-scorecard claiming Meldwor
 | **Meldwork** | Supported local Agent CLIs; remote supply is direction | Concurrent independent responses and selected-Agent proposal, negotiation, responsibility, evidence, and verification | Local single-user preview today; participants are still selected by the user | Build the organization layer for the Agent workforce |
 
 If one Agent and one work surface are enough, use the native tool. Use Meldwork when handoff, independent judgment, authority, evidence, and acceptance become part of the problem.
-
-## See the current work cell
-
-| Local Agent discovery | Direct multimodal work | Concurrent multi-Agent work |
-| --- | --- | --- |
-| [![Meldwork detecting supported local Agent CLIs](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![A direct Agent conversation returning local files and media](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) | [![A group conversation with user-selected Agent replies](assets/meldwork-group-collaboration.png)](assets/meldwork-group-collaboration.png) |
-| See which supported Agents are ready. | Keep prompts, files, permissions, and compatible sessions together. | Run concurrent replies or an Agent-negotiated collaboration with the participants you selected. |
-
-## Connected Agents
-
-Current integrations include:
-
-**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code**
-
-Specialized review:
-
-**OpenCodeReview**
-
-Availability depends on installation, version, authentication, Provider, and declared capabilities. Each Agent keeps its own tools, session behavior, and permission model.
 
 ## Install
 

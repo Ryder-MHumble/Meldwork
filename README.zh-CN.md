@@ -40,45 +40,30 @@ Meldwork 关注的是中间那层工作：
 - 不随 Agent 切换而丢失的 Artifact 与 Evidence；
 - 由人类掌握的最终采用决定。
 
-## 当前已经可用
-
-- **支持的本地 Agent CLI**：检测、检查并受控调用已批准的 Agent，不把不受限的 Shell 暴露给 Renderer。
-- **持续的直接工作**：把本地历史、附件、权限、兼容的原生 Session 和脱敏执行详情放在一起，尽量不让上下文断线。
-- **并发回复**：一条消息同时发给多个已选 Agent，执行前冻结同一份任务上下文，并以稳定批次公布各自独立回复。
-- **Agent 自主协商协作**：先独立提案，再互相质询并全员同意一份职责图，随后执行不同工作包，由唯一写入者整合，并由不同 Agent 独立复核。
-- **可检查执行**：保留有界运行事件、警告、终态、检查点和恢复动作，不暴露凭据或私有推理。
-- **本地控制**：Meldwork 的会话和编排状态都留在电脑上；工作目录写入必须主动开启。
-
-具体能力仍取决于所选 Agent、本机版本、认证状态、Provider 和声明的工具/附件支持。
 
 ## Meldwork 正在构建什么
 
 当前协作机制不是 Harness 暗中预设的 A → B → C 分配链。用户选定参与者后，Agent 先展开解空间、自主协商职责，再在 Harness 管理的上下文、权限、预算、恢复和证据边界内执行。
 
-~~~mermaid
-flowchart LR
-  G["目标与验收契约"] --> P["独立竞案"]
-  P --> C["公开质询"]
-  C --> B["角色声明与团队竞案"]
-  B --> R["责任契约"]
-  R --> X["有界执行"]
-  X --> E["产物与证据"]
-  E --> H["人类采用"]
-  H --> O["结果回执"]
-  O -. "Agent Fit + Team Fit" .-> P
-~~~
-
 已选 Agent 的独立提案、交叉质询、职责协商、分工执行、整合和复核现在已经可用。从更大候选池自动选人组队、远程 Agent、企业治理和 Outcome 驱动的声誉系统仍是未来方向。
 
-## Harness
+### 效果演示
+
+| 本地 Agent 检测 | 单聊中的多模态工作 | 并发多 Agent 协作 |
+| --- | --- | --- |
+| [![Meldwork 检测已支持本地 Agent CLI](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![Agent 在直接会话中返回本地文件和媒体](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) | [![用户选择多个 Agent 并分别检查结果](assets/meldwork-group-collaboration.png)](assets/meldwork-group-collaboration.png) |
+| 查看哪些受支持 Agent 已就绪。 | Prompt、文件、权限和兼容 Session 留在一起。 | 让已选 Agent 并发回复，或进入由 Agent 自主协商职责的协作流程。 |
+
+
+## Meldwork 和别的产品有什么区别
+
+### Harness设计
 
 Harness 是把会话、上下文、适配器、流和持久化状态拴在一起的控制平面。它让一次任务可以跨会话、超时、恢复和 Agent 切换继续下去。
 
 <p align="center">
   <img src="frontend/public/logos/Harness-readme.png" alt="Meldwork Harness" width="100%">
 </p>
-
-## Meldwork 在哪里
 
 这张表比较的是不同工作范式，不是一张声称 Meldwork 应当替代所有工具的功能勾选表。
 
@@ -92,25 +77,6 @@ Harness 是把会话、上下文、适配器、流和持久化状态拴在一起
 | **Meldwork** | 已支持本地 Agent CLI；远程供给属于方向 | 并发独立回复，以及已选 Agent 之间的提案、协商、责任、Evidence 和复核 | 当前仍是本地单用户预览；参与者仍由用户选定 | 构建 Agent workforce 的组织层 |
 
 如果一个 Agent 和一个工作面已经足够，直接使用原生工具。只有当交接、独立判断、权限、证据和验收成为问题时，才需要 Meldwork。
-
-## 看看当前 Work Cell
-
-| 本地 Agent 检测 | 单聊中的多模态工作 | 并发多 Agent 协作 |
-| --- | --- | --- |
-| [![Meldwork 检测已支持本地 Agent CLI](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![Agent 在直接会话中返回本地文件和媒体](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) | [![用户选择多个 Agent 并分别检查结果](assets/meldwork-group-collaboration.png)](assets/meldwork-group-collaboration.png) |
-| 查看哪些受支持 Agent 已就绪。 | Prompt、文件、权限和兼容 Session 留在一起。 | 让已选 Agent 并发回复，或进入由 Agent 自主协商职责的协作流程。 |
-
-## 当前可连接的 Agent
-
-当前集成包括：
-
-**Codex · Hermes · OpenClaw · WorkBuddy · Kimi Code · MiMo Code · Claude Code · Gemini CLI · OpenCode · Qwen Code**
-
-专项审查：
-
-**OpenCodeReview**
-
-能否使用取决于安装、版本、认证、Provider 和声明的能力。每个 Agent 保留自己的工具、Session 行为和权限模型。
 
 ## 安装
 
