@@ -50,6 +50,22 @@ afterEach(() => {
 })
 
 describe('composer context', () => {
+  it('treats an empty manual selection as the whole group', () => {
+    const { activeGroup, composer, scope } = createComposer()
+    activeGroup.value = {
+      id: 'group-concurrent-default-all',
+      conversationType: 'group',
+      agentKinds: ['codex', 'hermes'],
+    }
+
+    composer.resetComposerContext(activeGroup.value)
+    composer.discussionMode.value = 'manual'
+
+    expect(composer.targetKinds.value).toEqual([])
+    expect(composer.composerTargetKinds.value).toEqual(['codex', 'hermes'])
+    scope.stop()
+  })
+
   it('ignores a stale Skill result after the active conversation changes', async () => {
     const pendingSkills = deferred()
     const { activeGroup, composer, scope } = createComposer({

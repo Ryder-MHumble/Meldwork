@@ -2,6 +2,7 @@ import { flushPromises } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { setLocale } from '../../i18n.js'
 import { mountApp } from './app-test-harness.js'
+import { readStylesSource } from './style-test-helpers.js'
 
 beforeEach(() => {
   localStorage.clear()
@@ -15,6 +16,15 @@ afterEach(() => {
 })
 
 describe('Unlimited-round review mode', () => {
+  it('keeps the normal composer surface while retaining the infinity cue', () => {
+    const styles = readStylesSource()
+
+    expect(styles).not.toMatch(/\.composer-box\.unlimited-mode(?::focus-within)?\s*\{/)
+    expect(styles).not.toMatch(/\.composer-box\.unlimited-running\s*\{/)
+    expect(styles).not.toContain('@keyframes unlimited-composer-breathe')
+    expect(styles).toMatch(/\.composer-box\.unlimited-running \.round-unlimited-symbol\s*\{/)
+  })
+
   it('derives the live infinity cue from the active run instead of the finite composer draft', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({

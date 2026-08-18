@@ -160,6 +160,10 @@ export function useComposerContext({
       else void addAgentMention(kind)
       return
     }
+    if (!targetKinds.value.length) {
+      targetKinds.value = activeGroup.value.agentKinds.filter(item => item !== kind)
+      return
+    }
     if (targetKinds.value.includes(kind)) targetKinds.value = targetKinds.value.filter(item => item !== kind)
     else targetKinds.value = [...targetKinds.value, kind]
   }
@@ -224,7 +228,7 @@ export function useComposerContext({
   function resetComposerContext(group) {
     discussionMode.value = group?.conversationType === 'direct' ? 'manual' : 'auto'
     automaticTeamFormation.value = false
-    targetKinds.value = group ? [...group.agentKinds] : []
+    targetKinds.value = group?.conversationType === 'direct' ? [...group.agentKinds] : []
     clearComposerContext()
   }
 

@@ -498,29 +498,8 @@
     0 12px 28px rgb(32 43 53 / 0.12);
 }
 
-.composer-box.unlimited-mode {
-  background: color-mix(in srgb, var(--surface-raised) 82%, var(--accent-soft) 18%);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent),
-    0 8px 22px rgb(32 43 53 / 0.08);
-}
-
-.composer-box.unlimited-running {
-  animation: unlimited-composer-breathe 2.4s ease-in-out infinite;
-}
-
 .composer-box.unlimited-running .round-unlimited-symbol {
   animation: unlimited-symbol-breathe 1.8s ease-in-out infinite;
-}
-
-@keyframes unlimited-composer-breathe {
-  0%, 100% {
-    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent),
-      0 8px 22px rgb(32 43 53 / 0.08);
-  }
-  50% {
-    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 42%, transparent),
-      0 10px 26px rgb(32 43 53 / 0.12);
-  }
 }
 
 @keyframes unlimited-symbol-breathe {
@@ -553,12 +532,6 @@
   box-shadow: 0 8px 24px rgb(0 0 0 / 0.26);
 }
 
-:root[data-theme="dark"] .composer-box.unlimited-mode {
-  background: color-mix(in srgb, var(--surface-raised) 86%, var(--accent-soft) 14%);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
-    0 8px 24px rgb(0 0 0 / 0.26);
-}
-
 .composer-box:focus-within {
   background: color-mix(in srgb, var(--surface-raised) 94%, var(--accent-soft) 6%);
   box-shadow: 0 12px 28px rgb(32 43 53 / 0.12);
@@ -567,18 +540,6 @@
 
 :root[data-theme="dark"] .composer-box:focus-within {
   box-shadow: 0 12px 30px rgb(0 0 0 / 0.34);
-}
-
-.composer-box.unlimited-mode:focus-within {
-  background: color-mix(in srgb, var(--surface-raised) 76%, var(--accent-soft) 24%);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
-    0 12px 28px rgb(32 43 53 / 0.12);
-}
-
-:root[data-theme="dark"] .composer-box.unlimited-mode:focus-within {
-  background: color-mix(in srgb, var(--surface-raised) 80%, var(--accent-soft) 20%);
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 46%, transparent),
-    0 12px 30px rgb(0 0 0 / 0.34);
 }
 
 .composer-attachment-list {
@@ -1072,7 +1033,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .composer-box.unlimited-running,
   .composer-box.unlimited-running .round-unlimited-symbol,
   .smart-team-icon-state,
   .smart-team-icon-network {

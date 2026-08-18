@@ -185,7 +185,7 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('Concurrent responses')
     const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     expect(styles).toMatch(/@container \(max-width: 420px\)[\s\S]*\.mode-segmented button\s*\{[^}]*white-space:\s*normal;/s)
-    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.composer-box\.unlimited-running,[\s\S]*animation:\s*none;/s)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.composer-box\.unlimited-running \.round-unlimited-symbol,[\s\S]*animation:\s*none;/s)
     setLocale('zh')
     await flushPromises()
     expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('并发回复')
@@ -220,7 +220,7 @@ describe('Meldwork workbench', () => {
 
     await wrapper.get('.conversation-link').trigger('click')
     await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
-    for (const chip of wrapper.findAll('.target-chip')) await chip.trigger('click')
+    expect(wrapper.get('.composer-box textarea').element.value).not.toContain('@')
     expect(wrapper.findAll('.target-chip').map(chip => chip.classes().includes('selected')))
       .toEqual([true, true, true])
 
