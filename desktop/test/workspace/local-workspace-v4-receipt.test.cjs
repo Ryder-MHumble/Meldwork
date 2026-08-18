@@ -241,6 +241,42 @@ test('V4 receipt parser accepts only the phase receipt shape and strips its cont
   }
 })
 
+test('Manual concurrent proposals preserve a valid visible response when a CLI omits its receipt', () => {
+  const result = parseV4CollaborationReceipt({
+    text: 'A complete user-facing response without a control block.',
+  }, true, 'proposal', { allowMissingProposalReceipt: true })
+
+  assert.equal(result.text, 'A complete user-facing response without a control block.')
+  assert.deepEqual(result.collaboration, {
+    version: 1,
+    phase: 'proposal',
+    summary: 'The Agent returned a visible proposal without a structured receipt.',
+    capabilities: ['Delivered a user-facing proposal'],
+    intendedWork: ['Addressed the current user task'],
+    deliverables: ['Visible Agent response'],
+    dependencies: [],
+  })
+  const malformed = parseV4CollaborationReceipt({
+    text: 'A complete streamed response.\n\n[[MELDWORK_COLLABORATION:{"version":1',
+  }, true, 'proposal', { allowMissingProposalReceipt: true })
+  assert.equal(malformed.text, 'A complete streamed response.')
+  assert.deepEqual(malformed.collaboration, {
+    version: 1,
+    phase: 'proposal',
+    summary: 'The Agent returned a visible proposal without a valid structured receipt.',
+    capabilities: ['Delivered a user-facing proposal'],
+    intendedWork: ['Addressed the current user task'],
+    deliverables: ['Visible Agent response'],
+    dependencies: [],
+  })
+  assert.throws(
+    () => parseV4CollaborationReceipt({ text: 'Visible body' }, true, 'challenge', {
+      allowMissingProposalReceipt: true,
+    }),
+    /LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED/,
+  )
+})
+
 test('V4 preserves responsibility endorsements and assigned work item receipts', () => {
   const supportedPlanHash = 'a'.repeat(64)
   const challenge = parseV4CollaborationReceipt({

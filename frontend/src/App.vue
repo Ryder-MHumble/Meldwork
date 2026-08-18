@@ -524,7 +524,12 @@ const {
   messageScroller,
   scrollToLatest,
   showScrollToLatest,
-} = useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId })
+} = useConversationViewport({
+  activeMessages,
+  activeRunTopicSignature,
+  liveOutputSignature,
+  selectedGroupId,
+})
 const { index: emptyShowcaseIndex } = useEmptyShowcasePlayback({
   visible: conversationEmptyVisible,
 })
@@ -1077,7 +1082,11 @@ watch(
   scheduleComposerResize,
   { flush: 'post' },
 )
-watch(activeRunTopicSignature, (value) => { if (value) void focusRunTopic() })
+watch(activeRunTopicSignature, async (value) => {
+  if (!value) return
+  await focusRunTopic()
+  await scrollToLatest({ force: true })
+})
 watch(readyAgentSignature, (value) => { if (value) void loadAgentSkillStats() })
 watch(() => installerState.value.phase, (phase, previous) => {
   if (phase === 'completed' && previous !== 'completed') void refreshAgents()

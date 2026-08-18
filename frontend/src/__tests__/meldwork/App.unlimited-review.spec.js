@@ -80,9 +80,10 @@ describe('Unlimited-round review mode', () => {
     await wrapper.get('.confirmation-modal-footer .primary-button').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.composer-box').classes()).not.toContain('unlimited-mode')
-    expect(wrapper.get('.round-settings-trigger').classes()).not.toContain('unlimited')
-    expect(wrapper.find('.round-unlimited-symbol').exists()).toBe(false)
+    expect(wrapper.get('.composer-box').classes()).toContain('unlimited-mode')
+    expect(wrapper.get('.composer-box').classes()).not.toContain('unlimited-running')
+    expect(wrapper.get('.round-settings-trigger').classes()).toContain('unlimited')
+    expect(wrapper.get('.round-unlimited-symbol').text()).toBe('∞')
     expect(wrapper.get('.round-settings-trigger').text()).toContain('No round limit')
     expect(wrapper.get('.round-unlimited-active').text()).toContain('report material defects')
     expect(wrapper.get('.composer-box textarea').attributes('placeholder'))
@@ -132,10 +133,11 @@ describe('Unlimited-round review mode', () => {
     emitWorkspaceChanged()
     await flushPromises()
 
+    expect(wrapper.get('.composer-box').classes()).toContain('unlimited-mode')
+    expect(wrapper.find('.round-unlimited-symbol').exists()).toBe(true)
     await wrapper.get('.round-settings-trigger').trigger('click')
     await wrapper.get('.round-bounded-button').trigger('click')
     await flushPromises()
-
     expect(wrapper.get('.composer-box').classes()).not.toContain('unlimited-mode')
     expect(wrapper.find('.round-unlimited-symbol').exists()).toBe(false)
     expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')

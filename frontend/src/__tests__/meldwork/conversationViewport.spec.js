@@ -1,5 +1,5 @@
 import { nextTick, ref } from 'vue'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { useConversationViewport } from '../../composables/useConversationViewport.js'
 
 describe('Conversation viewport', () => {
@@ -61,6 +61,35 @@ describe('Conversation viewport', () => {
     await viewport.scrollToLatest({ force: true })
 
     expect(outerReveals).toEqual([{ block: 'end', inline: 'nearest' }])
+    expect(scroller.scrollTop).toBe(1200)
+    expect(viewport.showScrollToLatest.value).toBe(false)
+  })
+
+  it('moves to the loading state at the bottom when a new run starts', async () => {
+    const activeRunTopicSignature = ref('')
+    const viewport = useConversationViewport({
+      activeMessages: ref([{ id: 'message-one' }]),
+      activeRunTopicSignature,
+      liveOutputSignature: ref(''),
+      selectedGroupId: ref('group-one'),
+    })
+    const container = document.createElement('section')
+    container.className = 'conversation-pane'
+    const scroller = document.createElement('div')
+    Object.defineProperties(scroller, {
+      scrollHeight: { value: 1200 },
+      clientHeight: { value: 400 },
+    })
+    scroller.scrollTop = 360
+    container.scrollIntoView = vi.fn()
+    container.append(scroller)
+    viewport.messageScroller.value = scroller
+
+    activeRunTopicSignature.value = 'group-one\u0000message-one'
+    await nextTick()
+    await nextTick()
+
+    expect(container.scrollIntoView).toHaveBeenCalledWith({ block: 'end', inline: 'nearest' })
     expect(scroller.scrollTop).toBe(1200)
     expect(viewport.showScrollToLatest.value).toBe(false)
   })

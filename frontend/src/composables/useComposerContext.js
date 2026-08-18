@@ -67,7 +67,7 @@ export function useComposerContext({
       return [...addressedAgentKinds.value]
     }
     if (group.conversationType === 'direct' || discussionMode.value === 'auto') return [...group.agentKinds]
-    return [...targetKinds.value]
+    return targetKinds.value.length ? [...targetKinds.value] : [...group.agentKinds]
   })
   const composerMode = computed(() => {
     if (activeGroup.value?.conversationType === 'direct') return 'manual'

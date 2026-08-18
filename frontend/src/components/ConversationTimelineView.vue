@@ -151,12 +151,29 @@
               :alt="agentLabel(message.agentKind)"
             />
             <div class="message-body" :class="{ 'has-topic-replies': isTopicRoot(message) }">
-              <div class="message-meta">
+              <div class="message-meta" :class="{ 'user-message-meta': message.role === 'user' }">
                 <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
-                <time>{{ formatTime(message.createdAt) }}</time>
+                <span
+                  v-if="message.role === 'user'
+                    && activeGroup.conversationType !== 'direct'
+                    && messageTargetKinds(message).length"
+                  class="message-target-list"
+                  :aria-label="t('composer.mentionedAgents')"
+                >
+                  <span
+                    v-for="kind in messageTargetKinds(message)"
+                    :key="kind"
+                    class="message-target-avatar"
+                    :title="agentLabel(kind)"
+                    :aria-label="agentLabel(kind)"
+                  >
+                    <img :src="agentLogo(kind, theme)" alt="" />
+                  </span>
+                </span>
                 <span v-if="isActiveRunTopic(message)" class="active-topic-label">
                   {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
                 </span>
+                <time>{{ formatTime(message.createdAt) }}</time>
                 <div class="message-meta-actions">
                   <button
                     v-if="message.role === 'user' && message.content"
@@ -304,7 +321,7 @@
                       || messageSkills(message).length
                       || messageKnowledgeBases(message).length"
                     :ref="element => setUserMessageContentElement(message.id, element)"
-                    class="message-content plain-message message-copy-surface user-message-content"
+                    class="message-content message-copy-surface user-message-content"
                     :class="{
                       copied: isMessageCopied(message.id),
                       collapsed: isUserMessageCollapsed(message.id),
@@ -312,27 +329,24 @@
                     @click="copyMessageContent(message, $event)"
                   >
                     <span
-                      v-if="activeGroup.conversationType !== 'direct' && messageTargetKinds(message).length"
-                      class="message-target-list"
-                      :aria-label="t('composer.mentionedAgents')"
-                    >
-                      <span v-for="kind in messageTargetKinds(message)" :key="kind">
-                        <img :src="agentLogo(kind, theme)" alt="" />
-                        {{ agentLabel(kind) }}
-                      </span>
-                    </span><span
                       v-if="messageSkills(message).length || messageKnowledgeBases(message).length"
                       class="message-skill-list"
                     ><span v-for="skill in messageSkills(message)" :key="skillKey(skill)">
-                        @{{ skill.name || skill.slug }}
+                        <LibraryOutline aria-hidden="true" />
+                        {{ skill.name || skill.slug }}
                       </span><span
                         v-for="source in messageKnowledgeBases(message)"
                         :key="`knowledge:${source.kind}`"
                         class="message-knowledge-base"
+                        :title="knowledgeBaseName(source.kind)"
+                        :aria-label="knowledgeBaseName(source.kind)"
                       >
                         <img :src="knowledgeBaseLogo(source.kind)" alt="" />
-                        @{{ knowledgeBaseName(source.kind) }}
-                      </span></span><span v-if="message.content" class="user-message-text">{{ message.content }}</span>
+                      </span></span><MarkdownMessage
+                      v-if="message.content"
+                      class="user-message-markdown"
+                      :content="message.content"
+                    />
                   </div>
                   <button
                     v-if="isUserMessageCollapsible(message.id)"
@@ -761,6 +775,7 @@ import {
   DocumentTextOutline,
   EaselOutline,
   GridOutline,
+  LibraryOutline,
   OpenOutline,
   ReaderOutline,
   RefreshOutline,

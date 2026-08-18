@@ -735,7 +735,7 @@ class LocalWorkspaceMessageSubmission {
   }
 
   async commitV4ManualBarrier({ group, controller, targetKinds, slots, snapshotRecord,
-    batchId, writerKind }) {
+    batchId, writerKind, allowStoppedCommit = false }) {
     const successfulSlots = slots.filter(slot => ['completed', 'partial'].includes(slot.status))
     const committedKinds = successfulSlots
       .filter(slot => slot.commitStatus === 'committed')
@@ -777,7 +777,7 @@ class LocalWorkspaceMessageSubmission {
     this.checkpointV4Manual(group, controller)
 
     for (const slot of successfulSlots) {
-      if (controller.signal.aborted) break
+      if (controller.signal.aborted && !allowStoppedCommit) break
       const resultBody = this.loadV4ResultBody(slot)
       const workflowRecord = slot.resultRefs?.workflowOutcomeRefs?.find(item => (
         item?.receipt?.receiptId === slot.receiptId
@@ -918,6 +918,7 @@ class LocalWorkspaceMessageSubmission {
             singleWriterKind: writerKind || '',
             parallelGraph: true,
             deferMessage: true,
+            allowMissingProposalReceipt: true,
             operationId: slot.operationId,
             onLeaseAcquired: (leaseState) => {
               if (leaseAcquired) return
@@ -1112,9 +1113,13 @@ class LocalWorkspaceMessageSubmission {
       if (!controller.signal.aborted && slot.status === 'completed') continue
       const error = item.error || item.invocation?.error || new Error('LOCAL_AGENT_UNKNOWN_FAILURE')
       failures.push({ ...item, error })
-      if (!controller.signal.aborted) this.recordAgentFailure(
-        group.id, item.kind, error, threadRootId,
-      )
+      if (!controller.signal.aborted) {
+        this.recordAgentFailure(group.id, item.kind, error, threadRootId)
+      } else if (controller.stopReason === 'user'
+          && slot.agentRunId
+          && error?.runTrace?.agentRunId === slot.agentRunId) {
+        this.recordAgentInterruption(group.id, item.kind, error, threadRootId, 'stopped')
+      }
     }
     controller.completedKinds = targetKinds.filter(kind => {
       const status = slots.find(slot => slot.agentKind === kind)?.status
@@ -1188,7 +1193,7 @@ class LocalWorkspaceMessageSubmission {
     const successfulKinds = slots
       .filter(slot => ['completed', 'partial'].includes(slot.status))
       .map(slot => slot.agentKind)
-    if (!controller.signal.aborted) {
+    if (!controller.signal.aborted || controller.stopReason === 'user') {
       await this.commitV4ManualBarrier({
         group,
         controller,
@@ -1197,6 +1202,7 @@ class LocalWorkspaceMessageSubmission {
         snapshotRecord: frozenSnapshot.record,
         batchId,
         writerKind,
+        allowStoppedCommit: controller.stopReason === 'user',
       })
     }
     return {

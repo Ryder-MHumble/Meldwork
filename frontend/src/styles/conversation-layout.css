@@ -233,8 +233,8 @@
 }
 
 .conversation-jump-to-latest {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   position: absolute;
   right: 20px;
   bottom: 16px;
@@ -242,19 +242,20 @@
   display: grid;
   place-items: center;
   padding: 0;
-  border: 1px solid var(--border-strong);
+  border: 0;
   border-radius: 50%;
-  background: var(--surface-raised);
-  box-shadow: 0 4px 12px rgb(32 43 53 / 0.18);
-  color: var(--muted);
+  background: color-mix(in srgb, var(--surface-raised) 90%, var(--accent-soft) 10%);
+  box-shadow: 0 8px 22px rgb(32 43 53 / 0.18);
+  color: var(--text-soft);
   cursor: pointer;
   transition: color 0.14s ease, background 0.14s ease, transform 0.16s ease, opacity 0.16s ease;
 }
 
 .conversation-jump-to-latest:hover,
 .conversation-jump-to-latest:focus-visible {
-  background: var(--surface-hover);
-  color: var(--text);
+  background: color-mix(in srgb, var(--surface-raised) 78%, var(--accent-soft) 22%);
+  color: var(--accent);
+  transform: translateY(1px);
 }
 
 .conversation-jump-to-latest:focus-visible {
@@ -263,8 +264,8 @@
 }
 
 .conversation-jump-to-latest svg {
-  width: 16px;
-  height: 16px;
+  width: 18px;
+  height: 18px;
 }
 
 .conversation-jump-to-latest::after {

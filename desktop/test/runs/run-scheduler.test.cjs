@@ -27,7 +27,7 @@ function deferred() {
 
 test('exports one process-wide scheduler with bounded defaults and no run deadline', () => {
   assert.equal(processRunScheduler instanceof RunScheduler, true)
-  assert.deepEqual(processRunScheduler.snapshot().limits, { task: 2, workspace: 2, global: 4 })
+  assert.deepEqual(processRunScheduler.snapshot().limits, { task: 4, workspace: 4, global: 4 })
   assert.equal(Object.hasOwn(processRunScheduler.snapshot(), 'timeoutMs'), false)
 })
 

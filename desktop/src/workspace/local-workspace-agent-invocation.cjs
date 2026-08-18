@@ -107,7 +107,7 @@ function boundedReceiptList(value) {
   return result
 }
 
-function parseV4CollaborationReceipt(result, required = false, expectedPhase = '') {
+function parseV4CollaborationReceiptStrict(result, required = false, expectedPhase = '', options = {}) {
   const rawText = typeof result?.text === 'string' ? result.text : ''
   if (!required) return { text: rawText, collaboration: null }
   let text = rawText
@@ -133,6 +133,18 @@ function parseV4CollaborationReceipt(result, required = false, expectedPhase = '
     throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
   }
   text = text.replace(LEGACY_CONSENSUS_MARKER, '').replace(/\n{3,}/g, '\n\n').trim()
+  if (receipt == null && expectedPhase === 'proposal'
+      && options.allowMissingProposalReceipt === true && text) {
+    receipt = {
+      version: 1,
+      phase: 'proposal',
+      summary: 'The Agent returned a visible proposal without a structured receipt.',
+      capabilities: ['Delivered a user-facing proposal'],
+      intendedWork: ['Addressed the current user task'],
+      deliverables: ['Visible Agent response'],
+      dependencies: [],
+    }
+  }
   if (receipt == null) throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED')
   if (!receipt || typeof receipt !== 'object' || Array.isArray(receipt)) {
     throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
@@ -225,6 +237,39 @@ function parseV4CollaborationReceipt(result, required = false, expectedPhase = '
     ...(phase === 'synthesis' ? { resolvedIssueIds } : {}),
   }
   return { text, collaboration: Object.freeze(JSON.parse(canonicalJson(normalized))) }
+}
+
+function parseV4CollaborationReceipt(result, required = false, expectedPhase = '', options = {}) {
+  try {
+    return parseV4CollaborationReceiptStrict(result, required, expectedPhase, options)
+  } catch (error) {
+    const code = String(error?.message || '')
+    if (expectedPhase !== 'proposal'
+        || options.allowMissingProposalReceipt !== true
+        || !['LOCAL_RUN_COLLABORATION_RECEIPT_INVALID', 'LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED']
+          .includes(code)) {
+      throw error
+    }
+    const rawText = typeof result?.text === 'string' ? result.text : ''
+    const markerIndex = rawText.search(/\[\[MELDWORK_COLLABORATION/i)
+    const visibleText = (markerIndex >= 0 ? rawText.slice(0, markerIndex) : rawText)
+      .replace(LEGACY_CONSENSUS_MARKER, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim()
+    if (!visibleText) throw error
+    return {
+      text: visibleText,
+      collaboration: Object.freeze({
+        version: 1,
+        phase: 'proposal',
+        summary: 'The Agent returned a visible proposal without a valid structured receipt.',
+        capabilities: ['Delivered a user-facing proposal'],
+        intendedWork: ['Addressed the current user task'],
+        deliverables: ['Visible Agent response'],
+        dependencies: [],
+      }),
+    }
+  }
 }
 
 function attachInvocationFailure(error, input) {
@@ -1538,6 +1583,7 @@ class LocalWorkspaceAgentInvocation {
         result,
         context.v4 === true,
         context.phase || '',
+        { allowMissingProposalReceipt: context.allowMissingProposalReceipt === true },
       )
       const reply = mode === 'auto' && context.completionPolicy !== 'typed'
         ? parseAutoReply(collaborationReply.text)

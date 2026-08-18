@@ -190,6 +190,55 @@ test('Manual V4 freezes one durable snapshot and checkpoints each queued slot in
   assert.ok(hermesCompleted >= 0 && hermesCompleted < codexCompleted)
 })
 
+test('Manual V4 starts a four-Agent concurrent batch without task-level queueing', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger.json'),
+    now: () => Date.now(),
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler()
+  const releases = new Map([
+    ['codex', deferred()],
+    ['hermes', deferred()],
+    ['openclaw', deferred()],
+    ['workbuddy', deferred()],
+  ])
+  options.runAgent = agent => releases.get(agent.kind).promise
+
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const targetKinds = ['codex', 'hermes', 'openclaw', 'workbuddy']
+  const group = workspace.createGroup({
+    name: 'Four Agent concurrent batch',
+    agentKinds: targetKinds,
+    workdir: directory,
+    allowWrite: false,
+  })
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Start every selected Agent together.',
+    mode: 'manual',
+    targetKinds,
+    protocol: 'v4',
+  })
+
+  const running = await waitFor(() => {
+    const record = ledger.list(group.id)[0]
+    return record?.orchestration?.slots.every(slot => slot.status === 'running') ? record : null
+  }, 'all four slots running')
+  assert.deepEqual(running.orchestration.currentKinds, targetKinds)
+  assert.deepEqual(options.runScheduler.snapshot().queued, [])
+
+  for (const kind of targetKinds) releases.get(kind).resolve({
+    text: `${kind} concurrent response`,
+    sessionRef: `${kind}-session`,
+    collaboration: proposalCollaboration(`${kind} concurrent summary`),
+  })
+  await send
+})
+
 test('Manual V4 keeps its durable result body separate at the reported Artifact cap', async (t) => {
   for (const reportedCount of [63, 64]) {
     await t.test(`${reportedCount} reported Artifact IDs`, async (t) => {
@@ -865,6 +914,7 @@ test('Manual V4 rejects a late slot result after the batch is stopped', async (t
   assert.equal(lateSlot.resultBodyArtifactId, undefined)
   assert.deepEqual(lateSlot.resultRefs?.artifactIds || [], [])
   assert.equal(final.orchestration.commitState.committedKinds.includes('codex'), false)
+  assert.deepEqual(final.orchestration.commitState.committedKinds, ['hermes', 'workbuddy'])
   assert.equal(final.orchestration.collaboration.entries.some(entry => (
     entry.owner?.agentKind === 'codex'
   )), false)
@@ -873,6 +923,76 @@ test('Manual V4 rejects a late slot result after the batch is stopped', async (t
     && message.agentKind === 'codex'
     && message.content === 'codex late result must be ignored'
   )), false)
+  assert.deepEqual(workspace.snapshot().messages.filter(message => (
+    message.role === 'agent' && message.threadRootId === running.threadRootId
+  )).map(message => `${message.agentKind}:${message.content}`), [
+    'hermes:hermes settled before stop',
+    'workbuddy:workbuddy settled before stop',
+  ])
+})
+
+test('Manual V4 persists streamed output from a slot stopped by the user', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({
+    storagePath: path.join(directory, 'run-ledger.json'),
+    now: () => Date.now(),
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 2, globalLimit: 2 })
+  const codexStarted = deferred()
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    if (agent.kind !== 'codex') return {
+      text: 'hermes settled before stop',
+      sessionRef: 'hermes-session',
+      collaboration: proposalCollaboration('hermes settled summary'),
+    }
+    runOptions.onEvent({
+      type: 'answer_delta',
+      status: 'running',
+      delta: 'codex partial streamed response',
+    })
+    codexStarted.resolve()
+    return await new Promise((_resolve, reject) => {
+      runOptions.signal.addEventListener(
+        'abort', () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED')), { once: true },
+      )
+    })
+  }
+
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Manual V4 streamed stop',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  const send = workspace.sendMessage({
+    groupId: group.id,
+    text: 'Keep partial output when this batch is stopped.',
+    mode: 'manual',
+    targetKinds: ['codex', 'hermes'],
+    protocol: 'v4',
+  })
+  await codexStarted.promise
+  const running = ledger.list(group.id)[0]
+
+  assert.equal(workspace.stop(group.id, running.runId), true)
+  await send
+
+  const final = ledger.get(running.runId)
+  const codexSlot = final.orchestration.slots.find(slot => slot.agentKind === 'codex')
+  const stoppedMessage = workspace.snapshot().messages.find(message => (
+    message.system?.key === 'system.agentStopped'
+      && message.agentKind === 'codex'
+      && message.threadRootId === running.threadRootId
+  ))
+  assert.equal(final.status, 'stopped')
+  assert.equal(codexSlot.status, 'stopped')
+  assert.equal(stoppedMessage.content, 'Codex was stopped.\ncodex partial streamed response')
+  assert.equal(stoppedMessage.trace.status, 'stopped')
+  assert.equal(stoppedMessage.trace.agentRunId, codexSlot.agentRunId)
 })
 
 test('Manual V4 recovery fails closed when immutable recovery bodies are missing', async (t) => {

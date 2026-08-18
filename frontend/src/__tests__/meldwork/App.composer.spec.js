@@ -196,6 +196,53 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
+  it('defaults an empty concurrent-response selection to every group Agent', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.agents.push({
+        kind: 'qwen',
+        installed: true,
+        available: true,
+        credentialState: 'ready',
+        version: '1.0.0',
+      })
+      state.groups.push({
+        id: 'group-concurrent-default-all',
+        conversationType: 'group',
+        name: 'Concurrent default all',
+        topic: '',
+        agentKinds: ['codex', 'hermes', 'qwen'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
+    for (const chip of wrapper.findAll('.target-chip')) await chip.trigger('click')
+    expect(wrapper.findAll('.target-chip').map(chip => chip.classes().includes('selected')))
+      .toEqual([true, true, true])
+
+    await wrapper.get('.composer-box textarea').setValue('Ask the whole group')
+    expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-concurrent-default-all',
+      text: 'Ask the whole group',
+      targetKinds: ['codex', 'hermes', 'qwen'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'manual',
+      protocol: 'v4',
+      maxRounds: 6,
+    })
+    wrapper.unmount()
+  })
+
   it('keeps automatic round settings isolated per group', async () => {
     const group = (id, name) => ({
       id,
@@ -320,7 +367,7 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.agent-mention-option').text()).toContain('Codex')
     expect(wrapper.get('.agent-mention-option').text()).toContain('Structured reasoning')
     await wrapper.get('.agent-mention-option').trigger('click')
-    expect(wrapper.get('.selected-agent-tag').text()).toContain('Codex')
+    expect(wrapper.get('.selected-agent-avatar').attributes('title')).toContain('Codex')
     expect(wrapper.get('.mode-segmented [data-mode="auto"]').classes()).toContain('active')
     expect(wrapper.get('.mode-segmented [data-mode="auto"]').attributes()).not.toHaveProperty('disabled')
     expect(wrapper.get('.send-button').text()).toBe('Send')
@@ -360,7 +407,7 @@ describe('Meldwork workbench', () => {
       mode: 'manual',
       maxRounds: 6,
     })
-    expect(wrapper.find('.selected-agent-tag').exists()).toBe(false)
+    expect(wrapper.find('.selected-agent-avatar').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -393,8 +440,10 @@ describe('Meldwork workbench', () => {
     await flushPromises()
     await wrapper.get('.agent-mention-option').trigger('click')
 
-    expect(wrapper.findAll('.selected-agent-tag').map(tag => tag.text()))
-      .toEqual(['Codex', 'Hermes'])
+    expect(wrapper.findAll('.selected-agent-avatar')).toHaveLength(2)
+    expect(wrapper.findAll('.selected-agent-avatar img')).toHaveLength(2)
+    expect(wrapper.findAll('.selected-agent-avatar').map(tag => tag.attributes('title')))
+      .toEqual(['Remove Codex', 'Remove Hermes'])
 
     await textarea.setValue('@find')
     await flushPromises()
@@ -403,11 +452,11 @@ describe('Meldwork workbench', () => {
     await textarea.trigger('keydown', { key: 'Enter' })
     const selectedSkill = wrapper.get('.selected-skill')
     expect(selectedSkill.text()).toContain('Find sources')
-    expect(selectedSkill.classes()).toContain('selected-agent-tag')
+    expect(selectedSkill.text()).not.toContain('@')
     expect(selectedSkill.element.closest('.composer-input-shell')).not.toBeNull()
 
-    await wrapper.findAll('.selected-agent-tag button')[1].trigger('click')
-    expect(wrapper.findAll('.selected-agent-tag').map(tag => tag.text())).toEqual(['Codex'])
+    await wrapper.findAll('.selected-agent-avatar')[1].trigger('click')
+    expect(wrapper.findAll('.selected-agent-avatar')).toHaveLength(1)
     expect(wrapper.find('.selected-skill').exists()).toBe(false)
     wrapper.unmount()
   })
@@ -786,7 +835,9 @@ describe('Meldwork workbench', () => {
     expect(option.text()).toContain('Search DingTalk documents through the configured dws connection')
     expect(option.text()).toContain('Knowledge')
     await option.trigger('click')
-    expect(wrapper.get('.selected-knowledge-base').text()).toContain('@DingTalk Docs')
+    expect(wrapper.get('.selected-knowledge-base-avatar').attributes('title')).toBe('Remove knowledge base')
+    expect(wrapper.get('.selected-knowledge-base-avatar img').attributes('src'))
+      .toBe('./knowledge-base-logos/dingtalk.svg')
 
     await textarea.setValue('Compare the internal references')
     await wrapper.get('.send-button').trigger('click')
@@ -804,7 +855,7 @@ describe('Meldwork workbench', () => {
       protocol: 'v4',
       maxRounds: 6,
     })
-    expect(wrapper.find('.selected-knowledge-base').exists()).toBe(false)
+    expect(wrapper.find('.selected-knowledge-base-avatar').exists()).toBe(false)
     wrapper.unmount()
   })
 
@@ -848,6 +899,8 @@ describe('Meldwork workbench', () => {
   })
 
   it('lists knowledge bases before skills in grouped and direct @ menus', async () => {
+    const scrollIntoView = vi.fn()
+    HTMLElement.prototype.scrollIntoView = scrollIntoView
     const { wrapper } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.groups.push({
         id: 'group-menu-order',
@@ -891,6 +944,11 @@ describe('Meldwork workbench', () => {
     expect(sections[1].text()).toContain('Deep research')
     expect(wrapper.findAll('.skill-option').map(option => option.attributes('id')))
       .toEqual(['composer-mention-option-0', 'composer-mention-option-1'])
+    scrollIntoView.mockClear()
+    await textarea.trigger('keydown', { key: 'ArrowDown' })
+    await flushPromises()
+    expect(textarea.attributes('aria-activedescendant')).toBe('composer-mention-option-1')
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' })
 
     wrapper.vm.selectGroup('direct-menu-order')
     await flushPromises()
@@ -934,7 +992,7 @@ describe('Meldwork workbench', () => {
     await flushPromises()
 
     expect(textarea.element.value).toBe('Research this market')
-    expect(wrapper.get('.selected-agent-tag').text()).toContain('Hermes')
+    expect(wrapper.get('.selected-agent-avatar').attributes('title')).toContain('Hermes')
     expect(wrapper.get('.selected-skill').text()).toContain('Find sources')
     wrapper.unmount()
   })
@@ -983,7 +1041,7 @@ describe('Meldwork workbench', () => {
       mode: 'manual',
       maxRounds: 6,
     })
-    expect(wrapper.find('.selected-agent-tag').exists()).toBe(false)
+    expect(wrapper.find('.selected-agent-avatar').exists()).toBe(false)
     wrapper.unmount()
   })
 })

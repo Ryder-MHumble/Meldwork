@@ -1,6 +1,11 @@
 import { nextTick, ref, watch } from 'vue'
 
-export function useConversationViewport({ activeMessages, liveOutputSignature, selectedGroupId }) {
+export function useConversationViewport({
+  activeMessages,
+  activeRunTopicSignature,
+  liveOutputSignature,
+  selectedGroupId,
+}) {
   const messageFollowLatest = ref(true)
   const messageScroller = ref(null)
   const previousMessageScrollTop = ref(0)
@@ -42,6 +47,9 @@ export function useConversationViewport({ activeMessages, liveOutputSignature, s
   }
 
   watch(() => activeMessages.value.length, () => { void scrollToLatest() })
+  if (activeRunTopicSignature) {
+    watch(activeRunTopicSignature, value => { if (value) void scrollToLatest({ force: true }) })
+  }
   watch(liveOutputSignature, () => { void scrollToLatest() })
   watch(selectedGroupId, () => { resetMessageViewport() }, { flush: 'post' })
 

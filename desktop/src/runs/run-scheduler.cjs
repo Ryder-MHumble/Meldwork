@@ -1,5 +1,5 @@
-const DEFAULT_TASK_CONCURRENCY = 2
-const DEFAULT_WORKSPACE_CONCURRENCY = 2
+const DEFAULT_TASK_CONCURRENCY = 4
+const DEFAULT_WORKSPACE_CONCURRENCY = 4
 const DEFAULT_GLOBAL_CONCURRENCY = 4
 const schedulerPauseTokens = new WeakMap()
 const schedulerLeaseBindings = new WeakMap()

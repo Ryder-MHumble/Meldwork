@@ -499,6 +499,7 @@
 }
 
 .composer-box.unlimited-mode {
+  background: color-mix(in srgb, var(--surface-raised) 82%, var(--accent-soft) 18%);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent),
     0 8px 22px rgb(32 43 53 / 0.08);
 }
@@ -553,6 +554,7 @@
 }
 
 :root[data-theme="dark"] .composer-box.unlimited-mode {
+  background: color-mix(in srgb, var(--surface-raised) 86%, var(--accent-soft) 14%);
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent),
     0 8px 24px rgb(0 0 0 / 0.26);
 }
@@ -565,6 +567,18 @@
 
 :root[data-theme="dark"] .composer-box:focus-within {
   box-shadow: 0 12px 30px rgb(0 0 0 / 0.34);
+}
+
+.composer-box.unlimited-mode:focus-within {
+  background: color-mix(in srgb, var(--surface-raised) 76%, var(--accent-soft) 24%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
+    0 12px 28px rgb(32 43 53 / 0.12);
+}
+
+:root[data-theme="dark"] .composer-box.unlimited-mode:focus-within {
+  background: color-mix(in srgb, var(--surface-raised) 80%, var(--accent-soft) 20%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 46%, transparent),
+    0 12px 30px rgb(0 0 0 / 0.34);
 }
 
 .composer-attachment-list {
@@ -711,46 +725,82 @@
 
 .composer-input-shell {
   min-width: 0;
-  display: flex;
-  align-items: flex-start;
-  flex-wrap: wrap;
-  gap: 6px;
+  position: relative;
+  display: block;
   padding: 10px 12px 2px;
 }
 
-.selected-agent-list {
-  min-width: 0;
+.composer-inline-mentions {
+  position: absolute;
+  top: 13px;
+  right: 12px;
+  left: 12px;
+  z-index: 1;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 5px;
-  padding-top: 3px;
+  gap: 4px;
+  pointer-events: none;
 }
 
-.selected-agent-tag,
-.selected-skill,
-.message-target-list span {
-  height: 28px;
+.selected-mention-token,
+.selected-skill {
+  height: 24px;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 5px 0 7px;
+  gap: 4px;
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 0;
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface-raised) 28%);
   color: var(--text-soft);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 650;
   white-space: nowrap;
+  pointer-events: auto;
 }
 
-.selected-agent-tag > img,
-.selected-knowledge-base img,
-.selected-context-icon,
-.message-target-list img {
-  width: 18px;
-  height: 18px;
+.selected-agent-avatar,
+.selected-knowledge-base-avatar {
+  width: 24px;
+  position: relative;
+  justify-content: center;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.selected-agent-avatar > img,
+.selected-knowledge-base-avatar > img,
+.selected-context-icon {
+  width: 20px;
+  height: 20px;
   background: transparent;
   object-fit: contain;
+}
+
+.selected-agent-avatar > svg,
+.selected-knowledge-base-avatar > svg {
+  width: 11px;
+  height: 11px;
+  position: absolute;
+  top: -2px;
+  right: -3px;
+  padding: 1px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: 0 1px 4px rgb(32 43 53 / 0.18);
+  opacity: 0;
+  transition: opacity 0.14s ease;
+}
+
+.selected-agent-avatar:hover > svg,
+.selected-agent-avatar:focus-visible > svg,
+.selected-knowledge-base-avatar:hover > svg,
+.selected-knowledge-base-avatar:focus-visible > svg {
+  opacity: 1;
 }
 
 .selected-context-icon {
@@ -758,12 +808,12 @@
   color: var(--muted);
 }
 
-.selected-agent-tag button {
+.selected-skill button {
   width: 20px;
   height: 20px;
 }
 
-.selected-agent-tag button svg {
+.selected-skill button svg {
   width: 13px;
   height: 13px;
 }
@@ -772,17 +822,17 @@
   width: auto;
   min-height: 58px;
   max-height: 180px;
-  min-width: min(220px, 100%);
-  flex: 1 1 260px;
+  min-width: 100%;
   display: block;
   overflow-y: hidden;
   resize: none;
-  padding: 4px 3px 8px;
+  padding: calc(4px + var(--composer-mention-line-top, 0px)) 3px 8px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
   line-height: 1.55;
+  text-indent: var(--composer-mention-indent, 0px);
 }
 
 .composer-box textarea::placeholder {
@@ -1042,24 +1092,6 @@
 
 .selected-skill {
   flex: 0 0 auto;
-}
-
-.message-target-list {
-  display: inline;
-  margin: 0 5px 0 0;
-}
-
-.message-target-list span {
-  height: 24px;
-  margin: 0 5px 4px 0;
-  padding-right: 8px;
-  font-size: 10px;
-  vertical-align: middle;
-}
-
-.message-target-list img {
-  width: 16px;
-  height: 16px;
 }
 
 .send-button,

@@ -630,13 +630,14 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    expect(wrapper.get('.message-target-list').text()).toBe('Codex')
+    expect(wrapper.get('.message-target-list').text()).toBe('')
+    expect(wrapper.get('.message-target-list img').exists()).toBe(true)
+    expect(wrapper.get('.message-target-avatar').attributes('aria-label')).toBe('Codex')
     expect(wrapper.get('.message-target-list').element.parentElement).toBe(
-      wrapper.get('.user-message-text').element.parentElement,
+      wrapper.get('.message-meta').element,
     )
-    expect(wrapper.get('.message-target-list').element.parentElement.classList)
-      .toContain('user-message-content')
-    expect(wrapper.get('.plain-message').element.parentElement.className).toBe('user-message-flow')
+    expect(wrapper.get('.message-target-list').element.previousElementSibling.tagName).toBe('STRONG')
+    expect(wrapper.get('.user-message-content').element.parentElement.className).toBe('user-message-flow')
     expect(wrapper.get('.message-row.agent').classes()).toContain('group-message')
     expect(wrapper.get('.message-row.agent').classes()).toContain('topic-reply')
     expect(wrapper.get('.topic-toggle').text()).toContain('1 reply')
@@ -746,7 +747,7 @@ describe('Meldwork workbench', () => {
           id: 'group-root-1',
           groupId: 'group-1',
           role: 'user',
-          content: 'Compare the internal references',
+          content: '**Compare the internal references**\n\n1. Verify the source\n2. Preserve the evidence',
           targetKinds: ['codex', 'hermes'],
           skillHints: [{ targetKind: 'codex', namespace: 'quality', slug: 'review', name: 'Review code' }],
           knowledgeBaseHints: [{ kind: 'dingtalk', targetKinds: ['codex', 'hermes'] }],
@@ -761,23 +762,32 @@ describe('Meldwork workbench', () => {
     expect(directContents).toHaveLength(2)
     directContents.forEach((content) => {
       expect(content.element.children[0].classList).toContain('message-skill-list')
-      expect(content.element.children[1].classList).toContain('user-message-text')
+      expect(content.element.children[1].classList).toContain('user-message-markdown')
     })
 
     await wrapper.get('.conversation-link').trigger('click')
     await flushPromises()
     const groupContent = wrapper.get('.user-message-content')
     expect(Array.from(groupContent.element.children).map(element => element.className)).toEqual([
-      'message-target-list',
       'message-skill-list',
-      'user-message-text',
+      'message-content markdown-body user-message-markdown',
     ])
-    expect(groupContent.get('.message-skill-list').text()).toContain('@Review code')
+    expect(wrapper.get('.message-target-list').text()).toBe('')
+    expect(wrapper.findAll('.message-target-avatar img')).toHaveLength(2)
+    expect(groupContent.get('.message-skill-list').text()).toContain('Review code')
+    expect(groupContent.get('.message-skill-list').text()).not.toContain('@')
     expect(groupContent.get('.message-knowledge-base img').exists()).toBe(true)
+    expect(groupContent.get('.message-knowledge-base').text()).toBe('')
+    expect(groupContent.get('.user-message-markdown strong').text()).toBe('Compare the internal references')
+    expect(groupContent.findAll('.user-message-markdown ol li').map(item => item.text()))
+      .toEqual(['Verify the source', 'Preserve the evidence'])
 
     const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     expect(styles).toMatch(/\.message-row\.user \.message-body\s*\{[^}]*text-align:\s*left;/s)
-    expect(styles).toMatch(/\.message-skill-list\s*\{[^}]*display:\s*inline;/s)
+    expect(styles).toMatch(/\.message-skill-list\s*\{[^}]*display:\s*inline-flex;/s)
+    expect(styles).toMatch(/\.message-row\.user \.message-meta time\s*\{[^}]*margin-left:\s*auto;/s)
+    expect(styles).toMatch(/\.user-message-content\s*\{[^}]*display:\s*flow-root;/s)
+    expect(styles).toMatch(/\.user-message-markdown\s*\{[^}]*overflow-wrap:\s*break-word;/s)
     wrapper.unmount()
   })
 

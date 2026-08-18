@@ -3,6 +3,7 @@
     <div class="composer-shell">
       <section
         v-if="skillMenuOpen"
+        ref="mentionMenu"
         id="composer-skill-menu"
         class="skill-menu"
         role="listbox"
@@ -57,7 +58,7 @@
         class="composer-box"
         :class="{
           'is-dragging-files': composerDropActive,
-          'unlimited-mode': activeUnlimitedAutoRun,
+          'unlimited-mode': unlimitedModeActive,
           'unlimited-running': activeUnlimitedAutoRun,
         }"
         @dragenter="handleComposerDragEnter"
@@ -129,11 +130,11 @@
               :aria-label="t('composer.maxRounds')"
               aria-haspopup="dialog"
               :aria-expanded="roundSettingsOpen ? 'true' : 'false'"
-              :class="{ unlimited: activeUnlimitedAutoRun }"
+              :class="{ unlimited: unlimitedModeActive }"
               :disabled="Boolean(activeRun) || sending"
               @click="roundSettingsOpen = !roundSettingsOpen"
             >
-              <span v-if="activeUnlimitedAutoRun" class="round-unlimited-symbol" aria-hidden="true">∞</span>
+              <span v-if="unlimitedModeActive" class="round-unlimited-symbol" aria-hidden="true">∞</span>
               <span>{{ unlimitedRounds || activeUnlimitedAutoRun ? t('composer.unlimitedRounds') : t('composer.autoRounds', { count: maxRounds }) }}</span>
               <ChevronDownOutline :class="{ open: roundSettingsOpen }" />
             </button>
@@ -228,57 +229,52 @@
           </article>
         </div>
 
-        <div class="composer-input-shell">
+        <div
+          ref="composerInputShell"
+          class="composer-input-shell"
+          :style="composerMentionLayout"
+        >
           <div
-            v-if="activeGroup.conversationType !== 'direct' && selectedAgentKinds.length"
-            class="selected-agent-list"
-            :aria-label="t('composer.mentionedAgents')"
-          >
-            <span v-for="kind in selectedAgentKinds" :key="kind" class="selected-agent-tag">
-              <img :src="agentLogo(kind, theme)" alt="" />
-              {{ agentLabel(kind) }}
-              <button
-                type="button"
-                :title="t('composer.removeMention', { agent: agentLabel(kind) })"
-                :aria-label="t('composer.removeMention', { agent: agentLabel(kind) })"
-                :disabled="Boolean(activeRun) || sending"
-                @click="removeAgentMention(kind)"
-              >
-                <CloseOutline />
-              </button>
-            </span>
-          </div>
-          <div
-            v-if="selectedSkills.length || selectedKnowledgeBases.length"
-            class="selected-agent-list selected-context-list"
+            v-if="selectedAgentKinds.length || selectedSkills.length || selectedKnowledgeBases.length"
+            ref="composerMentionStrip"
+            class="composer-inline-mentions"
             :aria-label="t('composer.mentions')"
           >
-            <span v-for="skill in selectedSkills" :key="skillKey(skill)" class="selected-agent-tag selected-skill">
+            <button
+              v-for="kind in selectedAgentKinds"
+              :key="kind"
+              class="selected-mention-token selected-agent-avatar"
+              type="button"
+              :title="t('composer.removeMention', { agent: agentLabel(kind) })"
+              :aria-label="t('composer.removeMention', { agent: agentLabel(kind) })"
+              :disabled="Boolean(activeRun) || sending"
+              @click="removeAgentMention(kind)"
+            >
+              <img :src="agentLogo(kind, theme)" alt="" />
+              <CloseOutline aria-hidden="true" />
+            </button>
+            <button
+              v-for="source in selectedKnowledgeBases"
+              :key="`knowledge:${source.kind}`"
+              class="selected-mention-token selected-knowledge-base-avatar"
+              type="button"
+              :title="t('composer.removeKnowledgeBase')"
+              :aria-label="t('composer.removeKnowledgeBase')"
+              :disabled="Boolean(activeRun) || sending"
+              @click="removeKnowledgeBase(source.kind)"
+            >
+              <img :src="knowledgeBaseLogo(source.kind)" alt="" />
+              <CloseOutline aria-hidden="true" />
+            </button>
+            <span v-for="skill in selectedSkills" :key="skillKey(skill)" class="selected-mention-token selected-skill">
               <LibraryOutline class="selected-context-icon" aria-hidden="true" />
-              @{{ skill.name || skill.slug }}
+              <span>{{ skill.name || skill.slug }}</span>
               <button
                 type="button"
                 :title="t('composer.removeSkill')"
                 :aria-label="t('composer.removeSkill')"
                 :disabled="Boolean(activeRun) || sending"
                 @click="removeSkill(skill)"
-              >
-                <CloseOutline />
-              </button>
-            </span>
-            <span
-              v-for="source in selectedKnowledgeBases"
-              :key="`knowledge:${source.kind}`"
-              class="selected-agent-tag selected-skill selected-knowledge-base"
-            >
-              <img :src="knowledgeBaseLogo(source.kind)" alt="" />
-              @{{ knowledgeBaseName(source.kind) }}
-              <button
-                type="button"
-                :title="t('composer.removeKnowledgeBase')"
-                :aria-label="t('composer.removeKnowledgeBase')"
-                :disabled="Boolean(activeRun) || sending"
-                @click="removeKnowledgeBase(source.kind)"
               >
                 <CloseOutline />
               </button>
@@ -428,7 +424,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AddOutline,
   ArchiveOutline,
@@ -562,11 +558,57 @@ const {
 } = props.controller
 
 const smartTeamTooltipOpen = ref(false)
+const mentionMenu = ref(null)
+const composerInputShell = ref(null)
+const composerMentionStrip = ref(null)
+const composerMentionLayout = ref({})
+let composerMentionResizeObserver = null
 const activeUnlimitedAutoRun = computed(() => (
   activeRun.value?.mode === 'auto'
   && activeRun.value?.unlimitedRounds === true
   && ['preparing', 'running', 'waiting'].includes(String(activeRun.value?.phase || '').toLowerCase())
 ))
+const unlimitedModeActive = computed(() => (
+  activeRun.value
+    ? activeUnlimitedAutoRun.value
+    : discussionMode.value === 'auto' && unlimitedRounds.value === true
+))
+const composerMentionSignature = computed(() => JSON.stringify([
+  selectedAgentKinds.value,
+  selectedKnowledgeBases.value.map(source => source.kind),
+  selectedSkills.value.map(skill => skillKey(skill)),
+]))
+
+async function updateComposerMentionLayout() {
+  await nextTick()
+  const strip = composerMentionStrip.value
+  if (!strip?.lastElementChild) {
+    composerMentionLayout.value = {}
+    return
+  }
+  const last = strip.lastElementChild
+  const rowTop = Math.max(0, Number(last.offsetTop) || 0)
+  const indent = Math.max(0, (Number(last.offsetLeft) || 0) + (Number(last.offsetWidth) || 0) + 6)
+  composerMentionLayout.value = {
+    '--composer-mention-line-top': `${rowTop}px`,
+    '--composer-mention-indent': `${indent}px`,
+  }
+}
+
+watch([activeSkillOptionId, skillMenuOpen], async ([, open]) => {
+  if (!open) return
+  await nextTick()
+  mentionMenu.value?.querySelector('[aria-selected="true"]')?.scrollIntoView?.({ block: 'nearest' })
+}, { flush: 'post' })
+watch(composerMentionSignature, updateComposerMentionLayout, { flush: 'post' })
+
+onMounted(() => {
+  if (typeof ResizeObserver !== 'function') return
+  composerMentionResizeObserver = new ResizeObserver(() => { void updateComposerMentionLayout() })
+  if (composerInputShell.value) composerMentionResizeObserver.observe(composerInputShell.value)
+})
+
+onBeforeUnmount(() => composerMentionResizeObserver?.disconnect())
 
 function handleSmartTeamToggle() {
   toggleAutomaticTeamFormation()
