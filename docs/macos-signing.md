@@ -1,6 +1,6 @@
 # macOS 预发布签名与正式发行
 
-Meldwork-V1.0.2 的 Apple silicon 预发布使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。最终应用通过 `codesign --verify --deep --strict` 完整性检查；`spctl` 拒绝是这一分发方式的预期结果，不代表已经通过 Gatekeeper。通过 GitHub prerelease 获取该版本的用户，首次启动时可能需要在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
+Meldwork-V1.0.3 的 Apple silicon 预发布使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。最终应用通过 `codesign --verify --deep --strict` 完整性检查；`spctl` 拒绝是这一分发方式的预期结果，不代表已经通过 Gatekeeper。通过 GitHub prerelease 获取该版本的用户，首次启动时可能需要在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
 
 未来面向公众的正式发行必须改用 `Developer ID Application` 证书签名并提交 Apple 公证，使应用能够在全新 Mac 上通过 Gatekeeper。仓库中的 `dist:public` 是这条正式发行路径，缺少签名或公证凭据时会安全失败，不会降级生成 ad-hoc 公共产物。
 
@@ -91,7 +91,7 @@ APPLE_TEAM_ID
 
 ## 6. 构建并验证产物
 
-### V1.0.2 预发布候选
+### V1.0.3 预发布候选
 
 本地预发布候选使用普通 `dist` 路径：
 
@@ -113,13 +113,13 @@ codesign -dv --verbose=4 \
 
 `codesign -dv` 应显示 `Signature=adhoc` 且没有 Team ID。此候选执行 `spctl --assess` 时应被拒绝；不要把这一结果描述为正式签名失败或 Gatekeeper 验收通过。
 
-V1.0.2 发布时必须从最终源码状态重新构建并生成同批次校验值：
+V1.0.3 发布时必须从最终源码状态重新构建并生成同批次校验值：
 
 ```bash
 npm --prefix desktop run dist
 shasum -a 256 \
-  desktop/dist/Meldwork-0.1.2-arm64.dmg \
-  desktop/dist/Meldwork-0.1.2-arm64.zip
+  desktop/dist/Meldwork-0.1.3-arm64.dmg \
+  desktop/dist/Meldwork-0.1.3-arm64.zip
 ```
 
 只有该次精确构建生成的值才可以写入同批次的 `SHA256SUMS.txt` 和 Release Notes。校验值只能证明文件与该次构建一致，不能替代 Developer ID 信任或 Apple 公证。
@@ -146,7 +146,7 @@ spctl --assess --type execute --verbose=4 \
   desktop/dist/mac-arm64/Meldwork.app
 
 xcrun stapler validate desktop/dist/mac-arm64/Meldwork.app
-xcrun stapler validate desktop/dist/Meldwork-0.1.2-arm64.dmg
+xcrun stapler validate desktop/dist/Meldwork-0.1.3-arm64.dmg
 ```
 
 必须在没有安装过 Meldwork、没有历史应用数据的全新 Apple 芯片 Mac 用户账户中安装 DMG，并通过正常双击启动。不能使用右键绕过、删除隔离属性或执行 `xattr` 的方式通过测试。只有 Gatekeeper 正常接受应用，才算满足公开发布门槛。
@@ -155,11 +155,11 @@ Developer ID 签名、公证和 Stapling 全部完成后，再为正式发行重
 
 ```bash
 shasum -a 256 \
-  desktop/dist/Meldwork-0.1.2-arm64.dmg \
-  desktop/dist/Meldwork-0.1.2-arm64.zip
+  desktop/dist/Meldwork-0.1.3-arm64.dmg \
+  desktop/dist/Meldwork-0.1.3-arm64.zip
 ```
 
-正式发行的 DMG、ZIP 和 `SHA256SUMS.txt` 必须来自同一个干净的 Git 标签和同一次 `dist:public` 构建，不能复用 V1.0.2 ad-hoc 候选的校验值。
+正式发行的 DMG、ZIP 和 `SHA256SUMS.txt` 必须来自同一个干净的 Git 标签和同一次 `dist:public` 构建，不能复用 V1.0.3 ad-hoc 候选的校验值。
 
 ## 7. 常见错误
 
@@ -173,8 +173,8 @@ shasum -a 256 \
 
 - Bundle ID 已固定为 `com.rydersun.meldwork`。
 - `dist:public` 已配置为缺少正式签名或公证凭据时安全失败。
-- Meldwork-V1.0.2 的 DMG、ZIP 和应用已从最终源码状态重新生成；同批次 SHA-256 写入 `SHA256SUMS.txt`。
+- Meldwork-V1.0.3 的 DMG、ZIP 和应用已从最终源码状态重新生成；同批次 SHA-256 写入 `SHA256SUMS.txt`。
 - 最终应用通过 ad-hoc `codesign` 完整性验证，远端 Release 资产按相同校验值复核。
-- V1.0.2 不包含 Developer ID、Apple 公证或 Gatekeeper 验收；最终 ad-hoc 候选执行 `spctl` 时仍应被拒绝，安装时可能需要用户明确选择 Open Anyway。
+- V1.0.3 不包含 Developer ID、Apple 公证或 Gatekeeper 验收；最终 ad-hoc 候选执行 `spctl` 时仍应被拒绝，安装时可能需要用户明确选择 Open Anyway。
 - 在完成 Apple Developer Program 申请、证书安装和公证凭据配置之前，不能把任何 Meldwork 产物描述为正式签名或公证发行版。
-- 最终校验值生成规则、自动化测试和实时 Agent 验收边界见 [Meldwork V1.0.2 预发布与分发边界](public-mvp-release.md) 和 [Verification And Test Coverage](tests.md)。
+- 最终校验值生成规则、自动化测试和实时 Agent 验收边界见 [Meldwork V1.0.3 预发布与分发边界](public-mvp-release.md) 和 [Verification And Test Coverage](tests.md)。

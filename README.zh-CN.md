@@ -21,7 +21,7 @@
 当前预览版是一个面向已支持本地 Agent CLI 的本地工作单元。它把参与者、上下文、协作边界、运行状态和人类复核放在同一个工作空间里。已选 Agent 现在可以并发回复，也可以围绕同一目标先独立提案、再协商职责、分工执行、单写者整合并由其他 Agent 独立复核。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.2/Meldwork-0.1.2-arm64.dmg"><strong>下载 Meldwork V1.0.2 Apple 芯片 macOS 版</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>下载 Meldwork V1.0.3 Apple 芯片 macOS 版</strong></a>
   · <a href="architecture.md">架构</a>
   · <a href="LICENSE">许可证</a>
 </p>
@@ -116,8 +116,8 @@ Harness 是把会话、上下文、适配器、流和持久化状态拴在一起
 
 当前经过发布验证的目标是 Apple 芯片 macOS。
 
-1. 打开 [Meldwork V1.0.2 预发布页](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.2)。
-2. 下载 Meldwork-0.1.2-arm64.dmg。
+1. 打开 [Meldwork V1.0.3 预发布页](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3)。
+2. 下载 Meldwork-0.1.3-arm64.dmg。
 3. 将 Meldwork 拖入“应用程序”，然后先尝试打开一次。
 4. 当前预发布版使用临时签名，没有 Apple Developer ID 签名，也尚未经过 Apple 公证。如果 macOS 阻止启动，请打开“系统设置 → 隐私与安全性”，找到 Meldwork 提示，点击“仍要打开”并确认。
 5. 连接电脑上已安装的受支持 Agent CLI，或在兼容情况下单独配置 Provider。

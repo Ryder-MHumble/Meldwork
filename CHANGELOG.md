@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.3 - 2026-08-18 (Meldwork-V1.0.3 prerelease)
+
+### Concurrent Conversations
+
+- Concurrent Responses now treats an empty explicit selection as the whole group, so users can send one message to every group Agent without adding `@` mentions first.
+- Keeps every group member in the frozen batch. Agents beyond the available Scheduler capacity remain visibly queued instead of being removed from the request.
+- Preserves valid visible proposals when a CLI omits or malforms its proposal receipt, while later Auto Discussion phases retain their strict structured-receipt boundary.
+
+### Conversation Experience
+
+- Refines user-message metadata, Agent logos, inline Agent/Skill/knowledge mentions, Markdown rendering, mention-menu tracking, and narrow-layout wrapping.
+- Returns newly sent conversations to the active Agent loading state and keeps the animated return-to-bottom control for readers who have scrolled up.
+- Removes the special No round limit composer background, border, shadow, and container breathing effect. The infinity status cue and real collaboration phase feedback remain available.
+
+### Stop Durability
+
+- Persists completed and streamed concurrent Agent replies when the user stops a batch instead of removing already visible work.
+- Records stopped Agent attempts as interrupted, rejects late post-stop results, and resumes the stable batch commit idempotently after restart.
+
+### Packaging And Verification
+
+- Sets the frontend and desktop package version to `0.1.3` and publishes Apple silicon DMG and ZIP prerelease artifacts with a matching SHA-256 manifest.
+- Frontend tests: 306/306 passed. Desktop tests: 1338/1338 passed.
+- Web and Electron renderer builds, Electron `pack`, packaged acceptance, and `git diff --check` passed before release packaging.
+- The prerelease remains ad-hoc signed, without Apple Developer ID signing or notarization, and may require Open Anyway on first launch.
+
 ## 0.1.2 - 2026-08-18 (Meldwork-V1.0.2 prerelease)
 
 ### Collaboration Harness V4

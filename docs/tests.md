@@ -1,6 +1,6 @@
 # Verification And Test Coverage
 
-This page records the V1.0.2 prerelease evidence available on 2026-08-18 for Apple silicon macOS. Repository tooling and CI require Node.js 22.12 or newer; the packaged desktop uses Electron's bundled runtime.
+This page records the V1.0.3 prerelease evidence available on 2026-08-18 for Apple silicon macOS. Repository tooling and CI require Node.js 22.12 or newer; the packaged desktop uses Electron's bundled runtime.
 
 The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not notarized. Passing `codesign` proves bundle integrity only. Gatekeeper acceptance is not claimed, and `spctl` rejection is expected for this candidate.
 
@@ -8,8 +8,8 @@ The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not n
 
 | Check | Evidence | Result |
 | --- | --- | --- |
-| Frontend unit suite | `npm --prefix frontend test` | 302/302 tests passed |
-| Desktop unit suite | `npm --prefix desktop test` | 1335/1335 tests passed |
+| Frontend unit suite | `npm --prefix frontend test` | 306/306 tests passed |
+| Desktop unit suite | `npm --prefix desktop test` | 1338/1338 tests passed |
 | Deterministic Eval Harness | `npm --prefix desktop run eval:deterministic` | 6 cases and 18 results passed |
 | Renderer builds | `npm --prefix frontend run build` and `npm --prefix frontend run build:desktop` | Both builds passed |
 | Packaged application directory | `npm --prefix desktop run pack` | Passed on the final source tree |
@@ -21,15 +21,17 @@ The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not n
 
 ## Packaged-App Acceptance
 
-Live checks used packaged V1.0.2 applications with isolated user-data profiles and isolated workspaces. They validate the observed local Agent versions and authentication state, not every supported installation.
+Packaged checks combine current V1.0.3 UI acceptance with retained V1.0.2 live Agent evidence for unchanged runtime paths. The V1.0.3 checks used an isolated user-data profile and isolated workspace to validate implicit group targeting and unlimited-mode styling. Live Agent evidence validates only the observed local versions and authentication state, not every supported installation.
 
 | Surface | Result | Boundary |
 | --- | --- | --- |
 | Hermes direct execution | Streaming answer deltas and a closed tool lifecycle | Passed |
 | OpenClaw direct execution | Latest live run failed during proposal with `LOCAL_AGENT_PROCESS_FAILED` | Failed closed; protocol fixtures and managed-runtime tests pass, but live streaming/tool lifecycle is not certified |
 | Manual V4 | Selected Agents use one frozen snapshot; results commit in stable member order | Completed packaged runs with Codex, Claude, and Hermes evidence |
+| Implicit group targeting | Concurrent Responses with no explicit `@` or Agent selection resolves to every Agent in the group | Passed; four Agents ran and the fifth remained visibly queued under Scheduler capacity |
 | Auto Discussion V4 | Parallel proposals, cross-Agent negotiation, agreed work packages, synthesis, and independent verification | Completed packaged runs with Codex and Claude evidence |
 | Stop behavior | Stop after the first answer delta, then compare Ledger, message, and workspace hashes after 10.25 seconds | Passed; the run remained `stopped` and all hashes were unchanged |
+| No round limit composer | Compare the finite and unlimited composer surface while retaining the infinity cue | Passed; background, shadow, and border remained identical |
 | Narrow-layout return control | Group and direct conversation return-to-latest behavior at 360 x 800 | Passed; both surfaces exposed one button while reading above, returned to the bottom, and removed the button after activation |
 | Narrow-layout details and actions | Trace panel geometry plus copy, regenerate, version, and delete placement at 360 x 800 | Passed without control overlap |
 
@@ -76,12 +78,12 @@ The workflow file does not prove branch-protection configuration or the status o
 
 | Priority | Gap | Release boundary |
 | --- | --- | --- |
-| High | No Developer ID signing, Apple notarization, Stapling, or clean-machine Gatekeeper acceptance | V1.0.2 remains an ad-hoc signed prerelease candidate that may require Open Anyway |
+| High | No Developer ID signing, Apple notarization, Stapling, or clean-machine Gatekeeper acceptance | V1.0.3 remains an ad-hoc signed prerelease candidate that may require Open Anyway |
 | High | OpenClaw has not completed the latest packaged live streaming/tool-lifecycle run | The runtime fails closed with `LOCAL_AGENT_PROCESS_FAILED`; fixture and managed-runtime coverage do not replace live certification |
 | Medium | Codex exceeded the 300-second direct acceptance observation window before completing late | UI behavior was accepted with Claude direct; Codex Provider and CLI timing still needs a repeatable live matrix |
 | Medium | No clean-machine live matrix for every listed Agent and installer recipe | Upstream CLI versions, authentication, and output formats can diverge from fixtures |
 | Medium | No production Cloud Agent provider or task-oriented Channel Connector is configured | Mock/framework coverage does not establish a production remote integration |
-| Medium | Windows and Intel Mac packages were not built or accepted | V1.0.2 distribution evidence applies only to Apple silicon macOS |
+| Medium | Windows and Intel Mac packages were not built or accepted | V1.0.3 distribution evidence applies only to Apple silicon macOS |
 | Low | No comprehensive automated visual-regression, accessibility, or long-history performance suite | Responsive, assistive-technology, and large-history risks still require additional validation |
 
 ## Documentation Checks

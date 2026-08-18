@@ -28,7 +28,7 @@ Agent 管理面板提供经过白名单约束的安装入口。安装命令和�
 
 ## 首次启动与本地 Agent 检测
 
-V1.0.2 GitHub 预发布使用 ad-hoc 临时签名，不使用 Apple Developer ID，也不提交 Apple 公证。
+V1.0.3 GitHub 预发布使用 ad-hoc 临时签名，不使用 Apple Developer ID，也不提交 Apple 公证。
 如果 macOS 首次启动时拦截候选应用，请打开
 “系统设置 → 隐私与安全性”，找到 Meldwork 的拦截提示，点击“仍要打开 / Open Anyway”，
 再确认启动。
@@ -137,7 +137,7 @@ npm run dist
 npm run dist:public
 ```
 
-`pack` 用于生成未打包应用并验证 Electron 产物；`dist` 生成 V1.0.2 GitHub 预发布候选使用的 ad-hoc 签名 DMG 和 ZIP。这些产物不具备 Developer ID 信任链且未公证，不能声称通过 Gatekeeper。
+`pack` 用于生成未打包应用并验证 Electron 产物；`dist` 生成 V1.0.3 GitHub 预发布候选使用的 ad-hoc 签名 DMG 和 ZIP。这些产物不具备 Developer ID 信任链且未公证，不能声称通过 Gatekeeper。
 
 `dist:public` 是未来正式签名公开发行的专用命令：它要求
 Developer ID 证书和完整公证凭据，强制代码签名，在签名后校验永久 Bundle ID、Team ID 与

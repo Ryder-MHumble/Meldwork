@@ -1,10 +1,10 @@
-# Meldwork V1.0.2 预发布与分发边界
+# Meldwork V1.0.3 预发布与分发边界
 
-Meldwork-V1.0.2 对应桌面包版本 `0.1.2`，当前验证目标是 Apple silicon macOS。该版本作为 GitHub prerelease 分发，使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。它不能被描述为通过 Gatekeeper 的正式 macOS 发行版；首次启动可能需要在“系统设置 → 隐私与安全性”中选择“仍要打开 / Open Anyway”。
+Meldwork-V1.0.3 对应桌面包版本 `0.1.3`，当前验证目标是 Apple silicon macOS。该版本作为 GitHub prerelease 分发，使用 ad-hoc 临时签名，没有 Apple Developer ID 签名，也未提交 Apple 公证。它不能被描述为通过 Gatekeeper 的正式 macOS 发行版；首次启动可能需要在“系统设置 → 隐私与安全性”中选择“仍要打开 / Open Anyway”。
 
 ## 当前产品合同
 
-V1.0.2 是一个本地优先的多 Agent Work Cell，由用户明确选择参与 Agent、工作目录和写入权限。
+V1.0.3 是一个本地优先的多 Agent Work Cell，由用户选择参与 Agent、工作目录和写入权限。在群聊并发回复模式中，未显式指定 Agent 代表调用群聊全部成员。
 
 - 直接会话保留本地历史、附件、Skill、Provider、受控权限、兼容的原生 Session 和脱敏运行事件。
 - 群聊“并发回复”在调度前为所有已选 Agent 冻结同一份任务快照，保留全部成员，并在批次屏障后按稳定顺序提交独立回复。
@@ -16,7 +16,7 @@ V1.0.2 是一个本地优先的多 Agent Work Cell，由用户明确选择参与
 
 当前不承诺从大规模候选池自动选人组队、生产级 Cloud/Channel Agent、跨用户远程协作、企业 RBAC/治理、Outcome Network，也不承诺目录中每个 Agent 都已通过实时发布认证。
 
-## V1.0.2 预发布产物
+## V1.0.3 预发布产物
 
 DMG、ZIP 和 `SHA256SUMS.txt` 来自最终源码状态和同一次 `npm --prefix desktop run dist` 构建。Release Notes 与远端资产使用该批次的校验值，不复用任何更早候选产物。
 
@@ -24,10 +24,10 @@ DMG、ZIP 和 `SHA256SUMS.txt` 来自最终源码状态和同一次 `npm --prefi
 
 ## 验收状态
 
-- 前端测试 `302/302`、桌面测试 `1335/1335` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。
+- 前端测试 `306/306`、桌面测试 `1338/1338` 通过；确定性 Eval Harness 共 `6` 个案例、`18` 个结果通过。
 - Web 与 Electron renderer 两个构建、Electron `pack`、`dist`、DMG/ZIP 完整性检查和 `git diff --check` 通过。
-- Hermes 实时流式与工具生命周期通过；Manual V4 已有 Codex、Claude、Hermes 完成证据，Auto Discussion V4 已有 Codex、Claude 完成证据。OpenClaw 最新实时运行以 `LOCAL_AGENT_PROCESS_FAILED` 安全失败，因此只声明协议夹具和托管运行时测试通过，不声明 OpenClaw 实时认证通过。
-- `360 x 800` 群聊与私聊回到底部、Trace、消息操作和停止耐久性验收通过。一次 Codex 私聊运行超过 300 秒观察窗口后才迟到完成，最终 UI 验收使用 Claude 私聊并保留该实时延迟边界。
+- V1.0.2 的 Hermes 实时流式与工具生命周期证据继续适用于未变更路径；Manual V4 已有 Codex、Claude、Hermes 完成证据，Auto Discussion V4 已有 Codex、Claude 完成证据。V1.0.3 未重新执行全部实时 Agent 矩阵。OpenClaw 最新实时运行以 `LOCAL_AGENT_PROCESS_FAILED` 安全失败，因此只声明协议夹具和托管运行时测试通过，不声明 OpenClaw 实时认证通过。
+- `360 x 800` 群聊与私聊回到底部、Trace、消息操作和停止耐久性验收通过。打包应用进一步确认未使用 `@` 时会解析为群聊全部 Agent，并确认有限轮与不限轮输入框使用同一表面样式。一次 Codex 私聊运行超过 300 秒观察窗口后才迟到完成，最终 UI 验收使用 Claude 私聊并保留该实时延迟边界。
 - 以上验证不覆盖所有目录 Agent、安装配方、上游版本或操作系统。该版本仍为 ad-hoc 签名，未使用 Apple Developer ID，也未提交 Apple 公证。
 
 完整的自动化证据、实时 Agent 边界和剩余风险见[Verification And Test Coverage](tests.md)。
