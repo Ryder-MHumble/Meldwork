@@ -75,6 +75,7 @@ const FINAL_OUTPUT_PARSERS = Object.freeze({
   codex: parseCodexOutput,
   openclaw: stdout => ({ text: normalizeOpenClawOutput(stdout), sessionRef: '' }),
   workbuddy: parseWorkBuddyOutput,
+  pi: parseOpenCodeOutput,
   kimi: parseKimiOutput,
   mimo: parseMimoOutput,
   claude: parseClaudeQwenOutput,
@@ -353,6 +354,21 @@ const OPENCODE_JSON_EVENTS_PROFILE = profile({
   createFinalOutputAccumulator: createFinalOutputAccumulator('opencode'),
 })
 
+const PI_JSON_EVENTS_PROFILE = profile({
+  profileId: 'pi-json-events-v1',
+  protocol: 'pi-json-events',
+  framing: 'jsonl',
+  source: 'stdout',
+  capabilities: {
+    answerMode: 'delta', tools: NO_TOOL_LIFECYCLE,
+    plan: false, reasoning: false, session: true, terminal: true,
+  },
+  createDecoder: createJsonLineParser,
+  createState: createStatelessRuntimeState,
+  mapEvent: openCodeJsonRuntimeEvents,
+  createFinalOutputAccumulator: createFinalOutputAccumulator('pi'),
+})
+
 const OPENCLAW_TERMINAL_DOCUMENT_PROFILE = profile({
   profileId: 'openclaw-terminal-document-v1',
   protocol: 'openclaw-terminal-document',
@@ -436,6 +452,7 @@ const CONNECTOR_EVENT_PROFILES = Object.freeze({
   hermes: ACP_JSONRPC_PROFILE,
   openclaw: ACP_JSONRPC_PROFILE,
   workbuddy: WORKBUDDY_TERMINAL_RESULT_PROFILE,
+  pi: PI_JSON_EVENTS_PROFILE,
   kimi: ACP_JSONRPC_PROFILE,
   mimo: MIMO_JSON_EVENTS_PROFILE,
   claude: ANTHROPIC_STREAM_JSON_PROFILE,
@@ -450,6 +467,7 @@ const TRANSPORT_EVENT_PROFILES = Object.freeze({
   openclaw: Object.freeze({ legacy: OPENCLAW_TERMINAL_DOCUMENT_PROFILE }),
   kimi: Object.freeze({ 'stream-json': KIMI_STREAM_JSON_PROFILE }),
   mimo: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
+  pi: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
   opencode: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
   workbuddy: Object.freeze({ 'stream-json': ANTHROPIC_STREAM_JSON_PROFILE }),
 })

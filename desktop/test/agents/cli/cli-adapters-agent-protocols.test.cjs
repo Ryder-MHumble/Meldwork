@@ -1596,6 +1596,16 @@ test('every supported built-in Agent produces an explicit completion outcome', (
         part: { type: 'step-finish', reason: 'stop' },
       }),
     ].join('\n'),
+    pi: [
+      JSON.stringify({
+        type: 'text', sessionID: 'pi-session',
+        part: { type: 'text', text: 'Pi Agent reply' },
+      }),
+      JSON.stringify({
+        type: 'step_finish', sessionID: 'pi-session',
+        part: { type: 'step-finish', reason: 'stop' },
+      }),
+    ].join('\n'),
     claude: JSON.stringify({
       type: 'result', result: 'Claude reply', session_id: 'claude-session',
     }),
@@ -1652,6 +1662,7 @@ test('recorded fixtures cover every supported built-in output schema', () => {
     workbuddy: 'WorkBuddy fixture reply',
     kimi: 'Kimi fixture reply',
     mimo: 'MiMo fixture reply',
+    pi: 'Pi Agent fixture reply',
     claude: 'Claude fixture reply',
     gemini: 'Gemini fixture reply',
     opencode: 'OpenCode fixture reply',

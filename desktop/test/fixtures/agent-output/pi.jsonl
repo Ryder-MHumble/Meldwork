@@ -1,0 +1,2 @@
+{"type":"text","sessionID":"pi-fixture-session","part":{"type":"text","text":"Pi Agent fixture reply"}}
+{"type":"step_finish","sessionID":"pi-fixture-session","part":{"type":"step-finish","reason":"stop"}}

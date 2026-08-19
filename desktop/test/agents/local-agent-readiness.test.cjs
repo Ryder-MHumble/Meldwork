@@ -170,6 +170,7 @@ test('native readiness recognizes credential files for every supported CLI', () 
     ['hermes', ['.hermes', 'auth.json'], { access_token: 'hermes-secret' }],
     ['openclaw', ['.openclaw', 'openclaw.json'], { gateway: { auth: { token: 'claw-secret' } } }],
     ['workbuddy', ['.workbuddy', 'models.json'], [{ apiKey: 'workbuddy-secret' }]],
+    ['pi', ['.pi', 'auth.json'], { access_token: 'pi-secret' }],
     ['kimi', ['.kimi-code', 'credentials', 'kimi-code.json'], { refresh_token: 'kimi-secret' }],
     ['claude', ['.claude', '.credentials.json'], { oauth: { accessToken: 'claude-secret' } }],
     ['qwen', ['.qwen', 'oauth_creds.json'], { access_token: 'qwen-secret' }],

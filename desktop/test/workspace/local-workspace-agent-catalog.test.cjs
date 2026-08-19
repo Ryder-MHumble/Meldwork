@@ -109,6 +109,33 @@ test('incompatible Agents remain installed but unavailable with ready credential
   assert.deepEqual(events, ['emit', 'snapshot'])
 })
 
+test('locally detected compatible Agents remain invocable when native configuration cannot be inspected', async () => {
+  const { agents, catalog } = fixture({
+    detectAgents: async () => [{
+      kind: 'pi', executable: '/tmp/pi', compatibilityState: 'compatible',
+    }, {
+      kind: 'opencode', executable: '/tmp/opencode', compatibilityState: 'compatible',
+    }],
+  })
+
+  await catalog.refresh()
+
+  assert.deepEqual(agents().map(agent => ({
+    kind: agent.kind,
+    configured: agent.configured,
+    authenticated: agent.authenticated,
+    invocable: agent.invocable,
+    available: agent.available,
+    availabilitySource: agent.availabilitySource,
+  })), [{
+    kind: 'pi', configured: true, authenticated: true, invocable: true,
+    available: true, availabilitySource: 'local-cli',
+  }, {
+    kind: 'opencode', configured: true, authenticated: true, invocable: true,
+    available: true, availabilitySource: 'local-cli',
+  }])
+})
+
 test('shared Provider readiness cannot override a recorded runtime auth failure', async () => {
   const { agents, catalog, events, state } = fixture({
     detectAgents: async () => [{

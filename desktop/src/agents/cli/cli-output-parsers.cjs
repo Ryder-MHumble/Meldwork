@@ -10,7 +10,7 @@ const MAX_RUNTIME_JSON_PENDING_CHARS = 1024 * 1024
 const MAX_STRUCTURED_JSON_BYTES = 64 * 1024 * 1024
 const MAX_STRUCTURED_TEXT_CHARS = 1024 * 1024
 const STRUCTURED_JSONL_KINDS = new Set([
-  'codex', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'codex', 'workbuddy', 'pi', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
 ])
 const STRUCTURED_DOCUMENT_KINDS = new Set(['openclaw', 'opencodereview'])
 function parseCodexOutput(stdout) {
@@ -154,7 +154,7 @@ function ingestStructuredEvent(state, event) {
     return
   }
 
-  if (['mimo', 'opencode'].includes(state.kind)) {
+  if (['pi', 'mimo', 'opencode'].includes(state.kind)) {
     if (typeof event.sessionID === 'string') state.sessionRef = event.sessionID
     if (event.type === 'text' && event.part?.type === 'text'
         && typeof event.part.text === 'string') {
@@ -718,7 +718,7 @@ function classifyCliOutcome(kind, stdout) {
         : 'partial',
     }
   }
-  if (['mimo', 'opencode'].includes(kind)) {
+  if (['pi', 'mimo', 'opencode'].includes(kind)) {
     const finish = events.findLast(event => (
       event?.type === 'step_finish' || event?.part?.type === 'step-finish'
     ))

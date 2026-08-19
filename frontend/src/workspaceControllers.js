@@ -48,6 +48,8 @@ export function createWorkspaceControllers({
     selectedGroupId: app.selectedGroupId,
     sidebarAgentSessionListId: conversationNavigation.sidebarAgentSessionListId,
     sidebarAgents: agentCatalog.sidebarAgents,
+    sidebarAgentsCollapsed: app.sidebarAgentsCollapsed,
+    sidebarGroupsCollapsed: app.sidebarGroupsCollapsed,
     sidebarCollapsed: app.sidebarCollapsed,
     sidebarDeleteGroup: app.sidebarDeleteGroup,
     sidebarDeletePopoverStyle: app.sidebarDeletePopoverStyle,

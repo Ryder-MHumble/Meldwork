@@ -108,12 +108,12 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
         compatibilityState: 'compatible', incompatibilityReason: '', incompatibilityProbe: '',
       },
       {
-        kind: 'gemini', version: '', executable: '/tmp/gemini',
+        kind: 'pi', version: '', executable: '/tmp/pi',
         compatibilityState: 'incompatible',
         incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
         incompatibilityProbe: '',
         resolvedVersion: '',
-        supportedVersionRange: '0.53.1',
+        supportedVersionRange: '0.1.0..0.1.999',
         privateMetadata: 'must-not-cross-ipc',
       },
     ],
@@ -122,8 +122,8 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   const result = await service.catalog()
   assert.equal(result.platform, 'darwin')
   assert.deepEqual(result.agents.map(agent => agent.kind), [
-    'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'codex', 'claude',
-    'gemini', 'opencode', 'qwen', 'opencodereview',
+    'codex', 'claude', 'hermes', 'workbuddy', 'openclaw', 'pi',
+    'opencode', 'opencodereview', 'kimi', 'mimo', 'qwen',
   ])
   assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').installed, true)
   assert.equal(result.agents.find(agent => agent.kind === 'workbuddy').providerCompatible, true)
@@ -133,17 +133,17 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
     'supported')
   assert.equal(result.agents.find(agent => agent.kind === 'kimi').providerCompatible, false)
   assert.equal(result.agents.find(agent => agent.kind === 'kimi').providerSupport, 'native-config')
-  assert.equal(result.agents.find(agent => agent.kind === 'gemini').installed, true)
-  assert.equal(result.agents.find(agent => agent.kind === 'gemini').version, '')
+  assert.equal(result.agents.find(agent => agent.kind === 'pi').installed, true)
+  assert.equal(result.agents.find(agent => agent.kind === 'pi').version, '')
   assert.deepEqual(
-    Object.fromEntries(Object.entries(result.agents.find(agent => agent.kind === 'gemini'))
+    Object.fromEntries(Object.entries(result.agents.find(agent => agent.kind === 'pi'))
       .filter(([key]) => [
         'resolvedVersion', 'supportedVersionRange', 'compatibilityState',
         'incompatibilityReason', 'incompatibilityProbe',
       ].includes(key))),
     {
       resolvedVersion: '',
-      supportedVersionRange: '0.53.1',
+      supportedVersionRange: '0.1.0..0.1.999',
       compatibilityState: 'incompatible',
       incompatibilityReason: 'LOCAL_AGENT_VERSION_UNSUPPORTED',
       incompatibilityProbe: '',
@@ -165,7 +165,7 @@ test('catalog reports installed, recommended and provider-compatible Agents', as
   )
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installSupported, true)
   assert.equal(result.agents.find(agent => agent.kind === 'openclaw').installErrorCode, '')
-  assert.equal(result.agents.find(agent => agent.kind === 'gemini').providerSupport, 'native-config')
+  assert.equal(result.agents.find(agent => agent.kind === 'pi').providerSupport, 'native-config')
   assert.equal(result.agents.find(agent => agent.kind === 'opencode').providerCompatible, false)
   assert.equal(result.agents.find(agent => agent.kind === 'opencodereview').providerCompatible, true)
   assert.equal(JSON.stringify(result).includes('/tmp/codebuddy'), false)
@@ -284,6 +284,8 @@ test('recipes are fixed by Agent and platform', () => {
       assert.equal(npmPackageSpec(recipe).includes('@latest'), false, kind)
     }
   }
+  assert.equal(installRecipe('pi', 'darwin'), null)
+  assert.equal(installRecipe('pi', 'win32'), null)
   const darwinHermes = installRecipe('hermes', 'darwin')
   const windowsHermes = installRecipe('hermes', 'win32')
   assert.equal(darwinHermes.type, 'script')

@@ -79,6 +79,10 @@ const AGENT_RUNTIME_CAPABILITIES = Object.freeze({
     domains: ['general', 'software-development', 'document-production'],
     toolClasses: ['filesystem', 'shell'],
   }),
+  pi: generalProfile({
+    domains: ['general', 'software-development'],
+    toolClasses: ['filesystem', 'shell'],
+  }),
   kimi: generalProfile({
     domains: ['general', 'software-development', 'research', 'document-production'],
     toolClasses: ['filesystem', 'shell'],

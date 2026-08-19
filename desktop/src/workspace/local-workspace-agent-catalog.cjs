@@ -94,14 +94,18 @@ class LocalWorkspaceAgentCatalog {
       const installed = true
       const versionIdentified = agentVersionIdentified(agent)
       const compatible = agentCompatible(agent)
+      const nativeConfigurationUnknown = !runtimeMissing
+        && nativeState === 'unknown'
+        && native?.source !== 'native-runtime-unavailable'
       const configured = sharedProviderReady
         || nativeState === 'ready'
         || native?.source === 'native-auth-status'
         || native?.source === 'native-runtime-unavailable'
         || verifiedReady
         || runtimeMissing
+        || nativeConfigurationUnknown
       const authenticated = !runtimeMissing && nativeState !== 'missing' && (
-        sharedProviderReady || nativeState === 'ready' || verifiedReady
+        sharedProviderReady || nativeState === 'ready' || verifiedReady || nativeConfigurationUnknown
       )
       const runtimePrerequisitesReady = native?.source !== 'native-runtime-unavailable'
       const invocable = installed && versionIdentified && compatible && configured
@@ -121,6 +125,7 @@ class LocalWorkspaceAgentCatalog {
       else if (nativeState === 'missing') availabilitySource = native.source || 'none'
       else if (nativeReadySource) availabilitySource = nativeReadySource
       else if (verifiedReady) availabilitySource = 'verified-run'
+      else if (nativeConfigurationUnknown) availabilitySource = 'local-cli'
       return {
         ...agent,
         installed,

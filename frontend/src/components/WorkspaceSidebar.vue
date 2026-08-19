@@ -29,8 +29,8 @@
         :aria-expanded="sidebarCollapsed ? 'false' : 'true'"
         @click="sidebarCollapsed = !sidebarCollapsed"
       >
-        <ChevronForwardOutline v-if="sidebarCollapsed" />
-        <ChevronBackOutline v-else />
+        <MenuOutline v-if="sidebarCollapsed" />
+        <ContractOutline v-else />
       </button>
     </header>
 
@@ -41,192 +41,210 @@
 
     <nav class="conversation-nav" :aria-label="t('nav.conversations')">
       <section class="nav-section">
-        <div class="nav-heading">
+        <button
+          class="nav-heading"
+          type="button"
+          :title="sidebarAgentsCollapsed ? t('nav.expandAgents') : t('nav.collapseAgents')"
+          :aria-expanded="String(!sidebarAgentsCollapsed)"
+          aria-controls="sidebar-agent-list"
+          @click="sidebarAgentsCollapsed = !sidebarAgentsCollapsed"
+        >
           <span>{{ t('nav.sidebarAgents') }}</span>
-        </div>
-        <article v-for="agent in sidebarAgents" :key="agent.kind" class="sidebar-agent">
-          <header class="sidebar-agent-header">
-            <button
-              class="sidebar-agent-main"
-              type="button"
-              :title="agent.label"
-              :disabled="isDirectCreationPending(agent.kind)"
-              :aria-expanded="directGroupsFor(agent.kind).length ? String(isSidebarAgentExpanded(agent.kind)) : undefined"
-              :aria-controls="directGroupsFor(agent.kind).length ? sidebarAgentSessionListId(agent.kind) : undefined"
-              @click="handleSidebarAgentMain(agent)"
-            >
-              <img :src="agent.logo" :alt="agent.label" />
-              <span>
-                <strong>{{ agent.label }}</strong>
-                <small>
-                  {{ directGroupsFor(agent.kind).length
-                    ? t('nav.agentSessions', { count: directGroupsFor(agent.kind).length })
-                    : t('nav.noAgentSessions') }}
-                </small>
-              </span>
-            </button>
-            <button
-              class="sidebar-agent-new"
-              type="button"
-              :title="t('nav.newDirect', { agent: agent.label })"
-              :aria-label="t('nav.newDirect', { agent: agent.label })"
-              :disabled="!agent.ready || isDirectCreationPending(agent.kind)"
-              @click="createDirectSession(agent)"
-            >
-              <AddOutline />
-            </button>
-          </header>
-          <div
-            v-if="directGroupsFor(agent.kind).length && isSidebarAgentExpanded(agent.kind)"
-            :id="sidebarAgentSessionListId(agent.kind)"
-            class="direct-session-list"
-          >
+        </button>
+        <div v-if="!sidebarAgentsCollapsed" id="sidebar-agent-list">
+          <article v-for="agent in sidebarAgents" :key="agent.kind" class="sidebar-agent">
+            <header class="sidebar-agent-header">
+              <button
+                class="sidebar-agent-main"
+                type="button"
+                :title="agent.label"
+                :disabled="isDirectCreationPending(agent.kind)"
+                :aria-expanded="directGroupsFor(agent.kind).length ? String(isSidebarAgentExpanded(agent.kind)) : undefined"
+                :aria-controls="directGroupsFor(agent.kind).length ? sidebarAgentSessionListId(agent.kind) : undefined"
+                @click="handleSidebarAgentMain(agent)"
+              >
+                <img :src="agent.logo" :alt="agent.label" />
+                <span>
+                  <strong>{{ agent.label }}</strong>
+                  <small>
+                    {{ directGroupsFor(agent.kind).length
+                      ? t('nav.agentSessions', { count: directGroupsFor(agent.kind).length })
+                      : t('nav.noAgentSessions') }}
+                  </small>
+                </span>
+              </button>
+              <button
+                class="sidebar-agent-new"
+                type="button"
+                :title="t('nav.newDirect', { agent: agent.label })"
+                :aria-label="t('nav.newDirect', { agent: agent.label })"
+                :disabled="!agent.ready || isDirectCreationPending(agent.kind)"
+                @click="createDirectSession(agent)"
+              >
+                <AddOutline />
+              </button>
+            </header>
             <div
-              v-for="group in visibleDirectGroupsFor(agent.kind)"
-              :key="group.id"
-              class="direct-session-row"
-              :class="{ active: isSelectedConversation(group) }"
+              v-if="directGroupsFor(agent.kind).length && isSidebarAgentExpanded(agent.kind)"
+              :id="sidebarAgentSessionListId(agent.kind)"
+              class="direct-session-list"
             >
-              <button
-                class="direct-session-open"
-                type="button"
-                :title="t('nav.openDirect', { name: groupName(group) })"
-                :aria-current="isSelectedConversation(group) ? 'page' : undefined"
-                @click="selectGroup(group.id)"
+              <div
+                v-for="group in visibleDirectGroupsFor(agent.kind)"
+                :key="group.id"
+                class="direct-session-row"
+                :class="{ active: isSelectedConversation(group) }"
               >
-                <span>{{ groupName(group) }}</span>
-              </button>
-              <span
-                v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
-                class="run-mark"
-                :title="t('conversation.runningGeneric')"
-              >
-                <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
-              </span>
-              <span
-                v-else-if="hasFinishedDirectRun(group.id) && !isSelectedConversation(group)"
-                class="run-finished-mark"
-                :title="t('nav.runFinished')"
-              >
-                <CheckmarkCircleOutline />
-              </span>
-              <span v-else class="direct-session-spacer" />
-              <button
-                v-if="!isGroupRunning(group.id) || isSelectedConversation(group)"
-                class="direct-session-action"
-                type="button"
-                :title="t('nav.renameDirect', { name: groupName(group) })"
-                :aria-label="t('nav.renameDirect', { name: groupName(group) })"
-                :disabled="isGroupRunning(group.id)"
-                @click="openConversationRename(group)"
-              >
-                <PencilOutline />
-              </button>
-              <span v-if="!isGroupRunning(group.id) || isSelectedConversation(group)" class="sidebar-delete-control">
                 <button
-                  class="direct-session-action danger"
+                  class="direct-session-open"
                   type="button"
-                  :title="t('nav.deleteDirect', { name: groupName(group) })"
-                  :aria-label="t('nav.deleteDirect', { name: groupName(group) })"
-                  :disabled="isGroupRunning(group.id)"
-                  @click="openSidebarConversationDelete(group, $event)"
+                  :title="t('nav.openDirect', { name: groupName(group) })"
+                  :aria-current="isSelectedConversation(group) ? 'page' : undefined"
+                  @click="selectGroup(group.id)"
                 >
-                  <TrashOutline />
+                  <span>{{ groupName(group) }}</span>
                 </button>
-              </span>
+                <span
+                  v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
+                  class="run-mark"
+                  :title="t('conversation.runningGeneric')"
+                >
+                  <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
+                </span>
+                <span
+                  v-else-if="hasFinishedDirectRun(group.id) && !isSelectedConversation(group)"
+                  class="run-finished-mark"
+                  :title="t('nav.runFinished')"
+                >
+                  <CheckmarkCircleOutline />
+                </span>
+                <span v-else class="direct-session-spacer" />
+                <button
+                  v-if="!isGroupRunning(group.id) || isSelectedConversation(group)"
+                  class="direct-session-action"
+                  type="button"
+                  :title="t('nav.renameDirect', { name: groupName(group) })"
+                  :aria-label="t('nav.renameDirect', { name: groupName(group) })"
+                  :disabled="isGroupRunning(group.id)"
+                  @click="openConversationRename(group)"
+                >
+                  <PencilOutline />
+                </button>
+                <span v-if="!isGroupRunning(group.id) || isSelectedConversation(group)" class="sidebar-delete-control">
+                  <button
+                    class="direct-session-action danger"
+                    type="button"
+                    :title="t('nav.deleteDirect', { name: groupName(group) })"
+                    :aria-label="t('nav.deleteDirect', { name: groupName(group) })"
+                    :disabled="isGroupRunning(group.id)"
+                    @click="openSidebarConversationDelete(group, $event)"
+                  >
+                    <TrashOutline />
+                  </button>
+                </span>
+              </div>
+              <button
+                v-if="hasMoreDirectGroups(agent.kind)"
+                class="sidebar-more-button"
+                type="button"
+                :title="t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessDirectSessions' : 'nav.moreDirectSessions', {
+                  agent: agent.label,
+                  count: remainingDirectGroupsCount(agent.kind),
+                })"
+                :aria-label="t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessDirectSessions' : 'nav.moreDirectSessions', {
+                  agent: agent.label,
+                  count: remainingDirectGroupsCount(agent.kind),
+                })"
+                :aria-expanded="String(isDirectSessionListExpanded(agent.kind))"
+                @click="toggleDirectSessionListExpanded(agent.kind)"
+              >
+                <span>{{ t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessItems' : 'nav.moreItems') }}</span>
+              </button>
             </div>
-            <button
-              v-if="hasMoreDirectGroups(agent.kind)"
-              class="sidebar-more-button"
-              type="button"
-              :title="t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessDirectSessions' : 'nav.moreDirectSessions', {
-                agent: agent.label,
-                count: remainingDirectGroupsCount(agent.kind),
-              })"
-              :aria-label="t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessDirectSessions' : 'nav.moreDirectSessions', {
-                agent: agent.label,
-                count: remainingDirectGroupsCount(agent.kind),
-              })"
-              :aria-expanded="String(isDirectSessionListExpanded(agent.kind))"
-              @click="toggleDirectSessionListExpanded(agent.kind)"
-            >
-              <span>{{ t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessItems' : 'nav.moreItems') }}</span>
-            </button>
-          </div>
-        </article>
-        <p v-if="!sidebarAgents.length" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
+          </article>
+        </div>
+        <p v-if="!sidebarAgents.length && !sidebarAgentsCollapsed" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
       </section>
 
       <section class="nav-section group-nav-section">
-        <div class="nav-heading">
+        <button
+          class="nav-heading"
+          type="button"
+          :title="sidebarGroupsCollapsed ? t('nav.expandGroups') : t('nav.collapseGroups')"
+          :aria-expanded="String(!sidebarGroupsCollapsed)"
+          aria-controls="sidebar-group-list"
+          @click="sidebarGroupsCollapsed = !sidebarGroupsCollapsed"
+        >
           <span>{{ t('nav.groups') }}</span>
-        </div>
-        <div v-if="groupGroups.length" class="group-conversation-list">
-          <div
-            v-for="group in visibleGroupGroups"
-            :key="group.id"
-            class="group-conversation-row"
-            :class="{ active: isSelectedConversation(group) }"
-          >
-            <button
-              class="conversation-link"
-              type="button"
-              :title="t('nav.openGroup', { name: groupName(group) })"
-              :aria-current="isSelectedConversation(group) ? 'page' : undefined"
-              @click="selectGroup(group.id)"
+        </button>
+        <div v-if="!sidebarGroupsCollapsed" id="sidebar-group-list">
+          <div v-if="groupGroups.length" class="group-conversation-list">
+            <div
+              v-for="group in visibleGroupGroups"
+              :key="group.id"
+              class="group-conversation-row"
+              :class="{ active: isSelectedConversation(group) }"
             >
-              <span class="group-avatar"><ChatbubblesOutline /></span>
-              <span>{{ groupName(group) }}</span>
-              <span
-                v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
-                class="run-mark"
-                :title="t('conversation.runningGeneric')"
-              >
-                <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
-              </span>
-            </button>
-            <span v-if="!isGroupRunning(group.id) || isSelectedConversation(group)" class="group-conversation-actions">
               <button
-                class="direct-session-action"
+                class="conversation-link"
                 type="button"
-                :title="t('nav.renameGroup', { name: groupName(group) })"
-                :aria-label="t('nav.renameGroup', { name: groupName(group) })"
-                :disabled="isGroupRunning(group.id)"
-                @click="openConversationRename(group)"
+                :title="t('nav.openGroup', { name: groupName(group) })"
+                :aria-current="isSelectedConversation(group) ? 'page' : undefined"
+                @click="selectGroup(group.id)"
               >
-                <PencilOutline />
-              </button>
-              <span class="sidebar-delete-control">
-                <button
-                  class="direct-session-action danger"
-                  type="button"
-                  :title="t('nav.deleteGroup', { name: groupName(group) })"
-                  :aria-label="t('nav.deleteGroup', { name: groupName(group) })"
-                  :disabled="isGroupRunning(group.id)"
-                  @click="openSidebarConversationDelete(group, $event)"
+                <span class="group-avatar"><ChatbubblesOutline /></span>
+                <span>{{ groupName(group) }}</span>
+                <span
+                  v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
+                  class="run-mark"
+                  :title="t('conversation.runningGeneric')"
                 >
-                  <TrashOutline />
+                  <span class="run-agent-bars" aria-hidden="true"><i /><i /><i /></span>
+                </span>
+              </button>
+              <span v-if="!isGroupRunning(group.id) || isSelectedConversation(group)" class="group-conversation-actions">
+                <button
+                  class="direct-session-action"
+                  type="button"
+                  :title="t('nav.renameGroup', { name: groupName(group) })"
+                  :aria-label="t('nav.renameGroup', { name: groupName(group) })"
+                  :disabled="isGroupRunning(group.id)"
+                  @click="openConversationRename(group)"
+                >
+                  <PencilOutline />
                 </button>
+                <span class="sidebar-delete-control">
+                  <button
+                    class="direct-session-action danger"
+                    type="button"
+                    :title="t('nav.deleteGroup', { name: groupName(group) })"
+                    :aria-label="t('nav.deleteGroup', { name: groupName(group) })"
+                    :disabled="isGroupRunning(group.id)"
+                    @click="openSidebarConversationDelete(group, $event)"
+                  >
+                    <TrashOutline />
+                  </button>
+                </span>
               </span>
-            </span>
+            </div>
+            <button
+              v-if="hasMoreGroupGroups"
+              class="sidebar-more-button"
+              type="button"
+              :title="t(groupSessionListExpanded ? 'nav.lessGroups' : 'nav.moreGroups', {
+                count: remainingGroupGroupsCount,
+              })"
+              :aria-label="t(groupSessionListExpanded ? 'nav.lessGroups' : 'nav.moreGroups', {
+                count: remainingGroupGroupsCount,
+              })"
+              :aria-expanded="String(groupSessionListExpanded)"
+              @click="toggleGroupSessionListExpanded"
+            >
+              <span>{{ t(groupSessionListExpanded ? 'nav.lessItems' : 'nav.moreItems') }}</span>
+            </button>
           </div>
-          <button
-            v-if="hasMoreGroupGroups"
-            class="sidebar-more-button"
-            type="button"
-            :title="t(groupSessionListExpanded ? 'nav.lessGroups' : 'nav.moreGroups', {
-              count: remainingGroupGroupsCount,
-            })"
-            :aria-label="t(groupSessionListExpanded ? 'nav.lessGroups' : 'nav.moreGroups', {
-              count: remainingGroupGroupsCount,
-            })"
-            :aria-expanded="String(groupSessionListExpanded)"
-            @click="toggleGroupSessionListExpanded"
-          >
-            <span>{{ t(groupSessionListExpanded ? 'nav.lessItems' : 'nav.moreItems') }}</span>
-          </button>
+          <p v-else class="nav-empty">{{ t('nav.noGroups') }}</p>
         </div>
-        <p v-if="!groupGroups.length" class="nav-empty">{{ t('nav.noGroups') }}</p>
       </section>
     </nav>
 
@@ -377,9 +395,9 @@ import {
   AddOutline,
   ChatbubblesOutline,
   CheckmarkCircleOutline,
-  ChevronBackOutline,
-  ChevronForwardOutline,
+  ContractOutline,
   LanguageOutline,
+  MenuOutline,
   MoonOutline,
   PencilOutline,
   PeopleOutline,
@@ -429,6 +447,8 @@ const {
   selectedGroupId,
   sidebarAgentSessionListId,
   sidebarAgents,
+  sidebarAgentsCollapsed,
+  sidebarGroupsCollapsed,
   sidebarCollapsed,
   sidebarDeleteGroup,
   sidebarDeletePopoverStyle,

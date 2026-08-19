@@ -5,7 +5,7 @@ import { AGENTS } from '../../catalog.js'
 
 function baseSnapshot() {
   return {
-    agents: AGENTS.slice(0, 2).map(agent => ({
+    agents: AGENTS.filter(agent => ['codex', 'hermes'].includes(agent.kind)).map(agent => ({
       kind: agent.kind,
       installed: true,
       available: true,

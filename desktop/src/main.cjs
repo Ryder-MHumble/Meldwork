@@ -77,7 +77,7 @@ const {
   providerOptionsFor,
 } = require('./providers/provider-options.cjs')
 const LOCAL_AGENT_KINDS = new Set([
-  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   'opencodereview',
 ])
 const QUIT_CLEANUP_TIMEOUT_MS = 2500

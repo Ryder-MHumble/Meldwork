@@ -392,7 +392,8 @@ describe('Meldwork workbench', () => {
     await flushPromises()
 
     expect(bridge.agentInstaller.skills.mock.calls.map(([kind]) => kind).sort()).toEqual(['codex', 'hermes'])
-    for (const card of wrapper.findAll('.agent-card').slice(0, 2)) {
+    for (const card of wrapper.findAll('.agent-card')
+      .filter(node => ['Codex', 'Hermes'].some(label => node.text().includes(label)))) {
       expect(card.get('.agent-capability-list').text()).toContain('3 local skills')
     }
     wrapper.unmount()

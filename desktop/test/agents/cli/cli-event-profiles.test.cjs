@@ -46,6 +46,11 @@ const PROFILE_EXPECTATIONS = {
     source: 'stdout', answerMode: 'delta', tools: { start: false, update: false, result: false },
     plan: false, reasoning: false, session: true, terminal: true,
   },
+  pi: {
+    profileId: 'pi-json-events-v1', protocol: 'pi-json-events', framing: 'jsonl',
+    source: 'stdout', answerMode: 'delta', tools: { start: false, update: false, result: false },
+    plan: false, reasoning: false, session: true, terminal: true,
+  },
   claude: {
     profileId: 'anthropic-stream-json-v1', protocol: 'anthropic-stream-json', framing: 'jsonl',
     source: 'stdout', answerMode: 'delta', tools: { start: true, update: true, result: true },
@@ -127,6 +132,11 @@ test('every built-in invocation transport resolves its reusable profile and capa
     {
       kind: 'mimo', options: { invocationTransport: 'json' },
       profileId: 'mimo-json-events-v1', limited: true,
+    },
+    { kind: 'pi', profileId: 'acp-jsonrpc-v1', limited: false },
+    {
+      kind: 'pi', options: { invocationTransport: 'json' },
+      profileId: 'pi-json-events-v1', limited: true,
     },
     { kind: 'claude', profileId: 'anthropic-stream-json-v1', limited: false },
     { kind: 'gemini', profileId: 'gemini-stream-json-v1', limited: false },

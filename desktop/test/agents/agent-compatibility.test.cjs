@@ -78,6 +78,7 @@ test('accepts inclusive release ranges and rejects unvalidated versions', () => 
     ['codex', '0.146.0-alpha.9.3'],
     ['hermes', '0.19.1-beta.1'],
     ['openclaw', '2026.7.1'],
+    ['pi', '0.2.0'],
     ['gemini', '0.53.2'],
     ['opencodereview', '1.8.7'],
   ]) {
@@ -92,9 +93,9 @@ test('accepts inclusive release ranges and rejects unvalidated versions', () => 
 
 test('defines required capability probes for every supported connector', () => {
   assert.deepEqual(Object.keys(AGENT_COMPATIBILITY).sort(), [
-    'claude', 'codex', 'gemini', 'hermes', 'kimi', 'mimo', 'openclaw',
+    'claude', 'codex', 'gemini', 'hermes', 'kimi', 'mimo', 'openclaw', 'pi',
     'opencode', 'opencodereview', 'qwen', 'workbuddy',
-  ])
+  ].sort())
   for (const kind of Object.keys(AGENT_COMPATIBILITY)) {
     assert.ok(capabilityProbes(kind).length > 0, kind)
   }

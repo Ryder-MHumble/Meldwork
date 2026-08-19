@@ -139,6 +139,27 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       eventTransport: 'stream-json',
     }
   }
+  if (kind === 'pi') {
+    if (options.invocationTransport !== 'json') {
+      return {
+        command: executable,
+        args: ['acp', '--pure', '--cwd', workdir],
+        acpMode: options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        eventTransport: 'acp',
+        fallbackTransport: 'json',
+        fallbackSessionPolicy: 'preserve',
+      }
+    }
+    return {
+      command: executable,
+      args: [
+        'run', '--format', 'json',
+        '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        ...(sessionRef ? ['--session', sessionRef] : []),
+      ],
+      promptArg: true,
+    }
+  }
   if (kind === 'kimi') {
     if (options.sandbox !== 'workspace-write') {
       return {

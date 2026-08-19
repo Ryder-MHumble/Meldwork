@@ -10,7 +10,7 @@ const PROVIDER_METADATA = Object.freeze({
   model: 'example-model',
 })
 const PROVIDER_AGENT_KINDS = Object.freeze([
-  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   'opencodereview',
 ])
 

@@ -1453,7 +1453,7 @@ test('every writable built-in conversational Agent can use the shared main-proce
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kinds = [
-    'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi',
+    'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi',
     'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   ]
   options.detectAgents = async () => kinds.map((kind, index) => ({
@@ -1523,7 +1523,7 @@ test('every built-in conversational Agent can generate each media type when targ
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kinds = [
-    'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi',
+    'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi',
     'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   ]
   options.detectAgents = async () => kinds.map((kind, index) => ({
@@ -1889,7 +1889,7 @@ test('every built-in conversational Agent starts a newly targeted group task out
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kinds = [
-    'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi',
+    'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi',
     'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   ]
   options.detectAgents = async () => kinds.map((kind, index) => ({

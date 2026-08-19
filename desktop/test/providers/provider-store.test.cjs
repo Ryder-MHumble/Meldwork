@@ -212,7 +212,7 @@ test('custom preset keeps accepting secure arbitrary and loopback endpoints', (t
 })
 
 for (const kind of [
-  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi', 'mimo',
   'claude', 'gemini', 'opencode', 'qwen', 'opencodereview',
 ]) {
   test(`${kind} Provider endpoints are stored as API roots`, (t) => {

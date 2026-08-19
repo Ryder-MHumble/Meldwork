@@ -5,6 +5,7 @@ const AGENT_VERSION_IDENTITIES = Object.freeze({
   hermes: [/\bhermes(?:\s+agent)?\b/i],
   openclaw: [/\bopenclaw\b/i],
   workbuddy: [/\b(?:workbuddy|codebuddy)\b/i],
+  pi: [/\bpi(?:\s+agent)?\b/i],
   kimi: [/\bkimi(?:\s+code)?\b/i],
   mimo: [/\bmimo(?:\s+code)?\b/i, /\bmimocode\b/i],
   claude: [/\bclaude(?:\s+code)?\b/i],
@@ -18,6 +19,7 @@ const AGENT_EXECUTABLE_NAMES = Object.freeze({
   hermes: ['hermes'],
   openclaw: ['openclaw'],
   workbuddy: ['codebuddy'],
+  pi: ['pi', 'pi-agent', 'piagent'],
   kimi: ['kimi'],
   mimo: ['mimo'],
   claude: ['claude'],
@@ -53,6 +55,9 @@ const AGENT_COMPATIBILITY = Object.freeze({
       '--print', '--output-format', '--permission-mode', '--max-turns', '--resume',
       'json', 'plan', 'acceptEdits',
     ]),
+  ]),
+  pi: profile('0.1.0', '0.1.999', [
+    probe('pi-cli', ['--help'], []),
   ]),
   kimi: profile('0.19.2', '0.32.0', [
     probe('kimi-stream', ['--help'], [

@@ -332,8 +332,8 @@ describe('Meldwork workbench', () => {
         platform: 'darwin',
         agents: AGENTS.map(agent => ({
           kind: agent.kind,
-          installed: agent.kind !== 'gemini',
-          installSupported: true,
+          installed: agent.kind !== 'pi',
+          installSupported: agent.kind !== 'pi',
         })),
       })
       bridge.localAgentProvider.status.mockImplementation(async kind => (
@@ -348,13 +348,13 @@ describe('Meldwork workbench', () => {
     const providerButton = label => wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes(label))
 
-    expect(providerButton('Gemini CLI').text()).toContain('Not installed')
+    expect(providerButton('Pi Agent').text()).toContain('Not installed')
     expect(providerButton('Hermes').text()).toContain('Sign-in required')
     expect(providerButton('Codex').text()).toContain('Sign-in not verified')
     expect(providerButton('Kimi Code').text()).toContain('Native configuration active')
     expect(providerButton('Qwen Code').text()).toContain('OpenRouter override active')
 
-    await providerButton('Gemini CLI').trigger('click')
+    await providerButton('Pi Agent').trigger('click')
     await flushPromises()
     const officialSource = wrapper.findAll('.provider-source-options button')[0]
     expect(officialSource.text()).toContain('Not installed')

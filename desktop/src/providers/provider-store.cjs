@@ -17,6 +17,7 @@ const OFFICIAL_PROVIDERS = Object.freeze({
   hermes: { provider: 'OpenAI API', baseUrl: 'https://api.openai.com/v1' },
   openclaw: { provider: 'OpenAI API', baseUrl: 'https://api.openai.com/v1' },
   workbuddy: { provider: 'WorkBuddy Official', baseUrl: '' },
+  pi: { provider: 'Pi Native', baseUrl: '' },
   kimi: { provider: 'Moonshot AI', baseUrl: 'https://api.moonshot.cn/v1' },
   mimo: { provider: 'MiMo Native', baseUrl: '' },
   claude: { provider: 'Anthropic', baseUrl: 'https://api.anthropic.com' },

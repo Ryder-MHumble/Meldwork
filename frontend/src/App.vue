@@ -238,13 +238,15 @@ const shortcutDefinitions = Object.freeze([
   { labelKey: 'shortcut.openAgents', keys: '⌘ ,' },
 ])
 const READ_ONLY_ENFORCED_AGENT_KINDS = new Set([
-  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'qwen', 'gemini',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi', 'mimo', 'claude', 'qwen', 'gemini',
   'opencode', 'opencodereview',
 ])
 const installCatalog = ref({ platform: '', agents: [] })
 const installerState = ref({ taskId: '', kind: '', phase: 'idle', canCancel: false, errorCode: '' })
 const systemSettingsSection = ref('agents')
 const sidebarCollapsed = ref(false)
+const sidebarAgentsCollapsed = ref(false)
+const sidebarGroupsCollapsed = ref(false)
 const refreshing = ref(false)
 const agentDiscoveryPending = ref(false)
 const sendingGroupIds = ref(new Set())
@@ -872,6 +874,8 @@ const {
     selectGroup,
     selectedGroupId,
     selectSystemSettingsSection,
+    sidebarAgentsCollapsed,
+    sidebarGroupsCollapsed,
     sidebarCollapsed,
     sidebarDeleteGroup,
     sidebarDeletePopoverStyle,

@@ -1,7 +1,7 @@
 const { managedOpenClawOptions, nativeOpenClawOptions } = require('../agents/cli/openclaw-runtime.cjs')
 
 const EXTERNAL_PROVIDER_KINDS = new Set([
-  'codex', 'hermes', 'openclaw', 'workbuddy', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
+  'codex', 'hermes', 'openclaw', 'workbuddy', 'pi', 'kimi', 'mimo', 'claude', 'gemini', 'opencode', 'qwen',
   'opencodereview',
 ])
 
@@ -10,6 +10,7 @@ const OFFICIAL_PROVIDER_BASE_URLS = Object.freeze({
   hermes: 'https://api.openai.com/v1',
   openclaw: 'https://api.openai.com/v1',
   workbuddy: '',
+  pi: '',
   kimi: 'https://api.moonshot.cn/v1',
   mimo: '',
   claude: 'https://api.anthropic.com',
@@ -64,6 +65,16 @@ function providerOptionsFor(kind, generic, context = {}, status = {}) {
         CODEBUDDY_MODEL: generic.OPENAI_MODEL,
         CODEBUDDY_API_KEY: generic.OPENAI_API_KEY,
         CODEBUDDY_BASE_URL: generic.OPENAI_BASE_URL,
+      },
+    }
+  }
+  if (kind === 'pi') {
+    return {
+      env: {
+        ...generic,
+        PI_MODEL: generic.OPENAI_MODEL,
+        PI_API_KEY: generic.OPENAI_API_KEY,
+        PI_BASE_URL: generic.OPENAI_BASE_URL,
       },
     }
   }

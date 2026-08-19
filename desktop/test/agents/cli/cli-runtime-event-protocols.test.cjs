@@ -52,6 +52,15 @@ const STREAMING_FIXTURES = [
     expectedTypes: ['answer_delta'],
   },
   {
+    kind: 'pi',
+    agent: 'Pi Agent',
+    version: '0.1.0',
+    protocol: 'pi-json-events',
+    evidence: 'source-derived',
+    file: 'pi.jsonl',
+    expectedTypes: ['answer_delta'],
+  },
+  {
     kind: 'opencode',
     agent: 'OpenCode',
     version: '1.18.18',
@@ -640,7 +649,7 @@ test('profile capabilities produce connector-limited warnings without Agent-kind
   }
 
   const complete = [
-    ['codex'], ['hermes'], ['openclaw'], ['kimi'], ['claude'], ['qwen'], ['gemini'],
+    ['codex'], ['hermes'], ['openclaw'], ['pi', { transport: 'acp' }], ['kimi'], ['claude'], ['qwen'], ['gemini'],
     ['workbuddy', { transport: 'stream-json' }],
   ]
   for (const [kind, options] of complete) {

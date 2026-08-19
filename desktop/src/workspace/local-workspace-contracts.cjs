@@ -3,6 +3,7 @@ const AGENT_LABELS = {
   hermes: 'Hermes',
   openclaw: 'OpenClaw',
   workbuddy: 'WorkBuddy',
+  pi: 'Pi Agent',
   kimi: 'Kimi',
   mimo: 'MiMo',
   claude: 'Claude',

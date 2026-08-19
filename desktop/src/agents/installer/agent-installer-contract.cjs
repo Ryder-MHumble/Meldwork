@@ -94,16 +94,36 @@ const ALLOWED_SCRIPT_URLS = new Set(Object.values(HERMES_RECIPES).map(recipe => 
 
 const AGENT_CATALOG = Object.freeze([
   {
+    kind: 'codex', label: 'Codex', recommended: false, providerCompatible: false,
+    providerSupport: 'responses-required',
+  },
+  {
+    kind: 'claude', label: 'Claude Code', recommended: false, providerCompatible: false,
+    providerSupport: 'anthropic-required',
+  },
+  {
     kind: 'hermes', label: 'Hermes', recommended: true, providerCompatible: true,
     providerSupport: 'supported',
+  },
+  {
+    kind: 'workbuddy', label: 'WorkBuddy', recommended: true, providerCompatible: true,
+    providerSupport: 'experimental',
   },
   {
     kind: 'openclaw', label: 'OpenClaw', recommended: true, providerCompatible: true,
     providerSupport: 'supported',
   },
   {
-    kind: 'workbuddy', label: 'WorkBuddy', recommended: true, providerCompatible: true,
-    providerSupport: 'experimental',
+    kind: 'pi', label: 'Pi Agent', recommended: false, providerCompatible: false,
+    providerSupport: 'native-config',
+  },
+  {
+    kind: 'opencode', label: 'OpenCode', recommended: false, providerCompatible: false,
+    providerSupport: 'native-config',
+  },
+  {
+    kind: 'opencodereview', label: 'OpenCodeReview', recommended: false, providerCompatible: true,
+    providerSupport: 'supported',
   },
   {
     kind: 'kimi', label: 'Kimi Code', recommended: false, providerCompatible: false,
@@ -114,27 +134,7 @@ const AGENT_CATALOG = Object.freeze([
     providerSupport: 'native-config',
   },
   {
-    kind: 'codex', label: 'Codex', recommended: false, providerCompatible: false,
-    providerSupport: 'responses-required',
-  },
-  {
-    kind: 'claude', label: 'Claude Code', recommended: false, providerCompatible: false,
-    providerSupport: 'anthropic-required',
-  },
-  {
-    kind: 'gemini', label: 'Gemini CLI', recommended: false, providerCompatible: false,
-    providerSupport: 'native-config',
-  },
-  {
-    kind: 'opencode', label: 'OpenCode', recommended: false, providerCompatible: false,
-    providerSupport: 'native-config',
-  },
-  {
     kind: 'qwen', label: 'Qwen Code', recommended: false, providerCompatible: true,
-    providerSupport: 'supported',
-  },
-  {
-    kind: 'opencodereview', label: 'OpenCodeReview', recommended: false, providerCompatible: true,
     providerSupport: 'supported',
   },
 ])

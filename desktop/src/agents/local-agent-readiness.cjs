@@ -33,6 +33,7 @@ const CREDENTIAL_ENV_KEYS = Object.freeze({
   hermes: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'],
   openclaw: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'],
   workbuddy: ['CODEBUDDY_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  pi: ['PI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
   kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY', 'KIMI_MODEL_API_KEY', 'OPENAI_API_KEY'],
   mimo: ['MIMO_API_KEY'],
   claude: ['ANTHROPIC_API_KEY'],
@@ -50,6 +51,10 @@ const RUNTIME_ENV_KEYS = Object.freeze({
   openclaw: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'],
   workbuddy: [
     'CODEBUDDY_API_KEY', 'CODEBUDDY_BASE_URL', 'CODEBUDDY_MODEL',
+    'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'ANTHROPIC_API_KEY',
+  ],
+  pi: [
+    'PI_API_KEY', 'PI_BASE_URL', 'PI_MODEL',
     'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'ANTHROPIC_API_KEY',
   ],
   kimi: [
@@ -252,6 +257,12 @@ function nativeCredentialState(kind, options = {}) {
     hermes: [path.join(home, '.hermes', 'auth.json'), path.join(home, '.hermes', 'config.json')],
     openclaw: [path.join(home, '.openclaw', 'openclaw.json')],
     workbuddy: [path.join(home, '.workbuddy', 'models.json')],
+    pi: [
+      path.join(home, '.pi', 'auth.json'),
+      path.join(home, '.pi', 'config.json'),
+      path.join(home, '.pi-agent', 'auth.json'),
+      path.join(home, '.pi-agent', 'config.json'),
+    ],
     kimi: [path.join(home, '.kimi-code', 'credentials', 'kimi-code.json')],
     claude: [
       path.join(home, '.claude', '.credentials.json'),
@@ -279,6 +290,12 @@ function nativeCredentialState(kind, options = {}) {
     ],
     openclaw: [path.join(home, '.openclaw', '.env')],
     workbuddy: [path.join(home, '.workbuddy', '.env')],
+    pi: [
+      path.join(home, '.pi', '.env'),
+      path.join(home, '.pi', 'config.toml'),
+      path.join(home, '.pi-agent', '.env'),
+      path.join(home, '.pi-agent', 'config.toml'),
+    ],
     kimi: [
       path.join(home, '.kimi', 'config.toml'),
       path.join(home, '.kimi-code', 'config.toml'),

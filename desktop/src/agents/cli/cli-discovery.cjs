@@ -15,6 +15,7 @@ const AGENT_PROFILES = {
   hermes: { label: 'Hermes', commands: ['hermes'] },
   openclaw: { label: 'OpenClaw', commands: ['openclaw'] },
   workbuddy: { label: 'WorkBuddy', commands: ['codebuddy'] },
+  pi: { label: 'Pi Agent', commands: ['pi', 'pi-agent', 'piagent'] },
   kimi: { label: 'Kimi', commands: ['kimi'] },
   mimo: { label: 'MiMo', commands: ['mimo'] },
   claude: { label: 'Claude', commands: ['claude'] },

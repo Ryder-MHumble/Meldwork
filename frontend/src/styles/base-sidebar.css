@@ -215,6 +215,13 @@
   color: var(--text);
 }
 
+.sidebar-toggle:hover,
+.sidebar-toggle:focus-visible {
+  border-color: transparent;
+  background: transparent;
+  color: var(--text);
+}
+
 .new-group-button {
   height: 38px;
   display: flex;
@@ -259,14 +266,23 @@
 }
 
 .nav-heading {
+  width: 100%;
   height: 28px;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  border: 0;
   padding: 0 8px;
+  background: transparent;
   color: var(--muted);
   font-size: 11px;
   font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-heading:hover,
+.nav-heading:focus-visible {
+  color: var(--text);
 }
 
 .sidebar-agent {
