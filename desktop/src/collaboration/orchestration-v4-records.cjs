@@ -1831,6 +1831,15 @@ function parseOrchestrationV4(input, options = {}) {
   const planKinds = plan.assignments.map(assignment => assignment.agentKind)
   const effectiveKinds = targetKinds || [...new Set([...inferredKinds, ...planKinds])]
   if (currentKinds.some(kind => !effectiveKinds.includes(kind))) fail('ORCHESTRATION_V4_REFERENCE_INVALID')
+  const activeKinds = hasOwn(input, 'activeKinds')
+    ? uniqueIds(input.activeKinds, MAX_V4_SLOTS)
+    : effectiveKinds
+  if (activeKinds.some(kind => !effectiveKinds.includes(kind))) {
+    fail('ORCHESTRATION_V4_REFERENCE_INVALID')
+  }
+  const participantKinds = workflow === 'auto' && template === 'discussion'
+    ? activeKinds
+    : effectiveKinds
   if (!Array.isArray(input.slots) || input.slots.length > MAX_V4_SLOTS) {
     fail('ORCHESTRATION_V4_SLOT_INVALID')
   }
@@ -1865,26 +1874,26 @@ function parseOrchestrationV4(input, options = {}) {
     fail('ORCHESTRATION_V4_DELIVERY_STATE_INVALID')
   }
   const challengeBindings = hasOwn(input, 'challengeBindings')
-    ? normalizeChallengeBindings(input.challengeBindings, effectiveKinds, input.round)
+    ? normalizeChallengeBindings(input.challengeBindings, participantKinds, input.round)
     : null
   if (challengeBindings && (workflow !== 'auto' || template !== 'discussion')) {
     fail('ORCHESTRATION_V4_CHALLENGE_BINDING_INVALID')
   }
   const synthesisBinding = hasOwn(input, 'synthesisBinding')
-    ? normalizeSynthesisBinding(input.synthesisBinding, effectiveKinds, snapshot?.bodyHash)
+    ? normalizeSynthesisBinding(input.synthesisBinding, participantKinds, snapshot?.bodyHash)
     : null
   if (synthesisBinding && (workflow !== 'auto' || template !== 'discussion')) {
     fail('ORCHESTRATION_V4_SYNTHESIS_BINDING_INVALID')
   }
   const coordinationPlan = hasOwn(input, 'coordinationPlan')
-    ? normalizeCoordinationPlan(input.coordinationPlan, effectiveKinds, snapshotHash)
+    ? normalizeCoordinationPlan(input.coordinationPlan, participantKinds, snapshotHash)
     : null
   if (coordinationPlan && (workflow !== 'auto' || template !== 'discussion')) {
     fail('ORCHESTRATION_V4_COORDINATION_PLAN_INVALID')
   }
   if (coordinationPlan) {
     validateCoordinationAgreement(
-      coordinationPlan, slots, challengeBindings, effectiveKinds, snapshotHash,
+      coordinationPlan, slots, challengeBindings, participantKinds, snapshotHash,
     )
   }
   const workReceipts = hasOwn(input, 'workReceipts')
@@ -1901,7 +1910,7 @@ function parseOrchestrationV4(input, options = {}) {
   }
   const synthesisRecovery = hasOwn(input, 'synthesisRecovery')
     ? normalizeSynthesisRecovery(
-        input.synthesisRecovery, effectiveKinds, synthesisBinding, coordinationPlan, input.round,
+        input.synthesisRecovery, participantKinds, synthesisBinding, coordinationPlan, input.round,
       )
     : null
   if (synthesisRecovery && (workflow !== 'auto' || template !== 'discussion')) {
@@ -1915,7 +1924,7 @@ function parseOrchestrationV4(input, options = {}) {
     fail('ORCHESTRATION_V4_CONVERGENCE_INVALID')
   }
   const hasCompletedChallengeEvidence = completedChallengeEvidence(
-    slots, effectiveKinds, snapshotHash, challengeBindings,
+    slots, participantKinds, snapshotHash, challengeBindings,
   )
   const synthesisObservable = workflow === 'auto' && template === 'discussion'
     && (synthesisStateObservable(phase, slots)
@@ -1924,10 +1933,12 @@ function parseOrchestrationV4(input, options = {}) {
   const completedChallengeCheckpoint = phase === 'challenge'
     && currentKinds.length === 0
     && (!Array.isArray(input.pendingKinds) || input.pendingKinds.length === 0)
-    && slots.every(slot => slot.status === 'completed')
+    && participantKinds.every(kind => slots.some(slot => (
+      slot.agentKind === kind && slot.status === 'completed'
+    )))
   const retainedChallengeBinding = phase === 'challenge'
     && completedChallengeEvidence(
-      slots, effectiveKinds, snapshotHash, challengeBindings, deliveryWatermarks, true,
+      slots, participantKinds, snapshotHash, challengeBindings, deliveryWatermarks, true,
     )
     && postChallengeReceiptObservable(slots, deliveryWatermarks, snapshotHash)
   if (synthesisBinding && (
@@ -2008,6 +2019,7 @@ function parseOrchestrationV4(input, options = {}) {
     phase,
     batchId,
     currentKinds,
+    activeKinds,
     snapshotHash,
     ...(snapshot ? { snapshot } : {}),
     plan,
@@ -2024,7 +2036,7 @@ function parseOrchestrationV4(input, options = {}) {
     ...(workReceipts ? { workReceipts } : {}),
   }
   for (const key of [
-    'round', 'currentKind', 'pendingKinds', 'activeKinds', 'successfulKinds',
+    'round', 'currentKind', 'pendingKinds', 'successfulKinds',
     'agreementKinds', 'attachmentRecipients', 'totalSuccesses', 'terminalFailureOccurred',
     'collaboration', 'taskGraph',
   ]) {

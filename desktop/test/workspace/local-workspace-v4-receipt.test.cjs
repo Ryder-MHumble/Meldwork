@@ -457,6 +457,8 @@ test('V4 streams split receipts without exposing controls and commits the comple
     [
       'codex proposal visible body.',
       'hermes proposal visible body.',
+      'codex challenge visible body.',
+      'hermes challenge visible body.',
       'Visible synthesis conclusion.',
     ],
   )
@@ -583,7 +585,7 @@ test('V4 preserves typed receipt visible suffixes that resemble partial controls
   }
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent').map(message => message.content),
-    [body, body, body],
+    [body, body, body, body, body],
   )
 })
 

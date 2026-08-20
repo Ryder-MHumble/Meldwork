@@ -1352,8 +1352,24 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
     assert.match(message.content, new RegExp(`^${message.agentKind} independent proposal BODY_FROM_${message.agentKind}`))
   }
   assert.deepEqual(
-    visibleAgentMessages.slice(3).map(message => message.content),
+    visibleAgentMessages.slice(3, 6).map(message => message.content),
+    [
+      'codex responsibility proposal',
+      'hermes responsibility proposal',
+      'workbuddy responsibility proposal',
+    ],
+  )
+  assert.deepEqual(
+    visibleAgentMessages.slice(6, 9).map(message => message.content),
+    [
+      'codex supports a corrected responsibility graph',
+      'hermes supports a corrected responsibility graph',
+      'workbuddy supports a corrected responsibility graph',
+    ],
+  )
+  assert.deepEqual(
+    visibleAgentMessages.slice(9).map(message => message.content),
     ['Final delivery assembled from all agreed work products.'],
   )
-  assert.equal(new Set(visibleAgentMessages.map(message => message.id)).size, 4)
+  assert.equal(new Set(visibleAgentMessages.map(message => message.id)).size, 10)
 })

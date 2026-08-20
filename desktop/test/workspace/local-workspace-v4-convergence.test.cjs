@@ -748,6 +748,8 @@ test('finite V4 round limit retains candidate and durable open issues without a 
     [
       { agentKind: 'codex', content: 'codex proposal' },
       { agentKind: 'hermes', content: 'hermes proposal' },
+      { agentKind: 'codex', content: 'codex challenge' },
+      { agentKind: 'hermes', content: 'hermes challenge' },
     ],
   )
 })

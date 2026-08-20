@@ -2555,7 +2555,7 @@ test('V4 Auto round one runs concurrent primary proposals before round-two chall
   assert.equal(durable.orchestration.plan.assignments.every(assignment => assignment.role === 'participant'), true)
 })
 
-test('V4 Auto preserves round-one proposals when a round-two Agent fails', async (t) => {
+test('V4 Auto preserves proposals and continues when a round-two Agent fails', async (t) => {
   const { directory, calls, options } = fixture()
   const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
   let workspace = null
@@ -2613,11 +2613,14 @@ test('V4 Auto preserves round-one proposals when a round-two Agent fails', async
       ['hermes', 'hermes proposal'],
       ['codex', 'codex challenge'],
       ['hermes', 'hermes challenge'],
+      ['codex', 'codex challenge'],
+      ['hermes', 'hermes challenge'],
+      ['hermes', 'hermes synthesis'],
     ],
   )
   assert.deepEqual(
     calls.filter(call => call.phase === 'challenge').map(call => call.kind),
-    ['codex', 'openclaw', 'openclaw', 'openclaw', 'openclaw', 'hermes'],
+    ['codex', 'openclaw', 'openclaw', 'openclaw', 'openclaw', 'hermes', 'codex', 'hermes'],
   )
   assert.equal(workspace.snapshot().messages.some(message => (
     message.system?.key === 'system.agentRemovedAfterFailure'
@@ -2793,6 +2796,147 @@ test('V4 Auto exposes successful proposals when a peer fails in the same batch',
       && message.threadRootId === controller.threadRootId
       && message.content === 'Codex retained proposal'
   )), true)
+})
+
+test('V4 Auto continues to round two with healthy Agents after a proposal peer fails', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.retrySleep = async () => {}
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase })
+    if (phase === 'proposal' && agent.kind === 'openclaw') {
+      throw new Error('LOCAL_AGENT_PROCESS_FAILED')
+    }
+    const collaboration = phase === 'proposal'
+      ? v4ProposalCollaboration(agent.kind)
+      : agreedV4Collaboration(agent.kind, phase, prompt, ['codex', 'hermes'])
+    if (phase === 'challenge') {
+      collaboration.proposedAssignments[0].objective += ` ${agent.kind}`
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 degraded proposal continuation',
+    agentKinds: ['codex', 'openclaw', 'hermes'],
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue with the healthy participants after one proposal fails.',
+    mode: 'auto',
+    targetKinds: ['codex', 'openclaw', 'hermes'],
+    maxRounds: 2,
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  await controller.promise
+
+  assert.deepEqual(
+    calls.filter(call => call.phase === 'challenge').map(call => call.kind),
+    ['codex', 'hermes'],
+  )
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
+  const durable = ledger.get(controller.runId)
+  assert.equal(durable.currentRound, 2)
+  assert.deepEqual(durable.orchestration.snapshot.targetKinds, ['codex', 'openclaw', 'hermes'])
+  assert.deepEqual(durable.orchestration.activeKinds, ['codex', 'hermes'])
+  assert.equal(durable.status, 'round-limit')
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => (
+      message.role === 'agent' && message.threadRootId === controller.threadRootId
+    )).map(message => [message.agentKind, message.content]),
+    [
+      ['codex', 'codex proposal'],
+      ['hermes', 'hermes proposal'],
+      ['codex', 'codex challenge'],
+      ['hermes', 'hermes challenge'],
+    ],
+  )
+})
+
+test('V4 Auto publishes one visible message per Agent in every bounded discussion round', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const challengeCounts = new Map()
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    const round = phase === 'proposal'
+      ? 1
+      : 2 + (challengeCounts.get(agent.kind) || 0)
+    if (phase === 'challenge') challengeCounts.set(agent.kind, round - 1)
+    calls.push({ kind: agent.kind, phase, round })
+    const collaboration = phase === 'proposal'
+      ? v4ProposalCollaboration(agent.kind)
+      : agreedV4Collaboration(agent.kind, phase, prompt, ['codex', 'openclaw', 'hermes'])
+    if (phase === 'challenge') {
+      collaboration.proposedAssignments[0].objective += ` ${agent.kind} round ${round}`
+    }
+    return {
+      text: `${agent.kind} round ${round} ${phase}`,
+      sessionRef: `${agent.kind}-${round}-${phase}`,
+      collaboration,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 visible bounded rounds',
+    agentKinds: ['codex', 'openclaw', 'hermes'],
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Publish every contribution across three bounded rounds.',
+    mode: 'auto',
+    targetKinds: ['codex', 'openclaw', 'hermes'],
+    maxRounds: 3,
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  await controller.promise
+
+  assert.deepEqual(calls.map(call => [call.kind, call.phase, call.round]), [
+    ['codex', 'proposal', 1],
+    ['openclaw', 'proposal', 1],
+    ['hermes', 'proposal', 1],
+    ['codex', 'challenge', 2],
+    ['openclaw', 'challenge', 2],
+    ['hermes', 'challenge', 2],
+    ['codex', 'challenge', 3],
+    ['openclaw', 'challenge', 3],
+    ['hermes', 'challenge', 3],
+  ])
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => (
+      message.role === 'agent' && message.threadRootId === controller.threadRootId
+    )).map(message => message.content),
+    [
+      'codex round 1 proposal',
+      'openclaw round 1 proposal',
+      'hermes round 1 proposal',
+      'codex round 2 challenge',
+      'openclaw round 2 challenge',
+      'hermes round 2 challenge',
+      'codex round 3 challenge',
+      'openclaw round 3 challenge',
+      'hermes round 3 challenge',
+    ],
+  )
+  assert.equal(ledger.get(controller.runId).status, 'round-limit')
+  assert.equal(ledger.get(controller.runId).currentRound, 3)
 })
 
 test('V4 Auto freezes all thirty-two proposal dispatches before the first constrained lease', async (t) => {

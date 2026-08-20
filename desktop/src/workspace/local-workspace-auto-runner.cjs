@@ -2722,6 +2722,7 @@ class LocalWorkspaceAutoRunner {
   v4CheckpointPhase(group, controller, {
     targetKinds, phase, batchId, snapshotRecord, snapshotHash, slots,
     writerKind, currentKinds = [], pendingKinds = [], receipts = [], commitState = null,
+    participantKinds = targetKinds,
     challengeBindings = controller.orchestration?.round === controller.currentRound
       ? controller.orchestration?.challengeBindings
       : null,
@@ -2775,7 +2776,7 @@ class LocalWorkspaceAutoRunner {
       status: 'pending',
       writerKind: writerKind || null,
       committedKinds: [],
-      pendingKinds: [...targetKinds],
+      pendingKinds: [...participantKinds],
       operationId: '',
       attempt: 0,
       updatedAt: Date.now(),
@@ -2793,7 +2794,7 @@ class LocalWorkspaceAutoRunner {
       currentKind: '',
       currentKinds: [...currentKinds],
       pendingKinds: [...pendingKinds],
-      activeKinds: [...targetKinds],
+      activeKinds: [...participantKinds],
       successfulKinds: slots
         .filter(slot => ['completed', 'partial'].includes(slot.status))
         .map(slot => slot.agentKind),
@@ -2903,6 +2904,7 @@ class LocalWorkspaceAutoRunner {
     const {
       targetKinds, writerKind, batchId, snapshotRecord, snapshotHash,
       phaseSlots, receiptRecords, dispatches, resumedGate = null,
+      participantKinds = targetKinds,
     } = phaseInput
     const phaseReceipts = []
     const phasePendingMessages = []
@@ -2920,6 +2922,7 @@ class LocalWorkspaceAutoRunner {
       writerKind,
       currentKinds: pendingKinds(),
       pendingKinds: pendingKinds(),
+      participantKinds,
       receipts: receiptRecords,
     })
     const failSlot = (slot, kind, error) => {
@@ -2942,7 +2945,7 @@ class LocalWorkspaceAutoRunner {
           group,
           kind,
           controller,
-          activeKinds: targetKinds,
+          activeKinds: participantKinds,
           threadRootId,
           context: {
             ...context,
@@ -3064,6 +3067,7 @@ class LocalWorkspaceAutoRunner {
     const {
       targetKinds, writerKind, batchId, snapshotRecord, snapshotHash,
       phaseSlots, receiptRecords, challengeBindings, coordinationPlan, workAssignments,
+      participantKinds = targetKinds,
     } = input
     const slot = phaseSlots.find(candidate => candidate.agentKind === item.kind)
     const result = item.invocation?.result
@@ -3178,6 +3182,7 @@ class LocalWorkspaceAutoRunner {
         writerKind,
         currentKinds: pendingKinds,
         pendingKinds,
+        participantKinds,
         receipts: receiptRecords,
         challengeBindings,
         coordinationPlan,
@@ -3201,6 +3206,9 @@ class LocalWorkspaceAutoRunner {
       phase, activeKinds, targetKinds, writerKind, batchId,
       snapshot, snapshotRecord, snapshotHash, slots, receiptRecords, challengeBindings,
     } = phaseInput
+    const participantKinds = Array.isArray(phaseInput.participantKinds)
+      ? phaseInput.participantKinds
+      : targetKinds
     const coordinationPlan = phaseInput.coordinationPlan || null
     const workAssignments = phase === 'work' && Array.isArray(phaseInput.workAssignments)
       ? phaseInput.workAssignments
@@ -3225,7 +3233,7 @@ class LocalWorkspaceAutoRunner {
       ? phaseInput.deliveryReceiptRecords
       : [...receiptRecords]
     const workContextLimit = Math.max(
-      0, 6000 - collaborationPackageIndexText(targetKinds).length - 2,
+      0, 6000 - collaborationPackageIndexText(participantKinds).length - 2,
     )
     const extraContextFor = kind => phase === 'work'
       ? this.v4WorkAssignmentText(
@@ -3292,6 +3300,7 @@ class LocalWorkspaceAutoRunner {
       writerKind,
       currentKinds: activeKinds,
       pendingKinds: activeKinds,
+      participantKinds,
       receipts: receiptRecords,
       challengeBindings,
       synthesisRecovery,
@@ -3339,6 +3348,7 @@ class LocalWorkspaceAutoRunner {
       })
       return this.runV4ProposalBatch(group, controller, threadRootId, {
         targetKinds,
+        participantKinds,
         writerKind,
         batchId,
         snapshotRecord,
@@ -3361,6 +3371,7 @@ class LocalWorkspaceAutoRunner {
         const admitted = this.v4AdmitWorkSettlement(
           group, controller, threadRootId, item, {
             targetKinds,
+            participantKinds,
             writerKind,
             batchId,
             snapshotRecord,
@@ -3422,7 +3433,7 @@ class LocalWorkspaceAutoRunner {
           group,
           kind,
           controller,
-          activeKinds: targetKinds,
+          activeKinds: participantKinds,
           threadRootId,
           context: {
             v4: true,
@@ -3478,6 +3489,7 @@ class LocalWorkspaceAutoRunner {
                 writerKind,
                 currentKinds: activeKinds,
                 pendingKinds: activeKinds,
+                participantKinds,
                 receipts: receiptRecords,
                 challengeBindings,
                 synthesisRecovery,
@@ -3489,7 +3501,7 @@ class LocalWorkspaceAutoRunner {
             v4PromptBuilder: (sessionBinding) => {
               const built = this.v4DeliveryPrompt(group, controller, {
                 kind, phase, snapshot, receiptRecords: deliveryReceiptRecords,
-                role, targetKinds, slot,
+                role, targetKinds: participantKinds, slot,
                 options: {
                   reviewTarget: phase === 'challenge'
                     ? challengeBinding?.proposalKind || ''
@@ -3732,6 +3744,7 @@ class LocalWorkspaceAutoRunner {
       writerKind,
       currentKinds: [],
       pendingKinds: [],
+      participantKinds,
       receipts: receiptRecords,
       challengeBindings,
       synthesisRecovery,
@@ -4387,6 +4400,7 @@ class LocalWorkspaceAutoRunner {
     group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
     slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
     coordinationPlan, workReceipts, convergence, writerKind, verificationKinds, acceptance,
+    participantKinds = targetKinds,
   }) {
     if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
     const synthesisRecord = this.v4LatestReceipt(receiptRecords, 'synthesis', writerKind)
@@ -4480,6 +4494,7 @@ class LocalWorkspaceAutoRunner {
         writerKind,
         currentKinds: [],
         pendingKinds: [],
+        participantKinds,
         receipts: receiptRecords,
         challengeBindings,
         synthesisBinding,
@@ -4601,8 +4616,8 @@ class LocalWorkspaceAutoRunner {
       updatedAt: Date.now(),
     }
     checkpoint('completed', candidateCommit, collaboration, finalSlots)
-    controller.completedKinds = [...targetKinds]
-    controller.failedKinds = []
+    controller.completedKinds = [...participantKinds]
+    controller.failedKinds = targetKinds.filter(kind => !participantKinds.includes(kind))
     controller.currentKind = ''
     controller.progress = []
     this.emitChanged()
@@ -4615,7 +4630,10 @@ class LocalWorkspaceAutoRunner {
       ? controller.orchestration
       : null
     const targetKinds = [...snapshotTargetKinds]
-    const removedKinds = new Set()
+    let activeKinds = Array.isArray(existing?.activeKinds) && existing.activeKinds.length
+      ? existing.activeKinds.filter(kind => targetKinds.includes(kind))
+      : [...targetKinds]
+    const removedKinds = new Set(targetKinds.filter(kind => !activeKinds.includes(kind)))
     if (existing?.synthesisBinding) {
       throw new Error('LOCAL_RUN_V4_LEGACY_SYNTHESIS_BINDING_UNSUPPORTED')
     }
@@ -4766,6 +4784,7 @@ class LocalWorkspaceAutoRunner {
     if (!existing) {
       this.v4CheckpointPhase(group, controller, {
         targetKinds,
+        participantKinds: activeKinds,
         phase: 'proposal',
         batchId,
         snapshotRecord,
@@ -4806,6 +4825,7 @@ class LocalWorkspaceAutoRunner {
     const checkpointPhase = (phase, activeKinds, phaseSlots = slots, bindings = challengeBindings) => {
       this.v4CheckpointPhase(group, controller, {
         targetKinds,
+        participantKinds: activeKindsForRun(),
         phase,
         batchId,
         snapshotRecord,
@@ -4822,11 +4842,12 @@ class LocalWorkspaceAutoRunner {
         workReceipts,
       })
     }
-    const runPhase = async (phase, activeKinds, bindings = challengeBindings, options = {}) => {
+    const activeKindsForRun = () => [...activeKinds]
+    const runPhase = async (phase, requestedKinds, bindings = challengeBindings, options = {}) => {
       const workAssignments = Array.isArray(options.workAssignments)
         ? options.workAssignments
         : []
-      const pending = pendingKindsFor(phase, activeKinds, workAssignments)
+      const pending = pendingKindsFor(phase, requestedKinds, workAssignments)
       if (!pending.length) {
         checkpointPhase(phase, [], slots)
         return { ok: true, phaseReceipts: [], synthesisPendingMessage: null }
@@ -4836,6 +4857,7 @@ class LocalWorkspaceAutoRunner {
           phase,
           activeKinds: phaseKinds,
           targetKinds,
+          participantKinds: activeKindsForRun(),
           writerKind,
           batchId,
           snapshot,
@@ -4883,7 +4905,7 @@ class LocalWorkspaceAutoRunner {
       }
       return aggregate
     }
-    const commitPartialPhaseMessages = (phase, result) => {
+    const commitPhaseMessages = (phase, result) => {
       let committed = 0
       for (const item of result?.phasePendingMessages || []) {
         const pendingMessage = item?.pendingMessage
@@ -4910,13 +4932,22 @@ class LocalWorkspaceAutoRunner {
     }
     const removePhaseFailures = (result) => {
       const failedKinds = [...new Set((result?.failures || [])
-        .filter(item => !normalizeFailure(item.error).code.startsWith('COLLABORATION_CONTROL_'))
+        .filter((item) => {
+          const failure = normalizeFailure(item.error)
+          return !['budget', 'cancellation', 'permission'].includes(failure.category)
+            && !failure.code.startsWith('COLLABORATION_CONTROL_')
+        })
         .map(item => item.kind)
         .filter(Boolean))]
+      const removed = []
       for (const kind of failedKinds) {
-        if (this.removeFailedAgent(group, controller, kind, threadRootId)) removedKinds.add(kind)
+        const didRemove = this.removeFailedAgent(group, controller, kind, threadRootId)
+        if (didRemove) {
+          removedKinds.add(kind)
+          removed.push(kind)
+        }
       }
-      return failedKinds
+      return removed
     }
     const finalStatus = (status) => {
       if (!removedKinds.size || status !== 'completed') return status
@@ -5105,7 +5136,7 @@ class LocalWorkspaceAutoRunner {
       controller.currentRound = round
       challengeBindings = null
     }
-    let proposalComplete = targetKinds.every(kind => Boolean(latestFor('proposal', kind)))
+    let proposalComplete = activeKinds.every(kind => Boolean(latestFor('proposal', kind)))
     const legacyBoundRun = Boolean(synthesisBinding && !coordinationPlan)
     const postChallengePhases = new Set([
       'coordination', 'work', 'synthesis', 'verification',
@@ -5140,7 +5171,7 @@ class LocalWorkspaceAutoRunner {
           : slot
       ))
       const acceptance = this.v4Acceptance(
-        receiptRecords, targetKinds, writerKind, verificationKinds,
+        receiptRecords, activeKinds, writerKind, verificationKinds,
         {
           runId: controller.runId,
           round,
@@ -5160,21 +5191,25 @@ class LocalWorkspaceAutoRunner {
         group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
         slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
         coordinationPlan, workReceipts, convergence: existing.convergence,
-        writerKind, verificationKinds, acceptance,
+        writerKind, verificationKinds, acceptance, participantKinds: activeKinds,
       })
     }
     while (!controller.signal.aborted) {
       controller.currentRound = round
       if (!proposalComplete) {
-        const proposal = await runPhase('proposal', targetKinds)
-        commitPartialPhaseMessages('proposal', proposal)
+        const proposal = await runPhase('proposal', activeKinds)
+        commitPhaseMessages('proposal', proposal)
         if (!proposal.ok) {
-          removePhaseFailures(proposal)
-          return proposal.phasePendingMessages?.length ? 'partial' : 'failed'
+          const failedKinds = removePhaseFailures(proposal)
+          activeKinds = activeKinds.filter(kind => !failedKinds.includes(kind))
+          checkpointPhase('proposal', [], slots)
+          if (!failedKinds.length || activeKinds.length < 2) {
+            return proposal.phasePendingMessages?.length ? 'partial' : 'failed'
+          }
         }
-        proposalComplete = targetKinds.every(kind => Boolean(latestFor('proposal', kind)))
+        proposalComplete = activeKinds.every(kind => Boolean(latestFor('proposal', kind)))
         if (!proposalComplete) {
-          return targetKinds.some(kind => Boolean(latestFor('proposal', kind))) ? 'partial' : 'failed'
+          return activeKinds.some(kind => Boolean(latestFor('proposal', kind))) ? 'partial' : 'failed'
         }
       }
 
@@ -5190,7 +5225,9 @@ class LocalWorkspaceAutoRunner {
         }
 
         if (!challengeBindings || challengeBindings[0]?.round !== round) {
+          const activeSet = new Set(activeKinds)
           slots = slots.map((slot) => {
+            if (!activeSet.has(slot.agentKind)) return slot
             const { agentRunId: _agentRunId, ...retainedSlot } = slot
             return {
               ...retainedSlot,
@@ -5209,37 +5246,47 @@ class LocalWorkspaceAutoRunner {
           })
           challengeBindings = this.v4ChallengeBindings({
             controller,
-            targetKinds,
+            targetKinds: activeKinds,
             round,
             snapshotRecord,
             slots,
             receiptRecords,
           })
-          checkpointPhase('challenge', targetKinds, slots, challengeBindings)
+          checkpointPhase('challenge', activeKinds, slots, challengeBindings)
           this.emitChanged()
         }
 
         const knownCoordination = this.v4CoordinationResult({
           receiptRecords,
-          targetKinds,
+          targetKinds: activeKinds,
           snapshotHash,
           snapshot,
           requireSupport: false,
         })
-        const challenge = await runPhase('challenge', targetKinds, challengeBindings, {
+        const challenge = await runPhase('challenge', activeKinds, challengeBindings, {
           coordinationText: this.v4CoordinationText(knownCoordination),
         })
+        commitPhaseMessages('challenge', challenge)
         if (!challenge.ok) {
           if (controller.signal.aborted) return 'stopped'
-          removePhaseFailures(challenge)
-          commitPartialPhaseMessages('challenge', challenge)
-          return challenge.phasePendingMessages?.length ? 'partial' : 'failed'
+          const failedKinds = removePhaseFailures(challenge)
+          activeKinds = activeKinds.filter(kind => !failedKinds.includes(kind))
+          if (!failedKinds.length || activeKinds.length < 2
+              || (!controller.unlimitedRounds && round >= (controller.maxRounds || 6))) {
+            return challenge.phasePendingMessages?.length ? 'partial' : 'failed'
+          }
+          this.assertV4PhaseCanAdvance(controller)
+          round += 1
+          controller.currentRound = round
+          challengeBindings = null
+          this.emitChanged()
+          continue
         }
         if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
 
         const coordination = this.v4CoordinationResult({
           receiptRecords,
-          targetKinds,
+          targetKinds: activeKinds,
           snapshotHash,
           snapshot,
           challengeBindings,
@@ -5260,6 +5307,7 @@ class LocalWorkspaceAutoRunner {
         writerKind = coordinationPlan.finalizerKind
         this.v4CheckpointPhase(group, controller, {
           targetKinds,
+          participantKinds: activeKinds,
           phase: 'coordination',
           batchId,
           snapshotRecord,
@@ -5287,7 +5335,7 @@ class LocalWorkspaceAutoRunner {
             readyOwners.add(assignment.ownerKind)
             readyAssignments.push(assignment)
           }
-          const readyKinds = targetKinds.filter(kind => readyOwners.has(kind))
+          const readyKinds = activeKinds.filter(kind => readyOwners.has(kind))
           const completedBefore = workState.completed.size
           const work = await runPhase('work', readyKinds, challengeBindings, {
             deliveryReceiptRecords: [...receiptRecords],
@@ -5421,7 +5469,7 @@ class LocalWorkspaceAutoRunner {
       if (!synthesisPendingMessage) return 'failed'
       const previousConvergence = controller.orchestration?.convergence || null
       this.v4RoundState(
-        receiptRecords, targetKinds, writerKind, verificationKinds,
+        receiptRecords, activeKinds, writerKind, verificationKinds,
         {
           runId: controller.runId,
           round,
@@ -5436,7 +5484,7 @@ class LocalWorkspaceAutoRunner {
       if (!verification.ok) return controller.signal.aborted ? 'stopped' : 'partial'
 
       const acceptance = this.v4Acceptance(
-        receiptRecords, targetKinds, writerKind, verificationKinds,
+        receiptRecords, activeKinds, writerKind, verificationKinds,
         {
           runId: controller.runId,
           round,
@@ -5459,6 +5507,7 @@ class LocalWorkspaceAutoRunner {
       )
       this.v4CheckpointPhase(group, controller, {
         targetKinds,
+        participantKinds: activeKinds,
         phase: 'verification',
         batchId,
         snapshotRecord,
@@ -5481,7 +5530,7 @@ class LocalWorkspaceAutoRunner {
           group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
           slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
           coordinationPlan, workReceipts, convergence,
-          writerKind, verificationKinds, acceptance,
+          writerKind, verificationKinds, acceptance, participantKinds: activeKinds,
         }))
       }
 
