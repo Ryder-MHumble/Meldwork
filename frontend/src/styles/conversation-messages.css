@@ -1012,6 +1012,13 @@
   color: var(--accent);
 }
 
+.system-message-agent-avatar {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  object-fit: contain;
+}
+
 .message-dismiss-button,
 .toast-dismiss-button {
   width: 26px;

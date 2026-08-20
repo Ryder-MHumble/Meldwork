@@ -1312,6 +1312,8 @@ describe('Meldwork workbench', () => {
 
     expect(wrapper.get('.conversation-link').text()).toContain('Agent group')
     await wrapper.get('.conversation-link').trigger('click')
+    expect(wrapper.get('.system-message-agent-avatar').attributes('src')).toContain('/agent-logos/hermes')
+    expect(wrapper.get('.system-message-agent-avatar').attributes('alt')).toBe('Hermes')
     expect(wrapper.get('.system-message').text()).toContain('Hermes failed: This Agent took too long to respond.')
     expect(wrapper.get('.system-message .markdown-body').text()).toBe('Recovered conclusion before timeout.')
     expect(wrapper.get('.system-message').text()).not.toContain('Hermes failed: LOCAL_AGENT_TIMEOUT')

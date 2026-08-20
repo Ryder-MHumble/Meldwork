@@ -70,7 +70,13 @@
           <template v-if="message.role === 'system'">
             <div class="system-message-stack">
               <div class="system-message">
-                <WarningOutline />
+                <img
+                  v-if="isAgentFailureMessage(message) && message.agentKind"
+                  class="system-message-agent-avatar"
+                  :src="agentLogo(message.agentKind, theme)"
+                  :alt="agentLabel(message.agentKind)"
+                />
+                <WarningOutline v-else />
                 <span>
                   <span>{{ translateSystemMessage(message) }}</span>
                   <MarkdownMessage
@@ -788,6 +794,7 @@ import { skillKey } from '../composables/useComposerContext.js'
 import { orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { locale } from '../i18n.js'
 import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
+import { isAgentFailureMessage } from '../conversationTimelineModel.js'
 import AttachmentMediaPreview from './AttachmentMediaPreview.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
 

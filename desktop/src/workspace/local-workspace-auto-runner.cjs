@@ -2900,6 +2900,25 @@ class LocalWorkspaceAutoRunner {
     ) || !this.hasRunLedger()
   }
 
+  commitV4PhaseMessage({ group, controller, threadRootId, phase, kind, pendingMessage }) {
+    if (!pendingMessage?.content || !kind) return null
+    const agentRunId = pendingMessage.metadata?.trace?.agentRunId || ''
+    return this.commitV4AgentMessage({
+      messageId: `message-${hashValue({
+        agentKind: kind,
+        agentRunId,
+        phase,
+        runId: controller.runId,
+        taskId: controller.taskId,
+      })}`,
+      groupId: group.id,
+      agentKind: kind,
+      threadRootId,
+      content: pendingMessage.content,
+      metadata: pendingMessage.metadata || {},
+    })
+  }
+
   async runV4ProposalBatch(group, controller, threadRootId, phaseInput) {
     const {
       targetKinds, writerKind, batchId, snapshotRecord, snapshotHash,
@@ -3028,6 +3047,11 @@ class LocalWorkspaceAutoRunner {
         ]
         if (result.pendingMessage) {
           phasePendingMessages.push({ kind, pendingMessage: result.pendingMessage })
+          this.commitV4PhaseMessage({
+            group, controller, threadRootId, phase: 'proposal', kind,
+            pendingMessage: result.pendingMessage,
+          })
+          slot.commitStatus = 'committed'
         }
         if (resumedGate?.agentKind === slot.agentKind
             && !this.completeV4ResumedAgentSlotContinuation(controller, resumedGate)) {
@@ -3656,6 +3680,13 @@ class LocalWorkspaceAutoRunner {
           synthesisPendingMessage = result.pendingMessage || result.message || null
         } else if (result.pendingMessage?.content) {
           phasePendingMessages.push({ kind: item.kind, pendingMessage: result.pendingMessage })
+          if (phase === 'challenge') {
+            this.commitV4PhaseMessage({
+              group, controller, threadRootId, phase, kind: item.kind,
+              pendingMessage: result.pendingMessage,
+            })
+            slot.commitStatus = 'committed'
+          }
         }
         if (phase === 'synthesis' && synthesisRecovery) {
           const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
@@ -4910,21 +4941,8 @@ class LocalWorkspaceAutoRunner {
       for (const item of result?.phasePendingMessages || []) {
         const pendingMessage = item?.pendingMessage
         if (!pendingMessage?.content || !item.kind) continue
-        const agentRunId = pendingMessage.metadata?.trace?.agentRunId || ''
-        const messageId = `message-${hashValue({
-          agentKind: item.kind,
-          agentRunId,
-          phase,
-          runId: controller.runId,
-          taskId: controller.taskId,
-        })}`
-        this.commitV4AgentMessage({
-          messageId,
-          groupId: group.id,
-          agentKind: item.kind,
-          threadRootId,
-          content: pendingMessage.content,
-          metadata: pendingMessage.metadata || {},
+        this.commitV4PhaseMessage({
+          group, controller, threadRootId, phase, kind: item.kind, pendingMessage,
         })
         committed += 1
       }

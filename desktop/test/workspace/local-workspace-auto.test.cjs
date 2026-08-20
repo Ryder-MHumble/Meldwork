@@ -2798,6 +2798,130 @@ test('V4 Auto exposes successful proposals when a peer fails in the same batch',
   )), true)
 })
 
+test('V4 Auto commits each completed proposal while a peer is still running', async (t) => {
+  const { directory, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const releaseCodex = deferred()
+  const releaseHermes = deferred()
+  const codexCompleted = deferred()
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    releaseCodex.resolve()
+    releaseHermes.resolve()
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+    }
+    try { await controller?.promise } catch {}
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runScheduler = new RunScheduler({ taskLimit: 2, workspaceLimit: 2, globalLimit: 2 })
+  options.runAgent = async (agent) => {
+    await (agent.kind === 'codex' ? releaseCodex.promise : releaseHermes.promise)
+    return {
+      text: `${agent.kind} durable proposal`,
+      sessionRef: `${agent.kind}-proposal`,
+      collaboration: v4ProposalCollaboration(agent.kind),
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const checkpointPhase = workspace.autoRunner.v4CheckpointPhase.bind(workspace.autoRunner)
+  workspace.autoRunner.v4CheckpointPhase = (...args) => {
+    const record = checkpointPhase(...args)
+    if (args[2]?.phase === 'proposal' && args[2]?.slots?.some(slot => (
+      slot.agentKind === 'codex' && slot.status === 'completed'
+    ))) codexCompleted.resolve()
+    return record
+  }
+  group = workspace.createGroup({
+    name: 'V4 immediate proposal commit', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Publish each proposal as soon as it completes.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    maxRounds: 1,
+    protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  releaseCodex.resolve()
+  await codexCompleted.promise
+
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'agent'
+      && message.agentKind === 'codex'
+      && message.threadRootId === controller.threadRootId
+      && message.content === 'codex durable proposal'
+  )), true)
+  assert.equal(ledger.get(controller.runId).orchestration.slots.find(slot => (
+    slot.agentKind === 'hermes'
+  )).status, 'running')
+})
+
+test('V4 Auto commits each completed challenge before the next reviewer settles', async (t) => {
+  const { directory, options } = fixture()
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const hermesChallengeStarted = deferred()
+  const releaseHermesChallenge = deferred()
+  let workspace = null
+  let group = null
+  let controller = null
+  t.after(async () => {
+    releaseHermesChallenge.resolve()
+    if (workspace && group && controller && workspace.activeRuns.has(group.id)) {
+      workspace.stop(group.id, controller.runId)
+    }
+    try { await controller?.promise } catch {}
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runLedger = ledger
+  options.runAgent = async (agent, prompt) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    if (phase === 'challenge' && agent.kind === 'hermes') {
+      hermesChallengeStarted.resolve()
+      await releaseHermesChallenge.promise
+    }
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration: phase === 'proposal'
+        ? v4ProposalCollaboration(agent.kind)
+        : agreedV4Collaboration(agent.kind, phase, prompt, ['codex', 'hermes']),
+    }
+  }
+  workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  group = workspace.createGroup({
+    name: 'V4 immediate challenge commit', agentKinds: ['codex', 'hermes'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Publish each challenge before the next reviewer finishes.',
+    mode: 'auto',
+    targetKinds: ['codex', 'hermes'],
+    maxRounds: 2,
+    protocol: 'v4',
+  })
+  controller = workspace.activeRuns.get(group.id)
+  controller.promise.catch(() => {})
+  await hermesChallengeStarted.promise
+
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.role === 'agent'
+      && message.agentKind === 'codex'
+      && message.threadRootId === controller.threadRootId
+      && message.content === 'codex challenge'
+  )), true)
+  assert.equal(ledger.get(controller.runId).orchestration.phase, 'challenge')
+})
+
 test('V4 Auto continues to round two with healthy Agents after a proposal peer fails', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
