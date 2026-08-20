@@ -714,6 +714,21 @@ describe('Meldwork workbench', () => {
     expect(source).toMatch(/\.sidebar\.collapsed \.sidebar-toggle\s*\{[^}]*flex:\s*0 0 34px;/s)
   })
 
+  it('uses directional controls for the sidebar and animates the trace panel state change', () => {
+    const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
+    const sidebarSource = readNodeFileSync(resolve(process.cwd(), 'src/components/WorkspaceSidebar.vue'), 'utf8')
+    const appSource = readNodeFileSync(resolve(process.cwd(), 'src/App.vue'), 'utf8')
+
+    expect(sidebarSource).toContain('<ChevronForwardOutline v-if="sidebarCollapsed" />')
+    expect(sidebarSource).toContain('<ChevronBackOutline v-else />')
+    expect(sidebarSource).not.toContain('<ContractOutline')
+    expect(sidebarSource).not.toContain('<MenuOutline')
+    expect(appSource).toContain('<transition name="trace-panel">')
+    expect(styles).toMatch(/\.trace-panel-enter-active \.run-trace-panel,[^{]+\.trace-panel-leave-active \.run-trace-panel\s*\{[^}]*transition:[^}]*transform[^}]*opacity[^}]*;/s)
+    expect(styles).toMatch(/\.trace-panel-enter-from \.run-trace-panel,[^{]+\.trace-panel-leave-to \.run-trace-panel\s*\{[^}]*transform:\s*translateX\(/s)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.trace-panel-enter-active \.run-trace-panel,[^{]+\.trace-panel-leave-active \.run-trace-panel,[^{]+\{[^}]*transition:\s*none;/s)
+  })
+
   it('anchors collapsed sidebar controls while the workspace width animates', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
 
@@ -805,7 +820,7 @@ describe('Meldwork workbench', () => {
     expect(source).toMatch(/\.direct-session-action\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row:hover \.direct-session-action,[^{]+\.direct-session-row:focus-within \.direct-session-action\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*auto;/s)
     expect(source).toMatch(/\.direct-session-row > \.run-mark,[^{]+\.direct-session-row > \.run-finished-mark\s*\{[^}]*grid-column:\s*4;[^}]*grid-row:\s*1;[^}]*justify-self:\s*end;/s)
-    expect(source).toMatch(/\.run-agent-row\s*\{[^}]*grid-template-columns:\s*32px minmax\(0, 1fr\) auto;[^}]*"avatar name state"/s)
+    expect(source).toMatch(/\.run-agent-row\s*\{[^}]*grid-template-columns:\s*32px 20px;[^}]*grid-template-areas:\s*"avatar state"/s)
     expect(source).toMatch(/\.run-agent-state\s*\{[^}]*justify-content:\s*flex-end;/s)
   })
 

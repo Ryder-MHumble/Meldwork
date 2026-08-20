@@ -1144,6 +1144,67 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
+  it('scrolls the conversation to the selected Agent and round message', async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-trace-jump',
+        conversationType: 'group',
+        name: 'Trace jump',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:03:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'trace-jump-root', groupId: 'group-trace-jump', role: 'user',
+          content: 'Compare two rounds', targetKinds: ['codex', 'hermes'],
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'trace-jump-codex-one', groupId: 'group-trace-jump', role: 'agent',
+          agentKind: 'codex', threadRootId: 'trace-jump-root', content: 'Codex round one',
+          trace: { runId: 'trace-jump-run', agentRunId: 'trace-jump-codex-one-run', round: 1, status: 'completed', events: [] },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'trace-jump-hermes-one', groupId: 'group-trace-jump', role: 'agent',
+          agentKind: 'hermes', threadRootId: 'trace-jump-root', content: 'Hermes round one',
+          trace: { runId: 'trace-jump-run', agentRunId: 'trace-jump-hermes-one-run', round: 1, status: 'completed', events: [] },
+          createdAt: '2026-07-29T08:02:30Z',
+        },
+        {
+          id: 'trace-jump-codex-two', groupId: 'group-trace-jump', role: 'agent',
+          agentKind: 'codex', threadRootId: 'trace-jump-root', content: 'Codex round two',
+          trace: { runId: 'trace-jump-run', agentRunId: 'trace-jump-codex-two-run', round: 2, status: 'completed', events: [] },
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await wrapper.get('#message-trace-jump-codex-one .message-trace-surface').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('.trace-round-selector .trace-select-trigger').trigger('click')
+    await wrapper.findAll('.trace-round-selector .trace-select-option')[1].trigger('click')
+    await flushPromises()
+    expect(wrapper.get('#message-trace-jump-codex-two').element.scrollIntoView)
+      .toHaveBeenLastCalledWith({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+
+    await wrapper.get('.trace-agent-selector .trace-select-trigger').trigger('click')
+    const hermes = wrapper.findAll('.trace-agent-selector .trace-select-option')
+      .find(option => option.text().includes('Hermes'))
+    await hermes.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('#message-trace-jump-hermes-one').element.scrollIntoView)
+      .toHaveBeenLastCalledWith({ block: 'center', inline: 'nearest', behavior: 'smooth' })
+    wrapper.unmount()
+  })
+
   it('supports keyboard navigation and outside-click dismissal for trace dropdowns', async () => {
     const wrapper = mount(RunTracePanel, {
       attachTo: document.body,

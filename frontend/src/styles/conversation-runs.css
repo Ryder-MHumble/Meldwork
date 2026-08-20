@@ -231,7 +231,7 @@
 }
 
 .relay-run-agent {
-  z-index: calc(4 - var(--avatar-index, 0));
+  z-index: calc(100 - var(--avatar-index, 0));
 }
 
 .relay-run-agent + .relay-run-agent {
@@ -680,16 +680,15 @@
 }
 
 .run-agent-row {
-  min-width: 138px;
+  min-width: 68px;
   min-height: 48px;
   position: relative;
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) auto;
-  grid-template-areas:
-    "avatar name state"
-    "avatar name state";
+  grid-template-columns: 32px 20px;
+  grid-template-areas: "avatar state";
   align-items: center;
-  column-gap: 8px;
+  justify-content: space-between;
+  column-gap: 6px;
   row-gap: 0;
   flex: 0 0 auto;
   overflow: hidden;
@@ -717,21 +716,8 @@
   background: transparent;
 }
 
-.run-agent-row strong {
-  grid-area: name;
-  overflow: hidden;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .run-agent-row > .run-agent-logo {
   grid-area: avatar;
-}
-
-.run-agent-row small {
-  font-size: 10px;
-  font-weight: 650;
 }
 
 .run-agent-state {

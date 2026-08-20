@@ -48,10 +48,31 @@ class LocalWorkspaceRunLedger {
         try { this.runLedger?.deleteGroup?.(record.groupId) } catch {}
         continue
       }
-      for (const agentRun of Array.isArray(record.agentRuns) ? record.agentRuns : []) {
+      const agentRuns = Array.isArray(record.agentRuns) ? record.agentRuns : []
+      const latestAttemptByKind = new Map()
+      for (const attempt of Array.isArray(record.attemptHistory) ? record.attemptHistory : []) {
+        const previous = latestAttemptByKind.get(attempt.agentKind)
+        if (!previous || attempt.sequence > previous.sequence) {
+          latestAttemptByKind.set(attempt.agentKind, attempt)
+        }
+      }
+      const latestTerminalFailureByKind = new Map()
+      for (const agentRun of agentRuns) {
+        if (['failed', 'timeout'].includes(String(agentRun?.status || '').toLowerCase())) {
+          latestTerminalFailureByKind.set(agentRun.kind, agentRun.agentRunId)
+        }
+      }
+      for (const agentRun of agentRuns) {
         const status = String(agentRun?.status || '').toLowerCase()
         if (!RECOVERABLE_AGENT_STATUSES.has(status)
             || !isSupportedAgentKind(agentRun?.kind)) continue
+        if (['failed', 'timeout'].includes(status)) {
+          const latestAttempt = latestAttemptByKind.get(agentRun.kind)
+          if (latestAttempt?.finalOutcome === 'succeeded'
+              || latestTerminalFailureByKind.get(agentRun.kind) !== agentRun.agentRunId) {
+            continue
+          }
+        }
         const output = cleanText(agentRun.output, DEFAULT_MAX_OUTPUT_CHARS)
         const trace = traceCapsuleFromAgentRun({
           ...agentRun,

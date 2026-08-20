@@ -295,7 +295,9 @@ class AgentInstaller extends EventEmitter {
           throw installerError('INSTALL_AGENT_INTEGRITY_FAILED')
         }
         args = [
-          'install', '--global', npmPackageSpec(recipe),
+          'install', '--global',
+          ...(recipe.ignoreScripts ? ['--ignore-scripts'] : []),
+          npmPackageSpec(recipe),
           '--registry', NPM_REGISTRY,
         ]
       }

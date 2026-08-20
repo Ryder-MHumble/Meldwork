@@ -758,6 +758,7 @@ export default {
     'system.agentInterrupted': '{agent} was interrupted when Meldwork restarted.',
     'system.autoStopped': 'Automatic discussion stopped: {reason}',
     'system.autoRoundLimit': 'Automatic discussion reached the {rounds}-round limit without reaching consensus.',
+    'system.agentRemovedAfterFailure': '{agent} was removed from the group after a terminal failure. The discussion continued with the remaining Agents.',
     'system.autoTimeout': 'Automatic discussion stopped after a runtime timeout before consensus.',
     'system.runCircuitBreaker': 'The mandatory circuit breaker stopped this run after {maxAttempts} Agent attempts.',
     'error.generic': 'The operation could not be completed.',

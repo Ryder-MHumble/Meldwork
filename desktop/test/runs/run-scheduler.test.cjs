@@ -25,10 +25,28 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-test('exports one process-wide scheduler with bounded defaults and no run deadline', () => {
+test('exports one process-wide scheduler with no run deadline', () => {
   assert.equal(processRunScheduler instanceof RunScheduler, true)
-  assert.deepEqual(processRunScheduler.snapshot().limits, { task: 4, workspace: 4, global: 4 })
   assert.equal(Object.hasOwn(processRunScheduler.snapshot(), 'timeoutMs'), false)
+})
+
+test('default capacity is unlimited and starts every Agent in a collaboration batch', async (t) => {
+  const scheduler = new RunScheduler()
+  const leases = []
+  t.after(() => leases.forEach(lease => lease.release()))
+
+  assert.deepEqual(scheduler.snapshot().limits, { task: null, workspace: null, global: null })
+
+  for (let index = 0; index < 40; index += 1) {
+    void scheduler.acquire({
+      taskId: 'shared-task',
+      workspaceKey: 'shared-workspace',
+    }).then(lease => { leases.push(lease) })
+  }
+  await new Promise(resolve => setImmediate(resolve))
+
+  assert.equal(scheduler.snapshot().active.global, 40)
+  assert.equal(scheduler.snapshot().queued.length, 0)
 })
 
 test('grants FIFO leases when shared capacity becomes available and records fake-clock queue timing', async () => {

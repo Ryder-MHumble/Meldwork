@@ -62,6 +62,15 @@ test('keeps unidentified versions distinct from verified incompatibility', () =>
   })
 })
 
+test('accepts the verified Pi Agent release', () => {
+  assert.deepEqual(assessAgentVersion('pi', '0.84.2'), {
+    resolvedVersion: '0.84.2',
+    supportedVersionRange: '0.84.2',
+    compatibilityState: 'compatible',
+    incompatibilityReason: '',
+  })
+})
+
 test('accepts inclusive release ranges and rejects unvalidated versions', () => {
   for (const [kind, contract] of Object.entries(AGENT_COMPATIBILITY)) {
     const supported = contract.exactVersion

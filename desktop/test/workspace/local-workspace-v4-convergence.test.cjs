@@ -743,7 +743,11 @@ test('finite V4 round limit retains candidate and durable open issues without a 
   assert.equal(durable.orchestration.convergence.openIssueIds.length, 1)
   assert.deepEqual(workspace.listHumanGates(), [])
   assert.deepEqual(
-    workspace.snapshot().messages.filter(message => message.role === 'agent'),
-    [],
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => ({ agentKind: message.agentKind, content: message.content })),
+    [
+      { agentKind: 'codex', content: 'codex proposal' },
+      { agentKind: 'hermes', content: 'hermes proposal' },
+    ],
   )
 })

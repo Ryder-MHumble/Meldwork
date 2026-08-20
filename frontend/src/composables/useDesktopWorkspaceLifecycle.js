@@ -26,6 +26,7 @@ export function useDesktopWorkspaceLifecycle({
   installer,
   installerState,
   provider,
+  refreshAgents,
   showError,
   snapshot,
   workspace,
@@ -37,6 +38,14 @@ export function useDesktopWorkspaceLifecycle({
   let unsubscribeRunFinished = null
   let unsubscribeRunEvent = null
   let unsubscribeOpenGroup = null
+  let lastFocusRefreshAt = 0
+
+  function handleWindowFocus() {
+    const now = Date.now()
+    if (!workspace.value || now - lastFocusRefreshAt < 30000) return
+    lastFocusRefreshAt = now
+    void refreshAgents?.()
+  }
 
   function handleRunEvent(event) {
     const next = mergeRunEvent(snapshot.value, event)
@@ -77,10 +86,13 @@ export function useDesktopWorkspaceLifecycle({
   }
 
   onMounted(() => {
+    lastFocusRefreshAt = Date.now()
+    window.addEventListener('focus', handleWindowFocus)
     void boot()
   })
 
   onBeforeUnmount(() => {
+    window.removeEventListener('focus', handleWindowFocus)
     unsubscribeWorkspace?.()
     unsubscribeRunEvent?.()
     unsubscribeInstaller?.()

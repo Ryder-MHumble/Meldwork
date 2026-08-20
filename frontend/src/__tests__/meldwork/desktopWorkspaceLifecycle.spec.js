@@ -32,6 +32,7 @@ function mountLifecycle(overrides = {}) {
     installer: ref(installerApi),
     installerState: ref({ phase: 'loading' }),
     provider: ref({}),
+    refreshAgents: vi.fn(async () => {}),
     showError: vi.fn(),
     snapshot: ref(snapshot()),
     workspace: ref(workspaceApi),
@@ -48,6 +49,7 @@ function mountLifecycle(overrides = {}) {
 }
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.restoreAllMocks()
 })
 
@@ -120,5 +122,27 @@ describe('desktop workspace lifecycle', () => {
     expect(fixture.dependencies.snapshot.value).toEqual(snapshot())
     expect(fixture.lifecycle.booting.value).toBe(false)
     fixture.wrapper.unmount()
+  })
+
+  it('refreshes local Agents when the desktop regains focus after an external install window', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-08-19T08:00:00Z'))
+    const fixture = mountLifecycle()
+    await flushPromises()
+
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(fixture.dependencies.refreshAgents).not.toHaveBeenCalled()
+
+    vi.setSystemTime(new Date('2026-08-19T08:00:31Z'))
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(fixture.dependencies.refreshAgents).toHaveBeenCalledTimes(1)
+
+    fixture.wrapper.unmount()
+    vi.setSystemTime(new Date('2026-08-19T08:01:02Z'))
+    window.dispatchEvent(new Event('focus'))
+    await flushPromises()
+    expect(fixture.dependencies.refreshAgents).toHaveBeenCalledTimes(1)
   })
 })

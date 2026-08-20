@@ -56,7 +56,7 @@ const AGENT_COMPATIBILITY = Object.freeze({
       'json', 'plan', 'acceptEdits',
     ]),
   ]),
-  pi: profile('0.1.0', '0.1.999', [
+  pi: exactProfile('0.84.2', [
     probe('pi-cli', ['--help'], []),
   ]),
   kimi: profile('0.19.2', '0.32.0', [

@@ -52,15 +52,17 @@ describe('Conversation viewport', () => {
     scroller.scrollTop = 400
     const outerReveals = []
     container.scrollIntoView = options => outerReveals.push(options)
+    scroller.scrollTo = vi.fn(({ top }) => { scroller.scrollTop = top })
     container.append(scroller)
     viewport.messageScroller.value = scroller
 
     viewport.handleMessageScroll()
     expect(viewport.showScrollToLatest.value).toBe(true)
 
-    await viewport.scrollToLatest({ force: true })
+    await viewport.scrollToLatest({ force: true, behavior: 'smooth' })
 
     expect(outerReveals).toEqual([{ block: 'end', inline: 'nearest' }])
+    expect(scroller.scrollTo).toHaveBeenCalledWith({ top: 1200, behavior: 'smooth' })
     expect(scroller.scrollTop).toBe(1200)
     expect(viewport.showScrollToLatest.value).toBe(false)
   })

@@ -758,6 +758,7 @@ export default {
     'system.agentInterrupted': 'Meldwork 重启时，{agent} 的运行已中断。',
     'system.autoStopped': '自动讨论已停止：{reason}',
     'system.autoRoundLimit': '自动讨论已达到 {rounds} 轮上限，尚未达成共识。',
+    'system.agentRemovedAfterFailure': '{agent} 发生终止性故障，已自动移出群聊；其余 Agent 将继续讨论。',
     'system.autoTimeout': '自动讨论在达成共识前因运行超时而停止。',
     'system.runCircuitBreaker': '不可关闭的熔断器已在 {maxAttempts} 次 Agent 尝试后停止本次运行。',
     'error.generic': '操作未能完成。',

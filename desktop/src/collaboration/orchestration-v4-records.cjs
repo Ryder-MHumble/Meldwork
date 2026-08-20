@@ -347,13 +347,13 @@ function createCoordinationPlan(input = {}) {
   }
   const finalizerKind = cleanId(input.finalizerKind)
   const verifierKinds = uniqueIds(
-    input.verifierKinds || [], Math.min(2, MAX_V4_SLOTS), true,
+    input.verifierKinds || [], MAX_V4_SLOTS, true,
   ).sort()
   const agreedBy = uniqueIds(input.agreedBy || [], MAX_V4_SLOTS, true).sort()
   const supportReceiptIds = input.supportReceiptIds == null
     ? null
     : uniqueIds(input.supportReceiptIds, MAX_V4_SLOTS, true).sort()
-  const requiredVerifierCount = Math.min(2, targetKinds.length - 1)
+  const requiredVerifierCount = targetKinds.length - 1
   if (!finalizerKind || !targetKinds.includes(finalizerKind)
       || verifierKinds.length !== requiredVerifierCount
       || verifierKinds.some(kind => !targetKinds.includes(kind) || kind === finalizerKind)
@@ -2203,7 +2203,7 @@ function parseCollaborationControlBlock(input, options = {}) {
     }
   })
   const finalizerKind = input.finalizerKind == null ? '' : safeText(input.finalizerKind, 120, false)
-  const verifierKinds = boundedList(input.verifierKinds, Math.min(2, MAX_V4_SLOTS), 120)
+  const verifierKinds = boundedList(input.verifierKinds, MAX_V4_SLOTS, 120)
   const supportedPlanHash = input.supportedPlanHash == null
     ? '' : String(input.supportedPlanHash)
   const workItemId = input.workItemId == null ? '' : safeText(input.workItemId, 120, false)

@@ -156,6 +156,35 @@ test('retries only transient categories and stops at the total attempt bound', (
   assert.equal(retryDecision(cancelled).action, 'fail')
 })
 
+test('retries recoverable Agent protocol failures before the total attempt bound', () => {
+  for (const code of [
+    'LOCAL_RUN_COLLABORATION_RECEIPT_INVALID',
+    'LOCAL_AGENT_EMPTY_RESPONSE',
+    'LOCAL_AGENT_PROCESS_FAILED',
+    'LOCAL_AGENT_EXITED',
+  ]) {
+    const failure = normalizeFailure(Object.assign(new Error(code), { code }))
+    assert.equal(failure.category, 'protocol')
+    assert.equal(failure.retryability, 'retry')
+    assert.equal(retryDecision(failure, { attempt: 1, maxAttempts: 4 }).action, 'retry')
+    assert.equal(retryDecision(failure, { attempt: 4, maxAttempts: 4 }).action, 'fail')
+  }
+})
+
+test('retries a bounded Agent timeout while preserving the write-safety gate', () => {
+  const timeout = normalizeFailure(Object.assign(
+    new Error('LOCAL_AGENT_TIMEOUT'), { code: 'LOCAL_AGENT_TIMEOUT' },
+  ))
+  assert.equal(timeout.category, 'timeout')
+  assert.equal(timeout.retryability, 'retry')
+  assert.equal(retryDecision(timeout, { attempt: 1, maxAttempts: 4 }).action, 'retry')
+  assert.equal(retryDecision(timeout, {
+    attempt: 1,
+    maxAttempts: 4,
+    safety: { sideEffectsPossible: true, idempotencyMode: 'none' },
+  }).action, 'human_gate')
+})
+
 test('requires approval before retrying side-effectful ambiguous failures', () => {
   const error = Object.assign(new Error('socket reset after dispatch'), {
     code: 'ECONNRESET',

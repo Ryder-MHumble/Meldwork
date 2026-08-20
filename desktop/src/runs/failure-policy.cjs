@@ -147,7 +147,7 @@ function classifiedCategory(error, code, status) {
   if (/INCOMPAT|UNSUPPORTED|PROTOCOL_UNAVAILABLE|REVIEW_ONLY|VERSION_MISMATCH/.test(code)) {
     return 'compatibility'
   }
-  if (/SPAWN|EXITED|PROCESS|PROTOCOL|OUTCOME|OUTPUT_LIMIT|EMPTY_RESPONSE/.test(code)) {
+  if (/SPAWN|EXITED|PROCESS|PROTOCOL|OUTCOME|OUTPUT_LIMIT|EMPTY_RESPONSE|COLLABORATION_RECEIPT/.test(code)) {
     return 'protocol'
   }
   return 'execution'
@@ -157,7 +157,7 @@ function retryability(category, error) {
   if (category === 'session') return 'refresh_session'
   if (category === 'authentication') return 'never'
   if (category === 'compatibility') return 'never'
-  if (['rate_limit', 'network', 'provider'].includes(category)) return 'retry'
+  if (['rate_limit', 'network', 'provider', 'timeout', 'protocol'].includes(category)) return 'retry'
   if (error?.failure?.retryable === true) return 'retry'
   return 'never'
 }

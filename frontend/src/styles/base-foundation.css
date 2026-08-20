@@ -216,6 +216,57 @@ button svg {
   display: none;
 }
 
+.trace-panel-enter-active .run-trace-panel,
+.trace-panel-leave-active .run-trace-panel {
+  transition:
+    transform 0.22s cubic-bezier(0.16, 1, 0.3, 1),
+    opacity 0.16s ease-out;
+}
+
+.trace-panel-enter-from .run-trace-panel,
+.trace-panel-leave-to .run-trace-panel {
+  transform: translateX(24px);
+  opacity: 0;
+}
+
+.trace-panel-enter-active .trace-panel-scrim,
+.trace-panel-leave-active .trace-panel-scrim {
+  transition: opacity 0.18s ease-out;
+}
+
+.trace-panel-enter-from .trace-panel-scrim,
+.trace-panel-leave-to .trace-panel-scrim {
+  opacity: 0;
+}
+
+@media (min-width: 1180px) {
+  .trace-panel-leave-active {
+    position: fixed;
+    top: calc(var(--desktop-titlebar-height) + var(--shell-gutter));
+    right: var(--shell-gutter);
+    bottom: var(--shell-gutter);
+    z-index: 20;
+    display: block;
+    width: var(--trace-panel-width);
+    pointer-events: none;
+  }
+
+  .trace-panel-leave-active .run-trace-panel {
+    width: 100%;
+    height: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell,
+  .trace-panel-enter-active .run-trace-panel,
+  .trace-panel-leave-active .run-trace-panel,
+  .trace-panel-enter-active .trace-panel-scrim,
+  .trace-panel-leave-active .trace-panel-scrim {
+    transition: none;
+  }
+}
+
 .boot-state,
 .bridge-state {
   grid-column: 1 / -1;

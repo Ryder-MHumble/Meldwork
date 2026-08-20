@@ -489,27 +489,27 @@ test('allows only plan-ordered negotiated writer replacement while retaining ind
     targetKinds,
     assignments: [
       { taskId: 'a-final', ownerKind: 'workbuddy', role: 'integrator', objective: 'Integrate work.', expectedOutput: 'Integrated Artifact.', inputRefs: [], artifactIds: [], dependsOn: ['b-qwen', 'c-codex', 'd-hermes'] },
-      { taskId: 'b-qwen', ownerKind: 'qwen', role: 'worker', objective: 'Prepare a non-verifier work package.', expectedOutput: 'Qwen Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
+      { taskId: 'b-qwen', ownerKind: 'qwen', role: 'verifier', objective: 'Prepare Qwen evidence.', expectedOutput: 'Qwen Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
       { taskId: 'c-codex', ownerKind: 'codex', role: 'verifier', objective: 'Prepare Codex evidence.', expectedOutput: 'Codex Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
       { taskId: 'd-hermes', ownerKind: 'hermes', role: 'verifier', objective: 'Prepare Hermes evidence.', expectedOutput: 'Hermes Artifact.', inputRefs: [], artifactIds: [], dependsOn: [] },
     ],
     finalizerKind: 'workbuddy',
-    verifierKinds: ['codex', 'hermes'],
+    verifierKinds: ['codex', 'hermes', 'qwen'],
     agreedBy: targetKinds,
   })
-  const rankedKinds = ['workbuddy', 'qwen', 'codex', 'hermes']
+  const rankedKinds = ['workbuddy', 'codex', 'hermes', 'qwen']
   const rankingFingerprint = hashValue({ planHash: coordinationPlan.planHash, rankedKinds })
   const originalSlot = base.slots.find(slot => slot.agentKind === 'workbuddy')
-  const replacementSlot = base.slots.find(slot => slot.agentKind === 'qwen')
+  const replacementSlot = base.slots.find(slot => slot.agentKind === 'codex')
   const recovery = {
     revision: 2,
     originalWriterKind: 'workbuddy',
-    activeWriterKind: 'qwen',
-    verificationKinds: ['codex', 'hermes'],
+    activeWriterKind: 'codex',
+    verificationKinds: ['hermes', 'qwen'],
     rankedKinds,
     rankingFingerprint,
     stateEpoch: 0,
-    triedWriters: ['workbuddy', 'qwen'],
+    triedWriters: ['workbuddy', 'codex'],
     attempts: [
       {
         attemptId: 'synthesis-attempt-workbuddy-1',
@@ -525,8 +525,8 @@ test('allows only plan-ordered negotiated writer replacement while retaining ind
         updatedAt: 1001,
       },
       {
-        attemptId: 'synthesis-attempt-qwen-1',
-        writerKind: 'qwen',
+        attemptId: 'synthesis-attempt-codex-1',
+        writerKind: 'codex',
         slotId: replacementSlot.slotId,
         operationId: replacementSlot.operationId,
         attempt: 1,
@@ -542,12 +542,12 @@ test('allows only plan-ordered negotiated writer replacement while retaining ind
   const record = {
     ...base,
     phase: 'synthesis',
-    currentKinds: ['qwen'],
-    pendingKinds: ['qwen'],
+    currentKinds: ['codex'],
+    pendingKinds: ['codex'],
     coordinationPlan,
     synthesisRecovery: recovery,
-    commitState: { ...base.commitState, writerKind: 'qwen' },
-    slots: base.slots.map(slot => slot.agentKind === 'qwen' ? {
+    commitState: { ...base.commitState, writerKind: 'codex' },
+    slots: base.slots.map(slot => slot.agentKind === 'codex' ? {
       ...slot,
       phase: 'synthesis',
       status: 'planned',
@@ -563,7 +563,7 @@ test('allows only plan-ordered negotiated writer replacement while retaining ind
   assert.throws(() => parseOrchestrationV4({
     ...record,
     slots: record.slots.map(slot => (
-      ['qwen', 'workbuddy'].includes(slot.agentKind)
+      ['codex', 'workbuddy'].includes(slot.agentKind)
         ? { ...slot, permission: 'workspace-write' }
         : slot
     )),
@@ -1960,7 +1960,7 @@ test('keeps 32 Agent members while allowing a bounded extra work package', () =>
     targetKinds,
     assignments: [...baseAssignments, extraAssignment],
     finalizerKind: targetKinds.at(-1),
-    verifierKinds: targetKinds.slice(0, 2),
+    verifierKinds: targetKinds.slice(0, -1),
     agreedBy: targetKinds,
   })
 

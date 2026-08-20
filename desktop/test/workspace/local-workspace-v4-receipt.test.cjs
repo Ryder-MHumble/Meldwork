@@ -74,6 +74,18 @@ function inlineMarker(receipt) {
   return `[[MELDWORK_COLLABORATION:${JSON.stringify(receipt)}]]`
 }
 
+test('V4 challenge receipts normalize a finalizer assignment role to integrator', () => {
+  const receipt = runtimeReceiptFor('opencode', 'challenge', '', 'Shared plan')
+  receipt.proposedAssignments[1].role = 'finalizer'
+
+  const parsed = parseV4CollaborationReceipt({
+    text: `OpenCode plan\n${inlineMarker(receipt)}`,
+  }, true, 'challenge')
+
+  assert.equal(parsed.text, 'OpenCode plan')
+  assert.equal(parsed.collaboration.proposedAssignments[1].role, 'integrator')
+})
+
 function streamChunks(runOptions, value) {
   const widths = [1, 5, 2, 7, 3, 11]
   let start = 0
@@ -241,6 +253,33 @@ test('V4 receipt parser accepts only the phase receipt shape and strips its cont
   }
 })
 
+test('V4 strips WorkBuddy protocol commentary around a valid terminal receipt', () => {
+  const receipt = receiptFor('proposal', 'Independent proposal.')
+  const englishMeta = [
+    'This task is a coordination/self-introduction request within the MELDWORK framework, not a code implementation task.',
+    "I've provided my introduction and the structured receipt marker above.",
+    'No plan file or implementation planning is needed for this response.',
+  ].join(' ')
+  const chineseMeta = [
+    '我已完成本阶段的提案输出（上方含结构化 receipt 标记）。',
+    '鉴于本次 MELDWORK 任务为协作协调类文本产出，非代码实现任务，无需进入执行计划流程，故不调用 ExitPlanMode。',
+    '我的提案与 receipt 标记即为本轮交付，等待后续质询/验证阶段的指令。',
+  ].join('')
+
+  for (const text of [
+    `Normal user-facing proposal.\n\n${englishMeta}\n${inlineMarker(receipt)}`,
+    `Normal user-facing proposal.\n${inlineMarker(receipt)}\n${chineseMeta}`,
+  ]) {
+    const parsed = parseV4CollaborationReceipt({ text }, true, 'proposal')
+    assert.equal(parsed.text, 'Normal user-facing proposal.')
+    assert.deepEqual(parsed.collaboration, receipt)
+  }
+
+  assert.throws(() => parseV4CollaborationReceipt({
+    text: `First half.\n${inlineMarker(receipt)}\nSecond half of the user-facing proposal.`,
+  }, true, 'proposal'), /LOCAL_RUN_COLLABORATION_RECEIPT_INVALID/)
+})
+
 test('Manual concurrent proposals preserve a valid visible response when a CLI omits its receipt', () => {
   const result = parseV4CollaborationReceipt({
     text: 'A complete user-facing response without a control block.',
@@ -404,10 +443,22 @@ test('V4 streams split receipts without exposing controls and commits the comple
     'hermes work visible body.\n',
     'Visible synthesis conclusion.\n',
     `${verifierKind} verification visible body.\n`,
+    'Visible synthesis conclusion.\n',
+    `${verifierKind} verification visible body.\n`,
+    'Visible synthesis conclusion.\n',
+    `${verifierKind} verification visible body.\n`,
+    'Visible synthesis conclusion.\n',
+    `${verifierKind} verification visible body.\n`,
+    'Visible synthesis conclusion.\n',
+    `${verifierKind} verification visible body.\n`,
   ].join(''))
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent').map(message => message.content),
-    ['Visible synthesis conclusion.'],
+    [
+      'codex proposal visible body.',
+      'hermes proposal visible body.',
+      'Visible synthesis conclusion.',
+    ],
   )
 })
 
@@ -532,14 +583,14 @@ test('V4 preserves typed receipt visible suffixes that resemble partial controls
   }
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent').map(message => message.content),
-    [body],
+    [body, body, body],
   )
 })
 
-test('V4 refuses missing and extra receipts before committing an Agent message', async (t) => {
+test('V4 Auto preserves visible proposals with missing or malformed receipts', async (t) => {
   for (const [name, collaboration] of [
     ['missing', null],
-    ['extra', { version: 1, phase: 'proposal', summary: 'Proposal.', status: 'completed' }],
+    ['malformed', { version: 1, phase: 'proposal', summary: 'Proposal.', status: 'completed' }],
   ]) {
     await t.test(name, async (t) => {
       const { directory, options } = fixture()
@@ -561,15 +612,21 @@ test('V4 refuses missing and extra receipts before committing an Agent message',
         text: 'Produce one verified conclusion.',
         mode: 'auto',
         targetKinds: ['codex', 'hermes'],
+        maxRounds: 1,
         protocol: 'v4',
       })
       await workspace.activeRuns.get(group.id).promise
 
       const agentMessages = workspace.snapshot().messages.filter(message => message.role === 'agent')
-      assert.deepEqual(agentMessages, [])
+      assert.deepEqual(agentMessages.map(message => message.content), [
+        'Uncommitted body.',
+        'Uncommitted body.',
+      ])
       assert.equal(phases.length, 2)
       assert.equal(phases.every(phase => phase === 'proposal'), true)
-      assert.match(workspace.snapshot().messages.at(-1).content, /LOCAL_RUN_COLLABORATION_RECEIPT/)
+      assert.equal(workspace.snapshot().messages.some(message => (
+        /LOCAL_RUN_COLLABORATION_RECEIPT/.test(message.content)
+      )), false)
     })
   }
 })

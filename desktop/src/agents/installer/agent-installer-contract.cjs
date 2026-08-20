@@ -53,6 +53,12 @@ const NPM_RELEASES = Object.freeze({
     version: '2026.7.1-2',
     integrity: 'sha512-ycF3yPcbjN6bUPeaUx6Mh6vze1hQWoD3CT/wWcmD7a8xaHHHRUaAlaq+lFxMHf1ssEgODVAwjlzYqp2twkYZ7g==',
   }),
+  pi: Object.freeze({
+    packageName: '@earendil-works/pi-coding-agent',
+    version: '0.84.2',
+    integrity: 'sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==',
+    ignoreScripts: true,
+  }),
   qwen: Object.freeze({
     packageName: '@qwen-code/qwen-code',
     version: '0.21.5',

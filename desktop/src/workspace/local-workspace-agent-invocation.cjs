@@ -84,12 +84,28 @@ const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const V4_PHASES = new Set(['proposal', 'challenge', 'work', 'synthesis', 'verification'])
 const V4_RECEIPT_MARKER_PREFIX = '[[MELDWORK_COLLABORATION'
-const V4_RECEIPT_MARKER = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?:([\s\S]*?)\]\]\s*$/i
-const V4_RECEIPT_BLOCK = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?\]\]([\s\S]*?)\[\[\/MELDWORK_COLLABORATION(?:_JSON)?\]\]\s*$/i
+const V4_RECEIPT_MARKER = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?:([\s\S]*?)\]\]/i
+const V4_RECEIPT_BLOCK = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?\]\]([\s\S]*?)\[\[\/MELDWORK_COLLABORATION(?:_JSON)?\]\]/i
 const LEGACY_CONSENSUS_MARKER = /^\s*\[\[MELDWORK_CONSENSUS:(?:agree|continue)\]\]\s*$/gim
 const V4_RECEIPT_MAX_TEXT = 800
 const V4_RECEIPT_MAX_ITEMS = 16
 const V4_RECEIPT_MAX_BYTES = 16 * 1024
+
+function isV4InternalProtocolCommentary(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text || text.length > 4000 || /\[\[MELDWORK_COLLABORATION/i.test(text)) return false
+  const mentionsControl = /(?:\breceipt\b|structured marker|MELDWORK framework|ExitPlanMode|\u7ed3\u6784\u5316\s*receipt|receipt\s*\u6807\u8bb0)/i.test(text)
+  const describesInternalProcess = /(?:coordination\/self-introduction|not a code implementation task|no plan file|implementation planning|plan mode|waiting for (?:the )?(?:next|subsequent).*(?:phase|instruction)|\u534f\u4f5c\u534f\u8c03\u7c7b\u6587\u672c\u4ea7\u51fa|\u975e\u4ee3\u7801\u5b9e\u73b0\u4efb\u52a1|\u6267\u884c\u8ba1\u5212\u6d41\u7a0b|\u4e0d\u8c03\u7528\s*ExitPlanMode|\u672c\u8f6e\u4ea4\u4ed8|\u7b49\u5f85\u540e\u7eed.*(?:\u9636\u6bb5|\u6307\u4ee4))/i.test(text)
+  return mentionsControl && describesInternalProcess
+}
+
+function stripV4InternalProtocolTail(value) {
+  const paragraphs = String(value || '').trim().split(/\n{2,}/)
+  while (paragraphs.length && isV4InternalProtocolCommentary(paragraphs.at(-1))) {
+    paragraphs.pop()
+  }
+  return paragraphs.join('\n\n').trim()
+}
 
 function boundedReceiptText(value, limit = V4_RECEIPT_MAX_TEXT) {
   if (typeof value !== 'string' || value.trim().length > limit) return ''
@@ -114,6 +130,11 @@ function parseV4CollaborationReceiptStrict(result, required = false, expectedPha
   let receipt = result?.collaboration
   const block = rawText.match(V4_RECEIPT_BLOCK) || rawText.match(V4_RECEIPT_MARKER)
   if (block) {
+    const markerStart = Number(block.index) || 0
+    const suffix = rawText.slice(markerStart + block[0].length).trim()
+    if (suffix && !isV4InternalProtocolCommentary(suffix)) {
+      throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
+    }
     const encoded = String(block[1] || '').trim()
     if (!encoded || Buffer.byteLength(encoded) > V4_RECEIPT_MAX_BYTES) {
       throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
@@ -128,11 +149,13 @@ function parseV4CollaborationReceiptStrict(result, required = false, expectedPha
       if (error?.message === 'LOCAL_RUN_COLLABORATION_RECEIPT_MISMATCH') throw error
       throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
     }
-    text = rawText.slice(0, rawText.length - block[0].length)
+    text = rawText.slice(0, markerStart)
   } else if (/\[\[MELDWORK_COLLABORATION/i.test(rawText)) {
     throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_INVALID')
   }
-  text = text.replace(LEGACY_CONSENSUS_MARKER, '').replace(/\n{3,}/g, '\n\n').trim()
+  text = stripV4InternalProtocolTail(
+    text.replace(LEGACY_CONSENSUS_MARKER, '').replace(/\n{3,}/g, '\n\n'),
+  )
   if (receipt == null && expectedPhase === 'proposal'
       && options.allowMissingProposalReceipt === true && text) {
     receipt = {
@@ -224,7 +247,15 @@ function parseV4CollaborationReceiptStrict(result, required = false, expectedPha
     } : {}),
     ...(phase === 'challenge' ? {
       ...(Array.isArray(receipt.proposedAssignments)
-        ? { proposedAssignments: receipt.proposedAssignments } : {}),
+        ? {
+            proposedAssignments: receipt.proposedAssignments.map(assignment => (
+              assignment && typeof assignment === 'object' && !Array.isArray(assignment)
+                && assignment.role === 'finalizer'
+                ? { ...assignment, role: 'integrator' }
+                : assignment
+            )),
+          }
+        : {}),
       ...(receipt.finalizerKind ? { finalizerKind: boundedReceiptText(receipt.finalizerKind, 120) } : {}),
       ...(Array.isArray(receipt.verifierKinds) ? { verifierKinds: boundedList(receipt.verifierKinds) } : {}),
       ...(receipt.supportedPlanHash ? { supportedPlanHash: receipt.supportedPlanHash } : {}),

@@ -7,7 +7,7 @@ const { HumanGateStore } = require('../../src/gates/human-gate-store.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
 const { deferred, fixture } = require('../support/local-workspace-test-helpers.cjs')
 
-test('installed Agents distinguish ready, unverified, and missing credential states', async (t) => {
+test('installed Agents distinguish ready, local CLI, and missing credential states', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const readinessAgents = []
@@ -36,9 +36,10 @@ test('installed Agents distinguish ready, unverified, and missing credential sta
   assert.equal(hermes.available, false)
   assert.equal(hermes.credentialState, 'missing')
   assert.equal(hermes.showInSidebar, false)
-  assert.equal(kimi.available, false)
+  assert.equal(kimi.available, true)
   assert.equal(kimi.credentialState, 'unknown')
-  assert.equal(kimi.showInSidebar, false)
+  assert.equal(kimi.availabilitySource, 'local-cli')
+  assert.equal(kimi.showInSidebar, true)
   assert.equal(readinessAgents.find(agent => agent.kind === 'kimi').executable, '/tmp/kimi')
 })
 
@@ -283,22 +284,19 @@ test('shared Provider readiness skips slow native probes while a profile is acti
   assert.equal(probedKinds.length, 4)
 })
 
-test('an unverified installed Agent stays unavailable until credentials are detected', async (t) => {
+test('a detected local Agent stays usable while native credential state is unverified', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
-  let kimiState = { state: 'unknown', source: 'unverified' }
+  const kimiState = { state: 'unknown', source: 'unverified' }
   options.credentialState = async kind => kind === 'kimi'
     ? kimiState
     : { state: 'ready', source: 'native-credential' }
   const workspace = new LocalWorkspace(options)
-  await workspace.refreshAgents()
-
-  assert.throws(() => workspace.createGroup({
-    name: '首次验证', agentKinds: ['kimi'], workdir: directory,
-  }), { message: 'LOCAL_GROUP_AGENT_REQUIRED' })
-
-  kimiState = { state: 'ready', source: 'native-credential' }
-  await workspace.refreshAgents()
+  const initial = await workspace.refreshAgents()
+  const initialKimi = initial.agents.find(agent => agent.kind === 'kimi')
+  assert.equal(initialKimi.available, true)
+  assert.equal(initialKimi.credentialState, 'unknown')
+  assert.equal(initialKimi.availabilitySource, 'local-cli')
   const group = workspace.createGroup({
     name: '首次验证', agentKinds: ['kimi'], workdir: directory,
   })
@@ -2334,6 +2332,7 @@ test('one failed agent persists only its stable error code in a multi-agent mess
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '部分失败', agentKinds: ['codex', 'hermes'], workdir: directory,
+    allowWrite: false,
   })
 
   await workspace.sendMessage({
@@ -2341,7 +2340,9 @@ test('one failed agent persists only its stable error code in a multi-agent mess
   })
 
   const snapshot = workspace.snapshot()
-  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'hermes', 'hermes', 'hermes', 'hermes',
+  ])
   assert.deepEqual(
     snapshot.messages.map(message => [message.role, message.agentKind, message.content]),
     [
@@ -2421,6 +2422,7 @@ test('running snapshots distinguish failed Agents from successful completions', 
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: '失败状态', agentKinds: ['codex', 'hermes'], workdir: directory,
+    allowWrite: false,
   })
 
   const send = workspace.sendMessage({

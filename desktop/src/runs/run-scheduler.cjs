@@ -1,13 +1,18 @@
-const DEFAULT_TASK_CONCURRENCY = 4
-const DEFAULT_WORKSPACE_CONCURRENCY = 4
-const DEFAULT_GLOBAL_CONCURRENCY = 4
+const DEFAULT_TASK_CONCURRENCY = null
+const DEFAULT_WORKSPACE_CONCURRENCY = null
+const DEFAULT_GLOBAL_CONCURRENCY = null
 const schedulerPauseTokens = new WeakMap()
 const schedulerLeaseBindings = new WeakMap()
 
 function positiveLimit(value, fallback) {
+  if (value == null) return fallback
   const number = Number(value)
   if (!Number.isFinite(number) || number < 1) return fallback
   return Math.min(1024, Math.floor(number))
+}
+
+function belowLimit(active, limit) {
+  return limit === null || active < limit
 }
 
 function schedulerError(code) {
@@ -64,9 +69,9 @@ class RunScheduler {
 
   canGrant(entry) {
     return taskPauseAllows(this, entry)
-      && this.activeGlobal < this.limits.global
-      && this.resourceCount(this.activeTasks, entry.taskId) < this.limits.task
-      && this.resourceCount(this.activeWorkspaces, entry.workspaceKey) < this.limits.workspace
+      && belowLimit(this.activeGlobal, this.limits.global)
+      && belowLimit(this.resourceCount(this.activeTasks, entry.taskId), this.limits.task)
+      && belowLimit(this.resourceCount(this.activeWorkspaces, entry.workspaceKey), this.limits.workspace)
   }
 
   changeCount(collection, key, change) {

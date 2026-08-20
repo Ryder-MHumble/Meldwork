@@ -630,7 +630,7 @@
             </div>
             <div v-else class="relay-run-indicator" aria-hidden="true">
               <span
-                v-for="(kind, index) in displayedRunTargetKinds.slice(0, 4)"
+                v-for="(kind, index) in displayedRunTargetKinds"
                 :key="kind"
                 class="run-agent-logo relay-run-agent"
                 :data-status="displayedRunAgentToneForKind(kind)"
@@ -700,7 +700,7 @@
               <span class="run-agent-logo" :data-status="displayedRunAgentToneForKind(kind)" aria-hidden="true">
                 <img :src="agentLogo(kind, theme)" alt="" />
               </span>
-              <strong>{{ agentLabel(kind) }}</strong>
+              <strong class="visually-hidden">{{ agentLabel(kind) }}</strong>
               <span class="run-agent-state">
                 <span class="run-agent-motion" :data-status="displayedRunAgentToneForKind(kind)" aria-hidden="true">
                   <CheckmarkCircleOutline v-if="displayedRunAgentToneForKind(kind) === 'completed'" />
@@ -711,7 +711,7 @@
                   <WarningOutline v-else-if="displayedRunAgentToneForKind(kind) === 'partial'" />
                   <span v-else class="run-agent-dots"><i /><i /><i /></span>
                 </span>
-                <small :class="displayedRunAgentToneForKind(kind)">
+                <small class="visually-hidden" :class="displayedRunAgentToneForKind(kind)">
                   {{ runStatusLabel(displayedRunAgentStatusForKind(kind)) }}
                 </small>
               </span>
@@ -741,7 +741,7 @@
         type="button"
         :data-tooltip="t('conversation.jumpToLatest')"
         :aria-label="t('conversation.jumpToLatest')"
-        @click="scrollToLatest({ force: true })"
+        @click="scrollToLatest({ force: true, behavior: 'smooth' })"
       >
         <ArrowDownOutline aria-hidden="true" />
       </button>

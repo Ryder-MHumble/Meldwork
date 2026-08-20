@@ -92,22 +92,24 @@
         </section>
       </section>
 
-      <RunTracePanel
-        v-if="tracePanelOpen"
-        ref="tracePanel"
-        :open="tracePanelOpen"
-        :drawer="tracePanelDrawer"
-        :human-gate-decision-pending-ids="humanGateDecisionPendingIds"
-        :human-gates="tracePanelHumanGates"
-        :items="tracePanelItems"
-        :selected-agent-run-id="selectedTraceAgentRunId"
-        :theme="theme"
-        :waiting="tracePanelWaiting"
-        @close="closeTracePanel"
-        @decide-human-gate="decideHumanGate"
-        @select="selectTraceAgentRun"
-        @jump-source="jumpToTraceSource"
-      />
+      <transition name="trace-panel">
+        <RunTracePanel
+          v-if="tracePanelOpen"
+          ref="tracePanel"
+          :open="tracePanelOpen"
+          :drawer="tracePanelDrawer"
+          :human-gate-decision-pending-ids="humanGateDecisionPendingIds"
+          :human-gates="tracePanelHumanGates"
+          :items="tracePanelItems"
+          :selected-agent-run-id="selectedTraceAgentRunId"
+          :theme="theme"
+          :waiting="tracePanelWaiting"
+          @close="closeTracePanel"
+          @decide-human-gate="decideHumanGate"
+          @select="selectTraceAgentRun"
+          @jump-source="jumpToTraceSource"
+        />
+      </transition>
 
       <transition name="onboarding" appear>
         <div v-if="onboardingVisible" class="onboarding-transition-shell">
@@ -947,6 +949,7 @@ const { booting, bridgeMissing } = useDesktopWorkspaceLifecycle({
   installer,
   installerState,
   provider,
+  refreshAgents,
   showError,
   snapshot,
   workspace,

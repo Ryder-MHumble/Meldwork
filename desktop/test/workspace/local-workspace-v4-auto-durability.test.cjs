@@ -131,19 +131,18 @@ async function exerciseAutoCommitCrash(t, crashPoint, input = {}) {
     return checkpointRun(groupId, controller, status)
   }
   workspace.autoRunner.commitV4AgentMessage = (input) => {
-    if (crashPoint === 'pre-message') {
-      const running = workspace.activeRuns.get(group.id)
+    const running = workspace.activeRuns.get(group.id)
+    const isCandidateMessage = running?.orchestration?.candidateCommit?.messageId === input.messageId
+    if (crashPoint === 'pre-message' && isCandidateMessage) {
       crashRecord ||= structuredClone(ledger.get(running.runId))
       throw new Error('TEST_CRASH:AUTO_V4_PRE_MESSAGE')
     }
     const message = commitV4AgentMessage(input)
-    if (crashPoint === 'stop-after-message') {
-      const running = workspace.activeRuns.get(group.id)
+    if (crashPoint === 'stop-after-message' && isCandidateMessage) {
       workspace.stop(group.id, running.runId)
       return message
     }
-    if (crashPoint === 'post-message') {
-      const running = workspace.activeRuns.get(group.id)
+    if (crashPoint === 'post-message' && isCandidateMessage) {
       crashRecord ||= structuredClone(ledger.get(running.runId))
       throw new Error('TEST_CRASH:AUTO_V4_POST_MESSAGE')
     }
@@ -160,14 +159,21 @@ async function exerciseAutoCommitCrash(t, crashPoint, input = {}) {
   })
   const controller = workspace.activeRuns.get(group.id)
   await controller.promise
+  const proposalContents = ['codex proposal', 'hermes proposal', 'workbuddy proposal']
+  const visibleAgentMessages = workspace.snapshot().messages.filter(message => (
+    message.groupId === group.id && message.role === 'agent'
+  ))
+  assert.deepEqual(
+    visibleAgentMessages.filter(message => proposalContents.includes(message.content))
+      .map(message => message.content),
+    proposalContents,
+  )
   if (['stop-after-message', 'stop-after-blackboard'].includes(crashPoint)) {
     const stopped = ledger.get(controller.runId)
     assert.equal(stopped.status, 'stopped')
     assert.notEqual(stopped.orchestration.candidateCommit?.status, 'completed')
     assert.equal(
-      workspace.snapshot().messages.filter(message => (
-        message.groupId === group.id && message.role === 'agent'
-      )).length,
+      visibleAgentMessages.filter(message => message.content === candidateBody).length,
       1,
     )
     assert.equal(
@@ -208,9 +214,7 @@ async function exerciseAutoCommitCrash(t, crashPoint, input = {}) {
       ? 1 : 0,
   )
   assert.equal(
-    workspace.snapshot().messages.filter(message => (
-      message.groupId === group.id && message.role === 'agent'
-    )).length,
+    visibleAgentMessages.filter(message => message.content === candidateBody).length,
     ['post-message', 'post-message-checkpoint', 'post-blackboard-checkpoint',
       'pre-terminal', 'post-terminal'].includes(crashPoint) ? 1 : 0,
   )
@@ -277,10 +281,17 @@ async function exerciseAutoCommitCrash(t, crashPoint, input = {}) {
     new Set(final.orchestration.slots.flatMap(slot => slot.resultRefs?.artifactIds || [])),
     initialArtifactIds,
   )
+  const recoveredMessages = recovered.snapshot().messages.filter(message => (
+    message.groupId === group.id && message.role === 'agent'
+  ))
   assert.deepEqual(
-    recovered.snapshot().messages.filter(message => (
-      message.groupId === group.id && message.role === 'agent'
-    )).map(message => ({ id: message.id, content: message.content })),
+    recoveredMessages.filter(message => proposalContents.includes(message.content))
+      .map(message => message.content),
+    proposalContents,
+  )
+  assert.deepEqual(
+    recoveredMessages.filter(message => message.content === candidateBody)
+      .map(message => ({ id: message.id, content: message.content })),
     [{ id: finalMessageId, content: candidateBody }],
   )
 }

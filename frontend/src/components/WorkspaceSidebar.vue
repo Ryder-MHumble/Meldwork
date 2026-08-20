@@ -29,8 +29,8 @@
         :aria-expanded="sidebarCollapsed ? 'false' : 'true'"
         @click="sidebarCollapsed = !sidebarCollapsed"
       >
-        <MenuOutline v-if="sidebarCollapsed" />
-        <ContractOutline v-else />
+        <ChevronForwardOutline v-if="sidebarCollapsed" />
+        <ChevronBackOutline v-else />
       </button>
     </header>
 
@@ -395,9 +395,9 @@ import {
   AddOutline,
   ChatbubblesOutline,
   CheckmarkCircleOutline,
-  ContractOutline,
+  ChevronBackOutline,
+  ChevronForwardOutline,
   LanguageOutline,
-  MenuOutline,
   MoonOutline,
   PencilOutline,
   PeopleOutline,

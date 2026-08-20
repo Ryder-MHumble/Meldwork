@@ -63,6 +63,24 @@ const TERMINAL_RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
   'budget-exhausted', 'circuit-breaker',
 ])
+const V4_VISIBLE_MESSAGE_PHASES = ['proposal', 'challenge', 'work', 'verification']
+
+function isCommittedV4PhaseMessage(message, record) {
+  const agentRunId = String(message?.trace?.agentRunId || '')
+  if (message?.role !== 'agent' || message?.groupId !== record.groupId
+      || message?.trace?.runId !== record.runId || !message.agentKind || !agentRunId) {
+    return false
+  }
+  return V4_VISIBLE_MESSAGE_PHASES.some(phase => (
+    message.id === `message-${hashValue({
+      agentKind: message.agentKind,
+      agentRunId,
+      phase,
+      runId: record.runId,
+      taskId: record.taskId,
+    })}`
+  ))
+}
 
 class LocalWorkspace extends EventEmitter {
   constructor(options) {
@@ -276,6 +294,7 @@ class LocalWorkspace extends EventEmitter {
       recordAgentFailure: (...args) => this.recordAgentFailure(...args),
       recordAgentInterruption: (...args) => this.recordAgentInterruption(...args),
       addMessage: (...args) => this.addMessage(...args),
+      removeAgent: (...args) => this.conversations.removeAgent(...args),
       commitV4AgentMessage: input => this.commitV4AgentMessage(input),
       emitChanged: () => this.emitChanged(),
       finishRun: (...args) => this.finishRun(...args),
@@ -397,7 +416,9 @@ class LocalWorkspace extends EventEmitter {
           ? [durable.orchestration.candidateCommit.messageId] : []),
       ])
       const retainedMessages = this.state.messages.filter(message => (
-        message.trace?.runId !== durable.runId || allowedMessageIds.has(message.id)
+        message.trace?.runId !== durable.runId
+          || allowedMessageIds.has(message.id)
+          || isCommittedV4PhaseMessage(message, durable)
       ))
       if (retainedMessages.length !== this.state.messages.length) {
         this.state.messages = retainedMessages

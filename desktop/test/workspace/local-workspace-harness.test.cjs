@@ -1085,6 +1085,7 @@ test('terminal Agent traces hand compact partial evidence to the next Agent only
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Terminal evidence', agentKinds: ['codex', 'hermes'], workdir: directory,
+    allowWrite: false,
   })
   workspace.addMessage(
     group.id,
@@ -1588,6 +1589,7 @@ test('Harness refuses to persist a non-terminal Agent acknowledgement as a resul
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Non-terminal result', agentKinds: ['codex'], workdir: directory,
+    allowWrite: false,
   })
 
   await workspace.sendMessage({
@@ -1645,6 +1647,7 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Agent watchdog', agentKinds: ['codex', 'hermes'], workdir: directory,
+    allowWrite: false,
   })
 
   await workspace.sendMessage({
@@ -1657,13 +1660,19 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
   await lateCallbacksDone.promise
 
   assert.equal(timedOutSignal.aborted, true)
-  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'hermes'])
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex', 'codex', 'codex', 'codex', 'hermes',
+  ])
   const failure = workspace.snapshot().messages.find(message => (
     message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
   ))
   assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
   assert.equal(failure.trace.status, 'timeout')
-  assert.equal(finished[0].status, 'round-limit')
+  assert.equal(finished[0].status, 'partial')
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentRemovedAfterFailure'
+  )), true)
   assert.equal(events.some(event => (
     event.agentKind === 'codex' && event.type === 'status' && event.status === 'timeout'
   )), true)
@@ -1691,6 +1700,7 @@ test('manual Agent watchdog finishes the run as timeout and removes the parent a
   const group = workspace.createGroup({
     name: 'Manual watchdog', agentKinds: ['codex'], workdir: directory,
     conversationType: 'direct', directAgentKind: 'codex',
+    allowWrite: false,
   })
 
   const send = workspace.sendMessage({ groupId: group.id, text: 'Do not wait forever' })
@@ -1789,6 +1799,7 @@ test('terminal Agent states persist conclusion text already streamed through ans
       await workspace.refreshAgents()
       const group = workspace.createGroup({
         name: `Streamed ${scenario.name}`, agentKinds: ['codex'], workdir: directory,
+        allowWrite: false,
       })
 
       const send = workspace.sendMessage({
@@ -2808,6 +2819,7 @@ test('maximum Harness conclusion survives terminal persistence and authoritative
   await workspace.refreshAgents()
   const group = workspace.createGroup({
     name: 'Maximum terminal conclusion', agentKinds: ['codex'], workdir: directory,
+    allowWrite: false,
   })
 
   await workspace.sendMessage({
@@ -2849,7 +2861,7 @@ test('maximum Harness conclusion survives terminal persistence and authoritative
   )
 })
 
-test('restart reconciles every terminal Agent checkpoint with its real status and output', async (t) => {
+test('restart restores only the final failure after superseded Agent attempts', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledgerPath = path.join(directory, 'run-ledger.json')
@@ -2902,14 +2914,9 @@ test('restart reconciles every terminal Agent checkpoint with its real status an
   assert.equal(byAgentRunId.get('agent-partial').role, 'agent')
   assert.equal(byAgentRunId.get('agent-partial').content, 'Partial output')
   assert.equal(byAgentRunId.get('agent-partial').trace.status, 'partial')
-  assert.equal(byAgentRunId.get('agent-failed').system.key, 'system.agentCallFailed')
-  assert.match(byAgentRunId.get('agent-failed').content, /Failure output/)
-  assert.equal(byAgentRunId.get('agent-failed').trace.status, 'failed')
-  assert.match(byAgentRunId.get('agent-failed-other-output').content, /Distinct failure output/)
-  assert.equal(
-    byAgentRunId.get('agent-failed-other-reason').system.params.reason,
-    'LOCAL_AGENT_AUTH_FAILED',
-  )
+  assert.equal(byAgentRunId.has('agent-failed'), false)
+  assert.equal(byAgentRunId.has('agent-failed-other-output'), false)
+  assert.equal(byAgentRunId.has('agent-failed-other-reason'), false)
   assert.equal(byAgentRunId.get('agent-timeout').system.params.reason, 'LOCAL_AGENT_TIMEOUT')
   assert.match(byAgentRunId.get('agent-timeout').content, /Timeout output/)
   assert.equal(byAgentRunId.get('agent-timeout').trace.status, 'timeout')
@@ -2924,7 +2931,7 @@ test('restart reconciles every terminal Agent checkpoint with its real status an
   })
   assert.equal(repeated.snapshot().messages.filter(message => (
     message.trace?.runId === 'run-terminal'
-  )).length, 8)
+  )).length, 5)
 })
 
 test('stopping during output capture prevents the Agent from launching', async (t) => {
@@ -3132,15 +3139,28 @@ test('the Agent watchdog covers output capture and import phases', async (t) => 
         name: `Watchdog ${phase}`, agentKinds: ['codex'], workdir: directory, allowWrite: true,
       })
 
-      await workspace.sendMessage({ groupId: group.id, text: 'Do not hang' })
+      const send = workspace.sendMessage({ groupId: group.id, text: 'Do not hang' })
+      if (phase === 'import') {
+        const gate = await waitForPendingGate(workspace)
+        const request = workspace.humanGateStore.request(gate.gateId)
+        assert.equal(gate.type, 'retry')
+        assert.equal(request.failureCategory, 'timeout')
+        assert.equal(request.sideEffectsPossible, true)
+        workspace.decideHumanGate(gate.gateId, {
+          status: 'rejected', optionId: 'cancel-retry', actorId: 'local-user',
+        })
+      }
+      await send
 
       assert.equal(calls.length, phase === 'capture' ? 0 : 1)
-      assert.equal(finished[0].status, 'timeout')
-      const failure = workspace.snapshot().messages.find(message => (
-        message.system?.key === 'system.agentCallFailed'
-      ))
-      assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
-      assert.equal(failure.trace.status, 'timeout')
+      assert.equal(finished[0].status, phase === 'capture' ? 'timeout' : 'stopped')
+      if (phase === 'capture') {
+        const failure = workspace.snapshot().messages.find(message => (
+          message.system?.key === 'system.agentCallFailed'
+        ))
+        assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
+        assert.equal(failure.trace.status, 'timeout')
+      }
       assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
     })
   }

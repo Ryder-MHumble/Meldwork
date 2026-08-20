@@ -354,7 +354,7 @@ test('V4 keeps a complete minimal 32-Agent responsibility graph within the deliv
     targetKinds,
     assignments: minimalAssignments(targetKinds),
     finalizerKind: targetKinds.at(-1),
-    verifierKinds: targetKinds.slice(0, 2),
+    verifierKinds: targetKinds.slice(0, -1),
     agreedBy: targetKinds,
   })
 
@@ -1324,13 +1324,13 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
   ).size, 4)
   assert.deepEqual(
     calls.filter(call => call.phase === 'synthesis').map(call => call.kind),
-    ['workbuddy'],
+    ['workbuddy', 'workbuddy'],
   )
   assert.match(calls.find(call => call.phase === 'synthesis').prompt, /Role: integrator/)
   assert.equal(calls.find(call => call.phase === 'synthesis').sandbox, 'read-only')
   assert.deepEqual(
     calls.filter(call => call.phase === 'verification').map(call => call.kind).sort(),
-    ['codex', 'hermes'],
+    ['codex', 'codex', 'hermes', 'hermes'],
   )
   const finalEntry = controller.orchestration.collaboration.entries.at(-1)
   assert.equal(finalEntry.owner.agentKind, preferredPlan.finalizerKind)
@@ -1343,9 +1343,17 @@ test('V4 lets Agents negotiate responsibilities, execute every work package, and
     controller.orchestration.slots.find(slot => slot.agentKind === preferredPlan.finalizerKind).permission,
     'read-only',
   )
+  const visibleAgentMessages = workspace.snapshot().messages.filter(message => message.role === 'agent')
   assert.deepEqual(
-    workspace.snapshot().messages.filter(message => message.role === 'agent')
-      .map(message => message.content),
+    visibleAgentMessages.slice(0, 3).map(message => message.agentKind),
+    ['codex', 'hermes', 'workbuddy'],
+  )
+  for (const message of visibleAgentMessages.slice(0, 3)) {
+    assert.match(message.content, new RegExp(`^${message.agentKind} independent proposal BODY_FROM_${message.agentKind}`))
+  }
+  assert.deepEqual(
+    visibleAgentMessages.slice(3).map(message => message.content),
     ['Final delivery assembled from all agreed work products.'],
   )
+  assert.equal(new Set(visibleAgentMessages.map(message => message.id)).size, 4)
 })

@@ -160,6 +160,7 @@ class LocalWorkspaceAutoRunner {
     this.recordAgentFailure = options.recordAgentFailure
     this.recordAgentInterruption = options.recordAgentInterruption
     this.addMessage = options.addMessage
+    this.removeAgent = typeof options.removeAgent === 'function' ? options.removeAgent : null
     this.commitV4AgentMessage = typeof options.commitV4AgentMessage === 'function'
       ? options.commitV4AgentMessage
       : null
@@ -193,6 +194,32 @@ class LocalWorkspaceAutoRunner {
     controller.currentKind = kind
     controller.progress = []
     this.emitChanged()
+  }
+
+  removeFailedAgent(group, controller, kind, threadRootId) {
+    if (!this.removeAgent || group.conversationType === 'direct' || !group.agentKinds.includes(kind)) {
+      return false
+    }
+    const removed = this.removeAgent(group.id, kind)
+    if (!removed) return false
+    if (!controller.failedKinds.includes(kind)) controller.failedKinds.push(kind)
+    const alreadyReported = this.state().messages.some(message => (
+      message.threadRootId === threadRootId
+        && message.agentKind === kind
+        && message.system?.key === 'system.agentRemovedAfterFailure'
+    ))
+    if (!alreadyReported) {
+      const agent = this.agentLabel(kind)
+      this.addMessage(
+        group.id,
+        'system',
+        `${agent} was removed from the group after a terminal failure. The discussion continued with the remaining Agents.`,
+        kind,
+        threadRootId,
+        { key: 'system.agentRemovedAfterFailure', params: { agent } },
+      )
+    }
+    return true
   }
 
   replacementInstruction(failedKind) {
@@ -268,6 +295,7 @@ class LocalWorkspaceAutoRunner {
   async invokeTransiently(invokeSource, group, kind, controller, options = {}) {
     const operationId = options.operationId
     const idempotencyMode = options.idempotencyMode === 'durable' ? 'durable' : 'none'
+    const sideEffectsPossible = options.sideEffectsPossible === true
     for (let attempt = 1; ; attempt += 1) {
       if (controller.attemptHistory.length >= MAX_RUN_AGENT_ATTEMPTS) {
         throw circuitBreakerError()
@@ -285,7 +313,7 @@ class LocalWorkspaceAutoRunner {
           backoffMs: options.successBackoffMs || 0,
           recoveryAgentKind: options.recoveryAgentKind || '',
           finalOutcome: 'succeeded',
-          sideEffectsPossible: group.allowWrite === true,
+          sideEffectsPossible,
           operationId,
           idempotencyMode,
         })
@@ -307,7 +335,7 @@ class LocalWorkspaceAutoRunner {
         const failure = normalizeFailure(error)
         const safety = normalizeFailureOutcome(error, {
           category: failure.category,
-          sideEffectsPossible: group.allowWrite === true,
+          sideEffectsPossible,
           operationId,
           idempotencyMode,
         })
@@ -496,6 +524,8 @@ class LocalWorkspaceAutoRunner {
       : this.operationIdFor(controller, kind, mode)
     const contract = this.retryContract(kind) || {}
     const idempotencyMode = contract.idempotencyMode === 'durable' ? 'durable' : 'none'
+    const sideEffectsPossible = group.allowWrite === true
+      && context.permissionMode !== 'read-only'
     const invokeSource = async () => {
       if (context.parallelGraph !== true) this.setCurrentAgent(controller, kind)
       return this.invokeAgent(group, kind, mode, controller.signal, threadRootId, {
@@ -514,6 +544,7 @@ class LocalWorkspaceAutoRunner {
             attempt: phaseAttempt,
             operationId,
             idempotencyMode,
+            sideEffectsPossible,
             deferFailurePolicy: context.v4SynthesisRecovery === true
               || (context.v4 === true && context.resumedGate?.type === 'permission'),
             v4AgentSlotBinding: mode === 'auto' && context.v4 === true ? {
@@ -2611,7 +2642,13 @@ class LocalWorkspaceAutoRunner {
       ...(typeof raw.finalizerKind === 'string' && raw.finalizerKind
         ? { finalizerKind: publicCollaborationText(raw.finalizerKind, 120) } : {}),
       ...(Array.isArray(raw.verifierKinds)
-        ? { verifierKinds: listField('verifierKinds', 2) } : {}),
+        ? {
+            verifierKinds: listField(
+              'verifierKinds',
+              Math.max(1, (options.controller?.targetKinds?.length || 2) - 1),
+            ),
+          }
+        : {}),
       ...(typeof raw.supportedPlanHash === 'string' && raw.supportedPlanHash
         ? { supportedPlanHash: raw.supportedPlanHash } : {}),
       ...(typeof raw.agreeToPlan === 'boolean' ? { agreeToPlan: raw.agreeToPlan } : {}),
@@ -2868,6 +2905,7 @@ class LocalWorkspaceAutoRunner {
       phaseSlots, receiptRecords, dispatches, resumedGate = null,
     } = phaseInput
     const phaseReceipts = []
+    const phasePendingMessages = []
     const failures = []
     const pendingKinds = () => phaseSlots
       .filter(slot => ['planned', 'queued', 'running', 'waiting'].includes(slot.status))
@@ -2985,6 +3023,9 @@ class LocalWorkspaceAutoRunner {
           )),
           watermark,
         ]
+        if (result.pendingMessage) {
+          phasePendingMessages.push({ kind, pendingMessage: result.pendingMessage })
+        }
         if (resumedGate?.agentKind === slot.agentKind
             && !this.completeV4ResumedAgentSlotContinuation(controller, resumedGate)) {
           throw new Error('LOCAL_RUN_PERSIST_FAILED')
@@ -3013,6 +3054,7 @@ class LocalWorkspaceAutoRunner {
       receiptRecords,
       phaseReceipts,
       failures,
+      phasePendingMessages,
       synthesisPendingMessage: null,
       ok: failures.length === 0,
     }
@@ -3287,6 +3329,7 @@ class LocalWorkspaceAutoRunner {
             singleWriterKind: writerKind,
             parallelGraph: true,
             deferMessage: true,
+            allowMissingProposalReceipt: true,
             operationId: slot.operationId,
             ...(resumedGateFor(slot) ? { resumedGate: resumedGateFor(slot) } : {}),
             skillHints: context.rootSkillsByKind.get(kind) || [],
@@ -3308,6 +3351,7 @@ class LocalWorkspaceAutoRunner {
     }
 
     const failures = []
+    const phasePendingMessages = []
     let synthesisPendingMessage = null
     let workAdmissionClosed = false
     let workAdmissionTail = Promise.resolve()
@@ -3598,6 +3642,8 @@ class LocalWorkspaceAutoRunner {
         }
         if (phase === 'synthesis' && !duplicate) {
           synthesisPendingMessage = result.pendingMessage || result.message || null
+        } else if (result.pendingMessage?.content) {
+          phasePendingMessages.push({ kind: item.kind, pendingMessage: result.pendingMessage })
         }
         if (phase === 'synthesis' && synthesisRecovery) {
           const activeAttempt = this.v4ActiveSynthesisAttempt(synthesisRecovery)
@@ -3708,6 +3754,7 @@ class LocalWorkspaceAutoRunner {
       slots: phaseSlots,
       receiptRecords,
       phaseReceipts,
+      phasePendingMessages,
       failures,
       synthesisPendingMessage,
       synthesisRecovery,
@@ -4163,14 +4210,32 @@ class LocalWorkspaceAutoRunner {
     const slots = Array.isArray(options.slots) ? options.slots : []
     const challengeBindings = Array.isArray(options.challengeBindings)
       ? options.challengeBindings : []
+    const coordinationSupportReceiptIds = new Set(
+      options.coordinationPlan?.supportReceiptIds || [],
+    )
     const challengeInputs = targetKinds.map((kind) => {
       const binding = challengeBindings.find(item => item.reviewerKind === kind)
-      const record = binding && this.v4ReceiptForOperation(
-        receiptRecords, 'challenge', kind, binding.reviewerOperationId,
-      )
-      return record && binding?.artifactIds?.[0]
-        ? { record, reviewedArtifactId: binding.artifactIds[0] }
-        : null
+      if (binding) {
+        const record = this.v4ReceiptForOperation(
+          receiptRecords, 'challenge', kind, binding.reviewerOperationId,
+        )
+        return record && binding.artifactIds?.[0]
+          ? { record, reviewedArtifactId: binding.artifactIds[0] }
+          : null
+      }
+      const record = [...receiptRecords].reverse().find(item => (
+        item?.receipt?.phase === 'challenge'
+          && item.receipt.agentKind === kind
+          && coordinationSupportReceiptIds.has(item.receipt.receiptId)
+      ))
+      const findingId = record?.receipt?.findingIds?.[0]
+      let reviewedArtifactId = ''
+      try {
+        reviewedArtifactId = findingId
+          ? this.outcomeStore.getReviewerFinding(findingId).artifactId
+          : ''
+      } catch {}
+      return record && reviewedArtifactId ? { record, reviewedArtifactId } : null
     }).filter(Boolean)
     const priorIssues = this.v4CarriedIssues(
       receiptRecords,
@@ -4545,10 +4610,12 @@ class LocalWorkspaceAutoRunner {
   }
 
   async runV4Discussion(group, controller, threadRootId, context, resume = false, resumedGate = null) {
-    const targetKinds = [...controller.targetKinds]
+    const snapshotTargetKinds = [...controller.targetKinds]
     const existing = controller.orchestration?.version === 4
       ? controller.orchestration
       : null
+    const targetKinds = [...snapshotTargetKinds]
+    const removedKinds = new Set()
     if (existing?.synthesisBinding) {
       throw new Error('LOCAL_RUN_V4_LEGACY_SYNTHESIS_BINDING_UNSUPPORTED')
     }
@@ -4617,35 +4684,35 @@ class LocalWorkspaceAutoRunner {
           taskId: controller.taskId,
           messageId: threadRootId,
           groupId: controller.groupId,
-          targetKinds,
+          targetKinds: snapshotTargetKinds,
         })
       : v4Snapshot({
           state: this.state(),
           group,
           taskId: threadRootId,
-          targetKinds,
+          targetKinds: snapshotTargetKinds,
           message: rootMessage,
           skillHintsByKind: context.rootSkillsByKind,
           phase: 'proposal',
           writerKind,
         })
     if (existing) {
-      const persistedSkills = this.v4SnapshotSkillHints(snapshot, targetKinds)
-      const hasPersistedSkills = targetKinds.some(kind => (
+      const persistedSkills = this.v4SnapshotSkillHints(snapshot, snapshotTargetKinds)
+      const hasPersistedSkills = snapshotTargetKinds.some(kind => (
         (persistedSkills.get(kind) || []).length > 0
       ))
       context = {
         rootAttachments: [],
         rootSkillsByKind: hasPersistedSkills
-          ? await this.v4RestoreSnapshotSkills(snapshot, targetKinds, persistedSkills)
+          ? await this.v4RestoreSnapshotSkills(snapshot, snapshotTargetKinds, persistedSkills)
           : persistedSkills,
-        rootKnowledgeBasesByKind: new Map(targetKinds.map(kind => [kind, []])),
+        rootKnowledgeBasesByKind: new Map(snapshotTargetKinds.map(kind => [kind, []])),
         rootMediaRequest: null,
       }
     }
     const builtSnapshot = existing
       ? { record: existing.snapshot, snapshotHash: existing.snapshotHash }
-      : this.v4SnapshotRecord(controller, snapshot, targetKinds)
+      : this.v4SnapshotRecord(controller, snapshot, snapshotTargetKinds)
     const snapshotRecord = builtSnapshot.record
     const snapshotHash = builtSnapshot.snapshotHash
     const batchId = existing?.batchId || this.v4BatchId(controller, 'discussion')
@@ -4764,34 +4831,97 @@ class LocalWorkspaceAutoRunner {
         checkpointPhase(phase, [], slots)
         return { ok: true, phaseReceipts: [], synthesisPendingMessage: null }
       }
-      const result = await this.runV4Phase(group, controller, threadRootId, context, {
-        phase,
-        activeKinds: pending,
-        targetKinds,
-        writerKind,
-        batchId,
-        snapshot,
-        snapshotRecord,
-        snapshotHash,
+      const runPending = async (phaseKinds) => {
+        const result = await this.runV4Phase(group, controller, threadRootId, context, {
+          phase,
+          activeKinds: phaseKinds,
+          targetKinds,
+          writerKind,
+          batchId,
+          snapshot,
+          snapshotRecord,
+          snapshotHash,
+          slots,
+          receiptRecords,
+          challengeBindings: bindings,
+          synthesisBinding,
+          synthesisRecovery,
+          coordinationPlan,
+          workReceipts,
+          deliveryReceiptRecords: options.deliveryReceiptRecords,
+          coordinationText: options.coordinationText || '',
+          workAssignments,
+          resumedGate,
+        })
+        slots = result.slots
+        if (result.synthesisRecovery) synthesisRecovery = result.synthesisRecovery
+        if (result.workReceipts) {
+          workReceipts = result.workReceipts
+          controller.v4WorkReceipts = workReceipts
+        }
+        return result
+      }
+      if (!['challenge', 'verification'].includes(phase) || pending.length <= 1) {
+        return runPending(pending)
+      }
+      const aggregate = {
         slots,
         receiptRecords,
-        challengeBindings: bindings,
-        synthesisBinding,
-        synthesisRecovery,
-        coordinationPlan,
-        workReceipts,
-        deliveryReceiptRecords: options.deliveryReceiptRecords,
-        coordinationText: options.coordinationText || '',
-        workAssignments,
-        resumedGate,
-      })
-      slots = result.slots
-      if (result.synthesisRecovery) synthesisRecovery = result.synthesisRecovery
-      if (result.workReceipts) {
-        workReceipts = result.workReceipts
-        controller.v4WorkReceipts = workReceipts
+        phaseReceipts: [],
+        phasePendingMessages: [],
+        failures: [],
+        synthesisPendingMessage: null,
+        ok: true,
       }
-      return result
+      for (const kind of pending) {
+        const result = await runPending([kind])
+        aggregate.slots = result.slots
+        aggregate.phaseReceipts.push(...(result.phaseReceipts || []))
+        aggregate.phasePendingMessages.push(...(result.phasePendingMessages || []))
+        aggregate.failures.push(...(result.failures || []))
+        if (!result.ok) aggregate.ok = false
+      }
+      return aggregate
+    }
+    const commitPartialPhaseMessages = (phase, result) => {
+      let committed = 0
+      for (const item of result?.phasePendingMessages || []) {
+        const pendingMessage = item?.pendingMessage
+        if (!pendingMessage?.content || !item.kind) continue
+        const agentRunId = pendingMessage.metadata?.trace?.agentRunId || ''
+        const messageId = `message-${hashValue({
+          agentKind: item.kind,
+          agentRunId,
+          phase,
+          runId: controller.runId,
+          taskId: controller.taskId,
+        })}`
+        this.commitV4AgentMessage({
+          messageId,
+          groupId: group.id,
+          agentKind: item.kind,
+          threadRootId,
+          content: pendingMessage.content,
+          metadata: pendingMessage.metadata || {},
+        })
+        committed += 1
+      }
+      return committed
+    }
+    const removePhaseFailures = (result) => {
+      const failedKinds = [...new Set((result?.failures || [])
+        .filter(item => !normalizeFailure(item.error).code.startsWith('COLLABORATION_CONTROL_'))
+        .map(item => item.kind)
+        .filter(Boolean))]
+      for (const kind of failedKinds) {
+        if (this.removeFailedAgent(group, controller, kind, threadRootId)) removedKinds.add(kind)
+      }
+      return failedKinds
+    }
+    const finalStatus = (status) => {
+      if (!removedKinds.size || status !== 'completed') return status
+      controller.failedKinds = [...new Set([...controller.failedKinds, ...removedKinds])]
+      return 'partial'
     }
     const addRoundLimitNotice = () => {
       if (this.state().messages.some(message => (
@@ -5037,9 +5167,15 @@ class LocalWorkspaceAutoRunner {
       controller.currentRound = round
       if (!proposalComplete) {
         const proposal = await runPhase('proposal', targetKinds)
-        if (!proposal.ok) return 'failed'
+        commitPartialPhaseMessages('proposal', proposal)
+        if (!proposal.ok) {
+          removePhaseFailures(proposal)
+          return proposal.phasePendingMessages?.length ? 'partial' : 'failed'
+        }
         proposalComplete = targetKinds.every(kind => Boolean(latestFor('proposal', kind)))
-        if (!proposalComplete) return 'failed'
+        if (!proposalComplete) {
+          return targetKinds.some(kind => Boolean(latestFor('proposal', kind))) ? 'partial' : 'failed'
+        }
       }
 
       if (!coordinationPlan && !legacyBoundRun) {
@@ -5093,7 +5229,12 @@ class LocalWorkspaceAutoRunner {
         const challenge = await runPhase('challenge', targetKinds, challengeBindings, {
           coordinationText: this.v4CoordinationText(knownCoordination),
         })
-        if (!challenge.ok) return controller.signal.aborted ? 'stopped' : 'failed'
+        if (!challenge.ok) {
+          if (controller.signal.aborted) return 'stopped'
+          removePhaseFailures(challenge)
+          commitPartialPhaseMessages('challenge', challenge)
+          return challenge.phasePendingMessages?.length ? 'partial' : 'failed'
+        }
         if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
 
         const coordination = this.v4CoordinationResult({
@@ -5287,6 +5428,7 @@ class LocalWorkspaceAutoRunner {
           slots,
           challengeBindings,
           previousConvergence,
+          coordinationPlan,
           includeVerification: false,
         },
       )
@@ -5331,13 +5473,16 @@ class LocalWorkspaceAutoRunner {
         coordinationPlan,
         convergence,
       })
-      if (acceptance.accepted) {
-        return this.v4CommitAcceptedCandidate({
+      const acceptedStable = controller.unlimitedRounds
+        ? convergence.consecutiveStableRounds >= 2
+        : round >= (controller.maxRounds || 6)
+      if (acceptance.accepted && acceptedStable) {
+        return finalStatus(await this.v4CommitAcceptedCandidate({
           group, controller, threadRootId, targetKinds, batchId, snapshotRecord, snapshotHash,
           slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
           coordinationPlan, workReceipts, convergence,
           writerKind, verificationKinds, acceptance,
-        })
+        }))
       }
 
       if (this.v4ShouldOpenStableGate(convergence, controller.unlimitedRounds)) {
@@ -5579,10 +5724,9 @@ class LocalWorkspaceAutoRunner {
           if (!controller.failedKinds.includes(executionKind)) {
             controller.failedKinds.push(executionKind)
           }
-          if (['authentication', 'compatibility'].includes(normalizeFailure(error).category)) {
-            terminalFailureOccurred = true
-            activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
-          }
+          terminalFailureOccurred = true
+          this.removeFailedAgent(group, controller, executionKind, threadRootId)
+          activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
         }
         if (controller.signal.aborted) break
         if (!controller.completedKinds.includes(executionKind)) {

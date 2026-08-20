@@ -23,7 +23,7 @@ export function useConversationViewport({
     showScrollToLatest.value = !messageFollowLatest.value
   }
 
-  async function scrollToLatest({ force = false } = {}) {
+  async function scrollToLatest({ force = false, behavior = 'auto' } = {}) {
     await nextTick()
     const scroller = messageScroller.value
     if (!scroller || (!force && !messageFollowLatest.value)) return
@@ -31,11 +31,18 @@ export function useConversationViewport({
       const container = scroller.closest?.('.conversation-pane, .workspace-pane')
       container?.scrollIntoView?.({ block: 'end', inline: 'nearest' })
     }
-    const previousScrollBehavior = scroller.style.scrollBehavior
-    scroller.style.scrollBehavior = 'auto'
-    scroller.scrollTop = scroller.scrollHeight
-    scroller.style.scrollBehavior = previousScrollBehavior
-    previousMessageScrollTop.value = scroller.scrollTop
+    const reduceMotion = typeof matchMedia === 'function'
+      && matchMedia('(prefers-reduced-motion: reduce)').matches
+    const requestedBehavior = behavior === 'smooth' && !reduceMotion ? 'smooth' : 'auto'
+    if (requestedBehavior === 'smooth' && typeof scroller.scrollTo === 'function') {
+      scroller.scrollTo({ top: scroller.scrollHeight, behavior: 'smooth' })
+    } else {
+      const previousScrollBehavior = scroller.style.scrollBehavior
+      scroller.style.scrollBehavior = 'auto'
+      scroller.scrollTop = scroller.scrollHeight
+      scroller.style.scrollBehavior = previousScrollBehavior
+    }
+    previousMessageScrollTop.value = scroller.scrollHeight
     messageFollowLatest.value = true
     showScrollToLatest.value = false
   }

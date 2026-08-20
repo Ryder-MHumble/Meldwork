@@ -40,9 +40,26 @@ export function useRunTracePanel({
   ))
   const traceDrawerBlocking = computed(() => tracePanelOpen.value && tracePanelDrawer.value)
 
-  function selectTraceAgentRun(agentRunId) {
-    if (!agentRunId || !tracePanelItems.value.some(item => item.agentRunId === agentRunId)) return
+  async function selectTraceAgentRun(agentRunId) {
+    const item = tracePanelItems.value.find(candidate => candidate.agentRunId === agentRunId)
+    if (!agentRunId || !item) return
     selectedTraceAgentRunId.value = agentRunId
+    const message = item.messageId
+      ? activeMessages.value.find(candidate => candidate.id === item.messageId)
+      : activeMessages.value.find(candidate => messageAgentRunId(candidate) === agentRunId)
+    if (!message) return
+    const rootId = messageThreadRootId(message) || (message.role === 'user' ? message.id : '')
+    if (rootId && !isTopicExpanded(rootId)) expandTopic(rootId)
+    await nextTick()
+    const element = document.getElementById(messageElementId(message.id))
+    element?.scrollIntoView?.({
+      block: 'center',
+      inline: 'nearest',
+      behavior: typeof matchMedia === 'function'
+        && matchMedia('(prefers-reduced-motion: reduce)').matches
+        ? 'auto'
+        : 'smooth',
+    })
   }
 
   function openTracePanel(agentRunId, opener = null, runId = '') {

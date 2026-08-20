@@ -271,7 +271,7 @@ test('cache invalidation does not let an older in-flight detection overwrite fre
 test('recipes are fixed by Agent and platform', () => {
   const npmKinds = [
     'codex', 'claude', 'openclaw', 'qwen', 'workbuddy', 'gemini',
-    'opencode', 'kimi', 'mimo', 'opencodereview',
+    'opencode', 'kimi', 'mimo', 'opencodereview', 'pi',
   ]
   for (const platform of ['darwin', 'win32']) {
     for (const kind of npmKinds) {
@@ -284,8 +284,14 @@ test('recipes are fixed by Agent and platform', () => {
       assert.equal(npmPackageSpec(recipe).includes('@latest'), false, kind)
     }
   }
-  assert.equal(installRecipe('pi', 'darwin'), null)
-  assert.equal(installRecipe('pi', 'win32'), null)
+  const pi = installRecipe('pi', 'darwin')
+  assert.equal(pi.packageName, '@earendil-works/pi-coding-agent')
+  assert.equal(pi.version, '0.84.2')
+  assert.equal(
+    pi.integrity,
+    'sha512-l4E+B7hgXKWddRo8bC/eSue2aWZjEgJ9xIpf5p0Og+lq8a2TArCwJ0HCoCPCgaBP/tN4zbYH/wOwvx9pJpeLCA==',
+  )
+  assert.deepEqual(installRecipe('pi', 'win32'), pi)
   const darwinHermes = installRecipe('hermes', 'darwin')
   const windowsHermes = installRecipe('hermes', 'win32')
   assert.equal(darwinHermes.type, 'script')
@@ -304,6 +310,31 @@ test('recipes are fixed by Agent and platform', () => {
   assert.equal(windowsHermes.args.at(-2), '-Commit')
   assert.equal(windowsHermes.url.includes(windowsHermes.args.at(-1)), true)
   assert.equal(installRecipe('hermes', 'linux'), null)
+})
+
+test('Pi installation disables package scripts and verifies the detected release', async () => {
+  const recipe = installRecipe('pi', 'darwin')
+  const calls = []
+  let detectCount = 0
+  const service = installer({
+    detectAgents: async () => {
+      detectCount += 1
+      return detectCount > 1 ? [detectedRelease('pi')] : []
+    },
+    runProcess: async (...args) => { calls.push(args) },
+  })
+
+  await service.start('pi')
+  await service.waitForIdle()
+
+  assert.deepEqual(calls[0].slice(0, 2), [
+    '/usr/local/bin/npm',
+    [
+      'install', '--global', '--ignore-scripts', npmPackageSpec(recipe),
+      '--registry', 'https://registry.npmjs.org/',
+    ],
+  ])
+  assert.equal(service.state().phase, 'completed')
 })
 
 test('npm lookup uses the enhanced Finder-safe search path', async () => {

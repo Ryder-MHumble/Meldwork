@@ -227,7 +227,7 @@ function v4Prompt({
       ].join('\n')).join('\n')
     : '(none)'
   const selectedAgentCount = Array.isArray(snapshot?.targetKinds) ? snapshot.targetKinds.length : 0
-  const requiredVerifierCount = Math.min(2, Math.max(0, selectedAgentCount - 1))
+  const requiredVerifierCount = Math.max(0, selectedAgentCount - 1)
   const phaseInstruction = {
     proposal: 'Develop an independent proposal. State at least one capability, intended work item, and Artifact you will deliver, plus an explicit dependencies array (which may be empty). Do not rely on another Agent output from this batch.',
     challenge: `Discuss the proposals as peers and negotiate one shared responsibility graph. Every selected Agent must own at least one substantive work package, and an Agent may own multiple dependent work packages. The graph must include one finalizerKind owned by an integrator. It must name exactly ${requiredVerifierCount} distinct verifierKinds from the selected Agents; verifierKinds must not contain finalizerKind. taskId values must be unique; dependsOn may reference only other taskId values and must remain acyclic. inputRefs are exact displayed frozen Source IDs; artifactIds are existing immutable Artifact IDs; future outputs flow only through dependsOn. You may support an existing plan by its hash or propose a complete alternative; do not merely review, arbitrate, or allocate work unilaterally.`,
@@ -245,9 +245,10 @@ function v4Prompt({
           ? 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"verdict":"support|contradict","summary":"..."}]]'
           : 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"summary":"...","resolvedIssueIds":[]}]]'
   const receiptContract = receipt
-    ? [
+      ? [
         'Return the user-facing answer first, then append exactly one structured receipt marker.',
         receiptShape,
+        'Do not mention the receipt, Meldwork protocol, plan files, plan mode, ExitPlanMode, or whether this is a code task in the user-facing answer. Append nothing after the marker.',
         'The receipt summary must be concise, factual, and contain no credentials, paths, commands, or private reasoning.',
       ].join('\n')
     : ''

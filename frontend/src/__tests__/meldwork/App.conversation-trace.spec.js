@@ -271,7 +271,7 @@ describe('Meldwork workbench', () => {
         runId: 'run-terminal-agent-rows',
         groupId: 'group-terminal-agent-rows',
         mode: 'auto',
-        targetKinds: ['codex', 'hermes', 'claude'],
+        targetKinds: ['codex', 'hermes', 'claude', 'qwen', 'pi'],
         currentKind: '',
         agentRuns: [{
           agentRunId: 'agent-terminal-codex',
@@ -291,6 +291,18 @@ describe('Meldwork workbench', () => {
           round: 1,
           status: 'stopped',
           events: [],
+        }, {
+          agentRunId: 'agent-terminal-qwen',
+          kind: 'qwen',
+          round: 1,
+          status: 'partial',
+          events: [],
+        }, {
+          agentRunId: 'agent-terminal-pi',
+          kind: 'pi',
+          round: 1,
+          status: 'stopped',
+          events: [],
         }],
       }]
     })
@@ -298,10 +310,13 @@ describe('Meldwork workbench', () => {
     await wrapper.get('.conversation-link').trigger('click')
     await flushPromises()
 
+    expect(wrapper.findAll('.relay-run-indicator .run-agent-logo')).toHaveLength(5)
     const rows = wrapper.findAll('.run-agent-row')
-    expect(rows).toHaveLength(3)
+    expect(rows).toHaveLength(5)
+    expect(rows.every(row => row.get('strong').classes('visually-hidden'))).toBe(true)
+    expect(rows.every(row => row.get('.run-agent-state small').classes('visually-hidden'))).toBe(true)
     expect(rows.map(row => row.get('.run-agent-state small').text()))
-      .toEqual(['Partially completed', 'Interrupted', 'Stopped'])
+      .toEqual(['Partially completed', 'Interrupted', 'Stopped', 'Partially completed', 'Stopped'])
     for (const row of rows) {
       expect(row.get('.run-agent-motion').attributes('data-status')).toBe('partial')
       expect(row.find('.run-agent-motion svg').exists()).toBe(true)
