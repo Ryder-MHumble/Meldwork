@@ -857,6 +857,13 @@ class LocalWorkspaceAgentInvocation {
     let resumedPermissionUsed = false
     let resumedPermissionError = null
     const startedAt = Date.now()
+    // Automatic discussions must make progress between rounds even when an
+    // Agent keeps emitting heartbeat events without ever returning a result.
+    // Keep the existing inactivity watchdog for manual/direct work, but cap
+    // each automatic Agent attempt by the same configured timeout.
+    const hardDeadlineAt = mode === 'auto'
+      ? startedAt + this.runAgentTimeoutMs
+      : Number.POSITIVE_INFINITY
     if (signal) {
       parentAbortPromise = new Promise((_, reject) => {
         parentAbortHandler = () => {
@@ -873,7 +880,9 @@ class LocalWorkspaceAgentInvocation {
       if (watchdogTimer || watchdogPaused || agentController.signal.aborted
           || !Number.isFinite(this.runAgentTimeoutMs) || this.runAgentTimeoutMs <= 0) return
       const elapsedSinceProgress = Date.now() - watchdogLastProgressAt
-      const remainingMs = Math.max(0, this.runAgentTimeoutMs - elapsedSinceProgress)
+      const inactivityRemainingMs = Math.max(0, this.runAgentTimeoutMs - elapsedSinceProgress)
+      const hardRemainingMs = Math.max(0, hardDeadlineAt - Date.now())
+      const remainingMs = Math.min(inactivityRemainingMs, hardRemainingMs)
       watchdogTimer = setTimeout(() => {
         watchdogTimer = null
         if (parentAbortObserved || signal?.aborted || watchdogPaused

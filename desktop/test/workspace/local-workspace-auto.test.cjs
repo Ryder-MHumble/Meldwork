@@ -2988,6 +2988,65 @@ test('V4 Auto continues to round two with healthy Agents after a proposal peer f
   )
 })
 
+test('V4 Auto isolates a heartbeat-only proposal Agent and advances healthy peers', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.runAgentTimeoutMs = 20
+  options.runAbortGraceMs = 20
+  options.retrySleep = async () => {}
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = prompt.match(/^Phase: ([a-z-]+)$/m)?.[1] || ''
+    calls.push({ kind: agent.kind, phase })
+    if (agent.kind === 'openclaw') {
+      await new Promise((resolve, reject) => {
+        const abort = () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        if (runOptions.signal.aborted) abort()
+        else runOptions.signal.addEventListener('abort', abort, { once: true })
+        const heartbeat = setInterval(() => runOptions.onActivity(), 1)
+        runOptions.signal.addEventListener('abort', () => clearInterval(heartbeat), { once: true })
+      })
+    }
+    const collaboration = phase === 'proposal'
+      ? v4ProposalCollaboration(agent.kind)
+      : agreedV4Collaboration(agent.kind, phase, prompt, ['codex', 'hermes'])
+    return {
+      text: `${agent.kind} ${phase}`,
+      sessionRef: `${agent.kind}-${phase}`,
+      collaboration,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'V4 heartbeat-only proposal isolation',
+    agentKinds: ['codex', 'openclaw', 'hermes'],
+    workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Continue with healthy peers after one Agent stops responding.',
+    mode: 'auto',
+    targetKinds: ['codex', 'openclaw', 'hermes'],
+    maxRounds: 2,
+    protocol: 'v4',
+  })
+  const controller = workspace.activeRuns.get(group.id)
+  await controller.promise
+
+  assert.deepEqual(
+    calls.filter(call => call.phase === 'challenge').map(call => call.kind),
+    ['codex', 'hermes'],
+  )
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
+  assert.equal(ledger.get(controller.runId).currentRound, 2)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.agentKind === 'openclaw' && message.system?.key === 'system.agentCallFailed'
+  )), true)
+})
+
 test('V4 Auto publishes one visible message per Agent in every bounded discussion round', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

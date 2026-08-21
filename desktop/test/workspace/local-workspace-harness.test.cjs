@@ -1661,7 +1661,7 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
 
   assert.equal(timedOutSignal.aborted, true)
   assert.deepEqual(calls.map(call => call.agent.kind), [
-    'codex', 'codex', 'codex', 'codex', 'hermes',
+    'codex', 'hermes',
   ])
   const failure = workspace.snapshot().messages.find(message => (
     message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
@@ -1678,6 +1678,60 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
   )), true)
   assert.equal(events.some(event => ['late-progress', 'late-tool'].includes(event.id)), false)
   assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'codex')], undefined)
+})
+
+test('automatic discussion hard-stops a heartbeat-only Agent and continues later rounds', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 20
+  options.runAbortGraceMs = 20
+  options.runSilenceWarningMs = 1000
+  options.retrySleep = async () => {}
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (agent.kind === 'codex') {
+      await new Promise((resolve, reject) => {
+        const abort = () => reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+        if (runOptions.signal.aborted) abort()
+        else runOptions.signal.addEventListener('abort', abort, { once: true })
+        const heartbeat = setInterval(() => runOptions.onActivity(), 1)
+        runOptions.signal.addEventListener('abort', () => clearInterval(heartbeat), { once: true })
+      })
+    }
+    return {
+      text: `${agent.kind} continues`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Heartbeat-only Agent isolation',
+    agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  workspace.addMessage(group.id, 'user', 'Continue for two rounds after one Agent stalls')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), [
+    'codex',
+    'hermes', 'workbuddy', 'hermes', 'workbuddy',
+  ])
+  assert.equal(
+    workspace.snapshot().messages.filter(message => message.role === 'agent').length,
+    4,
+  )
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes', 'workbuddy'])
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'partial')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  )), true)
 })
 
 test('manual Agent watchdog finishes the run as timeout and removes the parent abort listener', async (t) => {

@@ -356,9 +356,12 @@ class LocalWorkspaceAutoRunner {
         }
         // Session recovery is owned by LocalWorkspaceAgentInvocation so a stale
         // native Session gets exactly one fresh attempt across every run mode.
+        const maxAttempts = failure.category === 'timeout' && options.retryTimeouts !== true
+          ? 1
+          : 4
         const decision = retryDecision(failure, {
           attempt,
-          maxAttempts: 4,
+          maxAttempts,
           baseDelayMs: this.retryBaseDelayMs,
           maxDelayMs: this.retryMaxDelayMs,
           safety,
@@ -547,6 +550,11 @@ class LocalWorkspaceAutoRunner {
             sideEffectsPossible,
             deferFailurePolicy: context.v4SynthesisRecovery === true
               || (context.v4 === true && context.resumedGate?.type === 'permission'),
+            // A timed-out automatic slot is a failed participant for this
+            // round. Retrying it serially delays every healthy peer and
+            // defeats failure isolation; manual/direct invocations retain
+            // their existing timeout retry policy.
+            retryTimeouts: mode !== 'auto',
             v4AgentSlotBinding: mode === 'auto' && context.v4 === true ? {
               phase: context.phase,
               slotId: context.slotId,
