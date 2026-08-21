@@ -16,6 +16,10 @@
     "eval:deterministic": "node scripts/run-evals.cjs --suite deterministic",
     "eval:provider": "node scripts/run-evals.cjs --suite provider",
     "test": "node scripts/run-tests.cjs",
+    "test:agents": "node scripts/run-tests.cjs --suite agents",
+    "test:runs": "node scripts/run-tests.cjs --suite runs",
+    "test:workspace": "node scripts/run-tests.cjs --suite workspace",
+    "test:security": "node scripts/run-tests.cjs --suite security",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "npm run build:frontend && electron-builder --mac dmg zip",
     "dist:public": "node scripts/public-release-preflight.cjs && npm run build:frontend && electron-builder --config electron-builder.public.cjs --mac dmg zip"

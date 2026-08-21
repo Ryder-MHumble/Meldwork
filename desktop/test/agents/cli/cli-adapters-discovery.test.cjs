@@ -979,6 +979,31 @@ setInterval(() => {}, 1000)
   await waitForExit(pid)
 })
 
+test('runAgent converts a closed stdin pipe into a bounded send failure', async () => {
+  const child = new EventEmitter()
+  child.stdin = new PassThrough()
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  let killed = false
+  child.kill = () => {
+    if (killed) return true
+    killed = true
+    process.nextTick(() => child.emit('close', 1, 'SIGTERM'))
+    return true
+  }
+  process.nextTick(() => child.stdin.destroy(new Error('write EPIPE')))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'codex', executable: '/tmp/codex', name: 'Codex' },
+      'send this reliably',
+      os.tmpdir(),
+      { spawnFn: () => child },
+    ),
+    error => error?.message === 'LOCAL_AGENT_SEND_FAILED',
+  )
+})
+
 test('runAgent cancellation closes pipes inherited by a descendant process', {
   skip: process.platform === 'win32',
 }, async (t) => {

@@ -108,12 +108,12 @@ Hermes 和 Kimi 的安装脚本来自固定 HTTPS 白名单地址；客户端不
 - `src/agents/`：Agent 兼容层、路由、运行时、CLI、安装器、连接器
 - `src/attachments/`：附件、内容存储、图片尺寸校验
 - `src/collaboration/`：对话、上下文包、产物、任务图
-- `src/workspace/`：本地工作区与自动调度
+- `src/workspace/`：本地工作区与自动调度；自动运行器的通用失败、重试和等待语义位于 `local-workspace-auto-runner-support.cjs`
 - `src/runs/`：运行、预算、事件、调度、日志
 - `src/knowledge/`：知识库与知识连接器
 - `src/skills/`：Skill 目录、快照、信任
 - `src/security/`：私有文件与敏感信息脱敏
-- `test/`：按同名领域镜像组织测试，`support/` 放测试辅助代码
+- `test/`：按同名领域镜像组织测试，`support/` 放测试辅助代码；测试发现与 suite 选择位于 `scripts/test-discovery.cjs`
 
 ## 本地开发
 

@@ -241,6 +241,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     let settled = false
     let stopRequested = false
     let timeoutRequested = false
+    let inputError = null
     let timeout
     let forceKillTimeout
     let forceSettleTimeout
@@ -302,6 +303,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     const abort = () => {
       if (settled || stopRequested) return
       stopRequested = true
+      const terminalError = inputError || new Error('LOCAL_AGENT_EXECUTION_STOPPED')
       if (platform === 'win32' && child.pid) {
         const killer = spawnFn('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], {
           stdio: 'ignore', windowsHide: true,
@@ -313,8 +315,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           child.stdout.destroy()
           child.stderr.destroy()
           rejectTerminal(
-            new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
-            timeoutRequested ? 'timeout' : 'stopped',
+            terminalError,
+            inputError ? 'failed' : (timeoutRequested ? 'timeout' : 'stopped'),
           )
         }), KILL_SETTLE_MS)
         return
@@ -328,8 +330,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           child.stdout.destroy()
           child.stderr.destroy()
           rejectTerminal(
-            new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
-            timeoutRequested ? 'timeout' : 'stopped',
+            terminalError,
+            inputError ? 'failed' : (timeoutRequested ? 'timeout' : 'stopped'),
           )
         }), KILL_SETTLE_MS)
       }, TERMINATE_GRACE_MS)
@@ -351,22 +353,30 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       stderr.push(chunk)
       noteActivity()
     })
+    child.stdin.on('error', (error) => {
+      if (settled || inputError) return
+      inputError = agentExecutionError(
+        'LOCAL_AGENT_SEND_FAILED',
+        redactChildSecrets(error?.message || error, childEnv),
+      )
+      abort()
+    })
     child.on('error', error => finish(() => rejectTerminal(
-      stopRequested
+      inputError || (stopRequested
         ? agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
         : agentExecutionError(
             'LOCAL_AGENT_SPAWN_FAILED',
             redactChildSecrets(error?.message || error, childEnv),
-          ),
-      stopRequested ? (timeoutRequested ? 'timeout' : 'stopped') : 'failed',
+          )),
+      stopRequested ? (inputError ? 'failed' : (timeoutRequested ? 'timeout' : 'stopped')) : 'failed',
     )))
     child.on('close', (code, signal) => finish(() => {
       void (async () => {
         runtimeStreamParser?.end()
         if (stopRequested || options.signal?.aborted) {
           rejectTerminal(
-            new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
-            timeoutRequested ? 'timeout' : 'stopped',
+            inputError || new Error('LOCAL_AGENT_EXECUTION_STOPPED'),
+            inputError ? 'failed' : (timeoutRequested ? 'timeout' : 'stopped'),
           )
           return
         }

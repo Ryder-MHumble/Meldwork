@@ -1,16 +1,17 @@
 const { spawnSync } = require('node:child_process')
-const fs = require('node:fs')
-const path = require('node:path')
+const { discoverTestFiles } = require('./test-discovery.cjs')
 
-function testFiles(directory) {
-  return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const filename = path.join(directory, entry.name)
-    if (entry.isDirectory()) return testFiles(filename)
-    return entry.isFile() && entry.name.endsWith('.test.cjs') ? [filename] : []
-  })
+function option(name, fallback) {
+  const index = process.argv.indexOf(name)
+  return index === -1 ? fallback : process.argv[index + 1] || fallback
 }
 
-const result = spawnSync(process.execPath, ['--test', '--test-concurrency=2', ...testFiles('test').sort()], {
+const suite = option('--suite', 'all')
+const result = spawnSync(process.execPath, [
+  '--test',
+  '--test-concurrency=2',
+  ...discoverTestFiles({ suite }),
+], {
   stdio: 'inherit',
 })
 
