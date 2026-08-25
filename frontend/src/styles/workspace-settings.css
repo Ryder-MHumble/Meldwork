@@ -73,6 +73,120 @@
   padding: 18px 0 40px;
 }
 
+.cloud-agent-bridge-panel {
+  border-top: 1px solid var(--border);
+}
+
+.cloud-agent-bridge-panel .manager-toolbar {
+  align-items: flex-start;
+}
+
+.cloud-agent-bridge-panel h2,
+.cloud-agent-bridge-panel p {
+  margin: 0;
+}
+
+.cloud-agent-bridge-panel h2 {
+  color: var(--text);
+  font-size: 18px;
+}
+
+.cloud-agent-bridge-panel .manager-toolbar p {
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cloud-agent-connect-form {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.5fr) minmax(150px, 1fr) auto;
+  align-items: end;
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.cloud-agent-connect-form label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.cloud-agent-connect-form input {
+  min-height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.cloud-agent-connect-form input:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 1px;
+}
+
+.cloud-agent-bridge-error {
+  margin: 8px 0;
+  color: var(--danger, #b34d4d);
+  font-size: 12px;
+}
+
+.cloud-agent-bridge-list {
+  display: grid;
+  gap: 7px;
+}
+
+.cloud-agent-bridge-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+}
+
+.cloud-agent-bridge-item-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px 12px;
+}
+
+.cloud-agent-bridge-item-main > strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.cloud-agent-bridge-agent-list {
+  width: 100%;
+  margin: -1px 0 0;
+  overflow: hidden;
+  color: var(--text-soft) !important;
+  font-size: 11px !important;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-agent-bridge-item-main > span,
+.cloud-agent-bridge-item-main > small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.bridge-online { color: var(--success, #4f7564) !important; }
+.bridge-offline { color: var(--danger, #b34d4d) !important; }
+
+.cloud-agent-bridge-empty {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .provider-settings-panel {
   --provider-success: #4f7564;
   --provider-success-soft: #e7efeb;

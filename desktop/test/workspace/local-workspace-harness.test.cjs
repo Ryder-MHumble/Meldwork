@@ -3,6 +3,9 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const { getEventListeners } = require('node:events')
+const { manifestFor } = require('../../src/agents/cloud/cloud-agent-bridge.cjs')
+const { AgentConnectorInstanceStore } = require('../../src/agents/connectors/agent-connector-instance-store.cjs')
+const { LocalAgentConnectors } = require('../../src/agents/connectors/agent-connector-local.cjs')
 const { createAgentConnectorManifest } = require('../../src/agents/connectors/agent-connector-manifest.cjs')
 const { AgentConnectorRegistry } = require('../../src/agents/connectors/agent-connector-registry.cjs')
 const { AgentConnectorRuntime } = require('../../src/agents/connectors/agent-connector-runtime.cjs')
@@ -13,6 +16,14 @@ const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const { RunScheduler } = require('../../src/runs/run-scheduler.cjs')
 const { deferred, fixture } = require('../support/local-workspace-test-helpers.cjs')
 const { executable } = require('../support/cli-adapters-test-helpers.cjs')
+
+function testSafeStorage() {
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: value => Buffer.from(`sealed:${value}`, 'utf8'),
+    decryptString: value => Buffer.from(value).toString('utf8').slice('sealed:'.length),
+  }
+}
 
 function inputConnectorRuntime(handler) {
   const manifest = createAgentConnectorManifest({
@@ -100,6 +111,108 @@ process.stdout.write(JSON.stringify({ type: 'turn.completed' }) + '\\n')
   const publicEvents = events.filter(event => event.type === 'answer_delta')
   assert.doesNotMatch(JSON.stringify(publicEvents), new RegExp(secret))
   assert.doesNotMatch(publicEvents.map(event => event.delta).join(''), new RegExp(secret))
+})
+
+test('Cloud Bridge Agents can create direct and group chats through the Connector runtime', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const record = {
+    bridgeId: 'cloud-bridge-0123456789abcdef01234567',
+    transport: 'ssh-tunnel',
+    address: '10.1.132.21',
+    endpoint: 'http://127.0.0.1:45678',
+    label: 'Cloud server',
+    available: true,
+  }
+  const agents = ['codex', 'hermes'].map(id => ({
+    id,
+    sourceKind: id,
+    label: id === 'codex' ? 'Codex' : 'Hermes',
+    version: '1.0.0',
+    description: '',
+    available: true,
+    credentialState: 'ready',
+    domains: ['general'],
+    inputTypes: ['text'],
+    permissionModes: ['read-only'],
+    session: { supported: true, resume: true, cancel: true, checkpoint: false },
+  }))
+  const entries = agents.map((agent) => {
+    const manifest = manifestFor(record, agent)
+    return {
+      record,
+      agent,
+      manifest,
+      instance: {
+        instanceId: manifest.connectorId,
+        connectorId: manifest.connectorId,
+        connectorVersion: manifest.connectorVersion,
+        upstreamVersion: '1.0.0',
+        label: manifest.label,
+        credentialRef: null,
+        manifestId: manifest.manifestId,
+        bridgeId: record.bridgeId,
+        agentId: agent.id,
+      },
+    }
+  })
+  const cloudRuns = []
+  const cloudBridges = {
+    connectorEntries: () => entries,
+    bridgeForInstance: instanceId => entries.find(entry => entry.instance.instanceId === instanceId) || null,
+    run: async (input) => {
+      cloudRuns.push(input)
+      return { text: `${input.agentId} cloud reply`, outcome: 'completed' }
+    },
+  }
+  const connectors = new LocalAgentConnectors({
+    manifestDirectory: path.join(directory, 'agent-connectors'),
+    instanceStore: new AgentConnectorInstanceStore({
+      instanceStoragePath: path.join(directory, 'connector-instances.json'),
+      credentialStoragePath: path.join(directory, 'private', 'connector-credentials.json'),
+      safeStorage: testSafeStorage(),
+    }),
+    runAgent: async () => { throw new Error('LOCAL_RUNNER_MUST_NOT_RUN') },
+    cloudBridges,
+  })
+  options.detectAgents = async () => connectors.refresh([])
+  options.connectorRuntime = connectors
+  options.runAgent = async () => { throw new Error('LOCAL_RUNNER_MUST_NOT_RUN') }
+  const workspace = new LocalWorkspace(options)
+  const snapshot = await workspace.refreshAgents()
+  const codexKind = entries.find(entry => entry.agent.id === 'codex').instance.instanceId
+  const hermesKind = entries.find(entry => entry.agent.id === 'hermes').instance.instanceId
+
+  assert.deepEqual(snapshot.agents.map(agent => agent.kind).sort(), [codexKind, hermesKind].sort())
+  const direct = workspace.createGroup({
+    conversationType: 'direct', directAgentKind: codexKind, workdir: directory,
+  })
+  await workspace.sendMessage({ groupId: direct.id, text: 'Direct cloud request' })
+
+  const group = workspace.createGroup({
+    name: 'Cloud collaboration', agentKinds: [codexKind, hermesKind], workdir: directory,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Group cloud request',
+    targetKinds: [codexKind, hermesKind],
+  })
+
+  assert.deepEqual(
+    cloudRuns.map(run => run.agentId),
+    ['codex', 'codex', 'hermes'],
+    JSON.stringify(workspace.snapshot().messages),
+  )
+  assert.equal(cloudRuns.every(run => run.permissionMode === 'read-only'), true)
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => [message.groupId, message.agentKind, message.content]),
+    [
+      [direct.id, codexKind, 'codex cloud reply'],
+      [group.id, codexKind, 'codex cloud reply'],
+      [group.id, hermesKind, 'hermes cloud reply'],
+    ],
+  )
 })
 
 test('Harness streams per-Agent events, persists a compact trace, and hands evidence to the next Agent', async (t) => {

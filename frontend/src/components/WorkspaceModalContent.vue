@@ -13,19 +13,30 @@
         <span>{{ t('group.agents') }}</span>
         <small>{{ t('group.selectedCount', { count: groupForm.agentKinds.length }) }}</small>
       </legend>
-      <div class="agent-choice-grid">
-        <label
-          v-for="agent in readyAgents"
-          :key="agent.kind"
-          class="agent-choice"
-          :class="{ selected: groupForm.agentKinds.includes(agent.kind) }"
-          :title="agent.label"
-        >
-          <input v-model="groupForm.agentKinds" type="checkbox" :value="agent.kind" />
-          <img :src="agent.logo" alt="" />
-          <span>{{ agent.label }}</span>
-          <CheckmarkCircleOutline />
-        </label>
+      <div class="agent-choice-location-groups">
+        <section v-for="agentGroup in readyAgentGroups" :key="agentGroup.id" class="agent-choice-location-group">
+          <header>
+            <strong>{{ t(agentGroup.titleKey) }}</strong>
+            <small>{{ t(agentGroup.hintKey) }}</small>
+          </header>
+          <div class="agent-choice-grid">
+            <label
+              v-for="agent in agentGroup.agents"
+              :key="agent.kind"
+              class="agent-choice"
+              :class="{ selected: groupForm.agentKinds.includes(agent.kind), cloud: agent.cloud }"
+              :title="agent.label"
+            >
+              <input v-model="groupForm.agentKinds" type="checkbox" :value="agent.kind" />
+              <span class="agent-choice-logo" :class="{ cloud: agent.cloud }">
+                <img :src="agent.logo" alt="" />
+                <CloudOutline v-if="agent.cloud" aria-hidden="true" />
+              </span>
+              <span>{{ agent.label }}</span>
+              <CheckmarkCircleOutline class="agent-choice-check" />
+            </label>
+          </div>
+        </section>
       </div>
     </fieldset>
     <label>
@@ -38,11 +49,12 @@
         </button>
       </div>
     </label>
-    <label class="switch-row">
-      <input v-model="groupForm.allowWrite" type="checkbox" :disabled="saving" />
+    <label class="switch-row" :class="{ disabled: groupSelectionIsCloudOnly }">
+      <input v-model="groupForm.allowWrite" type="checkbox" :disabled="saving || groupSelectionIsCloudOnly" />
       <span class="switch-control" />
-      <span>{{ t('group.allowWrite') }}</span>
+      <span>{{ groupSelectionIsCloudOnly ? t('group.cloudReadOnly') : t('group.allowWrite') }}</span>
     </label>
+    <p v-if="groupSelectionIncludesCloud" class="group-cloud-notice">{{ t('group.cloudSelectionNotice') }}</p>
     <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
     <footer class="modal-footer">
       <button class="secondary-button" type="button" :disabled="saving" @click="closeModal">{{ t('common.cancel') }}</button>
@@ -79,19 +91,29 @@
         <span>{{ t('group.agents') }}</span>
         <small>{{ t('group.selectedCount', { count: settingsForm.agentKinds.length }) }}</small>
       </legend>
-      <div class="agent-choice-grid settings-agent-choice-grid">
-        <label
-          v-for="agent in readyAgents"
-          :key="agent.kind"
-          class="agent-choice settings-agent-choice"
-          :class="{ selected: settingsForm.agentKinds.includes(agent.kind) }"
-          :title="agent.label"
-        >
-          <input v-model="settingsForm.agentKinds" type="checkbox" :value="agent.kind" />
-          <img :src="agent.logo" alt="" />
-          <span>{{ agent.label }}</span>
-          <CheckmarkCircleOutline />
-        </label>
+      <div class="agent-choice-location-groups settings-agent-choice-location-groups">
+        <section v-for="agentGroup in readyAgentGroups" :key="agentGroup.id" class="agent-choice-location-group">
+          <header>
+            <strong>{{ t(agentGroup.titleKey) }}</strong>
+          </header>
+          <div class="agent-choice-grid settings-agent-choice-grid">
+            <label
+              v-for="agent in agentGroup.agents"
+              :key="agent.kind"
+              class="agent-choice settings-agent-choice"
+              :class="{ selected: settingsForm.agentKinds.includes(agent.kind), cloud: agent.cloud }"
+              :title="agent.label"
+            >
+              <input v-model="settingsForm.agentKinds" type="checkbox" :value="agent.kind" />
+              <span class="agent-choice-logo" :class="{ cloud: agent.cloud }">
+                <img :src="agent.logo" alt="" />
+                <CloudOutline v-if="agent.cloud" aria-hidden="true" />
+              </span>
+              <span>{{ agent.label }}</span>
+              <CheckmarkCircleOutline class="agent-choice-check" />
+            </label>
+          </div>
+        </section>
       </div>
     </fieldset>
     <label>
@@ -104,11 +126,12 @@
         </button>
       </div>
     </label>
-    <label class="switch-row">
-      <input v-model="settingsForm.allowWrite" type="checkbox" :disabled="saving" />
+    <label class="switch-row" :class="{ disabled: settingsSelectionIsCloudOnly }">
+      <input v-model="settingsForm.allowWrite" type="checkbox" :disabled="saving || settingsSelectionIsCloudOnly" />
       <span class="switch-control" />
-      <span>{{ t('group.allowWrite') }}</span>
+      <span>{{ settingsSelectionIsCloudOnly ? t('group.cloudReadOnly') : t('group.allowWrite') }}</span>
     </label>
+    <p v-if="settingsSelectionIncludesCloud" class="group-cloud-notice">{{ t('group.cloudSelectionNotice') }}</p>
     <p v-if="formError" class="form-error" role="alert">{{ formError }}</p>
     <footer class="modal-footer settings-modal-footer">
       <div class="settings-delete-control">
@@ -219,7 +242,10 @@
 
   <section v-else-if="modal === 'agent-detail' && selectedAgentDetail" class="modal-body agent-detail-body">
     <div class="agent-detail-hero">
-      <img :src="selectedAgentDetail.logo" :alt="selectedAgentDetail.label" />
+      <span class="agent-detail-logo" :class="{ cloud: selectedAgentDetail.cloud }">
+        <img :src="selectedAgentDetail.logo" :alt="selectedAgentDetail.label" />
+        <CloudOutline v-if="selectedAgentDetail.cloud" aria-hidden="true" />
+      </span>
       <div>
         <span class="agent-state" :class="agentState(selectedAgentDetail).tone">
           <component :is="agentState(selectedAgentDetail).icon" />
@@ -235,8 +261,15 @@
         <small>{{ agentDetailSkillSummary }}</small>
       </span>
       <span>
-        <strong>{{ t('agentDetail.provider') }}</strong>
-        <small>{{ providerSummaryLabel(selectedAgentDetail) }}</small>
+        <strong>{{ selectedAgentDetail.cloud ? t('agentDetail.location') : t('agentDetail.provider') }}</strong>
+        <small>
+          {{ selectedAgentDetail.cloud
+            ? t('agentDetail.cloudLocation', {
+              server: selectedAgentDetail.serverLabel,
+              version: selectedAgentDetail.version,
+            })
+            : providerSummaryLabel(selectedAgentDetail) }}
+        </small>
       </span>
       <span>
         <strong>{{ t('agentDetail.images') }}</strong>
@@ -264,7 +297,7 @@
     </label>
 
     <section class="agent-detail-section">
-      <h3>{{ t('agentDetail.localSkills') }}</h3>
+      <h3>{{ t(selectedAgentDetail.cloud ? 'agentDetail.remoteSkills' : 'agentDetail.localSkills') }}</h3>
       <p v-if="agentDetailSkillsLoading" class="agent-detail-muted">{{ t('agent.skillsLoading') }}</p>
       <p v-else-if="!agentDetailSkillItems.length" class="agent-detail-muted">{{ t('agent.skillsUnavailable') }}</p>
       <div v-else class="agent-detail-skill-grid">
@@ -322,10 +355,11 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   ChatbubbleEllipsesOutline,
   CheckmarkCircleOutline,
+  CloudOutline,
   DownloadOutline,
   FolderOpenOutline,
   KeyOutline,
@@ -333,6 +367,7 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import { skillKey } from '../composables/useComposerContext.js'
+
 
 const props = defineProps({
   controller: { type: Object, required: true },
@@ -367,7 +402,7 @@ const {
   openProvider,
   pickGroupDirectory,
   providerSummaryLabel,
-  readyAgents,
+  readyAgentGroups,
   requestDeleteConfirmation,
   requestInstall,
   saveGroupSettings,
@@ -378,6 +413,26 @@ const {
   supportsExternalProvider,
   t,
 } = props.controller
+
+const cloudAgentKinds = computed(() => new Set(
+  readyAgentGroups.value.flatMap(group => group.agents).filter(agent => agent.cloud).map(agent => agent.kind),
+))
+
+function selectionIncludesCloud(agentKinds) {
+  return agentKinds.some(kind => cloudAgentKinds.value.has(kind))
+}
+
+function selectionIsCloudOnly(agentKinds) {
+  return agentKinds.length > 0 && agentKinds.every(kind => cloudAgentKinds.value.has(kind))
+}
+
+const groupSelectionIncludesCloud = computed(() => selectionIncludesCloud(groupForm.agentKinds))
+const groupSelectionIsCloudOnly = computed(() => selectionIsCloudOnly(groupForm.agentKinds))
+const settingsSelectionIncludesCloud = computed(() => selectionIncludesCloud(settingsForm.agentKinds))
+const settingsSelectionIsCloudOnly = computed(() => selectionIsCloudOnly(settingsForm.agentKinds))
+
+watch(groupSelectionIsCloudOnly, cloudOnly => { if (cloudOnly) groupForm.allowWrite = false })
+watch(settingsSelectionIsCloudOnly, cloudOnly => { if (cloudOnly) settingsForm.allowWrite = false })
 
 const settingsNameInput = ref(null)
 

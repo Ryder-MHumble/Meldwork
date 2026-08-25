@@ -339,7 +339,18 @@ class AgentRouter {
     const explicitReadOnlyTargets = effectiveMode === 'explicit'
       && explicitTargets.length > 0
       && explicitTargets.every(kind => isCodeReviewAgentKind(kind))
-    const permissionMode = explicitReadOnlyTargets
+    const detected = new Map((Array.isArray(agents) ? agents : []).map(agent => [agent.kind, agent]))
+    const permissionTargets = effectiveMode === 'explicit' ? explicitTargets : approvedKinds
+    const targetWriteSupport = permissionTargets.map((kind) => (
+      agentRuntimeCapabilities(kind, {
+        agent: detected.get(kind),
+        attachmentSupport: this.attachmentSupport(kind),
+      }).permissionModes.includes('workspace-write')
+    ))
+    const writePermissionCompatible = effectiveMode === 'explicit'
+      ? targetWriteSupport.every(Boolean)
+      : targetWriteSupport.some(Boolean)
+    const permissionMode = explicitReadOnlyTargets || !writePermissionCompatible
       ? 'read-only'
       : group.allowWrite === true ? 'workspace-write' : 'read-only'
     const requirements = normalizeRoutingRequirements(input.routingRequirements, {
@@ -354,7 +365,6 @@ class AgentRouter {
       const kind = explicitTargets.find(target => !approvedKinds.includes(target))
       throw routingError('LOCAL_MESSAGE_TARGET_OUT_OF_GROUP', { kind })
     }
-    const detected = new Map((Array.isArray(agents) ? agents : []).map(agent => [agent.kind, agent]))
     const candidates = approvedKinds.map((kind) => evaluateCandidate(
       detected.get(kind) || { kind, available: false },
       requirements,

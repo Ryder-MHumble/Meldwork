@@ -113,6 +113,7 @@
 .sidebar.collapsed .brand-button span,
 .sidebar.collapsed .new-group-button span,
 .sidebar.collapsed .nav-heading,
+.sidebar.collapsed .sidebar-agent-location-heading,
 .sidebar.collapsed .sidebar-agent-main > span,
 .sidebar.collapsed .sidebar-agent-new,
 .sidebar.collapsed .direct-session-list,
@@ -289,6 +290,18 @@
   margin: 2px 0 8px;
 }
 
+.sidebar-agent-location-group + .sidebar-agent-location-group {
+  margin-top: 10px;
+}
+
+.sidebar-agent-location-heading {
+  margin: 6px 8px 3px;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
 .sidebar-agent-header {
   height: 42px;
   display: grid;
@@ -338,6 +351,25 @@
   height: 28px;
   background: transparent;
   object-fit: contain;
+}
+
+.agent-logo-cloud {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: block;
+}
+
+.agent-logo-cloud > svg {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 13px;
+  height: 13px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--sidebar);
+  color: var(--accent);
 }
 
 .sidebar-agent-main > span {
@@ -674,3 +706,18 @@
   height: 15px;
   color: var(--accent);
 }
+
+.group-avatar.stack {
+  position: relative;
+}
+
+.group-avatar.stack img {
+  position: absolute;
+  width: 17px;
+  height: 17px;
+  object-fit: contain;
+}
+
+.group-avatar.stack img:nth-child(1) { top: 0; left: 0; }
+.group-avatar.stack img:nth-child(2) { right: 0; bottom: 0; }
+.group-avatar.stack img:nth-child(3) { left: 0; bottom: 0; }

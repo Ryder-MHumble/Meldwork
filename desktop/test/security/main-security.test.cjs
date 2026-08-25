@@ -273,6 +273,10 @@ test('ready activates one fixed local workspace and loads the bundled frontend',
       'local-cloud-agent:provide-input',
       'local-cloud-agent:decide-permission',
       'local-cloud-agent:cancel',
+      'local-cloud-agent-bridge:list',
+      'local-cloud-agent-bridge:connect',
+      'local-cloud-agent-bridge:refresh',
+      'local-cloud-agent-bridge:delete',
     ],
   )
   assert.equal([...harness.ipcHandlers.keys()].some(name => (
@@ -1719,6 +1723,56 @@ test('Skills IPC uses the installed-Agent gate and the shared local catalog', as
   assert.equal(harness.installerInstances[0].skillsKind, 'codex')
   assert.deepEqual(harness.installerInstances[0].input.listSkills('codex'), skillsResult)
   assert.deepEqual(harness.skillCatalogInstances[0].listCalls, ['codex'])
+})
+
+test('Cloud Agent catalog and Skills IPC preserve remote metadata without exposing paths', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cloud-skills-ipc-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const kind = 'cloud-0123456789abcdef01234567'
+  class TestCloudAgentBridgeStore {
+    refresh() { return Promise.resolve([]) }
+    connectorEntries() { return [] }
+    catalogEntries() {
+      return [{
+        kind, sourceKind: 'claude', label: 'Claude Code @ Research server',
+        description: 'Remote Claude Code', version: '2.1.123', installed: true,
+        installSupported: false, providerMode: 'connector', custom: false,
+        connector: true, cloud: true, available: false, credentialState: 'missing',
+        serverLabel: 'Research server',
+      }]
+    }
+    skillsForInstance(instanceId) {
+      return instanceId === kind
+        ? [{ namespace: 'claude', slug: 'research', name: 'Research' }]
+        : null
+    }
+    close() {}
+  }
+  const { harness } = loadMain(directory, {
+    moduleMocks: {
+      './agents/cloud/cloud-agent-bridge.cjs': { CloudAgentBridgeStore: TestCloudAgentBridgeStore },
+    },
+  })
+  await harness.ready()
+
+  const catalog = await harness.ipcHandlers.get('local-agent-installer:catalog')(harness.event())
+  const cloudAgent = catalog.agents.find(agent => agent.kind === kind)
+  assert.equal(cloudAgent.sourceKind, 'claude')
+  assert.equal(cloudAgent.version, '2.1.123')
+  assert.equal(cloudAgent.credentialState, 'missing')
+  assert.equal(cloudAgent.available, false)
+  assert.equal(cloudAgent.custom, false)
+  assert.equal('executable' in cloudAgent, false)
+
+  assert.deepEqual(
+    await harness.ipcHandlers.get('local-agent-installer:skills')(harness.event(), kind),
+    {
+      supported: true,
+      total: 1,
+      limit: 64,
+      skills: [{ targetKind: kind, namespace: 'claude', slug: 'research', name: 'Research' }],
+    },
+  )
 })
 
 test('attachment IPC returns bounded metadata, opens private files, and never exposes paths', async (t) => {

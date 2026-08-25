@@ -66,6 +66,10 @@ export function useConversationExecution({
       notify(t('composer.messageRequired'))
       return
     }
+    if (mode === 'auto-beta') {
+      notify(`${t('composer.autoBetaLockTitle')} — ${t('composer.autoBetaLockBody')}`)
+      return
+    }
     const targets = [...composerTargetKinds.value]
     if (!targets.length) {
       notify(t('composer.selectTarget'))

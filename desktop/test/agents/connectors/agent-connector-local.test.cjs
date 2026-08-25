@@ -5,6 +5,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const { createAgentConnectorManifest, serializeAgentConnectorManifest } = require('../../../src/agents/connectors/agent-connector-manifest.cjs')
+const { manifestFor } = require('../../../src/agents/cloud/cloud-agent-bridge.cjs')
 const { AgentConnectorInstanceStore } = require('../../../src/agents/connectors/agent-connector-instance-store.cjs')
 const { isSupportedAgentKind } = require('../../../src/workspace/local-workspace-contracts.cjs')
 const {
@@ -54,6 +55,7 @@ function fixture(t, options = {}) {
       }
     },
     seedSample: options.seedSample,
+    cloudBridges: options.cloudBridges,
   })
   return {
     calls,
@@ -116,6 +118,106 @@ test('discovers an explicitly installed approved sample and exposes generic sani
   assert.equal(calls.length, 1)
   assert.equal(calls[0][0].executable, '/private/bin/codex')
   assert.equal(calls[0][3].sandbox, 'read-only')
+})
+
+test('discovers and runs an Agent exposed by a Cloud Agent Bridge', async (t) => {
+  const record = {
+    bridgeId: 'cloud-bridge-0123456789abcdef01234567',
+    address: 'https://203.0.113.10:8443',
+    label: 'Research server',
+    available: true,
+  }
+  const agent = {
+    id: 'codex', sourceKind: 'codex', label: 'Codex CLI', version: '0.146.1', description: '',
+    credentialState: 'ready',
+    domains: ['general'], inputTypes: ['text'], permissionModes: ['read-only'],
+    session: { supported: true, resume: true, cancel: true, checkpoint: false },
+  }
+  const manifest = manifestFor(record, agent)
+  const entry = {
+    record, agent, manifest,
+    instance: {
+      instanceId: manifest.connectorId,
+      connectorId: manifest.connectorId,
+      connectorVersion: manifest.connectorVersion,
+      upstreamVersion: '1.0.0',
+      label: manifest.label,
+      credentialRef: null,
+      manifestId: manifest.manifestId,
+      bridgeId: record.bridgeId,
+      agentId: agent.id,
+    },
+  }
+  let cloudRunInput
+  const { connectors } = fixture(t, {
+    cloudBridges: {
+      connectorEntries: () => [entry],
+      bridgeForInstance: instanceId => instanceId === entry.instance.instanceId ? entry : null,
+      run: async (input) => {
+        cloudRunInput = input
+        return { text: 'cloud reply', outcome: 'completed' }
+      },
+    },
+  })
+  const [detected] = connectors.refresh([])
+  assert.equal(detected.cloud, true)
+  assert.equal(isSupportedAgentKind(detected.kind), true)
+  const cloudCatalog = connectors.catalog()[0]
+  assert.equal(cloudCatalog.cloud, true)
+  assert.equal(cloudCatalog.custom, false)
+  assert.equal(cloudCatalog.sourceKind, 'codex')
+  assert.equal(cloudCatalog.version, '0.146.1')
+  assert.equal(cloudCatalog.credentialState, 'ready')
+  const result = await connectors.run(detected, 'hello cloud', '/tmp/workspace', {
+    runId: 'run-cloud-1', agentRunId: 'agent-cloud-1', operationId: 'operation-cloud-1', sandbox: 'read-only',
+  })
+  assert.equal(result.text, 'cloud reply')
+  assert.equal(result.outcome, 'completed')
+  assert.equal(cloudRunInput.permissionMode, 'read-only')
+  assert.deepEqual(result.connectorEventState.events.map(event => event.type), ['Completed'])
+})
+
+test('runs a Codex Agent discovered through SSH without declaring an HTTP outbound destination', async (t) => {
+  const record = {
+    bridgeId: 'cloud-bridge-0123456789abcdef01234567',
+    transport: 'ssh',
+    address: '10.1.132.21',
+    label: 'Research server',
+    available: true,
+  }
+  const agent = {
+    id: 'codex', label: 'Codex CLI', version: '0.121.0', description: '',
+    domains: ['general'], inputTypes: ['text'], permissionModes: ['read-only'],
+    session: { supported: false, resume: false, cancel: true, checkpoint: false },
+  }
+  const manifest = manifestFor(record, agent)
+  const entry = {
+    record, agent, manifest,
+    instance: {
+      instanceId: manifest.connectorId,
+      connectorId: manifest.connectorId,
+      connectorVersion: manifest.connectorVersion,
+      upstreamVersion: '1.0.0',
+      label: manifest.label,
+      credentialRef: null,
+      manifestId: manifest.manifestId,
+      bridgeId: record.bridgeId,
+      agentId: agent.id,
+    },
+  }
+  const { connectors } = fixture(t, {
+    cloudBridges: {
+      connectorEntries: () => [entry],
+      bridgeForInstance: instanceId => instanceId === entry.instance.instanceId ? entry : null,
+      run: async () => ({ text: 'SSH reply', outcome: 'completed' }),
+    },
+  })
+  const [detected] = connectors.refresh([])
+  const result = await connectors.run(detected, 'hello SSH', '/tmp/workspace', {
+    runId: 'run-cloud-ssh-1', agentRunId: 'agent-cloud-ssh-1', operationId: 'operation-cloud-ssh-1', sandbox: 'read-only',
+  })
+  assert.equal(result.text, 'SSH reply')
+  assert.deepEqual(result.connectorEventState.events.map(event => event.type), ['Completed'])
 })
 
 test('delegated local Connector receives a streaming profile event before completion', async (t) => {

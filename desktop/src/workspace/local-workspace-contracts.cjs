@@ -13,6 +13,7 @@ const AGENT_LABELS = {
   opencodereview: 'OpenCodeReview',
 }
 const CUSTOM_AGENT_KIND = /^custom-[a-f0-9]{16}$/
+const CLOUD_AGENT_KIND = /^cloud-[a-f0-9]{24}$/
 const MAX_MESSAGE_TEXT_CHARS = 20000
 const MAX_SYSTEM_PARAM_TEXT_CHARS = 1000
 const STABLE_USER_TURNS_PER_EDGE = 3
@@ -23,7 +24,10 @@ const RECENT_TRANSCRIPT_TEXT_LIMIT = 9000
 const SESSION_KEY = /^[A-Za-z0-9._:-]{1,240}$/
 
 function isSupportedAgentKind(kind) {
-  return Object.hasOwn(AGENT_LABELS, kind) || CUSTOM_AGENT_KIND.test(String(kind || ''))
+  const normalized = String(kind || '')
+  return Object.hasOwn(AGENT_LABELS, normalized)
+    || CUSTOM_AGENT_KIND.test(normalized)
+    || CLOUD_AGENT_KIND.test(normalized)
 }
 
 function defaultAgentLabel(kind) {
@@ -45,6 +49,7 @@ function cleanInline(value, limit = 80) {
 
 module.exports = {
   AGENT_LABELS,
+  CLOUD_AGENT_KIND,
   CUSTOM_AGENT_KIND,
   MAX_MESSAGE_TEXT_CHARS,
   MAX_SYSTEM_PARAM_TEXT_CHARS,

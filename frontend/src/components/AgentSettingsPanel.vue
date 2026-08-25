@@ -30,7 +30,10 @@
             :title="t('systemSettings.openAgentDetail', { agent: agent.label })"
             @click="$emit('open-agent-detail', agent)"
           >
-            <img :src="agent.logo" :alt="agent.label" />
+            <span class="settings-agent-logo" :class="{ cloud: agent.cloud }">
+              <img :src="agent.logo" :alt="agent.label" />
+              <CloudOutline v-if="agent.cloud" aria-hidden="true" />
+            </span>
             <span class="agent-card-copy">
               <span class="agent-name-row">
                 <strong>{{ agent.label }}</strong>
@@ -119,6 +122,7 @@
 import {
   ChatbubbleEllipsesOutline,
   ChevronForwardOutline,
+  CloudOutline,
   DownloadOutline,
   KeyOutline,
   RefreshOutline,

@@ -366,6 +366,31 @@
   align-items: start;
 }
 
+.settings-agent-logo {
+  position: relative;
+  width: 38px;
+  height: 38px;
+  display: block;
+}
+
+.settings-agent-logo > img {
+  width: 38px;
+  height: 38px;
+  object-fit: contain;
+}
+
+.settings-agent-logo.cloud > svg {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 15px;
+  height: 15px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
 .settings-agent-card .agent-card-copy {
   gap: 6px;
 }

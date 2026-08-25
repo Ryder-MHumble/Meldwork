@@ -217,6 +217,35 @@
   gap: 7px;
 }
 
+.agent-choice-location-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.agent-choice-location-group {
+  min-width: 0;
+}
+
+.agent-choice-location-group > header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.agent-choice-location-group > header strong {
+  color: var(--text-soft);
+  font-size: 12px;
+}
+
+.agent-choice-location-group > header small {
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
 @container (min-width: 580px) {
   .agent-choice-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -257,10 +286,29 @@
   pointer-events: none;
 }
 
-.agent-choice img {
+.agent-choice-logo {
+  position: relative;
+  width: 27px;
+  height: 27px;
+  display: block;
+}
+
+.agent-choice-logo img {
   width: 27px;
   height: 27px;
   object-fit: contain;
+}
+
+.agent-choice-logo.cloud > svg {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 13px;
+  height: 13px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--accent);
 }
 
 .agent-choice span {
@@ -270,11 +318,11 @@
   white-space: nowrap;
 }
 
-.agent-choice svg {
+.agent-choice > .agent-choice-check {
   color: transparent;
 }
 
-.agent-choice.selected svg {
+.agent-choice.selected > .agent-choice-check {
   color: var(--accent);
 }
 
@@ -303,12 +351,13 @@
   background: color-mix(in srgb, var(--accent-soft) 64%, var(--surface-raised));
 }
 
-.settings-agent-choice img {
+.settings-agent-choice .agent-choice-logo,
+.settings-agent-choice .agent-choice-logo img {
   width: 24px;
   height: 24px;
 }
 
-.settings-agent-choice svg {
+.settings-agent-choice > .agent-choice-check {
   width: 15px;
   height: 15px;
 }
@@ -360,6 +409,24 @@ fieldset:disabled .agent-choice {
 .switch-row input:checked + .switch-control::after {
   background: var(--accent);
   transform: translateX(16px);
+}
+
+.switch-row.disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.switch-row.disabled .switch-control {
+  opacity: 0.55;
+}
+
+.group-cloud-notice {
+  margin: -2px 0 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-strong);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .form-error {

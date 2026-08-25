@@ -78,11 +78,30 @@
   animation: agent-detail-in 0.18s ease-out both;
 }
 
-.agent-detail-hero img {
+.agent-detail-logo {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  display: block;
+}
+
+.agent-detail-logo img {
   width: 64px;
   height: 64px;
   object-fit: contain;
   background: transparent;
+}
+
+.agent-detail-logo.cloud > svg {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  width: 21px;
+  height: 21px;
+  padding: 4px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--accent);
 }
 
 .agent-detail-hero p {

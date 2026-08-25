@@ -94,7 +94,7 @@ export function useConversationActions({
           : t('conversation.directDefaultName', { agent: agent.label, count: sessionCount }),
         agentKinds: [kind],
         workdir: await ensureDefaultDirectory(),
-        allowWrite: true,
+        allowWrite: agent.cloud !== true,
       })
       snapshot.value = normalizeSnapshot(await workspace.value.get())
       void preloadAgentSkills(group.agentKinds)
