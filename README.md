@@ -1,18 +1,15 @@
-<!-- <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/logos/meldwork-wordmark-v3-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="frontend/public/logos/meldwork-wordmark-v3.svg">
-    <img src="frontend/public/logos/meldwork-wordmark-v3.svg" alt="Meldwork" width="360">
-  </picture>
-</p> -->
+<div align="center">
 
-<p align="center">
-  <img src="frontend/public/logos/meldwork-readme-banner-en.png" alt="Meldwork README banner" width="100%">
-</p>
+<img src="frontend/public/logos/meldwork-readme-banner-en.png" alt="Meldwork" width="100%" />
 
-<p align="center">
-  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
-</p>
+[Architecture](architecture.md) · [Agent Connector Contract](docs/agent-connector-sdk.md) · [Contributing](CONTRIBUTING.md) · [Code of Conduct](CODE_OF_CONDUCT.md)
+
+[English](README.md) | [简体中文](README.zh-CN.md)
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20Apple%20silicon-black.svg)](https://github.com/Ryder-MHumble/Meldwork/releases)
+
+</div>
 
 # Meldwork builds the organization layer for AI agents.
 

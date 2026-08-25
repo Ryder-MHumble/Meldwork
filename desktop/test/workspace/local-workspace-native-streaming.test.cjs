@@ -39,6 +39,61 @@ test('direct Hermes conversations reuse one persistent ACP runtime key across me
   assert.equal(calls[1].runOptions.acpPersistenceKey, calls[0].runOptions.acpPersistenceKey)
 })
 
+test('direct Pi conversations reuse the native JSON session across messages', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [{
+    kind: 'pi', name: 'Pi Agent', executable: '/tmp/pi', version: '0.84.2',
+  }]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const sessionRef = runOptions.sessionRef || 'pi-json-session'
+    await runOptions.onSessionRef(sessionRef)
+    return { text: `pi reply ${calls.length}`, sessionRef, outcome: 'completed' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Pi direct', agentKinds: ['pi'], workdir: directory,
+    conversationType: 'direct', directAgentKind: 'pi',
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'first' })
+  await workspace.sendMessage({ groupId: group.id, text: 'second' })
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['pi', 'pi'])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'pi-json-session'])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionTransport), ['', ''])
+})
+
+test('group conversations dispatch Pi alongside other available Agents', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [
+    { kind: 'pi', name: 'Pi Agent', executable: '/tmp/pi', version: '0.84.2' },
+    { kind: 'codex', name: 'Codex', executable: '/tmp/codex', version: '0.144.0' },
+  ]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const sessionRef = runOptions.sessionRef || `${agent.kind}-session`
+    await runOptions.onSessionRef(sessionRef)
+    return { text: `${agent.kind} reply`, sessionRef, outcome: 'completed' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Pi group', agentKinds: ['pi', 'codex'], workdir: directory,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id, text: 'ask the group', targetKinds: ['pi', 'codex'],
+  })
+
+  assert.deepEqual(calls.map(call => call.agent.kind).sort(), ['codex', 'pi'])
+  const messages = workspace.snapshot().messages.filter(item => item.role === 'agent')
+  assert.deepEqual(messages.map(item => item.agentKind).sort(), ['codex', 'pi'])
+})
+
 test('Workspace stream bridge redacts split credentials and paths while preserving tools', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

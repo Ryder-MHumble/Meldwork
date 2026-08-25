@@ -54,9 +54,9 @@ const STREAMING_FIXTURES = [
   {
     kind: 'pi',
     agent: 'Pi Agent',
-    version: '0.1.0',
+    version: '0.84.2',
     protocol: 'pi-json-events',
-    evidence: 'source-derived',
+    evidence: 'captured-fixture',
     file: 'pi.jsonl',
     expectedTypes: ['answer_delta'],
   },

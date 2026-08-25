@@ -154,7 +154,29 @@ function ingestStructuredEvent(state, event) {
     return
   }
 
-  if (['pi', 'mimo', 'opencode'].includes(state.kind)) {
+  if (state.kind === 'pi') {
+    if (event.type === 'session' && typeof event.id === 'string') state.sessionRef = event.id
+    if (event.type === 'message_update'
+        && event.assistantMessageEvent?.type === 'text_delta'
+        && typeof event.assistantMessageEvent.delta === 'string') {
+      appendStructuredText(state, event.assistantMessageEvent.delta, '')
+    }
+    if (event.type === 'message_end'
+        && event.message?.role === 'assistant'
+        && Array.isArray(event.message.content)
+        && !state.text.trim()) {
+      appendStructuredText(state, piMessageContentText(event.message.content), '')
+    }
+    if (event.type === 'agent_settled') state.outcome = 'completed'
+    if (event.type === 'turn_end') {
+      const reason = String(event.message?.stopReason || event.message?.rawStopReason || '')
+      state.outcome = reason === 'stop' ? 'completed' : (reason ? stepFinishOutcome(reason) : 'completed')
+      if (state.outcome === 'failed') markStructuredFailure(state)
+    }
+    return
+  }
+
+  if (['mimo', 'opencode'].includes(state.kind)) {
     if (typeof event.sessionID === 'string') state.sessionRef = event.sessionID
     if (event.type === 'text' && event.part?.type === 'text'
         && typeof event.part.text === 'string') {
@@ -435,6 +457,45 @@ function parseMimoOutput(stdout) {
     } catch { /* ignore non-JSON diagnostics */ }
   }
   return { text: texts.join('\n').trim(), sessionRef, error: errors.join('\n').trim() }
+}
+
+function piMessageContentText(content) {
+  return (Array.isArray(content) ? content : [])
+    .map(part => (part?.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n')
+}
+
+function parsePiOutput(stdout) {
+  const raw = String(stdout || '').trim()
+  if (!raw) return { text: '', sessionRef: '' }
+  let sessionRef = ''
+  const deltas = []
+  let finalText = ''
+  let parsedLine = false
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    try {
+      const event = JSON.parse(line)
+      parsedLine = true
+      if (event?.type === 'session' && typeof event.id === 'string') sessionRef = event.id
+      if (event?.type === 'message_update'
+          && event.assistantMessageEvent?.type === 'text_delta'
+          && typeof event.assistantMessageEvent.delta === 'string') {
+        deltas.push(event.assistantMessageEvent.delta)
+      }
+      if (event?.type === 'message_end'
+          && event.message?.role === 'assistant'
+          && Array.isArray(event.message.content)) {
+        const text = piMessageContentText(event.message.content)
+        if (text) finalText = text
+      }
+    } catch { /* fall back to raw output when the CLI did not emit JSONL */ }
+  }
+  return {
+    text: finalText.trim() || deltas.join('').trim() || (parsedLine ? '' : raw),
+    sessionRef,
+  }
 }
 
 function normalizeOpenClawOutput(stdout) {
@@ -718,7 +779,15 @@ function classifyCliOutcome(kind, stdout) {
         : 'partial',
     }
   }
-  if (['pi', 'mimo', 'opencode'].includes(kind)) {
+  if (kind === 'pi') {
+    const turn = events.findLast(event => event?.type === 'turn_end')
+    if (turn) {
+      const reason = String(turn.message?.stopReason || turn.message?.rawStopReason || '')
+      return { outcome: reason === 'stop' || !reason ? 'completed' : stepFinishOutcome(reason) }
+    }
+    return { outcome: events.some(event => event?.type === 'agent_settled') ? 'completed' : 'partial' }
+  }
+  if (['mimo', 'opencode'].includes(kind)) {
     const finish = events.findLast(event => (
       event?.type === 'step_finish' || event?.part?.type === 'step-finish'
     ))
@@ -832,6 +901,7 @@ module.exports = {
   parseJsonOutputEvents,
   parseKimiOutput,
   parseMimoOutput,
+  parsePiOutput,
   parseOpenCodeOutput,
   parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,

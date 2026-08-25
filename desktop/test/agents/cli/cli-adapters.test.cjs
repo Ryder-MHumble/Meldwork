@@ -15,6 +15,7 @@ const {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parsePiOutput,
   parseWorkBuddyOutput,
   prepareCommand,
   readHermesFinalResponse,
@@ -1519,6 +1520,23 @@ test('Hermes receives selected Skill snapshots through the prompt without native
     skills: ['research'],
   })
   assert.deepEqual(acpSpec.args, ['acp'])
+})
+
+test('Pi receives provider settings through supported top-level JSON flags', () => {
+  const spec = invocation('pi', '/tmp/pi', '/tmp', 'pi-session-123', {
+    provider: { id: 'zgci', model: 'glm' },
+  })
+  assert.deepEqual(spec.args, [
+    '--mode', 'json',
+    '--tools', 'read,grep,find,ls',
+    '--provider', 'zgci',
+    '--model', 'glm',
+    '--session-id', 'pi-session-123',
+    '-p',
+  ])
+  assert.equal(spec.promptArg, true)
+  assert.equal(spec.eventTransport, 'pi-json-events')
+  assert.equal(typeof parsePiOutput, 'function')
 })
 
 test('Hermes forwards one image and rejects additional images instead of dropping them', () => {

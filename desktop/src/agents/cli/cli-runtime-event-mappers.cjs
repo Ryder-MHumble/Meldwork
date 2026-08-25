@@ -345,6 +345,20 @@ function openCodeJsonRuntimeEvents(event) {
   return []
 }
 
+function piJsonRuntimeEvents(event) {
+  if (!event || typeof event !== 'object') return []
+  if (event.type === 'message_update'
+      && event.assistantMessageEvent?.type === 'text_delta'
+      && typeof event.assistantMessageEvent.delta === 'string') {
+    return [{
+      type: 'answer_delta',
+      status: 'running',
+      delta: event.assistantMessageEvent.delta,
+    }]
+  }
+  return []
+}
+
 function finalOnlyRuntimeEvents() {
   return []
 }
@@ -432,4 +446,5 @@ module.exports = {
   kimiStreamJsonRuntimeEvents,
   mimoJsonRuntimeEvents,
   openCodeJsonRuntimeEvents,
+  piJsonRuntimeEvents,
 }

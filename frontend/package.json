@@ -4,7 +4,7 @@
   "private": true,
   "description": "Meldwork local-first multi-Agent collaboration workspace",
   "author": "Ryder-MHumble",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22.12.0"
   },

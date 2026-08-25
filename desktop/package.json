@@ -4,7 +4,7 @@
   "private": true,
   "description": "A local-first desktop workspace for multi-Agent collaboration",
   "author": "Ryder-MHumble",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=22.12.0"
   },

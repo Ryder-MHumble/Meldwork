@@ -19,6 +19,7 @@ const {
   parseMimoOutput,
   parseOpenCodeOutput,
   parseOpenCodeReviewOutput,
+  parsePiOutput,
   parseWorkBuddyOutput,
   prepareCommand,
   readHermesFinalResponse,
@@ -1062,6 +1063,67 @@ test('MiMo JSON output returns final text and session id', () => {
   })
 })
 
+test('Pi uses the current non-interactive JSON mode and resumes by session id', () => {
+  const readOnly = invocation('pi', '/tmp/pi', '/tmp/work', 'pi-session', {
+    provider: { id: 'zgci', model: 'glm' },
+  })
+  assert.deepEqual(readOnly.args, [
+    '--mode', 'json',
+    '--tools', 'read,grep,find,ls',
+    '--provider', 'zgci',
+    '--model', 'glm',
+    '--session-id', 'pi-session',
+    '-p',
+  ])
+  assert.equal(readOnly.promptArg, true)
+  assert.equal(readOnly.eventTransport, 'pi-json-events')
+
+  const writable = invocation('pi', '/tmp/pi', '/tmp/work', '', {
+    sandbox: 'workspace-write',
+  })
+  assert.deepEqual(writable.args, ['--mode', 'json', '-p'])
+})
+
+test('Pi JSON output returns final text and session id from current CLI events', () => {
+  const raw = [
+    JSON.stringify({
+      type: 'session',
+      id: '01a03794-ae3f-72ea-9efd-cd2cd16d88a1',
+      cwd: '/tmp/work',
+    }),
+    JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Pi ' },
+    }),
+    JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'reply' },
+    }),
+    JSON.stringify({
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [{ type: 'text', text: 'Pi reply' }],
+        stopReason: 'stop',
+      },
+    }),
+    JSON.stringify({
+      type: 'turn_end',
+      message: { role: 'assistant', stopReason: 'stop' },
+    }),
+    JSON.stringify({ type: 'agent_settled' }),
+  ].join('\n')
+  assert.deepEqual(parsePiOutput(raw), {
+    text: 'Pi reply',
+    sessionRef: '01a03794-ae3f-72ea-9efd-cd2cd16d88a1',
+  })
+  assert.deepEqual(profileOutput('pi', raw), {
+    text: 'Pi reply',
+    sessionRef: '01a03794-ae3f-72ea-9efd-cd2cd16d88a1',
+    outcome: 'completed',
+  })
+})
+
 test('Claude and Qwen stream JSON output returns the final reply and session id', () => {
   for (const kind of ['claude', 'qwen']) {
     const raw = [
@@ -1598,12 +1660,19 @@ test('every supported built-in Agent produces an explicit completion outcome', (
     ].join('\n'),
     pi: [
       JSON.stringify({
-        type: 'text', sessionID: 'pi-session',
-        part: { type: 'text', text: 'Pi Agent reply' },
+        type: 'session', id: 'pi-session', version: 3,
       }),
       JSON.stringify({
-        type: 'step_finish', sessionID: 'pi-session',
-        part: { type: 'step-finish', reason: 'stop' },
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'Pi Agent reply' },
+      }),
+      JSON.stringify({
+        type: 'message_end',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'Pi Agent reply' }] },
+      }),
+      JSON.stringify({
+        type: 'turn_end',
+        message: { role: 'assistant', stopReason: 'stop', rawStopReason: 'stop' },
       }),
     ].join('\n'),
     claude: JSON.stringify({

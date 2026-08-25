@@ -14,6 +14,7 @@ const {
   parseMimoOutput,
   parseOpenCodeOutput,
   parseOpenCodeReviewOutput,
+  parsePiOutput,
   parseWorkBuddyOutput,
   readHermesFinalResponse,
   readHermesMessageWatermark,
@@ -31,6 +32,7 @@ const {
   kimiStreamJsonRuntimeEvents,
   mimoJsonRuntimeEvents,
   openCodeJsonRuntimeEvents,
+  piJsonRuntimeEvents,
 } = require('./cli-runtime-event-mappers.cjs')
 
 function createStatelessRuntimeState() {
@@ -75,7 +77,7 @@ const FINAL_OUTPUT_PARSERS = Object.freeze({
   codex: parseCodexOutput,
   openclaw: stdout => ({ text: normalizeOpenClawOutput(stdout), sessionRef: '' }),
   workbuddy: parseWorkBuddyOutput,
-  pi: parseOpenCodeOutput,
+  pi: parsePiOutput,
   kimi: parseKimiOutput,
   mimo: parseMimoOutput,
   claude: parseClaudeQwenOutput,
@@ -365,7 +367,7 @@ const PI_JSON_EVENTS_PROFILE = profile({
   },
   createDecoder: createJsonLineParser,
   createState: createStatelessRuntimeState,
-  mapEvent: openCodeJsonRuntimeEvents,
+  mapEvent: piJsonRuntimeEvents,
   createFinalOutputAccumulator: createFinalOutputAccumulator('pi'),
 })
 
@@ -467,7 +469,6 @@ const TRANSPORT_EVENT_PROFILES = Object.freeze({
   openclaw: Object.freeze({ legacy: OPENCLAW_TERMINAL_DOCUMENT_PROFILE }),
   kimi: Object.freeze({ 'stream-json': KIMI_STREAM_JSON_PROFILE }),
   mimo: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
-  pi: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
   opencode: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
   workbuddy: Object.freeze({ 'stream-json': ANTHROPIC_STREAM_JSON_PROFILE }),
 })

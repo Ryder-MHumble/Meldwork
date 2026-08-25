@@ -140,24 +140,20 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'pi') {
-    if (options.invocationTransport !== 'json') {
-      return {
-        command: executable,
-        args: ['acp', '--pure', '--cwd', workdir],
-        acpMode: options.sandbox === 'workspace-write' ? 'build' : 'plan',
-        eventTransport: 'acp',
-        fallbackTransport: 'json',
-        fallbackSessionPolicy: 'preserve',
-      }
-    }
     return {
       command: executable,
       args: [
-        'run', '--format', 'json',
-        '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
-        ...(sessionRef ? ['--session', sessionRef] : []),
+        '--mode', 'json',
+        ...(options.sandbox === 'workspace-write'
+          ? []
+          : ['--tools', 'read,grep,find,ls']),
+        ...(options.provider?.id ? ['--provider', options.provider.id] : []),
+        ...(options.provider?.model ? ['--model', options.provider.model] : []),
+        ...(sessionRef ? ['--session-id', sessionRef] : []),
+        '-p',
       ],
       promptArg: true,
+      eventTransport: 'pi-json-events',
     }
   }
   if (kind === 'kimi') {
