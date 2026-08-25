@@ -29,6 +29,7 @@ const { AgentConnectorInstanceStore } = require('./agents/connectors/agent-conne
 const { LocalAgentConnectors } = require('./agents/connectors/agent-connector-local.cjs')
 const { AgentConnectorPackageStore } = require('./agents/connectors/agent-connector-package-store.cjs')
 const { CloudAgentOperationStore } = require('./agents/cloud/cloud-agent-operation-store.cjs')
+const { CloudAgentBridgeStore } = require('./agents/cloud/cloud-agent-bridge.cjs')
 const {
   CloudAgentRuntime,
   createCloudAgentStartRetry = ({ runtime }) => Object.freeze({
@@ -92,6 +93,7 @@ let providerStore = null
 let customAgentStore = null
 let agentConnectors = null
 let cloudAgentRuntime = null
+let cloudAgentBridges = null
 let cloudAgentStartRetry = null
 let channelIngressRuntime = null
 let knowledgeBaseStore = null
@@ -506,6 +508,7 @@ function createWorkspace() {
       safeStorage: lazySafeStorage,
     }),
     runAgent: runCoreAgent,
+    cloudBridges: cloudAgentBridges,
   })
   const outcomeStore = new OutcomeStore({
     rootPath: path.join(privateRoot, 'outcomes'),
@@ -551,6 +554,7 @@ function createWorkspace() {
     agentFitMatrix: FROZEN_AGENT_FIT_MATRIX,
     runLedger: cloudAgentRuntime.workspaceLedger(),
     detectAgents: async () => {
+      await cloudAgentBridges?.refresh()
       const [installedAgents, customAgents] = await Promise.all([
         installer.detectedAgents(),
         customAgentStore.detectAgents(),
@@ -610,6 +614,7 @@ function createWorkspace() {
 }
 
 async function localAgentCatalog() {
+  await cloudAgentBridges?.refresh()
   const [catalog, customAgents, installedAgents] = await Promise.all([
     installer.catalog(),
     customAgentStore.catalog(),
@@ -617,10 +622,17 @@ async function localAgentCatalog() {
   ])
   agentConnectors?.refresh(installedAgents)
   const connectorAgents = agentConnectors?.catalog() || []
+  const mergedAgents = new Map()
+  for (const agent of [...catalog.agents, ...customAgents, ...connectorAgents]) {
+    mergedAgents.set(agent.kind, agent)
+  }
+  for (const agent of cloudAgentBridges?.catalogEntries?.() || []) {
+    mergedAgents.set(agent.kind, { ...(mergedAgents.get(agent.kind) || {}), ...agent })
+  }
   const states = new Map((workspace?.snapshot().agents || []).map(agent => [agent.kind, agent]))
   return {
     ...catalog,
-    agents: [...catalog.agents, ...customAgents, ...connectorAgents].map((agent) => {
+    agents: [...mergedAgents.values()].map((agent) => {
       const state = states.get(agent.kind)
       const support = localAttachmentSupport(agent.kind)
       return {
@@ -635,7 +647,9 @@ async function localAgentCatalog() {
         recentlyVerified: Boolean(agent.installed && state?.recentlyVerified),
         capabilities: state?.capabilities || agent.capabilities || null,
         available: Boolean(agent.installed && state?.invocable),
-        credentialState: agent.installed ? (state?.credentialState || 'unknown') : 'missing',
+        credentialState: agent.installed
+          ? (state?.credentialState || agent.credentialState || 'unknown')
+          : 'missing',
         availabilitySource: agent.installed ? (state?.availabilitySource || 'unverified') : 'none',
         showInSidebar: Boolean(agent.installed && state?.showInSidebar),
         attachmentTypes: Object.entries(support)
@@ -755,6 +769,7 @@ function registerIpc() {
     getAttachmentStore: () => attachmentStore,
     getAgentConnectors: () => agentConnectors,
     getCloudAgentRuntime: () => cloudAgentRuntime,
+    getCloudAgentBridges: () => cloudAgentBridges,
     getMainWindow: () => mainWindow,
     getWorkspace: () => workspace,
     installer,
@@ -796,6 +811,10 @@ if (!hasSingleInstanceLock) {
     const attachmentReferences = persistedAttachmentReferences(workspaceStoragePath())
     customAgentStore = new CustomAgentStore({
       storagePath: path.join(app.getPath('userData'), 'meldwork-custom-agents.json'),
+    })
+    cloudAgentBridges = new CloudAgentBridgeStore({
+      storagePath: path.join(app.getPath('userData'), 'meldwork-cloud-agent-bridges.json'),
+      fetch: globalThis.fetch,
     })
     providerStore = new ProviderStore({
       storagePath: path.join(app.getPath('userData'), 'meldwork-provider.json'),
@@ -871,6 +890,7 @@ if (!hasSingleInstanceLock) {
     if (installRunning) installer.cancel(installerState.taskId)
     quitCleanup = runQuitCleanup([
       () => channelIngressRuntime?.shutdown(),
+      () => cloudAgentBridges?.close(),
       () => cloudAgentRuntime?.shutdown(),
       async () => {
         try {

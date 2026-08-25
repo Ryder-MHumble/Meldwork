@@ -1,5 +1,6 @@
 const { createHash, randomUUID } = require('node:crypto')
 const {
+  agentRuntimeCapabilities,
   isCodeReviewAgentKind,
   requireTerminalAgentResult,
 } = require('../agents/agent-runtime-contract.cjs')
@@ -600,9 +601,12 @@ class LocalWorkspaceAgentInvocation {
       : (context.permissionMode === 'workspace-write' ? 'workspace-write' : 'read-only')
     const writerKind = cleanText(context.singleWriterKind || context.writerKind, 80)
     const writerAllowed = !writerKind || writerKind === kind
+    const supportsWorkspaceWrite = agentRuntimeCapabilities(kind, { agent })
+      .permissionModes.includes('workspace-write')
     const allowWrite = group.allowWrite === true
       && requestedPermission === 'workspace-write'
       && writerAllowed
+      && supportsWorkspaceWrite
       && !reviewOnly
       && !isolated
     const skillInputTypes = new Set(['text'])

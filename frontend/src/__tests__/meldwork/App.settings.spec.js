@@ -44,6 +44,19 @@ afterEach(() => {
 })
 
 describe('Meldwork workbench', () => {
+  it('provides a dedicated cloud-server settings tab', async () => {
+    const { wrapper } = await mountApp()
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    const cloudTab = wrapper.findAll('.settings-tabs button')
+      .find(button => button.text().includes('Cloud servers'))
+    await cloudTab.trigger('click')
+
+    expect(wrapper.get('.cloud-agent-bridge-panel h2').text()).toBe('Cloud servers')
+    expect(wrapper.get('.cloud-agent-connect-form').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('enables onboarding completion as soon as Agent detection finishes on any slide', async () => {
     vi.useFakeTimers()
     localStorage.removeItem('meldwork-onboarding-seen-v1')
@@ -207,7 +220,7 @@ describe('Meldwork workbench', () => {
     expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes(AGENTS.length)
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
 
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await flushPromises()
     expect(bridge.localAgentProvider.status).toHaveBeenCalledTimes((AGENTS.length * 2) - 1)
     expect(bridge.localAgentProvider.probe).toHaveBeenCalledTimes(1)
@@ -219,7 +232,7 @@ describe('Meldwork workbench', () => {
     await flushPromises()
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(1)
 
-    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[3].trigger("click")
     await flushPromises()
     expect(bridge.localKnowledgeBase.status).toHaveBeenCalledTimes(2)
     expect(wrapper.get('.knowledge-base-ready-summary').text()).toContain('1 ready, 3 total')
@@ -244,7 +257,7 @@ describe('Meldwork workbench', () => {
 
     const { wrapper } = await mountApp()
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await flushPromises()
 
     expect(wrapper.findAll('.provider-agent-list button')).toHaveLength(AGENTS.length)
@@ -343,7 +356,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await flushPromises()
     const providerButton = label => wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes(label))
@@ -368,7 +381,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await flushPromises()
 
     const codexProvider = wrapper.findAll('.provider-agent-list button')
@@ -413,7 +426,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await wrapper.vm.$nextTick()
 
     const kimiProvider = wrapper.findAll('.provider-agent-list button')
@@ -455,7 +468,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await flushPromises()
 
     const codexProvider = wrapper.findAll('.provider-agent-list button')
@@ -526,7 +539,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Kimi Code'))
       .trigger('click')
@@ -592,7 +605,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Hermes'))
       .trigger('click')
@@ -655,7 +668,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     const hermesProvider = wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Hermes'))
     await hermesProvider.trigger('click')
@@ -689,7 +702,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Hermes'))
       .trigger('click')
@@ -722,7 +735,7 @@ describe('Meldwork workbench', () => {
     const { wrapper, bridge } = await mountApp()
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[3].trigger("click")
     await wrapper.vm.selectSystemSettingsSection('knowledge-bases')
     await flushPromises()
 
@@ -814,7 +827,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[3].trigger("click")
     await flushPromises()
 
     expect(wrapper.get('.knowledge-base-ready-summary').text()).toContain('2 ready, 3 total')
@@ -838,7 +851,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[3].trigger("click")
     await wrapper.vm.$nextTick()
 
     const localItems = wrapper.findAll('.knowledge-base-item')
@@ -895,7 +908,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[2].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[3].trigger("click")
     await flushPromises()
 
     const feishuCard = wrapper.findAll('.knowledge-base-item')

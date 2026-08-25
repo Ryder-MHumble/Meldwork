@@ -182,7 +182,7 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('Concurrent responses')
+    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('Concurrent replies')
     const styles = readFileSync(resolve(process.cwd(), 'src/styles.css'), 'utf8')
     expect(styles).toMatch(/@container \(max-width: 420px\)[\s\S]*\.mode-segmented button\s*\{[^}]*white-space:\s*normal;/s)
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)[\s\S]*\.composer-box\.unlimited-running \.round-unlimited-symbol,[\s\S]*animation:\s*none;/s)
@@ -192,7 +192,44 @@ describe('Meldwork workbench', () => {
 
     await wrapper.get('.mode-segmented [data-mode="manual"]').trigger('click')
     await wrapper.findAll('.target-chip')[1].trigger('click')
-    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('单轮回答')
+    expect(wrapper.get('.mode-segmented [data-mode="manual"]').text()).toBe('单次回答')
+    wrapper.unmount()
+  })
+
+  it('shows the Auto discussion Beta mode with an explanation placeholder and a coming-soon guard', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-auto-beta',
+        conversationType: 'group',
+        name: 'Beta group',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    const betaButton = wrapper.get('.mode-segmented [data-mode="auto-beta"]')
+
+    expect(betaButton.attributes()).not.toHaveProperty('disabled')
+    expect(betaButton.text()).toContain('Auto discussion')
+    expect(betaButton.get('.mode-beta-badge').text()).toBe('Beta')
+    expect(betaButton.find('.mode-beta-icon').exists()).toBe(false)
+
+    await betaButton.trigger('click')
+    expect(betaButton.classes()).toContain('active')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder'))
+      .toBe('Beta: Agents @ each other into the discussion and the model orchestrates the rounds autonomously.')
+
+    await wrapper.get('.composer-box textarea').setValue('Plan a launch')
+    await wrapper.get('.send-button').trigger('click')
+    await flushPromises()
+
+    expect(bridge.localWorkspace.send).not.toHaveBeenCalled()
+    expect(wrapper.get('.toast-message').text()).toContain('coming soon')
     wrapper.unmount()
   })
 

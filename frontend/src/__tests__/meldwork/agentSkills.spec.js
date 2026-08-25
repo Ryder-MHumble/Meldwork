@@ -9,6 +9,30 @@ function deferred() {
 }
 
 describe('Agent Skill catalog', () => {
+  it('loads Skills for cloud connector Agents', async () => {
+    const installer = { skills: vi.fn(async kind => ({
+      supported: true,
+      total: 1,
+      skills: [{ targetKind: kind, namespace: 'hermes', slug: 'research', name: 'Research' }],
+    })) }
+    const skills = useAgentSkills({
+      installer: ref(installer),
+      mergedCatalog: ref([{
+        kind: 'cloud-hermes', cloud: true, connector: true, custom: false,
+      }]),
+      normalizeSkill: (skill, targetKind) => ({ ...skill, targetKind }),
+      readyAgents: ref([{ kind: 'cloud-hermes', cloud: true, custom: false }]),
+      t: key => key,
+    })
+
+    await skills.selectAgentDetail('cloud-hermes')
+
+    expect(installer.skills).toHaveBeenCalledWith('cloud-hermes')
+    expect(skills.agentDetailSkillItems.value).toEqual([{
+      targetKind: 'cloud-hermes', namespace: 'hermes', slug: 'research', name: 'Research',
+    }])
+  })
+
   it('does not repopulate the cache after disposal', async () => {
     const pending = deferred()
     const skills = useAgentSkills({

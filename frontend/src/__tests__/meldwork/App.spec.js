@@ -146,6 +146,67 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
+  it('renders cloud Agents with product logos, cloud markers, version, and remote Skills', async () => {
+    const cloudKind = 'cloud-0123456789abcdef01234567'
+    const cloudAgent = {
+      kind: cloudKind,
+      sourceKind: 'codex',
+      label: 'Codex @ Research server',
+      description: 'Remote Codex CLI',
+      version: '0.146.1',
+      installed: true,
+      available: true,
+      credentialState: 'ready',
+      showInSidebar: true,
+      providerMode: 'connector',
+      custom: false,
+      connector: true,
+      cloud: true,
+      serverLabel: 'Research server',
+    }
+    const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
+      state.agents.push(cloudAgent)
+      desktopBridge.agentInstaller.catalog.mockResolvedValue({
+        platform: 'darwin',
+        agents: [
+          ...AGENTS.map(agent => ({ kind: agent.kind, installed: true, installSupported: true })),
+          cloudAgent,
+        ],
+      })
+      desktopBridge.agentInstaller.skills.mockResolvedValue({
+        supported: true,
+        total: 1,
+        skills: [{ targetKind: cloudKind, namespace: 'codex', slug: 'review', name: 'Review' }],
+      })
+    })
+
+    const sidebarCloud = wrapper.findAll('.sidebar-agent')
+      .find(agent => agent.text().includes('Codex @ Research server'))
+    expect(sidebarCloud.get('.agent-logo-cloud.cloud').exists()).toBe(true)
+    expect(sidebarCloud.get('img').attributes('src')).toContain('agent-logos/codex.svg')
+
+    await wrapper.get('.new-group-button').trigger('click')
+    const cloudChoice = wrapper.findAll('.agent-choice')
+      .find(choice => choice.text().includes('Codex @ Research server'))
+    expect(cloudChoice.get('.agent-choice-logo.cloud').exists()).toBe(true)
+    await wrapper.get('.modal-header .icon-button').trigger('click')
+
+    await wrapper.get('.sidebar-settings-entry').trigger('click')
+    const cloudCard = wrapper.findAll('.settings-agent-card')
+      .find(card => card.text().includes('Codex @ Research server'))
+    expect(cloudCard.get('.settings-agent-logo.cloud').exists()).toBe(true)
+    expect(cloudCard.text()).toContain('Version 0.146.1')
+    await cloudCard.get('.agent-card-main').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('.agent-detail-logo.cloud img').attributes('src'))
+      .toContain('agent-logos/codex.svg')
+    expect(wrapper.get('.agent-detail-metrics').text()).toContain('Research server · Version 0.146.1')
+    expect(wrapper.get('.agent-detail-skill-grid').text()).toContain('@Review')
+    expect(bridge.agentInstaller.skills).toHaveBeenCalledWith(cloudKind)
+    wrapper.unmount()
+  })
+
   it('hides Custom Agent setup while the connector surface is not production-ready', async () => {
     const customProfile = {
       kind: 'custom-0123456789abcdef',
@@ -1209,7 +1270,7 @@ describe('Meldwork workbench', () => {
     const { wrapper, bridge } = await mountApp()
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Hermes'))
       .trigger('click')
@@ -1255,7 +1316,7 @@ describe('Meldwork workbench', () => {
 
     expect(bridge.localWorkspace.refreshAgents).toHaveBeenCalledTimes(1)
     await wrapper.get('.sidebar-settings-entry').trigger('click')
-    await wrapper.findAll('.settings-tabs button')[1].trigger('click')
+    await wrapper.findAll(".settings-tabs button")[2].trigger("click")
     await wrapper.findAll('.provider-agent-list button')
       .find(button => button.text().includes('Hermes'))
       .trigger('click')
@@ -1427,7 +1488,7 @@ describe('Meldwork workbench', () => {
     expect(smartTeam.find('.smart-team-icon-state-off').exists()).toBe(true)
     expect(smartTeam.find('.smart-team-icon-state-on').exists()).toBe(true)
     expect(wrapper.find('.smart-team-tooltip').exists()).toBe(false)
-    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Every Agent receives your message at once and replies independently, with no hand-offs.')
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
 
     await wrapper.get('.smart-team-control').trigger('mouseenter')
@@ -1480,7 +1541,7 @@ describe('Meldwork workbench', () => {
 
     await smartTeam.trigger('click')
     expect(smartTeam.get('.smart-team-status').text()).toBe('Off')
-    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Every Agent receives your message at once and replies independently, with no hand-offs.')
     expect(wrapper.findAll('.target-chip').every(chip => chip.attributes('disabled') === undefined)).toBe(true)
 
     setLocale('zh')

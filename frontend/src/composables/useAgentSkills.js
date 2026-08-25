@@ -24,7 +24,9 @@ export function useAgentSkills({
     if (selectedAgentDetail.value?.custom) return t('customAgent.skillsUnsupported')
     if (agentDetailSkillsLoading.value) return t('agent.skillsLoading')
     if (!agentDetailSkillItems.value.length) return t('agent.skillsUnavailable')
-    return t('agent.localSkills', { count: agentDetailSkillItems.value.length })
+    return t(selectedAgentDetail.value?.cloud ? 'agent.cloudSkills' : 'agent.localSkills', {
+      count: agentDetailSkillItems.value.length,
+    })
   })
 
   function agentSkillLabel(kind) {
@@ -34,7 +36,8 @@ export function useAgentSkills({
     const state = agentSkillStats.value[kind]
     if (!state || state.loading) return t('agent.skillsLoading')
     if (!Number.isFinite(state.total)) return t('agent.skillsUnavailable')
-    return t('agent.localSkills', { count: state.total })
+    const cloud = mergedCatalog.value.find(agent => agent.kind === kind)?.cloud
+    return t(cloud ? 'agent.cloudSkills' : 'agent.localSkills', { count: state.total })
   }
 
   function normalizeAgentSkillCatalog(result, kind) {

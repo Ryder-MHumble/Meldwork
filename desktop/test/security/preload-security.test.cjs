@@ -62,11 +62,16 @@ test('local preload exposes the local-only Meldwork API and narrow Provider meth
   assert.equal(Object.isFrozen(api.localAgentConnector), true)
   assert.equal(Object.isFrozen(api.localSkillTrust), true)
   assert.equal(Object.isFrozen(api.cloudAgent), true)
+  assert.equal(Object.isFrozen(api.cloudAgentBridge), true)
   assert.equal(Object.isFrozen(api.localOutcome), true)
   assert.deepEqual(Object.keys(api.localOutcome), ['recordAdoption'])
   assert.deepEqual(
     Object.keys(api.cloudAgent).sort(),
     ['cancel', 'decidePermission', 'provideInput'],
+  )
+  assert.deepEqual(
+    Object.keys(api.cloudAgentBridge).sort(),
+    ['connect', 'delete', 'list', 'refresh'],
   )
   assert.deepEqual(
     Object.keys(api.localWorkspace).sort(),

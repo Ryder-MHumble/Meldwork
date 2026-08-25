@@ -1,4 +1,4 @@
-import { setCustomAgentProfiles } from '../catalog.js'
+import { setCloudAgentProfiles, setCustomAgentProfiles } from '../catalog.js'
 import { normalizeSnapshot } from '../desktop.js'
 
 export function useAgentRefresh({
@@ -25,6 +25,7 @@ export function useAgentRefresh({
       agents: Array.isArray(catalog.agents) ? catalog.agents : [],
     }
     setCustomAgentProfiles(installCatalog.value.agents.filter(agent => agent?.custom === true))
+    setCloudAgentProfiles(installCatalog.value.agents.filter(agent => agent?.cloud === true))
   }
 
   async function performAgentRefresh() {

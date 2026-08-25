@@ -26,7 +26,9 @@ export const AGENTS = Object.freeze([
 
 const BY_KIND = new Map(AGENTS.map(agent => [agent.kind, agent]))
 const CUSTOM_BY_KIND = new Map()
+const CLOUD_BY_KIND = new Map()
 const CUSTOM_AGENT_KIND = /^custom-[a-f0-9]{16}$/
+const CLOUD_AGENT_KIND = /^cloud-[a-f0-9]{24}$/
 const CUSTOM_AGENT_LOGO = publicAsset('agent-logos/custom-agent.svg')
 
 export function setCustomAgentProfiles(profiles = []) {
@@ -49,8 +51,18 @@ export function setCustomAgentProfiles(profiles = []) {
   }
 }
 
+export function setCloudAgentProfiles(profiles = []) {
+  CLOUD_BY_KIND.clear()
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const kind = String(profile?.kind || '')
+    const sourceKind = String(profile?.sourceKind || '')
+    if (!CLOUD_AGENT_KIND.test(kind) || !BY_KIND.has(sourceKind) || profile?.cloud !== true) continue
+    CLOUD_BY_KIND.set(kind, { ...BY_KIND.get(sourceKind), kind })
+  }
+}
+
 function agentProfile(kind) {
-  return BY_KIND.get(kind) || CUSTOM_BY_KIND.get(kind)
+  return BY_KIND.get(kind) || CUSTOM_BY_KIND.get(kind) || CLOUD_BY_KIND.get(kind)
     || { kind, label: kind || 'Agent', logo: CUSTOM_AGENT_LOGO, providerMode: 'native' }
 }
 

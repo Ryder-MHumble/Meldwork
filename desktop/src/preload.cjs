@@ -117,6 +117,12 @@ if (isLocalDocument) Object.assign(desktopApi, {
     ),
     cancel: runId => ipcRenderer.invoke('local-cloud-agent:cancel', runId),
   }),
+  cloudAgentBridge: Object.freeze({
+    list: () => ipcRenderer.invoke('local-cloud-agent-bridge:list'),
+    connect: input => ipcRenderer.invoke('local-cloud-agent-bridge:connect', input),
+    refresh: () => ipcRenderer.invoke('local-cloud-agent-bridge:refresh'),
+    delete: bridgeId => ipcRenderer.invoke('local-cloud-agent-bridge:delete', bridgeId),
+  }),
   localOutcome: Object.freeze({
     recordAdoption: input => ipcRenderer.invoke('local-outcome:record-adoption', input),
   }),

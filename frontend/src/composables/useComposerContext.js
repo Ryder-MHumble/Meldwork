@@ -71,6 +71,7 @@ export function useComposerContext({
   })
   const composerMode = computed(() => {
     if (activeGroup.value?.conversationType === 'direct') return 'manual'
+    if (discussionMode.value === 'auto-beta') return 'auto-beta'
     return addressedAgentKinds.value.length === 1 ? 'manual' : discussionMode.value
   })
   const manualModeLabel = computed(() => (

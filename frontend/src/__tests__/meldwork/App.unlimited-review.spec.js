@@ -150,7 +150,7 @@ describe('Unlimited-round review mode', () => {
     await flushPromises()
     expect(wrapper.get('.composer-box').classes()).not.toContain('unlimited-mode')
     expect(wrapper.find('.round-unlimited-symbol').exists()).toBe(false)
-    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Agents reply one at a time, in turn — each may build on the previous answer, up to the round limit.')
     wrapper.unmount()
   })
 })

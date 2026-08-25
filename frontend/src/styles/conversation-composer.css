@@ -11,19 +11,20 @@
 }
 
 .mode-segmented {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
   padding: 2px;
   border: 0;
   border-radius: 999px;
   background: var(--surface-hover);
+  justify-self: start;
 }
 
 .mode-segmented button {
-  min-width: 96px;
+  min-width: 0;
   height: 26px;
-  padding: 0 7px;
+  padding: 0 10px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -32,6 +33,9 @@
   font-weight: 650;
   white-space: nowrap;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
 }
 
 .mode-segmented button.active {
@@ -43,6 +47,37 @@
 .mode-segmented button[data-mode="auto"].active {
   background: var(--accent-soft);
   color: var(--accent);
+}
+
+.mode-segmented button[data-mode="auto-beta"]:hover:not(:disabled):not(.active) {
+  background: transparent;
+  color: var(--muted);
+}
+
+.mode-segmented button[data-mode="auto-beta"].active {
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  border-color: transparent;
+}
+
+.mode-segmented button[data-mode="auto-beta"].active .mode-beta-badge {
+  background: var(--surface-raised);
+  color: var(--accent);
+}
+
+.mode-beta-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
+  padding: 0 5px;
+  margin-left: 4px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--on-accent, #fff);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
 }
 
 .round-settings-control {
@@ -1162,12 +1197,18 @@
   }
 
   .mode-segmented button {
-    min-width: 86px;
+    min-width: 0;
     height: 32px;
-    padding-inline: 4px;
+    padding-inline: 6px;
     font-size: 10px;
     line-height: 1.05;
     white-space: normal;
+  }
+
+  .mode-beta-badge {
+    height: 12px;
+    padding: 0 4px;
+    font-size: 8px;
   }
 
   .round-settings-trigger {
