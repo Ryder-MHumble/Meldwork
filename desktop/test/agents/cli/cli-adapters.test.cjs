@@ -495,6 +495,31 @@ finish()
     ), result.text)
 })
 
+test('structured terminal output is kept when a CLI exits non-zero after producing a result', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cli-result-before-exit-'))
+  const cli = executable(directory, 'result-before-exit.cjs', `
+process.stdout.write(JSON.stringify({
+  type: 'result', subtype: 'success', is_error: false,
+  result: 'completed before cleanup failure', session_id: 'result-before-exit-session',
+}) + '\\n')
+process.exitCode = 1
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  const events = []
+  const result = await runAgent(
+    { kind: 'workbuddy', executable: cli, name: 'WorkBuddy' },
+    'hello',
+    directory,
+    { onEvent: event => events.push(event) },
+  )
+
+  assert.equal(result.outcome, 'completed')
+  assert.equal(result.text, 'completed before cleanup failure')
+  assert.equal(result.sessionRef, 'result-before-exit-session')
+  assert.equal(events.some(event => event.type === 'answer_delta'), true)
+})
+
 test('Gemini profile state retains one real tool lifecycle id and summary', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-gemini-profile-state-'))
   const cli = executable(directory, 'gemini-profile-state.cjs', `
