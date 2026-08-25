@@ -380,17 +380,6 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           )
           return
         }
-        if (code !== 0) {
-          const rawStdout = stdout.text()
-          const rawStderr = stderr.text().trim()
-          const structuredDetail = structuredCliError(rawStdout)
-          const detail = redactChildSecrets(
-            [rawStderr, structuredDetail].filter(Boolean).join('\n'),
-            childEnv,
-          )
-          rejectTerminal(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
-          return
-        }
         const rawStderr = stderr.text()
         const nextSessionRef = profile.resolveSessionRef({
           stderr: rawStderr,
@@ -400,6 +389,21 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         let result = structuredOutput.end({
           sessionRef: nextSessionRef,
         })
+        const rawStdout = stdout.text()
+        const structuredDetail = structuredCliError(rawStdout)
+        const usableNonZeroResult = code !== 0
+          && result
+          && typeof result.text === 'string'
+          && result.text.trim()
+          && ['completed', 'partial'].includes(result.outcome)
+        if (code !== 0 && !usableNonZeroResult) {
+          const detail = redactChildSecrets(
+            [rawStderr, structuredDetail].filter(Boolean).join('\n'),
+            childEnv,
+          )
+          rejectTerminal(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
+          return
+        }
         if (result.error) {
           rejectTerminal(failedAgentProcessError(
             redactChildSecrets(result.error, childEnv),
