@@ -19,6 +19,9 @@ const MAX_RESPONSE_BYTES = 256 * 1024
 const MAX_AGENTS = 32
 const MAX_SKILLS = 64
 const STORE_VERSION = 1
+const DEFAULT_REQUEST_TIMEOUT_MS = 3 * 60 * 1000
+const DEFAULT_RUN_TIMEOUT_MS = 10 * 60 * 1000
+const MAX_REQUEST_TIMEOUT_MS = 15 * 60 * 1000
 const SSH_DISCOVERY_COMMAND = 'if command -v codex >/dev/null 2>&1; then codex --version; fi'
 const SSH_CODEX_COMMAND = 'exec codex exec --json --skip-git-repo-check --sandbox read-only -'
 const SSH_TUNNEL_READY = 'MELDWORK_AGENT_BRIDGE_READY'
@@ -222,8 +225,11 @@ class CloudAgentBridgeStore {
     this.sshTunnelStart = typeof options.sshTunnelStart === 'function' ? options.sshTunnelStart : null
     this.tunnels = new Map()
     this.timeoutMs = Number.isFinite(options.timeoutMs)
-      ? Math.max(1000, Math.min(5 * 60 * 1000, Math.floor(options.timeoutMs)))
-      : 3 * 60 * 1000
+      ? Math.max(1000, Math.min(MAX_REQUEST_TIMEOUT_MS, Math.floor(options.timeoutMs)))
+      : DEFAULT_REQUEST_TIMEOUT_MS
+    this.runTimeoutMs = Number.isFinite(options.runTimeoutMs)
+      ? Math.max(1000, Math.min(MAX_REQUEST_TIMEOUT_MS, Math.floor(options.runTimeoutMs)))
+      : DEFAULT_RUN_TIMEOUT_MS
     this.records = this.read().records
   }
 
@@ -264,7 +270,18 @@ class CloudAgentBridgeStore {
 
   async request(pathname, options = {}) {
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
+    const timeoutMs = Number.isFinite(options.timeoutMs)
+      ? Math.max(1000, Math.min(MAX_REQUEST_TIMEOUT_MS, Math.floor(options.timeoutMs)))
+      : this.timeoutMs
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    const activityIntervalMs = Math.min(1000, Math.max(10, Math.floor(timeoutMs / 4)))
+    const reportActivity = () => {
+      try { options.onActivity?.() } catch { /* activity reporting must not fail the request */ }
+    }
+    reportActivity()
+    const activityTimer = options.onActivity
+      ? setInterval(reportActivity, activityIntervalMs)
+      : null
     const abortFromCaller = () => controller.abort()
     options.signal?.addEventListener?.('abort', abortFromCaller, { once: true })
     try {
@@ -284,6 +301,7 @@ class CloudAgentBridgeStore {
       throw error
     } finally {
       clearTimeout(timer)
+      if (activityTimer) clearInterval(activityTimer)
       options.signal?.removeEventListener?.('abort', abortFromCaller)
     }
   }
@@ -648,6 +666,8 @@ class CloudAgentBridgeStore {
       address: record.transport === 'ssh-tunnel' ? record.endpoint : record.address,
       method: 'POST',
       signal: input.signal,
+      timeoutMs: this.runTimeoutMs,
+      onActivity: input.onActivity,
       body: {
         prompt: input.prompt,
         sessionRef: input.sessionRef || null,

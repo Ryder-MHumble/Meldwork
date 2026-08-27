@@ -151,7 +151,7 @@ test('WorkBuddy uses non-interactive output and resumes its native session', () 
   assert.deepEqual(spec.args, [
     '--print', '--output-format', 'stream-json', '--include-partial-messages',
     '--permission-mode', 'plan',
-    '--max-turns', '20', '--resume', 'workbuddy-session',
+    '--max-turns', '8', '--resume', 'workbuddy-session',
   ])
   assert.equal(spec.eventTransport, 'stream-json')
 })
@@ -1597,14 +1597,12 @@ test('every supported built-in Agent produces an explicit completion outcome', (
       }),
     ].join('\n'),
     pi: [
+      JSON.stringify({ type: 'session', version: 3, id: 'pi-session' }),
       JSON.stringify({
-        type: 'text', sessionID: 'pi-session',
-        part: { type: 'text', text: 'Pi Agent reply' },
+        type: 'message_update',
+        assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: 'Pi Agent reply' },
       }),
-      JSON.stringify({
-        type: 'step_finish', sessionID: 'pi-session',
-        part: { type: 'step-finish', reason: 'stop' },
-      }),
+      JSON.stringify({ type: 'turn_end', stopReason: 'stop' }),
     ].join('\n'),
     claude: JSON.stringify({
       type: 'result', result: 'Claude reply', session_id: 'claude-session',
@@ -1643,6 +1641,87 @@ test('every supported built-in Agent produces an explicit completion outcome', (
     assert.equal(result.outcome, 'completed', kind)
     assert.ok(result.text, kind)
   }
+})
+
+test('structured result output keeps the terminal result after an earlier recoverable error', () => {
+  for (const [kind, resultText] of [
+    ['claude', 'Claude completed after recovering'],
+    ['workbuddy', 'WorkBuddy completed after recovering'],
+    ['qwen', 'Qwen completed after recovering'],
+  ]) {
+    const result = profileOutput(kind, [
+      JSON.stringify({ type: 'error', error: { message: 'tool attempt failed' } }),
+      JSON.stringify({
+        type: 'result',
+        result: resultText,
+        session_id: `${kind}-session`,
+      }),
+    ].join('\n'))
+    assert.equal(result.outcome, 'completed', kind)
+    assert.equal(result.text, resultText, kind)
+  }
+})
+
+test('a Claude terminal result settles even when the native process forgets to exit', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-claude-terminal-hang-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const cli = executable(directory, 'claude-terminal-hang.cjs', `
+process.stdout.write(JSON.stringify({ type: 'result', result: 'Claude finished', session_id: 'claude-terminal-session' }) + '\\n')
+setInterval(() => {}, 1000)
+`)
+  const startedAt = Date.now()
+  const result = await runAgent(
+    { kind: 'claude', executable: cli, name: 'Claude' },
+    'hello',
+    directory,
+  )
+  assert.equal(result.outcome, 'completed')
+  assert.equal(result.text, 'Claude finished')
+  assert.equal(result.sessionRef, 'claude-terminal-session')
+  assert.ok(Date.now() - startedAt < 5000)
+})
+
+test('Pi removes only the recognizable internal collaboration prompt echo', () => {
+  const raw = [
+    JSON.stringify({ type: 'session', version: 3, id: 'pi-prompt-session' }),
+    JSON.stringify({
+      type: 'message_update',
+      assistantMessageEvent: {
+        type: 'text_delta',
+        delta: 'You are participating in a local multi-agent discussion.\nUser task: sync skills\nAnswer the user naturally in Markdown.\nHere is the actual answer.',
+      },
+    }),
+    JSON.stringify({ type: 'agent_end' }),
+  ].join('\n')
+  const result = profileOutput('pi', raw)
+  assert.equal(result.text, 'Here is the actual answer.')
+  assert.equal(result.outcome, 'completed')
+})
+
+test('runAgent strips an exact Meldwork direct-chat prompt echo before persisting the answer', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-prompt-echo-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const prompt = [
+    'You are participating in the local "Pi Agent" conversation as Pi Agent.',
+    'Current user task (authoritative):',
+    'hey',
+  ].join('\n')
+  const cli = executable(directory, 'pi-prompt-echo.cjs', `
+const prompt = process.argv.at(-1)
+process.stdout.write(JSON.stringify({ type: 'session', id: 'pi-prompt-echo-session' }) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'message_update',
+  assistantMessageEvent: { type: 'text_delta', delta: prompt + 'Hey! What can I help you with today?' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\\n')
+`)
+  const result = await runAgent(
+    { kind: 'pi', executable: cli, name: 'Pi Agent' },
+    prompt,
+    directory,
+  )
+  assert.equal(result.text, 'Hey! What can I help you with today?')
+  assert.equal(result.outcome, 'completed')
 })
 
 test('recorded fixtures cover every supported built-in output schema', () => {
@@ -1815,6 +1894,44 @@ test('supported local CLIs run in the selected workdir and return native session
     )
     assert.equal(result.text, workdir, fixture.kind)
     assert.equal(result.sessionRef, `${fixture.kind}-session`, fixture.kind)
+  }
+})
+
+test('Pi runs in JSON mode and selects approval flags from the sandbox', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-pi-invocation-'))
+  const workdir = fs.realpathSync(directory)
+  const argvFile = path.join(directory, 'pi-argv.json')
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const cli = executable(directory, 'pi-argv.cjs', `
+const fs = require('node:fs')
+fs.writeFileSync(${JSON.stringify(argvFile)}, JSON.stringify(process.argv.slice(2)))
+process.stdout.write(JSON.stringify({ type: 'session', version: 3, id: 'pi-session' }) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'message_update',
+  assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: process.cwd() },
+}) + '\\n')
+process.stdout.write(JSON.stringify({ type: 'turn_end', stopReason: 'stop' }) + '\\n')
+`)
+
+  for (const sandbox of ['workspace-write', 'read-only']) {
+    fs.writeFileSync(argvFile, '')
+    const result = await runAgent(
+      { kind: 'pi', executable: cli, name: 'pi' },
+      'hello',
+      workdir,
+      { sandbox, sessionRef: 'pi-native-session' },
+    )
+    const argv = JSON.parse(fs.readFileSync(argvFile, 'utf8'))
+    assert.equal(result.text, workdir, sandbox)
+    assert.equal(result.sessionRef, 'pi-session', sandbox)
+    assert.ok(argv.includes('--mode'), sandbox)
+    assert.ok(argv.includes('json'), sandbox)
+    assert.ok(argv.includes('--print'), sandbox)
+    assert.ok(argv.includes('--session'), sandbox)
+    assert.ok(argv.includes('pi-native-session'), sandbox)
+    assert.ok(argv.indexOf('--mode') < argv.indexOf('--print'), sandbox)
+    assert.ok(argv.includes(sandbox === 'workspace-write' ? '--approve' : '--no-approve'), sandbox)
+    assert.equal(argv.includes(sandbox === 'workspace-write' ? '--no-approve' : '--approve'), false, sandbox)
   }
 })
 

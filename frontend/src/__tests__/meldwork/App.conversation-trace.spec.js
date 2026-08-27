@@ -47,6 +47,177 @@ afterEach(() => {
 })
 
 describe('Meldwork workbench', () => {
+  it('keeps each group topic reply block attached to its query', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-topic-order',
+        conversationType: 'group',
+        name: 'Topic ordering',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'topic-root-1',
+          groupId: 'group-topic-order',
+          role: 'user',
+          content: 'First query',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'topic-root-2',
+          groupId: 'group-topic-order',
+          role: 'user',
+          content: 'Second query',
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'topic-reply-1',
+          groupId: 'group-topic-order',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Reply to the first query',
+          threadRootId: 'topic-root-1',
+          trace: { round: 1, phase: 'proposal' },
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+        {
+          id: 'topic-reply-2',
+          groupId: 'group-topic-order',
+          role: 'agent',
+          agentKind: 'hermes',
+          content: 'Reply to the second query',
+          threadRootId: 'topic-root-2',
+          trace: { round: 1, phase: 'proposal' },
+          createdAt: '2026-07-29T08:04:00Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.message-list .message-row').map(row => row.attributes('id')))
+      .toEqual([
+        'message-topic-root-1',
+        'message-topic-reply-1',
+        'message-topic-root-2',
+        'message-topic-reply-2',
+      ])
+    expect(wrapper.get('#message-topic-reply-1').classes()).toContain('topic-reply')
+    expect(wrapper.get('#message-topic-reply-2').classes()).toContain('topic-reply')
+    wrapper.unmount()
+  })
+
+  it('keeps live Round 2 Agent replies after Round 1 in sequential execution order', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-live-round-order',
+        conversationType: 'group',
+        name: 'Live round ordering',
+        topic: '',
+        agentKinds: ['codex', 'hermes'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:05:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'live-round-root',
+          groupId: 'group-live-round-order',
+          role: 'user',
+          content: 'Review this in sequence',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'codex-round-1',
+          groupId: 'group-live-round-order',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Codex proposal',
+          threadRootId: 'live-round-root',
+          trace: {
+            runId: 'run-live-round-order',
+            agentRunId: 'codex-round-1',
+            round: 1,
+            phase: 'proposal',
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'hermes-round-1',
+          groupId: 'group-live-round-order',
+          role: 'agent',
+          agentKind: 'hermes',
+          content: 'Hermes proposal',
+          threadRootId: 'live-round-root',
+          trace: {
+            runId: 'run-live-round-order',
+            agentRunId: 'hermes-round-1',
+            round: 1,
+            phase: 'proposal',
+            status: 'completed',
+            events: [],
+          },
+          createdAt: '2026-07-29T08:03:00Z',
+        },
+      )
+      state.runningGroupIds = ['group-live-round-order']
+      state.runs = [{
+        runId: 'run-live-round-order',
+        groupId: 'group-live-round-order',
+        threadRootId: 'live-round-root',
+        targetKinds: ['codex', 'hermes'],
+        currentRound: 2,
+        orchestration: { phase: 'challenge' },
+        agentRuns: [
+          {
+            agentRunId: 'codex-round-2',
+            kind: 'codex',
+            round: 2,
+            executionSequence: 1,
+            status: 'completed',
+            output: 'Codex challenge',
+            events: [],
+            context: { phase: 'challenge' },
+            startedAt: '2026-07-29T07:59:00Z',
+          },
+          {
+            agentRunId: 'hermes-round-2',
+            kind: 'hermes',
+            round: 2,
+            executionSequence: 2,
+            status: 'running',
+            output: 'Hermes challenge',
+            events: [],
+            context: { phase: 'challenge' },
+            startedAt: '2026-07-29T07:58:00Z',
+          },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.findAll('.message-list .message-row').map(row => row.attributes('id')))
+      .toEqual([
+        'message-live-round-root',
+        'message-codex-round-1',
+        'message-hermes-round-1',
+        'message-run-message-codex-round-2',
+        'message-run-message-hermes-round-2',
+      ])
+    wrapper.unmount()
+  })
+
   it('maps direct tasks onto the turn rail without group reply styling', async () => {
     const scrollIntoView = vi.fn()
     HTMLElement.prototype.scrollIntoView = scrollIntoView
@@ -1836,6 +2007,21 @@ describe('Meldwork workbench', () => {
           createdAt: '2026-07-29T08:02:00Z',
         },
         {
+          id: 'codex-version-failure',
+          groupId: 'group-versioned-replies',
+          role: 'system',
+          agentKind: 'codex',
+          content: 'Codex failed after producing a partial response.',
+          threadRootId: 'version-root',
+          responseVersionRootId: 'codex-version-1',
+          system: {
+            key: 'system.agentCallFailed',
+            params: { agent: 'Codex', reason: 'LOCAL_AGENT_TIMEOUT' },
+          },
+          trace: { round: 1, phase: 'running', status: 'failed', agentRunId: 'codex-failure-run' },
+          createdAt: '2026-07-29T08:02:30Z',
+        },
+        {
           id: 'hermes-response',
           groupId: 'group-versioned-replies',
           role: 'agent',
@@ -1864,12 +2050,12 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.topic-toggle').text()).toContain('2 replies')
     expect(wrapper.findAll('.message-row.agent')).toHaveLength(2)
     expect(codexReply().text()).toContain('Codex regenerated response')
-    expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
+    expect(codexReply().get('.response-version-controls').text()).toContain('3/3')
     expect(codexReply().findAll('.message-meta-actions > button').map(button => button.classes()[0]))
       .toEqual(['message-copy-button', 'message-reply-toggle'])
     expect(codexReply().findAll('.message-footer-actions > button').map(button => button.classes()[0]))
       .toEqual(['message-regenerate-button', 'message-delete-button'])
-    expect(codexReply().get('.message-footer-actions .response-version-controls').text()).toContain('2/2')
+    expect(codexReply().get('.message-footer-actions .response-version-controls').text()).toContain('3/3')
     expect(codexReply().find('.message-footer-actions .message-copy-button').exists()).toBe(false)
     expect(codexReply().find('.message-meta-actions .message-copy-button').exists()).toBe(true)
     expect(hermesReply().find('.response-version-controls').exists()).toBe(false)
@@ -1905,8 +2091,12 @@ describe('Meldwork workbench', () => {
     expect(codexReply().find('.message-meta-actions .message-copy-button').isVisible()).toBe(true)
 
     await codexReply().get('.response-version-controls button').trigger('click')
+    expect(codexReply().text()).toContain('Codex failed:')
+    expect(codexReply().get('.response-version-controls').text()).toContain('2/3')
+
+    await codexReply().get('.response-version-controls button').trigger('click')
     expect(codexReply().classes()).toContain('agent-reply-collapsed')
-    expect(codexReply().get('.response-version-controls').text()).toContain('1/2')
+    expect(codexReply().get('.response-version-controls').text()).toContain('1/3')
 
     await codexReply().get('.message-reply-toggle').trigger('click')
     expect(codexReply().text()).toContain('Codex first response')
@@ -1920,8 +2110,125 @@ describe('Meldwork workbench', () => {
       regenerateMessageId: 'codex-version-1',
     })
     expect(codexReply().text()).toContain('Codex regenerated response')
-    expect(codexReply().get('.response-version-controls').text()).toContain('2/2')
+    expect(codexReply().get('.response-version-controls').text()).toContain('3/3')
     stylesheet.remove()
+    wrapper.unmount()
+  })
+
+  it('groups a phase-less failed attempt with the completed response version from the same round', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-phase-less-failure',
+        conversationType: 'group',
+        name: 'Phase-less failure',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push(
+        {
+          id: 'phase-less-root',
+          groupId: 'group-phase-less-failure',
+          role: 'user',
+          content: 'Review the loading component',
+          createdAt: '2026-07-29T08:01:00Z',
+        },
+        {
+          id: 'phase-less-completed',
+          groupId: 'group-phase-less-failure',
+          role: 'agent',
+          agentKind: 'codex',
+          content: 'Completed response',
+          threadRootId: 'phase-less-root',
+          trace: {
+            runId: 'phase-less-run', agentRunId: 'phase-less-success', round: 1,
+            phase: 'proposal', status: 'completed',
+          },
+          createdAt: '2026-07-29T08:02:00Z',
+        },
+        {
+          id: 'phase-less-failed',
+          groupId: 'group-phase-less-failure',
+          role: 'system',
+          agentKind: 'codex',
+          content: 'Codex failed: LOCAL_AGENT_TIMEOUT',
+          threadRootId: 'phase-less-root',
+          system: {
+            key: 'system.agentCallFailed',
+            params: { agent: 'Codex', reason: 'LOCAL_AGENT_TIMEOUT' },
+          },
+          trace: {
+            runId: 'phase-less-run', agentRunId: 'phase-less-failure', round: 1,
+            status: 'failed',
+          },
+          createdAt: '2026-07-29T08:02:30Z',
+        },
+      )
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+
+    expect(wrapper.findAll('.message-row.agent')).toHaveLength(1)
+    expect(wrapper.get('[data-agent-kind="codex"] .response-version-controls').text())
+      .toContain('2/2')
+    expect(wrapper.text()).toContain('Completed response')
+  })
+
+  it('renders recovered Agent attempts for one group turn as response versions', async () => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-recovered-attempts',
+        conversationType: 'group',
+        name: 'Recovered attempts',
+        topic: '',
+        agentKinds: ['codex'],
+        workdir: '/tmp/meldwork-workspace',
+        allowWrite: false,
+        createdAt: '2026-07-29T08:00:00Z',
+        updatedAt: '2026-07-29T08:00:00Z',
+      })
+      state.messages.push({
+        id: 'recovered-attempts-root',
+        groupId: 'group-recovered-attempts',
+        role: 'user',
+        content: 'Produce one proposal',
+        targetKinds: ['codex'],
+        createdAt: '2026-07-29T08:01:00Z',
+      })
+      state.runningGroupIds = ['group-recovered-attempts']
+      state.runs = [{
+        runId: 'run-recovered-attempts',
+        groupId: 'group-recovered-attempts',
+        threadRootId: 'recovered-attempts-root',
+        targetKinds: ['codex'],
+        currentRound: 1,
+        orchestration: { phase: 'proposal' },
+        agentRuns: [
+          {
+            agentRunId: 'codex-before-recovery', kind: 'codex', round: 1,
+            status: 'interrupted', output: 'First interrupted proposal', events: [],
+            context: { phase: 'proposal' }, startedAt: '2026-07-29T08:02:00Z',
+          },
+          {
+            agentRunId: 'codex-after-recovery', kind: 'codex', round: 1,
+            status: 'running', output: 'Latest recovered proposal', events: [],
+            context: { phase: 'proposal' }, startedAt: '2026-07-29T08:03:00Z',
+          },
+        ],
+      }]
+    })
+
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+
+    const replies = wrapper.findAll('.message-row.agent')
+    expect(replies).toHaveLength(1)
+    expect(replies[0].text()).toContain('Latest recovered proposal')
+    expect(replies[0].text()).not.toContain('First interrupted proposal')
+    expect(replies[0].get('.response-version-controls').text()).toContain('2/2')
     wrapper.unmount()
   })
 

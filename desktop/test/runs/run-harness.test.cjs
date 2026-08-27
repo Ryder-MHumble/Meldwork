@@ -641,6 +641,21 @@ test('recovers a legacy capsule round from its generated Agent run id', () => {
   assert.equal(explicit.round, 2)
 })
 
+test('persists the orchestration phase alongside the round in a trace capsule', () => {
+  const capsule = normalizeTraceCapsule({
+    runId: 'run-phase',
+    agentRunId: 'run-phase:2:codex:agent-1',
+    round: 2,
+    phase: 'challenge',
+    status: 'completed',
+  })
+  assert.equal(capsule.round, 2)
+  assert.equal(capsule.phase, 'challenge')
+  assert.equal('phase' in normalizeTraceCapsule({
+    runId: 'run-phase', agentRunId: 'run-phase:2:codex:agent-2', phase: 'not-a-phase',
+  }), false)
+})
+
 test('does not infer a legacy round from invalid explicit values or malformed Agent run ids', () => {
   for (const round of [true, '4', -1, 100001, null, undefined]) {
     const capsule = normalizeTraceCapsule({
