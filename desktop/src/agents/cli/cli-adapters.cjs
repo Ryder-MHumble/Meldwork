@@ -416,6 +416,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         })
         let result = structuredOutput.end({
           sessionRef: nextSessionRef,
+          prompt,
         })
         const rawStdout = stdout.text()
         const structuredDetail = structuredCliError(rawStdout)
