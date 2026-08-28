@@ -39,6 +39,37 @@ test('direct Hermes conversations reuse one persistent ACP runtime key across me
   assert.equal(calls[1].runOptions.acpPersistenceKey, calls[0].runOptions.acpPersistenceKey)
 })
 
+test('group OpenCode conversations reuse one persistent ACP runtime key across rounds', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.detectAgents = async () => [
+    { kind: 'codex', name: 'Codex CLI', executable: '/tmp/codex', version: '1' },
+    { kind: 'opencode', name: 'OpenCode CLI', executable: '/tmp/opencode', version: '1' },
+  ]
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const sessionRef = runOptions.sessionRef || `${agent.kind}-acp-session`
+    if (agent.kind === 'opencode') {
+      await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
+    }
+    return { text: `reply ${calls.length}`, sessionRef, outcome: 'completed' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'OpenCode ACP group', agentKinds: ['codex', 'opencode'], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'first', mode: 'auto', maxRounds: 2 })
+  await workspace.activeRuns.get(group.id)?.promise
+
+  const opencodeCalls = calls.filter(call => call.agent.kind === 'opencode')
+  assert.deepEqual(opencodeCalls.map(call => call.runOptions.sessionRef), ['', 'opencode-acp-session'])
+  assert.deepEqual(opencodeCalls.map(call => call.runOptions.sessionTransport), ['', 'acp'])
+  assert.equal(typeof opencodeCalls[0].runOptions.acpPersistenceKey, 'string')
+  assert.equal(opencodeCalls[1].runOptions.acpPersistenceKey, opencodeCalls[0].runOptions.acpPersistenceKey)
+})
+
 test('Workspace stream bridge redacts split credentials and paths while preserving tools', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
