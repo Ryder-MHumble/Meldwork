@@ -1304,7 +1304,6 @@ test('Auto V4 rejects a terminal proposal while its live permission Gate is pend
   const gate = await pendingGate(workspace)
   await waitFor(() => calls.filter(call => call.phase === 'proposal').length === 3,
     'all proposal Agents dispatched')
-
   assert.doesNotThrow(() => workspace.decideHumanGate(gate.gateId, {
     status: 'rejected', optionId: 'reject-once', actorId: 'local-user',
   }))

@@ -3,8 +3,10 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const { hasValidStoredRecordShape } = require('./run-ledger-records.cjs')
+const { atomicWritePrivateFile } = require('../security/private-file.cjs')
 
 const JOURNAL_VERSION = 1
+const DEFAULT_COMPACTION_BYTES = 4 * 1024 * 1024
 const JOURNAL_ID = /^[A-Za-z0-9._:-]{1,160}$/
 const MAX_CHANGE_ITEMS = 1024
 const CHANGE_FIELDS = new Set(['replace', 'upserts', 'removedRunIds'])
@@ -89,6 +91,9 @@ class RunJournal {
       ? options.storagePath.trim()
       : ''
     if (!this.storagePath) throw new Error('RUN_JOURNAL_STORAGE_REQUIRED')
+    this.compactionBytes = Number.isFinite(options.compactionBytes)
+      ? Math.max(1024, Math.floor(options.compactionBytes))
+      : DEFAULT_COMPACTION_BYTES
     this.sequence = 0
     this.loadError = null
     this.hasBaseline = false
@@ -229,6 +234,56 @@ class RunJournal {
       removedRunIds: [],
     }, timestamp)
     this.commit(transactionId, timestamp)
+  }
+
+  compact(runs, timestamp) {
+    this.assertLoaded()
+    const change = {
+      replace: true,
+      upserts: clone(runs),
+      removedRunIds: [],
+    }
+    if (!validChange(change)) throw new Error('RUN_JOURNAL_CHANGE_INVALID')
+    const transactionId = `txn-${timestamp}-${crypto.randomBytes(8).toString('hex')}`
+    const entries = [
+      {
+        version: JOURNAL_VERSION,
+        sequence: 1,
+        transactionId,
+        timestamp,
+        phase: 'prepare',
+        change,
+      },
+      {
+        version: JOURNAL_VERSION,
+        sequence: 2,
+        transactionId,
+        timestamp,
+        phase: 'commit',
+      },
+    ]
+    atomicWritePrivateFile(
+      this.storagePath,
+      `${entries.map(entry => JSON.stringify(entry)).join('\n')}\n`,
+    )
+    this.sequence = 2
+    this.runs.clear()
+    this.pending.clear()
+    this.hasBaseline = false
+    this.apply(change)
+  }
+
+  compactIfNeeded(runs, timestamp) {
+    this.assertLoaded()
+    try {
+      if (!fs.existsSync(this.storagePath) || fs.statSync(this.storagePath).size < this.compactionBytes) {
+        return false
+      }
+      this.compact(runs, timestamp)
+      return true
+    } catch {
+      return false
+    }
   }
 
   recover() {

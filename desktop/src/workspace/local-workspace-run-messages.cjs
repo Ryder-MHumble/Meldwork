@@ -18,6 +18,17 @@ class LocalWorkspaceRunMessages {
     this.addMessage = options.addMessage
   }
 
+  responseVersionRootId(groupId, kind, threadRootId, trace = null) {
+    const traceRound = Number(trace?.round)
+    const round = Number.isInteger(traceRound) && traceRound >= 0 ? traceRound : 1
+    const phase = cleanText(trace?.phase, 40)
+      || cleanText(trace?.context?.phase, 40)
+      || 'response'
+    return `response-${createHash('sha256').update(JSON.stringify([
+      String(groupId || ''), String(threadRootId || ''), String(kind || ''), round, phase,
+    ])).digest('hex').slice(0, 48)}`
+  }
+
   recordFailure(groupId, kind, error, threadRootId, reportedFailures = null) {
     const label = this.agentLabel(kind)
     const reason = cleanText(error?.message || error, MAX_SYSTEM_PARAM_TEXT_CHARS)
@@ -29,6 +40,8 @@ class LocalWorkspaceRunMessages {
       this.checkpointRun(groupId, controller)
     }
     const streamedConclusion = this.streamedConclusion(groupId, agentRunId)
+    const trace = error?.runTrace || null
+    const responseVersionRootId = this.responseVersionRootId(groupId, kind, threadRootId, trace)
     const hardBudget = reason === 'LOCAL_BUDGET_EXHAUSTED'
       && error?.decision?.action === 'terminal'
     const content = terminalMessageContent(
@@ -60,7 +73,7 @@ class LocalWorkspaceRunMessages {
         kind,
         threadRootId,
         system,
-        { trace: error?.runTrace },
+        { trace, responseVersionRootId },
       )
     }
     return { label, reason }
@@ -90,6 +103,7 @@ class LocalWorkspaceRunMessages {
     }
     const interrupted = status === 'interrupted'
     const streamedConclusion = this.streamedConclusion(groupId, trace.agentRunId)
+    const responseVersionRootId = this.responseVersionRootId(groupId, kind, threadRootId, trace)
     this.addMessage(
       groupId,
       'system',
@@ -100,7 +114,7 @@ class LocalWorkspaceRunMessages {
         key: interrupted ? 'system.agentInterrupted' : 'system.agentStopped',
         params: { agent: label },
       },
-      { trace },
+      { trace, responseVersionRootId },
     )
     return trace
   }

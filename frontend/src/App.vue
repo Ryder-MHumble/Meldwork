@@ -12,7 +12,7 @@
     <section v-if="booting" class="boot-state" aria-live="polite">
       <img class="boot-logo" :src="productAppIcon" alt="Meldwork" />
       <p>{{ t('app.loading') }}</p>
-      <div class="skeleton-line" />
+      <WavePhysicsLoader :theme="theme" />
     </section>
 
     <section v-else-if="bridgeMissing" class="bridge-state">
@@ -193,6 +193,7 @@ import ConversationTimelineView from './components/ConversationTimelineView.vue'
 import HomeDashboard from './components/HomeDashboard.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import PixelBlast from './components/PixelBlast.vue'
+import WavePhysicsLoader from './components/WavePhysicsLoader.vue'
 import RunTracePanel from './components/RunTracePanel.vue'
 import SystemSettingsView from './components/SystemSettingsView.vue'
 import WorkspaceModalContent from './components/WorkspaceModalContent.vue'

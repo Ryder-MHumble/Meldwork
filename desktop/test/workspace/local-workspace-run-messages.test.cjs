@@ -47,6 +47,22 @@ test('failure records its reason before checkpointing and persists streamed outp
   assert.equal(controller.agentFailureReasons.get(trace().agentRunId), 'LOCAL_AGENT_FAILED')
   assert.deepEqual(calls.map(call => call[0]), ['checkpoint', 'message'])
   assert.equal(calls[1][3], 'Codex failed: LOCAL_AGENT_FAILED\nstreamed answer')
+  assert.match(calls[1][7].responseVersionRootId, /^response-/)
+})
+
+test('failure and success traces use the same version root for one round and phase', () => {
+  const { calls, messages } = fixture()
+  const runTrace = trace({ round: 2, phase: 'challenge' })
+  messages.recordFailure(
+    'group-1', 'codex', { message: 'LOCAL_AGENT_TIMEOUT', runTrace }, 'root-1',
+  )
+  const failureRoot = calls.at(-1)[7].responseVersionRootId
+  const successRoot = messages.responseVersionRootId('group-1', 'codex', 'root-1', runTrace)
+  assert.equal(failureRoot, successRoot)
+  assert.notEqual(
+    successRoot,
+    messages.responseVersionRootId('group-1', 'codex', 'root-1', { round: 3, phase: 'challenge' }),
+  )
 })
 
 test('failure deduplication includes streamed output and still checkpoints duplicates', () => {

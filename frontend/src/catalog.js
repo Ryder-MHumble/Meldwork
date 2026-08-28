@@ -31,6 +31,10 @@ const CUSTOM_AGENT_KIND = /^custom-[a-f0-9]{16}$/
 const CLOUD_AGENT_KIND = /^cloud-[a-f0-9]{24}$/
 const CUSTOM_AGENT_LOGO = publicAsset('agent-logos/custom-agent.svg')
 
+export function isCloudAgentKind(kind) {
+  return CLOUD_AGENT_KIND.test(String(kind || ''))
+}
+
 export function setCustomAgentProfiles(profiles = []) {
   CUSTOM_BY_KIND.clear()
   for (const profile of Array.isArray(profiles) ? profiles : []) {

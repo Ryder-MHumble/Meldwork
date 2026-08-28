@@ -90,6 +90,26 @@ function appendStructuredText(state, value, separator = '\n') {
   state.text += `${prefix}${text}`.slice(0, remaining)
 }
 
+function stripPiInternalPromptEcho(value) {
+  const text = String(value || '').trim()
+  if (!text) return ''
+  const preamble = /^You are participating in a local multi-agent discussion\.[\s\S]*?^Answer the user naturally(?: in Markdown)?\.?\s*/im
+  return text.replace(preamble, '').trim()
+}
+
+function stripExactMeldworkPromptEcho(value, prompt) {
+  const text = String(value || '')
+  const expected = String(prompt || '').trim()
+  if (!expected.includes('Current user task (authoritative):')
+      || !expected.startsWith('You are participating in the local ')) {
+    return text.trim()
+  }
+  const candidate = text.trimStart()
+  return candidate.startsWith(expected)
+    ? candidate.slice(expected.length).trimStart()
+    : text.trim()
+}
+
 function markStructuredFailure(state, code = 'LOCAL_AGENT_PROCESS_FAILED', diagnostic = '') {
   state.outcome = 'failed'
   state.failure = agentRuntimeFailure(code)
@@ -116,6 +136,16 @@ function stepFinishOutcome(reason) {
 function ingestStructuredEvent(state, event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) return
   state.seen = true
+  if (['workbuddy', 'claude', 'qwen'].includes(state.kind)
+      && event.type === 'result' && typeof event.result === 'string') {
+    if (typeof event.session_id === 'string') state.sessionRef = event.session_id
+    state.failure = null
+    state.diagnostic = ''
+    state.text = ''
+    appendStructuredText(state, event.result, '')
+    state.outcome = event.is_error === true ? 'partial' : 'completed'
+    return
+  }
   if (structuredEventFailed(event)) {
     markStructuredFailure(state)
     return
@@ -133,15 +163,7 @@ function ingestStructuredEvent(state, event) {
     return
   }
 
-  if (['workbuddy', 'claude', 'qwen'].includes(state.kind)) {
-    if (typeof event.session_id === 'string') state.sessionRef = event.session_id
-    if (event.type === 'result' && typeof event.result === 'string') {
-      state.text = ''
-      appendStructuredText(state, event.result, '')
-      state.outcome = 'completed'
-    }
-    return
-  }
+  if (['workbuddy', 'claude', 'qwen'].includes(state.kind)) return
 
   if (state.kind === 'kimi') {
     if (event.role === 'assistant' && typeof event.content === 'string') {
@@ -154,7 +176,32 @@ function ingestStructuredEvent(state, event) {
     return
   }
 
-  if (['pi', 'mimo', 'opencode'].includes(state.kind)) {
+  if (state.kind === 'pi') {
+    if (typeof event.id === 'string') state.sessionRef = event.id
+    const update = event.assistantMessageEvent
+    if (event.type === 'message_update' && update?.type === 'text_delta'
+        && typeof update.delta === 'string') {
+      appendStructuredText(state, update.delta, '')
+    }
+    if (event.type === 'message_end' && Array.isArray(event.message?.content)) {
+      for (const block of event.message.content) {
+        if (block?.type === 'text' && typeof block.text === 'string') {
+          if (!state.text) appendStructuredText(state, block.text, '')
+        }
+      }
+      const stopReason = event.message.stopReason
+      if (stopReason) state.outcome = stepFinishOutcome(stopReason)
+    }
+    if (event.type === 'turn_end') {
+      state.outcome = stepFinishOutcome(event.message?.stopReason || event.stopReason || 'stop')
+    }
+    if (event.type === 'agent_end') state.outcome = 'completed'
+    if (state.outcome === 'failed') markStructuredFailure(state)
+    state.text = stripPiInternalPromptEcho(state.text)
+    return
+  }
+
+  if (['mimo', 'opencode'].includes(state.kind)) {
     if (typeof event.sessionID === 'string') state.sessionRef = event.sessionID
     if (event.type === 'text' && event.part?.type === 'text'
         && typeof event.part.text === 'string') {
@@ -315,7 +362,7 @@ function finalizeStructuredState(state) {
   if (!state.seen && !state.text && !state.outcome) return null
   const outcome = state.outcome || (state.text ? 'partial' : 'failed')
   const result = {
-    text: state.text.trim(),
+    text: state.kind === 'pi' ? stripPiInternalPromptEcho(state.text) : state.text.trim(),
     sessionRef: state.sessionRef,
     outcome,
   }
@@ -611,6 +658,29 @@ function parseOpenCodeOutput(stdout) {
   }
 }
 
+function parsePiOutput(stdout) {
+  const events = parseJsonOutputEvents(stdout)
+  let sessionRef = ''
+  let text = ''
+  for (const event of events) {
+    if (typeof event.id === 'string' && event.type === 'session') sessionRef = event.id
+    if (event.type === 'message_update'
+        && event.assistantMessageEvent?.type === 'text_delta'
+        && typeof event.assistantMessageEvent.delta === 'string') {
+      text += event.assistantMessageEvent.delta
+    }
+    if (!text && event.type === 'message_end' && Array.isArray(event.message?.content)) {
+      text = event.message.content
+        .filter(block => block?.type === 'text' && typeof block.text === 'string')
+        .map(block => block.text)
+        .join('')
+    }
+  }
+  const parsedText = text.trim()
+  const answer = stripPiInternalPromptEcho(parsedText)
+  return { text: parsedText ? answer : String(stdout || '').trim(), sessionRef }
+}
+
 function openCodeReviewText(output) {
   const sections = []
   if (typeof output.message === 'string' && output.message.trim()) {
@@ -686,6 +756,14 @@ function classifyCliOutcome(kind, stdout) {
   }
 
   const events = parseJsonOutputEvents(stdout)
+  if (['workbuddy', 'claude', 'qwen'].includes(kind)) {
+    const result = events.findLast(event => event?.type === 'result' && typeof event.result === 'string')
+    if (result) {
+      return {
+        outcome: result.is_error === true ? 'partial' : 'completed',
+      }
+    }
+  }
   const failed = events.findLast(event => (
     event?.type === 'error'
       || event?.status === 'failed'
@@ -706,11 +784,6 @@ function classifyCliOutcome(kind, stdout) {
         : 'partial',
     }
   }
-  if (['workbuddy', 'claude', 'qwen'].includes(kind)) {
-    return {
-      outcome: events.some(event => event?.type === 'result') ? 'completed' : 'partial',
-    }
-  }
   if (kind === 'kimi') {
     return {
       outcome: events.some(event => event?.type === 'session.resume_hint')
@@ -718,7 +791,12 @@ function classifyCliOutcome(kind, stdout) {
         : 'partial',
     }
   }
-  if (['pi', 'mimo', 'opencode'].includes(kind)) {
+  if (kind === 'pi') {
+    const terminal = events.findLast(event => event?.type === 'turn_end' || event?.type === 'agent_end')
+    const reason = terminal?.message?.stopReason || terminal?.stopReason || 'stop'
+    return { outcome: stepFinishOutcome(reason) }
+  }
+  if (['mimo', 'opencode'].includes(kind)) {
     const finish = events.findLast(event => (
       event?.type === 'step_finish' || event?.part?.type === 'step-finish'
     ))
@@ -833,11 +911,13 @@ module.exports = {
   parseKimiOutput,
   parseMimoOutput,
   parseOpenCodeOutput,
+  parsePiOutput,
   parseOpenCodeReviewOutput,
   parseWorkBuddyOutput,
   readHermesFinalResponse,
   readHermesMessageWatermark,
   stripAnsi,
+  stripExactMeldworkPromptEcho,
   structuredCliError,
   classifyCliOutcome,
 }

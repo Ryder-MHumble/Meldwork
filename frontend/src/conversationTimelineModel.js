@@ -4,8 +4,33 @@ const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
 ])
 
 export function responseVersionRootId(message) {
-  if (message?.role !== 'agent') return ''
-  return String(message.responseVersionRootId || message.id || '')
+  if (message?.responseVersionRootId
+      && (message?.role === 'agent'
+        || (message?.role === 'system' && AGENT_TERMINAL_SYSTEM_KEYS.has(message?.system?.key)))) {
+    return String(message.responseVersionRootId)
+  }
+  const trace = message?.liveAgentRun || message?.trace
+  const runId = String(message?.traceRunId || trace?.runId || '')
+  const kind = String(message?.agentKind || trace?.agentKind || '')
+  const round = Number(trace?.round)
+  const phase = String(message?.tracePhase || trace?.phase || trace?.context?.phase || '').trim()
+  // Recovery creates a new Agent-run ID, but it is still the same visible
+  // Agent turn. Keep those attempts in one response-version history.
+  if (runId && kind && Number.isInteger(round) && round > 0 && phase
+      && (message?.role === 'agent' || (message?.role === 'system'
+        && AGENT_TERMINAL_SYSTEM_KEYS.has(message?.system?.key)))) {
+    return `run-response:${runId}:${kind}:${round}:${phase}`
+  }
+  if (message?.role === 'agent') return String(message.id || '')
+  // Runtime failures and interruptions are persisted as system messages, but
+  // they still belong to the Agent response version selected by the same
+  // round/phase root. Keep them in that version history instead of rendering
+  // one extra bubble for every failed attempt.
+  if (message?.role === 'system'
+      && AGENT_TERMINAL_SYSTEM_KEYS.has(message?.system?.key)) {
+    return ''
+  }
+  return ''
 }
 
 export function traceRound(item) {

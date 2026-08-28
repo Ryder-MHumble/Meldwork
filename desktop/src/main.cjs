@@ -588,6 +588,7 @@ function createWorkspace() {
     agentLabel: kind => customAgentStore.label(kind) || agentConnectors.label(kind),
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
     connectorRuntime: agentConnectors,
+    naturalAgentResponses: true,
     generateMedia: input => mediaGeneration.generate(input),
     runAgent: async (agent, prompt, workdir, options = {}) => {
       if (customAgentStore.has(agent.kind)) {
