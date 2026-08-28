@@ -1759,6 +1759,39 @@ process.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\\n')
   assert.equal(result.outcome, 'completed')
 })
 
+test('runAgent strips partial Pi protocol and Harness record echoes', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-pi-partial-echo-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const prompt = 'Continue the current group discussion using the Harness context below.'
+  const cli = executable(directory, 'pi-partial-prompt-echo.cjs', `
+process.stdout.write(JSON.stringify({ type: 'session', id: 'pi-partial-echo-session' }) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'message_update',
+  assistantMessageEvent: { type: 'text_delta', delta: [
+    'Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template.',
+    '',
+    'Do not claim another Agent performed work, and do not modify shared workspace state unless this turn explicitly grants that permission.',
+    '',
+    'A useful conclusion.',
+    '',
+    'Selected records from completed phases:',
+    'MELDWORK_V4_COLLABORATION_PACKAGE_V1',
+    '[index] hermes',
+    'Artifact: artifact-123',
+    '[proposal] agent=claude Completed the proposal phase. Continue with the next step.',
+  ].join('\\n') },
+}) + '\\n')
+process.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\\n')
+`)
+  const result = await runAgent(
+    { kind: 'pi', executable: cli, name: 'Pi Agent' },
+    prompt,
+    directory,
+  )
+  assert.equal(result.text, 'A useful conclusion.\n\nContinue with the next step.')
+  assert.equal(result.outcome, 'completed')
+})
+
 test('recorded fixtures cover every supported built-in output schema', () => {
   const manifest = JSON.parse(fs.readFileSync(
     path.join(OUTPUT_FIXTURE_DIRECTORY, 'manifest.json'),

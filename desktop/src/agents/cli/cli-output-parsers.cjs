@@ -91,10 +91,40 @@ function appendStructuredText(state, value, separator = '\n') {
 }
 
 function stripPiInternalPromptEcho(value) {
-  const text = String(value || '').trim()
+  let text = String(value || '').trim()
   if (!text) return ''
   const preamble = /^You are participating in a local multi-agent discussion\.[\s\S]*?^Answer the user naturally(?: in Markdown)?\.?\s*/im
-  return text.replace(preamble, '').trim()
+  text = text.replace(preamble, '').trim()
+  // Pi may resume from a compact continuation prompt and echo only the
+  // protocol instructions or the selected Harness records. Remove those
+  // internal lines while preserving any user-facing text on the same line.
+  text = text.replace(/^Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template\.\s*/im, '')
+  text = text.replace(/^Do not claim another Agent performed work, and do not modify shared workspace state unless this turn explicitly grants that permission\.\s*/im, '')
+  const lines = text.split(/\r?\n/)
+  const cleaned = []
+  let inRecords = false
+  for (const line of lines) {
+    const valueLine = line.trim()
+    if (/^Selected records from completed phases:\s*$/i.test(valueLine)) {
+      inRecords = true
+      continue
+    }
+    if (inRecords) {
+      if (/^MELDWORK_V4_COLLABORATION_PACKAGE_V1$/i.test(valueLine)
+          || /^\[index\]\s+\S+/i.test(valueLine)
+          || /^Artifact:\s+\S+/i.test(valueLine)
+          || /^Evidence:\s+\S+/i.test(valueLine)) continue
+      const phasePrefix = /^(?:\[(?:challenge|proposal)\]\s+agent=\S+\s+Completed the (?:challenge|proposal) phase\.\s*)/i
+      const remainder = line.replace(phasePrefix, '')
+      if (remainder !== line) {
+        if (remainder.trim()) cleaned.push(remainder)
+        continue
+      }
+      inRecords = false
+    }
+    cleaned.push(line)
+  }
+  return cleaned.join('\n').replace(/\n{3,}/g, '\n\n').trim()
 }
 
 function stripPiPromptEcho(value, prompt) {
