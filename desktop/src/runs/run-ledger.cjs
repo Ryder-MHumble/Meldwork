@@ -165,7 +165,10 @@ class RunLedger {
     ))
     this.loadError = null
     this.snapshotError = null
-    this.journal = new RunJournal({ storagePath: this.journalPath })
+    this.journal = new RunJournal({
+      storagePath: this.journalPath,
+      compactionBytes: options.journalCompactionBytes,
+    })
     this.runs = this.load()
   }
 
@@ -373,6 +376,7 @@ class RunLedger {
     }
     this.runs = nextRuns
     this.snapshotError = null
+    this.journal.compactIfNeeded(this.journalBaseline(), timestamp)
   }
 
   checkpoint(record) {

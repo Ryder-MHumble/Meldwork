@@ -53,7 +53,9 @@
           :key="message.id"
           :id="messageElementId(message.id)"
           class="message-row"
-          :data-agent-kind="message.role === 'agent' ? message.agentKind : undefined"
+          :data-agent-kind="message.agentKind && (message.role === 'agent' || responseVersionRootId(message))
+            ? message.agentKind
+            : undefined"
           :class="[
             message.role,
             {
@@ -70,12 +72,18 @@
           <template v-if="message.role === 'system'">
             <div class="system-message-stack">
               <div class="system-message">
-                <img
+                <span
                   v-if="isAgentFailureMessage(message) && message.agentKind"
-                  class="system-message-agent-avatar"
-                  :src="agentLogo(message.agentKind, theme)"
-                  :alt="agentLabel(message.agentKind)"
-                />
+                  class="system-message-agent-avatar-wrap"
+                  :class="{ cloud: isCloudAgentKind(message.agentKind) }"
+                >
+                  <img
+                    class="system-message-agent-avatar"
+                    :src="agentLogo(message.agentKind, theme)"
+                    :alt="agentLabel(message.agentKind)"
+                  />
+                  <CloudOutline v-if="isCloudAgentKind(message.agentKind)" aria-hidden="true" />
+                </span>
                 <WarningOutline v-else />
                 <span>
                   <span>{{ translateSystemMessage(message) }}</span>
@@ -105,6 +113,35 @@
                 >
                   <CloseOutline />
                 </button>
+                <div
+                  v-if="responseVersionInfo(message).total > 1"
+                  class="response-version-controls"
+                  :aria-label="t('conversation.responseVersions')"
+                >
+                  <button
+                    type="button"
+                    :disabled="!responseVersionInfo(message).hasPrevious"
+                    :data-tooltip="t('conversation.previousResponseVersion')"
+                    :title="t('conversation.previousResponseVersion')"
+                    :aria-label="t('conversation.previousResponseVersion')"
+                    @click.stop="selectResponseVersion(message, -1)"
+                  >
+                    <ChevronBackOutline />
+                  </button>
+                  <span aria-live="polite">
+                    {{ t('conversation.responseVersion', responseVersionInfo(message)) }}
+                  </span>
+                  <button
+                    type="button"
+                    :disabled="!responseVersionInfo(message).hasNext"
+                    :data-tooltip="t('conversation.nextResponseVersion')"
+                    :title="t('conversation.nextResponseVersion')"
+                    :aria-label="t('conversation.nextResponseVersion')"
+                    @click.stop="selectResponseVersion(message, 1)"
+                  >
+                    <ChevronForwardOutline />
+                  </button>
+                </div>
               </div>
               <details
                 v-if="activeGroup.conversationType === 'direct' && message.agentKind && messageHasTrace(message)"
@@ -150,12 +187,18 @@
             </div>
           </template>
           <template v-else>
-            <img
+            <span
               v-if="message.role === 'agent'"
-              class="message-avatar"
-              :src="agentLogo(message.agentKind, theme)"
-              :alt="agentLabel(message.agentKind)"
-            />
+              class="message-avatar-wrap"
+              :class="{ cloud: isCloudAgentKind(message.agentKind) }"
+            >
+              <img
+                class="message-avatar"
+                :src="agentLogo(message.agentKind, theme)"
+                :alt="agentLabel(message.agentKind)"
+              />
+              <CloudOutline v-if="isCloudAgentKind(message.agentKind)" aria-hidden="true" />
+            </span>
             <div class="message-body" :class="{ 'has-topic-replies': isTopicRoot(message) }">
               <div class="message-meta" :class="{ 'user-message-meta': message.role === 'user' }">
                 <strong>{{ message.role === 'user' ? t('conversation.you') : agentLabel(message.agentKind) }}</strong>
@@ -277,7 +320,7 @@
                   </ol>
                 </details>
                   <details
-                    v-if="activeGroup.conversationType === 'direct' && messageHasTrace(message)"
+                    v-if="messageHasTrace(message)"
                     class="execution-details trace-inline-details"
                     :open="isDirectTraceOpen(message)"
                     @toggle="syncDirectTraceDisclosure(message, $event)"
@@ -375,12 +418,18 @@
                   @click="toggleTopic(message.id)"
                 >
                   <span class="topic-reply-avatars" aria-hidden="true">
-                    <img
+                    <span
                       v-for="kind in topicReplyAgentKinds(message.id)"
                       :key="kind"
-                      :src="agentLogo(kind, theme)"
-                      :alt="agentLabel(kind)"
-                    />
+                      class="topic-reply-avatar-wrap"
+                      :class="{ cloud: isCloudAgentKind(kind) }"
+                    >
+                      <img
+                        :src="agentLogo(kind, theme)"
+                        :alt="agentLabel(kind)"
+                      />
+                      <CloudOutline v-if="isCloudAgentKind(kind)" aria-hidden="true" />
+                    </span>
                   </span>
                   <span>{{ topicReplyLabel(topicReplyCount(message.id)) }}</span>
                   <ChevronDownOutline :class="{ collapsed: !isTopicExpanded(message.id) }" />
@@ -541,7 +590,10 @@
           <article v-for="gate in directHumanGates" :key="gate.gateId" class="human-gate-card">
             <header>
               <span class="human-gate-agent">
-                <img :src="agentLogo(gate.agentKind, theme)" alt="" />
+                <span class="human-gate-agent-avatar" :class="{ cloud: isCloudAgentKind(gate.agentKind) }">
+                  <img :src="agentLogo(gate.agentKind, theme)" alt="" />
+                  <CloudOutline v-if="isCloudAgentKind(gate.agentKind)" aria-hidden="true" />
+                </span>
                 <strong>{{ agentLabel(gate.agentKind) }}</strong>
               </span>
               <small>{{ t(`humanGate.type.${gate.type}`) }}</small>
@@ -629,8 +681,13 @@
         >
           <header class="run-status-header">
             <div v-if="!isDisplayedCoordinatedRun" class="direct-run-indicator" aria-hidden="true">
-              <span class="run-agent-logo" :data-status="displayedRunAgentTone">
+              <span
+                class="run-agent-logo"
+                :class="{ cloud: isCloudAgentKind(displayedRunAgentKind) }"
+                :data-status="displayedRunAgentTone"
+              >
                 <img :src="agentLogo(displayedRunAgentKind, theme)" alt="" />
+                <CloudOutline v-if="isCloudAgentKind(displayedRunAgentKind)" aria-hidden="true" />
               </span>
               <div v-if="displayedRunAgentTone === 'running'" class="typing-bars"><span /><span /><span /></div>
             </div>
@@ -639,10 +696,12 @@
                 v-for="(kind, index) in displayedRunTargetKinds"
                 :key="kind"
                 class="run-agent-logo relay-run-agent"
+                :class="{ cloud: isCloudAgentKind(kind) }"
                 :data-status="displayedRunAgentToneForKind(kind)"
                 :style="{ '--avatar-index': index }"
               >
                 <img :src="agentLogo(kind, theme)" alt="" />
+                <CloudOutline v-if="isCloudAgentKind(kind)" aria-hidden="true" />
               </span>
             </div>
             <div class="run-status-copy">
@@ -703,8 +762,14 @@
               :aria-label="displayedRunAgentTraceLabel(kind)"
               @click="openDisplayedTraceForAgent(kind, $event.currentTarget)"
             >
-              <span class="run-agent-logo" :data-status="displayedRunAgentToneForKind(kind)" aria-hidden="true">
+              <span
+                class="run-agent-logo"
+                :class="{ cloud: isCloudAgentKind(kind) }"
+                :data-status="displayedRunAgentToneForKind(kind)"
+                aria-hidden="true"
+              >
                 <img :src="agentLogo(kind, theme)" alt="" />
+                <CloudOutline v-if="isCloudAgentKind(kind)" aria-hidden="true" />
               </span>
               <strong class="visually-hidden">{{ agentLabel(kind) }}</strong>
               <span class="run-agent-state">
@@ -773,6 +838,7 @@ import {
   ChevronBackOutline,
   ChevronDownOutline,
   ChevronForwardOutline,
+  CloudOutline,
   CloseCircleOutline,
   CloseOutline,
   CodeOutline,
@@ -789,12 +855,12 @@ import {
   TrashOutline,
   WarningOutline,
 } from '@vicons/ionicons5'
-import { agentLabel, agentLogo } from '../catalog.js'
+import { agentLabel, agentLogo, isCloudAgentKind } from '../catalog.js'
 import { skillKey } from '../composables/useComposerContext.js'
 import { orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { locale } from '../i18n.js'
 import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
-import { isAgentFailureMessage } from '../conversationTimelineModel.js'
+import { isAgentFailureMessage, responseVersionRootId } from '../conversationTimelineModel.js'
 import AttachmentMediaPreview from './AttachmentMediaPreview.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
 
@@ -1188,10 +1254,30 @@ function formatBudgetNumber(value) {
   gap: 7px;
 }
 
-.human-gate-agent img {
+.human-gate-agent-avatar {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  display: block;
+}
+
+.human-gate-agent-avatar img {
   width: 22px;
   height: 22px;
   border-radius: 50%;
+}
+
+.human-gate-agent-avatar > svg {
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 12px;
+  height: 12px;
+  padding: 2px;
+  border-radius: 50%;
+  background: var(--surface-raised);
+  color: var(--accent);
 }
 
 .human-gate-card p {

@@ -86,7 +86,7 @@
   position: fixed;
   right: auto;
   bottom: auto;
-  z-index: 80;
+  z-index: 140;
   width: 278px;
   max-width: calc(100vw - 24px);
   border: 0;

@@ -219,6 +219,7 @@ function validateV4SnapshotBody({
 
 function v4Prompt({
   group, kind, phase, snapshot, role = 'proposal', receipt = true, skillHints = null,
+  naturalResponse = false,
 }) {
   const history = Array.isArray(snapshot?.history) && snapshot.history.length
     ? snapshot.history.map(item => [
@@ -228,13 +229,21 @@ function v4Prompt({
     : '(none)'
   const selectedAgentCount = Array.isArray(snapshot?.targetKinds) ? snapshot.targetKinds.length : 0
   const requiredVerifierCount = Math.max(0, selectedAgentCount - 1)
-  const phaseInstruction = {
-    proposal: 'Develop an independent proposal. State at least one capability, intended work item, and Artifact you will deliver, plus an explicit dependencies array (which may be empty). Do not rely on another Agent output from this batch.',
-    challenge: `Discuss the proposals as peers and negotiate one shared responsibility graph. Every selected Agent must own at least one substantive work package, and an Agent may own multiple dependent work packages. The graph must include one finalizerKind owned by an integrator. It must name exactly ${requiredVerifierCount} distinct verifierKinds from the selected Agents; verifierKinds must not contain finalizerKind. taskId values must be unique; dependsOn may reference only other taskId values and must remain acyclic. inputRefs are exact displayed frozen Source IDs; artifactIds are existing immutable Artifact IDs; future outputs flow only through dependsOn. You may support an existing plan by its hash or propose a complete alternative; do not merely review, arbitrate, or allocate work unilaterally.`,
-    work: 'Execute the agreed responsibility assigned to you. Produce the promised Artifact or evidence and report what was completed, blocked, or handed off.',
-    synthesis: 'Assemble the agreed work products into one bounded deliverable for the user.',
-    verification: 'Verify the proposed deliverable independently and report only material defects or acceptance.',
-  }[phase] || 'Complete the assigned collaboration phase.'
+  const phaseInstruction = naturalResponse
+    ? {
+        proposal: 'Work independently on the user task and offer your own analysis, recommendations, and next steps.',
+        challenge: 'Review the available peer context as a subject-matter peer. Explain what you agree with, what is missing, and the clearest correction or direction.',
+        work: 'Complete the responsibility assigned to you. Report useful work, evidence, blockers, or handoffs in your own words.',
+        synthesis: 'Combine the available work into the clearest useful answer for the user. Resolve contradictions where possible and state remaining uncertainty plainly.',
+        verification: 'Independently check the proposed answer or deliverable. Report material defects, risks, or acceptance in your own words.',
+      }[phase] || 'Address the current collaboration task directly.'
+    : {
+        proposal: 'Develop an independent proposal. State at least one capability, intended work item, and Artifact you will deliver, plus an explicit dependencies array (which may be empty). Do not rely on another Agent output from this batch.',
+        challenge: `Discuss the proposals as peers and negotiate one shared responsibility graph. Every selected Agent must own at least one substantive work package, and an Agent may own multiple dependent work packages. The graph must include one finalizerKind owned by an integrator. It must name exactly ${requiredVerifierCount} distinct verifierKinds from the selected Agents; verifierKinds must not contain finalizerKind. taskId values must be unique; dependsOn may reference only other taskId values and must remain acyclic. inputRefs are exact displayed frozen Source IDs; artifactIds are existing immutable Artifact IDs; future outputs flow only through dependsOn. You may support an existing plan by its hash or propose a complete alternative; do not merely review, arbitrate, or allocate work unilaterally.`,
+        work: 'Execute the agreed responsibility assigned to you. Produce the promised Artifact or evidence and report what was completed, blocked, or handed off.',
+        synthesis: 'Assemble the agreed work products into one bounded deliverable for the user.',
+        verification: 'Verify the proposed deliverable independently and report only material defects or acceptance.',
+      }[phase] || 'Complete the assigned collaboration phase.'
   const receiptShape = phase === 'proposal'
     ? 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"summary":"...","capabilities":["..."],"intendedWork":["..."],"deliverables":["..."],"dependencies":[]}]]'
     : phase === 'challenge'
@@ -244,7 +253,7 @@ function v4Prompt({
         : ['challenge', 'verification'].includes(phase)
           ? 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"verdict":"support|contradict","summary":"..."}]]'
           : 'Receipt JSON shape: [[MELDWORK_COLLABORATION:{"summary":"...","resolvedIssueIds":[]}]]'
-  const receiptContract = receipt
+  const receiptContract = receipt && !naturalResponse
       ? [
         'Return the user-facing answer first, then append exactly one structured receipt marker.',
         receiptShape,
@@ -258,6 +267,19 @@ function v4Prompt({
   const frozenSkillHints = Array.isArray(skillHints)
     ? skillHints
     : (snapshot?.skillHintsByKind || []).find(item => item?.kind === kind)?.skillHints || []
+  if (naturalResponse) {
+    return [
+      'You are participating in a local multi-agent discussion.',
+      `Your role this turn is ${role}.`,
+      `The current collaboration phase is ${phase}.`,
+      `User task:\n${cleanText(snapshot?.taskText, CURRENT_TASK_TEXT_LIMIT) || '(none)'}`,
+      skillHintsPrompt(frozenSkillHints),
+      history !== '(none)' ? `Relevant prior context:\n${history}` : '',
+      phaseInstruction,
+      'Answer the user naturally in Markdown. Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template.',
+      'Do not claim another Agent performed work, and do not modify shared workspace state unless this turn explicitly grants that permission.',
+    ].filter(Boolean).join('\n\n')
+  }
   return [
     'MELDWORK_V4_FROZEN_SNAPSHOT_V1',
     `Phase: ${phase}`,

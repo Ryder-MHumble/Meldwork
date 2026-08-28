@@ -27,6 +27,11 @@ import { useRunTracePanel } from './useRunTracePanel.js'
 
 export { durableRunTurnStatus, retainedTraceEvents, runStatusTone, traceRound }
 
+const TERMINAL_AGENT_SYSTEM_KEYS = new Set([
+  'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
+  'system.agentBudgetExhausted',
+])
+
 export function useConversationTimeline({
   activeGroup,
   activeView,
@@ -203,6 +208,7 @@ export function useConversationTimeline({
         threadRootId: rootId,
         provisional: true,
         traceRunId: run.runId,
+        tracePhase: run.orchestration?.phase || run.phase || '',
         liveAgentRun: agent,
         sourceMessageIds: agent.sourceMessageIds || [],
         ...(run.responseVersionRootId
@@ -371,10 +377,48 @@ export function useConversationTimeline({
     if (!activeRunTopicRootId.value) return ''
     return `${activeRun.value?.groupId || ''}\u0000${activeRunTopicRootId.value}`
   })
-  const versionedTimelineMessages = computed(() => [
-    ...messagesWithLiveTrace.value,
-    ...provisionalMessages.value,
-  ])
+  const versionedTimelineMessages = computed(() => {
+    const messages = [
+      ...messagesWithLiveTrace.value,
+      ...provisionalMessages.value,
+    ]
+    const roundRoots = new Map()
+    const runIdentity = message => {
+      const trace = message?.liveAgentRun || message?.trace
+      const runId = String(message?.traceRunId || trace?.runId || '')
+      const kind = String(message?.agentKind || trace?.agentKind || '')
+      const round = Number(trace?.round)
+      if (!runId || !kind || !Number.isInteger(round) || round < 1) return ''
+      return `${runId}\u0000${kind}\u0000${round}`
+    }
+
+    // A phase-less terminal record can be a recovered attempt for the same
+    // visible turn. Only alias it when that round has one unambiguous root.
+    for (const message of messages) {
+      const rootId = responseVersionRootId(message)
+      const phase = String(message?.tracePhase
+        || message?.trace?.phase
+        || message?.liveAgentRun?.phase
+        || message?.trace?.context?.phase
+        || '').trim()
+      const key = runIdentity(message)
+      if (!key || !rootId || !phase || !rootId.startsWith('run-response:')) continue
+      const roots = roundRoots.get(key) || new Set()
+      roots.add(rootId)
+      roundRoots.set(key, roots)
+    }
+
+    return messages.map((message) => {
+      if (responseVersionRootId(message)) return message
+      const key = runIdentity(message)
+      const roots = key ? roundRoots.get(key) : null
+      if (!roots || roots.size !== 1) return message
+      const isTerminal = message?.role === 'agent'
+        || (message?.role === 'system' && TERMINAL_AGENT_SYSTEM_KEYS.has(message?.system?.key))
+      if (!isTerminal) return message
+      return { ...message, responseVersionRootId: [...roots][0], _phaseLessResponseVersionAlias: true }
+    })
+  })
   const responseVersionGroups = computed(() => {
     const groups = new Map()
     for (const message of versionedTimelineMessages.value) {
@@ -383,6 +427,13 @@ export function useConversationTimeline({
       const versions = groups.get(rootId) || []
       versions.push(message)
       groups.set(rootId, versions)
+    }
+    for (const versions of groups.values()) {
+      versions.sort((left, right) => {
+        const leftFailed = left?._phaseLessResponseVersionAlias === true
+        const rightFailed = right?._phaseLessResponseVersionAlias === true
+        return Number(rightFailed) - Number(leftFailed)
+      })
     }
     return groups
   })
@@ -445,11 +496,58 @@ export function useConversationTimeline({
     })
   })
 
-  const timelineMessages = computed(() => selectedVersionMessages.value.filter((message) => {
-    if (dismissedSystemMessageIds.value.has(message.id)) return false
-    const rootId = messageThreadRootId(message)
-    return !rootId || isTopicExpanded(rootId)
-  }))
+  const timelineMessages = computed(() => {
+    const messages = selectedVersionMessages.value.filter((message) => {
+      if (dismissedSystemMessageIds.value.has(message.id)) return false
+      const rootId = messageThreadRootId(message)
+      return !rootId || isTopicExpanded(rootId)
+    })
+    if (activeGroup.value?.conversationType === 'direct') return messages
+    const agentOrder = new Map((activeGroup.value?.agentKinds || []).map((kind, index) => [kind, index]))
+    const phaseOrder = new Map([
+      ['proposal', 0], ['challenge', 1], ['coordination', 2], ['work', 3],
+      ['synthesis', 4], ['verification', 5], ['commit', 6],
+    ])
+    const messageTime = message => {
+      const parsed = Date.parse(message?.createdAt || '')
+      return Number.isFinite(parsed) ? parsed : 0
+    }
+    const topicOrder = new Map(topLevelUserMessages.value.map((message, index) => [message.id, index]))
+    const unanchoredTopicOrder = topLevelUserMessages.value.length + 1
+    const rank = (message, index) => {
+      const rootId = message.role === 'user' && !message.threadRootId
+        ? message.id
+        : messageThreadRootId(message)
+      const topicIndex = rootId && topicOrder.has(rootId)
+        ? topicOrder.get(rootId)
+        : unanchoredTopicOrder
+      if (message.role === 'user' && !message.threadRootId) return [topicIndex, 0, 0, 0, index]
+      const trace = message.trace || {}
+      const liveAgentRun = message.liveAgentRun || {}
+      const round = Number(trace.round ?? liveAgentRun.round)
+      const executionSequence = Number(trace.executionSequence ?? liveAgentRun.executionSequence)
+      const phase = phaseOrder.get(String(
+        trace.phase || message.tracePhase || liveAgentRun.context?.phase || '',
+      ).toLowerCase()) ?? 9
+      const kind = agentOrder.get(message.agentKind) ?? 99
+      if (Number.isInteger(round) && round > 0) {
+        if (Number.isInteger(executionSequence) && executionSequence > 0) {
+          return [topicIndex, 1, round, 0, executionSequence, index]
+        }
+        return [topicIndex, 1, round, 1, phase * 100 + kind, index]
+      }
+      return [topicIndex, 1, messageTime(message), kind, index]
+    }
+    return messages
+      .map((message, index) => ({ message, key: rank(message, index) }))
+      .sort((left, right) => {
+        for (let index = 0; index < left.key.length; index += 1) {
+          if (left.key[index] !== right.key[index]) return left.key[index] - right.key[index]
+        }
+        return 0
+      })
+      .map(item => item.message)
+  })
   const conversationEmptyVisible = computed(() => (
     activeView.value === 'conversation'
     && Boolean(activeGroup.value)

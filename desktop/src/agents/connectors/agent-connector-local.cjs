@@ -825,6 +825,7 @@ class LocalAgentConnectors {
         operationId: input.operationId,
         resume: input.resume,
         signal: input.signal,
+        onActivity: input.onActivity,
       })
       if (!result || typeof result !== 'object' || Array.isArray(result)
           || typeof result.text !== 'string' || result.text.includes('\u0000')

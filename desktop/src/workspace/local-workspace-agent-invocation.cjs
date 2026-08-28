@@ -157,6 +157,9 @@ function parseV4CollaborationReceiptStrict(result, required = false, expectedPha
   text = stripV4InternalProtocolTail(
     text.replace(LEGACY_CONSENSUS_MARKER, '').replace(/\n{3,}/g, '\n\n'),
   )
+  if (receipt == null && options.allowMissingV4Receipt === true && text) {
+    return { text, collaboration: null }
+  }
   if (receipt == null && expectedPhase === 'proposal'
       && options.allowMissingProposalReceipt === true && text) {
     receipt = {
@@ -486,7 +489,9 @@ class LocalWorkspaceAgentInvocation {
     this.detectedAgents = options.detectedAgents
     this.activeRuns = options.activeRuns
     this.runAgentTimeoutMs = options.runAgentTimeoutMs
+    this.runAgentToolTimeoutMs = options.runAgentToolTimeoutMs
     this.runAbortGraceMs = options.runAbortGraceMs
+    this.defaultYolo = options.defaultYolo !== false
     this.captureAgentOutputs = options.captureAgentOutputs
     this.captureArtifactOutputs = options.captureArtifactOutputs
     this.captureAgentOutcomeDescriptors = options.captureAgentOutcomeDescriptors
@@ -628,8 +633,17 @@ class LocalWorkspaceAgentInvocation {
     const state = this.state()
     const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
-    const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
+    const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
+      || (mode === 'auto'
+        ? `response-${sha256(JSON.stringify([
+            group.id,
+            threadRootId,
+            kind,
+            round,
+            cleanText(context.phase, 40) || 'response',
+          ])).slice(0, 48)}`
+        : '')
     if (!isolated && !frozen) {
       const requiredContext = this.packedPromptContext(
         group.id, '', threadRootId, context.contextOptions || {},
@@ -848,6 +862,8 @@ class LocalWorkspaceAgentInvocation {
     let watchdogReject = null
     let watchdogLastProgressAt = Date.now()
     let watchdogPaused = false
+    let watchdogEstablished = false
+    let watchdogToolActive = false
     let parentAbortHandler = null
     let parentAbortPromise = null
     let capturePromise = null
@@ -863,9 +879,15 @@ class LocalWorkspaceAgentInvocation {
     const startedAt = Date.now()
     // Automatic discussions must make progress between rounds even when an
     // Agent keeps emitting heartbeat events without ever returning a result.
-    // Keep the existing inactivity watchdog for manual/direct work, but cap
-    // each automatic Agent attempt by the same configured timeout.
-    const hardDeadlineAt = mode === 'auto'
+    // The watchdog is an inactivity timeout: streamed text, tool lifecycle,
+    // and structured progress refresh it. Raw local process activity alone is
+    // not proof of progress because some CLIs emit empty heartbeats forever.
+    // Heartbeats keep a process alive long enough to prove that it started,
+    // but cannot keep a turn alive forever without substantive output. Once a
+    // real runtime event or structured progress arrives, the deadline is
+    // lifted and the inactivity watchdog becomes event-driven.
+    const hardDeadlineAt = mode === 'auto' && Number.isFinite(this.runAgentTimeoutMs)
+      && this.runAgentTimeoutMs > 0
       ? startedAt + this.runAgentTimeoutMs
       : Number.POSITIVE_INFINITY
     if (signal) {
@@ -884,15 +906,20 @@ class LocalWorkspaceAgentInvocation {
       if (watchdogTimer || watchdogPaused || agentController.signal.aborted
           || !Number.isFinite(this.runAgentTimeoutMs) || this.runAgentTimeoutMs <= 0) return
       const elapsedSinceProgress = Date.now() - watchdogLastProgressAt
-      const inactivityRemainingMs = Math.max(0, this.runAgentTimeoutMs - elapsedSinceProgress)
-      const hardRemainingMs = Math.max(0, hardDeadlineAt - Date.now())
+      const inactivityTimeoutMs = watchdogToolActive
+        ? this.runAgentToolTimeoutMs
+        : this.runAgentTimeoutMs
+      const inactivityRemainingMs = Math.max(0, inactivityTimeoutMs - elapsedSinceProgress)
+      const hardRemainingMs = Math.max(
+        0, (watchdogEstablished ? Number.POSITIVE_INFINITY : hardDeadlineAt) - Date.now(),
+      )
       const remainingMs = Math.min(inactivityRemainingMs, hardRemainingMs)
       watchdogTimer = setTimeout(() => {
         watchdogTimer = null
         if (parentAbortObserved || signal?.aborted || watchdogPaused
             || agentController.signal.aborted) return
-        // This is an inactivity/stall timeout. Any progress signal refreshes the
-        // window, so a slow tool or streamed response can run indefinitely.
+        // This is an inactivity/stall timeout. Substantive progress refreshes
+        // the window, while an unmatched tool lifecycle remains bounded.
         watchdogTimedOut = true
         watchdogError = new Error('LOCAL_AGENT_TIMEOUT')
         agentController.abort()
@@ -912,6 +939,12 @@ class LocalWorkspaceAgentInvocation {
         watchdogTimer = null
         armWatchdog()
       }
+    }
+    const establishWatchdog = () => {
+      if (watchdogEstablished || agentController.signal.aborted) return
+      watchdogEstablished = true
+      clearTimeout(watchdogTimer)
+      watchdogTimer = null
     }
     const resumeWatchdog = () => {
       watchdogPaused = false
@@ -937,6 +970,7 @@ class LocalWorkspaceAgentInvocation {
     const onProgress = (step) => {
       if (agentCallbacksClosed || agentController.signal.aborted
           || !activeRun || this.activeRuns.get(group.id) !== activeRun) return
+      establishWatchdog()
       noteWatchdogProgress()
       const next = [...attemptProgress]
       const progressId = typeof step?.id === 'string' && /^[A-Za-z0-9._:-]{1,100}$/.test(step.id)
@@ -964,6 +998,21 @@ class LocalWorkspaceAgentInvocation {
           || !harness || !harnessRun || !rawEvent) return
       const event = harness.ingest(kind, round, rawEvent, harnessRun.agentRunId)
       if (!event) return
+      // Once a connector has produced a real runtime event, the process is
+      // demonstrably alive. Active tools use a longer shared inactivity window.
+      establishWatchdog()
+      const eventType = String(event.type || '').toLowerCase()
+      const eventStatus = String(event.status || '').toLowerCase()
+      if (['tool_start', 'tool_update'].includes(eventType)
+          && ['queued', 'running', 'waiting', 'in_progress', 'streaming'].includes(eventStatus)) {
+        watchdogToolActive = true
+        noteWatchdogProgress()
+      } else if (eventType === 'tool_result_summary'
+          || (eventType === 'status' && ['completed', 'failed', 'stopped', 'timeout', 'interrupted']
+            .includes(eventStatus))) {
+        watchdogToolActive = false
+        noteWatchdogProgress()
+      }
       this.emitRunEvent(event)
       this.armAgentSilence(activeRun, kind, round, harnessRun.agentRunId)
       if (event.type !== 'answer_delta' || event.seq % 8 === 0) {
@@ -1102,6 +1151,10 @@ class LocalWorkspaceAgentInvocation {
         ...deliveredContext.context,
         contextMode: promptMode,
         sessionRotated,
+        ...(context.phase ? { phase: context.phase } : {}),
+        ...(Number.isInteger(context.executionSequence)
+          ? { executionSequence: context.executionSequence }
+          : {}),
         ...runtimeContext,
         ...deliveryContext,
         ...connectorContext,
@@ -1351,6 +1404,9 @@ class LocalWorkspaceAgentInvocation {
       }
       const runOptions = {
         sessionRef,
+        ...(Number.isInteger(context.executionSequence)
+          ? { executionSequence: context.executionSequence }
+          : {}),
         onSessionRef: (nextSessionRef, metadata = {}) => {
           if (agentCallbacksClosed || agentController.signal.aborted) return
           noteWatchdogProgress()
@@ -1373,11 +1429,33 @@ class LocalWorkspaceAgentInvocation {
         signal: agentController.signal,
         sandbox: allowWrite ? 'workspace-write' : 'read-only',
         operationId,
-        onActivity: noteWatchdogProgress,
+        onActivity: () => {
+          // A cloud request has no local process events while the remote CLI
+          // is working. Its activity callback is therefore the first proof
+          // that the run has started and must release the initial deadline.
+          if (agent.cloud === true) establishWatchdog()
+          if (agent.cloud === true || !watchdogToolActive) {
+            noteWatchdogProgress()
+          }
+        },
         onProgress,
         onEvent: emitRuntimeEvent,
         onOutboundPayload: recordOutboundPayload,
         onPermissionRequest: (request, permissionContext = {}) => {
+          // Permission prompts default to yolo for every local invocation.
+          // Callers can opt into an interactive Gate explicitly with
+          // `yolo: false`; sandbox and workspace authorization remain enforced
+          // before this callback is reached.
+          if ((context.yolo ?? this.defaultYolo) !== false) {
+            const option = Array.isArray(request?.options)
+              ? request.options.find(candidate => candidate?.kind === 'allow_once')
+                || request.options.find(candidate => candidate?.kind === 'allow_always')
+                || request.options[0]
+              : null
+            if (option?.optionId) {
+              return Promise.resolve({ status: 'approved', optionId: option.optionId })
+            }
+          }
           const pending = Promise.resolve().then(async () => {
             if (resumedPermission && !resumedPermissionUsed) {
               if (!matchesResumedPermission(request, resumedPermission)) {
@@ -1425,6 +1503,9 @@ class LocalWorkspaceAgentInvocation {
           return pending
         },
         sessionTransport,
+        ...(kind === 'workbuddy' && Number.isInteger(context.maxInternalTurns)
+          ? { maxTurns: context.maxInternalTurns }
+          : {}),
         attachments: isolated || frozen ? [] : (stagedInputs?.nativeImagePaths || []),
         ...(kind === 'hermes'
           ? {
@@ -1448,7 +1529,12 @@ class LocalWorkspaceAgentInvocation {
           ...currentRunOptions,
           runId: activeRun.runId,
           agentRunId: harnessRun.agentRunId,
-          onActivity: noteWatchdogProgress,
+          onActivity: () => {
+            if (agent.cloud === true) establishWatchdog()
+            if (agent.cloud === true || !watchdogToolActive) {
+              noteWatchdogProgress()
+            }
+          },
           onConnectorState: (nextContext) => {
             noteWatchdogProgress()
             connectorContext = nextContext
@@ -1624,10 +1710,13 @@ class LocalWorkspaceAgentInvocation {
       this.markRuntimeCredential(kind, 'ready')
 
       const collaborationReply = parseV4CollaborationReceipt(
-        result,
-        context.v4 === true,
-        context.phase || '',
-        { allowMissingProposalReceipt: context.allowMissingProposalReceipt === true },
+      result,
+      context.v4 === true,
+      context.phase || '',
+        {
+          allowMissingProposalReceipt: context.allowMissingProposalReceipt === true,
+          allowMissingV4Receipt: context.allowMissingV4Receipt === true,
+        },
       )
       const reply = mode === 'auto' && context.completionPolicy !== 'typed'
         ? parseAutoReply(collaborationReply.text)

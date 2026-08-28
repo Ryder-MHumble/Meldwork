@@ -27,6 +27,41 @@ test('keeps a cloud CLI request alive for the local Agent runtime timeout', () =
       fetch: async () => response(manifest()),
     })
     assert.equal(store.timeoutMs, 3 * 60 * 1000)
+    assert.equal(store.runTimeoutMs, 10 * 60 * 1000)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('reports activity while a cloud Agent request is waiting for its final response', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-cloud-activity-'))
+  const activity = []
+  try {
+    const store = new CloudAgentBridgeStore({
+      storagePath: path.join(directory, 'bridges.json'),
+      runTimeoutMs: 1000,
+      fetch: async (_url, options) => {
+        await new Promise(resolve => setTimeout(resolve, 275))
+        return response({ text: 'remote reply', outcome: 'completed' })
+      },
+    })
+    store.records = [store.normalizeRecord({
+      bridgeId: 'cloud-bridge-0123456789abcdef01234567',
+      address: 'https://203.0.113.10:8443',
+      label: 'Research server',
+      available: true,
+      agents: manifest().agents,
+    })]
+    const record = store.records[0]
+    const result = await store.run({
+      bridgeId: record.bridgeId,
+      agentId: 'codex',
+      prompt: 'hello',
+      permissionMode: 'read-only',
+      onActivity: () => activity.push(Date.now()),
+    })
+    assert.equal(result.text, 'remote reply')
+    assert.ok(activity.length >= 2, `expected initial and heartbeat activity, got ${activity.length}`)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }

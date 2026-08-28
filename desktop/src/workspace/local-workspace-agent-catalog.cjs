@@ -40,9 +40,31 @@ class LocalWorkspaceAgentCatalog {
     this.emitChanged = options.emitChanged
     this.snapshot = options.snapshot
     this.now = options.now
+    this.refreshTask = null
+    this.refreshAgain = false
   }
 
   async refresh() {
+    if (this.refreshTask) {
+      this.refreshAgain = true
+      return this.refreshTask
+    }
+    const task = (async () => {
+      let snapshot
+      do {
+        this.refreshAgain = false
+        snapshot = await this.refreshOnce()
+      } while (this.refreshAgain)
+      return snapshot
+    })()
+    const pending = task.finally(() => {
+      if (this.refreshTask === pending) this.refreshTask = null
+    })
+    this.refreshTask = pending
+    return pending
+  }
+
+  async refreshOnce() {
     const runtimeAtRefreshStart = new Map(Object.entries(this.state().agentRuntime))
     const detected = await this.detectAgents()
     const nativeStates = await Promise.all(detected.map((agent) => {

@@ -44,6 +44,8 @@ describe('Meldwork i18n', () => {
   it('localizes Human Gates, Agent controls, and budget metadata', () => {
     setLocale('en')
     expect(t('humanGate.waiting')).toBe('Waiting for your decision')
+    expect(t('humanGate.waitingWordOne')).toBe('Waiting')
+    expect(t('humanGate.waitingWordFour')).toBe('Reviewing')
     expect(t('humanGate.option.allowOnce')).toBe('Allow once')
     expect(t('humanGate.summary.decision')).toBe('This run requires your decision.')
     expect(t('humanGate.summary.retry')).toContain('may already have changed')
@@ -71,6 +73,8 @@ describe('Meldwork i18n', () => {
 
     setLocale('zh')
     expect(t('humanGate.waiting')).toBe('等待你的决定')
+    expect(t('humanGate.waitingWordOne')).toBe('等待中')
+    expect(t('humanGate.waitingWordFour')).toBe('整理中')
     expect(t('humanGate.option.allowOnce')).toBe('允许一次')
     expect(t('humanGate.summary.decision')).toBe('该运行需要你做出决定。')
     expect(t('humanGate.summary.retry')).toContain('可能已经修改')
