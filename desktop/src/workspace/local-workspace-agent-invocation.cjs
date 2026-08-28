@@ -593,7 +593,19 @@ class LocalWorkspaceAgentInvocation {
   async invokeLeased(
     group, kind, mode, signal, threadRootId = '', context = {}, invocation = {},
   ) {
-    const agent = this.detectedAgents().find(item => item.kind === kind && item.available)
+    const detected = this.detectedAgents()
+    const activeRun = this.activeRuns.get(group.id)
+    const candidate = detected.find(item => item.kind === kind)
+    const agent = detected.find(item => item.kind === kind && item.available)
+      || (activeRun?.targetKinds?.includes(kind)
+        && candidate
+        && candidate.installed !== false
+        && candidate.compatibilityState !== 'incompatible'
+        && candidate.credentialState !== 'missing'
+        && candidate.availabilitySource !== 'runtime-auth-failure'
+        && candidate.availabilitySource !== 'none'
+        ? candidate
+        : null)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const reviewOnly = isCodeReviewAgentKind(kind)
     const invocationContext = isolatedInvocationContext(context)
@@ -631,7 +643,6 @@ class LocalWorkspaceAgentInvocation {
       })
     }
     const state = this.state()
-    const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     const round = mode === 'auto' ? (activeRun?.currentRound || 1) : 0
     const responseVersionRootId = cleanText(context.responseVersionRootId, 100)
