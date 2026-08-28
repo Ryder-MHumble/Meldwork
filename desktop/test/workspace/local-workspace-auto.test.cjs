@@ -4058,11 +4058,7 @@ test('automatic dialogue keeps an active Agent runnable through a transient cata
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
     if (calls.length === 2) {
-      const openclaw = workspace.detectedAgents.find(item => item.kind === 'openclaw')
-      openclaw.available = false
-      openclaw.invocable = false
-      openclaw.credentialState = 'unknown'
-      openclaw.availabilitySource = 'native-runtime-unavailable'
+      workspace.detectedAgents = workspace.detectedAgents.filter(item => item.kind !== 'openclaw')
     }
     const count = calls.filter(call => call.agent.kind === agent.kind).length
     return {
