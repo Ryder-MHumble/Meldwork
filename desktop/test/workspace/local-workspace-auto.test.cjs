@@ -4052,6 +4052,39 @@ test('automatic dialogue keeps Hermes on one persistent ACP session across round
   assert.equal(workspace.state.sessionMeta[hermesSessionKey].transport, 'acp')
 })
 
+test('automatic dialogue keeps an active Agent runnable through a transient catalog outage', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length === 2) {
+      const openclaw = workspace.detectedAgents.find(item => item.kind === 'openclaw')
+      openclaw.available = false
+      openclaw.invocable = false
+      openclaw.credentialState = 'unknown'
+      openclaw.availabilitySource = 'native-runtime-unavailable'
+    }
+    const count = calls.filter(call => call.agent.kind === agent.kind).length
+    return {
+      text: `${agent.kind} ${count > 1 ? 'agree' : 'continue'}\n[[MELDWORK_CONSENSUS:${count > 1 ? 'agree' : 'continue'}]]`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Transient catalog outage', agentKinds: ['codex', 'openclaw'], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Continue across a transient refresh', mode: 'auto', maxRounds: 2 })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'openclaw', 'codex', 'openclaw'])
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.agentKind === 'openclaw' && message.system?.key === 'system.agentCallFailed'
+  )), false)
+})
+
 test('automatic dialogue queues only the explicitly targeted group members', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
