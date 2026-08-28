@@ -97,6 +97,15 @@ function stripPiInternalPromptEcho(value) {
   return text.replace(preamble, '').trim()
 }
 
+function stripPiPromptEcho(value, prompt) {
+  const text = String(value || '').trim()
+  const expected = String(prompt || '').trim()
+  if (expected && text.startsWith(expected)) {
+    return text.slice(expected.length).trim()
+  }
+  return stripPiInternalPromptEcho(text)
+}
+
 function stripExactMeldworkPromptEcho(value, prompt) {
   const text = String(value || '')
   const expected = String(prompt || '').trim()
@@ -197,7 +206,6 @@ function ingestStructuredEvent(state, event) {
     }
     if (event.type === 'agent_end') state.outcome = 'completed'
     if (state.outcome === 'failed') markStructuredFailure(state)
-    state.text = stripPiInternalPromptEcho(state.text)
     return
   }
 
@@ -320,7 +328,7 @@ function openCodeReviewTerminal(status, manifest, manifestPresent = manifest != 
   }
 }
 
-function finalizeStructuredState(state) {
+function finalizeStructuredState(state, context = {}) {
   if (state.parseError) {
     return {
       text: '',
@@ -362,7 +370,9 @@ function finalizeStructuredState(state) {
   if (!state.seen && !state.text && !state.outcome) return null
   const outcome = state.outcome || (state.text ? 'partial' : 'failed')
   const result = {
-    text: state.kind === 'pi' ? stripPiInternalPromptEcho(state.text) : state.text.trim(),
+    text: state.kind === 'pi'
+      ? stripPiPromptEcho(state.text, context.prompt)
+      : state.text.trim(),
     sessionRef: state.sessionRef,
     outcome,
   }
@@ -395,7 +405,7 @@ function createStructuredOutputAccumulator(kind, sessionRef = '') {
     return {
       format: 'jsonl',
       ingest: event => ingestStructuredEvent(state, event),
-      end: () => finalizeStructuredState(state),
+      end: context => finalizeStructuredState(state, context),
     }
   }
 
