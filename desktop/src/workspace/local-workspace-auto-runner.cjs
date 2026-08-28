@@ -80,6 +80,8 @@ class LocalWorkspaceAutoRunner {
     this.validateSkillSelections = options.validateSkillSelections
     this.validateKnowledgeBaseSelections = options.validateKnowledgeBaseSelections
     this.invokeAgent = options.invokeAgent
+    this.defaultYolo = options.defaultYolo !== false
+    this.naturalAgentResponses = options.naturalAgentResponses === true
     this.resetAgentSession = options.resetAgentSession
     this.refreshAgents = options.refreshAgents
     this.consumeAgentControl = options.consumeAgentControl
@@ -148,6 +150,16 @@ class LocalWorkspaceAutoRunner {
       )
     }
     return true
+  }
+
+  shouldRemoveFailedAgent(error) {
+    const category = normalizeFailure(error).category
+    // Runtime, provider, rate-limit, protocol, and timeout failures are
+    // isolated to this run. A local CLI may recover on the next turn, so its
+    // configured group membership must remain intact. Only failures proving
+    // that the installed Agent cannot currently authenticate or run are
+    // removed from the persistent group.
+    return ['authentication', 'compatibility'].includes(category)
   }
 
   replacementInstruction(failedKind) {
@@ -461,6 +473,7 @@ class LocalWorkspaceAutoRunner {
       if (context.parallelGraph !== true) this.setCurrentAgent(controller, kind)
       return this.invokeAgent(group, kind, mode, controller.signal, threadRootId, {
         ...context,
+        yolo: context.yolo ?? this.defaultYolo,
         deferCredentialFailure: true,
         operationId,
       })
@@ -777,7 +790,10 @@ class LocalWorkspaceAutoRunner {
       && continuation?.resumeKind === 'agent_slot'
       && continuation.phase === orchestration.phase
       && continuation.round === orchestration.round
-      && ['pending', 'ready', 'resuming'].includes(continuation.state)
+      // `resuming` means the gate decision has already been accepted and the
+      // continuation is actively replaying the gated slot. Blocking that
+      // state makes the resume path fail with its own phase-gate error.
+      && ['pending', 'ready'].includes(continuation.state)
   }
 
   assertV4PhaseCanAdvance(controller) {
@@ -2394,7 +2410,10 @@ class LocalWorkspaceAutoRunner {
       ? this.v4SanitizeDeliveryText(options.assignedProposalText || '', 1600) : ''
     const extraContext = this.v4SanitizeDeliveryText(options.extraContext || '', 6000)
     return [
-      v4Prompt({ group, kind, phase, snapshot, role, skillHints: options.skillHints }),
+      v4Prompt({
+        group, kind, phase, snapshot, role, skillHints: options.skillHints,
+        naturalResponse: this.naturalAgentResponses,
+      }),
       reviewTarget
         ? `Coverage responsibility: explicitly incorporate or challenge ${reviewTarget}'s proposal while negotiating with every peer. This coverage duty does not assign responsibilities or authorize you to allocate work for others.`
         : '',
@@ -2447,7 +2466,56 @@ class LocalWorkspaceAutoRunner {
   }
 
   v4ReceiptForResult(result, phase, kind, slot, snapshotHash, options = {}) {
-    const raw = result?.collaboration
+    let raw = result?.collaboration
+    if ((!raw || typeof raw !== 'object' || Array.isArray(raw))
+        && this.naturalAgentResponses) {
+      const visibleSummary = (publicCollaborationText(
+        result?.text || result?.message?.content || '', 800,
+      ) || `Completed the ${phase} phase.`).replace(/\s+/gu, ' ').trim()
+      const controller = options.controller || {}
+      const targetKinds = [...new Set(
+        (Array.isArray(controller.targetKinds) && controller.targetKinds.length
+          ? controller.targetKinds
+          : controller.orchestration?.targetKinds || [kind])
+          .filter(value => typeof value === 'string' && value),
+      )].sort()
+      const phaseSlots = Array.isArray(controller.orchestration?.slots)
+        ? controller.orchestration.slots
+        : []
+      const taskIdFor = agentKind => `natural-${hashValue({ snapshotHash, agentKind }).slice(0, 24)}`
+      const finalizerKind = targetKinds[0] || kind
+      const verifierKinds = targetKinds.filter(agentKind => agentKind !== finalizerKind)
+      const proposedAssignments = targetKinds.map(agentKind => ({
+        taskId: taskIdFor(agentKind),
+        ownerKind: agentKind,
+        role: agentKind === finalizerKind ? 'integrator' : 'verifier',
+        objective: `Address the current user task as ${agentKind}.`,
+        expectedOutput: 'Return the result in natural Markdown.',
+        inputRefs: [],
+        artifactIds: [],
+        dependsOn: [],
+      }))
+      raw = {
+        summary: visibleSummary,
+        capabilities: ['Delivered a natural-language response'],
+        intendedWork: ['Addressed the current user task'],
+        deliverables: ['Natural-language Markdown response'],
+        dependencies: [],
+        ...(phase === 'challenge' ? {
+          verdict: 'support',
+          proposedAssignments,
+          finalizerKind,
+          verifierKinds,
+          agreeToPlan: true,
+        } : {}),
+        ...(phase === 'work' ? {
+          workItemId: options.workItemId || taskIdFor(kind),
+          deliverables: ['Natural-language Markdown response'],
+        } : {}),
+        ...(phase === 'synthesis' ? { resolvedIssueIds: [] } : {}),
+        ...(phase === 'verification' ? { verdict: 'support' } : {}),
+      }
+    }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED')
     }
@@ -3063,10 +3131,13 @@ class LocalWorkspaceAutoRunner {
           || resultTrace?.runId !== controller.runId) {
         throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
       }
-      const receiptRecord = this.v4ReceiptForResult(
-        result, 'work', item.kind, slot, snapshotHash, { controller },
-      )
       const assignment = workAssignments?.find(candidate => candidate.ownerKind === item.kind)
+      const receiptRecord = this.v4ReceiptForResult(
+        result, 'work', item.kind, slot, snapshotHash, {
+          controller,
+          workItemId: assignment?.taskId || '',
+        },
+      )
       if (!assignment || receiptRecord.receipt.workItemId !== assignment.taskId
           || !this.v4ReceiptReferencesComplete(receiptRecord, '', {
             runId: controller.runId,
@@ -3299,6 +3370,7 @@ class LocalWorkspaceAutoRunner {
             parallelGraph: true,
             deferMessage: true,
             allowMissingProposalReceipt: true,
+            allowMissingV4Receipt: this.naturalAgentResponses,
             operationId: slot.operationId,
             ...(resumedGateFor(slot) ? { resumedGate: resumedGateFor(slot) } : {}),
             skillHints: context.rootSkillsByKind.get(kind) || [],
@@ -3413,6 +3485,7 @@ class LocalWorkspaceAutoRunner {
             singleWriterKind: writerKind,
             parallelGraph: true,
             deferMessage: true,
+            allowMissingV4Receipt: this.naturalAgentResponses,
             operationId: slot.operationId,
             ...(resumedSlotGate ? { resumedGate: resumedSlotGate } : {}),
             v4SynthesisRecovery: phase === 'synthesis',
@@ -3563,6 +3636,9 @@ class LocalWorkspaceAutoRunner {
           snapshotHash,
           {
             controller,
+            ...(phase === 'work'
+              ? { workItemId: workAssignmentsByKind.get(item.kind)?.taskId || '' }
+              : {}),
             reviewedArtifactId: phase === 'challenge'
               ? challengeBindings?.find(binding => (
                 binding.reviewerKind === item.kind
@@ -4253,16 +4329,13 @@ class LocalWorkspaceAutoRunner {
       return aggregate
     }
     const commitPhaseMessages = (phase, result) => {
-      let committed = 0
-      for (const item of result?.phasePendingMessages || []) {
-        const pendingMessage = item?.pendingMessage
-        if (!pendingMessage?.content || !item.kind) continue
-        this.commitV4PhaseMessage({
-          group, controller, threadRootId, phase, kind: item.kind, pendingMessage,
-        })
-        committed += 1
-      }
-      return committed
+      // Proposal/work runners commit each pending Agent message at the same
+      // time they persist its receipt and slot. Replaying those messages here
+      // creates a second commit attempt with live metadata and can reject a
+      // valid first-round result as LOCAL_RUN_COMMIT_INVALID.
+      return (result?.phasePendingMessages || []).filter(item => (
+        item?.pendingMessage?.content && item.kind
+      )).length
     }
     const removePhaseFailures = (result) => {
       const failedKinds = [...new Set((result?.failures || [])
@@ -4275,16 +4348,24 @@ class LocalWorkspaceAutoRunner {
         .filter(Boolean))]
       const removed = []
       for (const kind of failedKinds) {
-        const didRemove = this.removeFailedAgent(group, controller, kind, threadRootId)
+        const failure = (result?.failures || []).find(item => item.kind === kind)?.error
+        // A local CLI timeout is a run-scoped availability problem. Keep the
+        // configured group membership intact so a later turn can retry it.
+        const didRemove = this.shouldRemoveFailedAgent(failure)
+          ? this.removeFailedAgent(group, controller, kind, threadRootId)
+          : false
+        // The failed slot is still isolated from this run's active queue even
+        // when its configured group membership is retained.
+        removed.push(kind)
         if (didRemove) {
           removedKinds.add(kind)
-          removed.push(kind)
         }
       }
       return removed
     }
     const finalStatus = (status) => {
-      if (!removedKinds.size || status !== 'completed') return status
+      if (status !== 'completed') return status
+      if (!removedKinds.size && !controller.failedKinds.length) return status
       controller.failedKinds = [...new Set([...controller.failedKinds, ...removedKinds])]
       return 'partial'
     }
@@ -4904,6 +4985,7 @@ class LocalWorkspaceAutoRunner {
     const attachmentRecipients = new Set(cursor?.attachmentRecipients || [])
     let terminalFailureOccurred = cursor?.terminalFailureOccurred === true
     let activeKinds = cursor ? [...cursor.activeKinds] : [...controller.targetKinds]
+    let executionSequence = Number(cursor?.executionSequence) || 0
     let totalSuccesses = cursor?.totalSuccesses || 0
     let consensusReached = false
     const reportedFailures = new Set()
@@ -4936,6 +5018,7 @@ class LocalWorkspaceAutoRunner {
           attachmentRecipients: [...attachmentRecipients],
           totalSuccesses,
           terminalFailureOccurred,
+          executionSequence,
         })
       }
       this.emitChanged()
@@ -4948,6 +5031,7 @@ class LocalWorkspaceAutoRunner {
         }
         if (controller.signal.aborted) break
         const executionKind = kind
+        executionSequence += 1
         this.setCurrentAgent(controller, executionKind)
         this.checkpointOrchestration(group, controller, {
           currentKind: executionKind,
@@ -4958,6 +5042,7 @@ class LocalWorkspaceAutoRunner {
           attachmentRecipients: [...attachmentRecipients],
           totalSuccesses,
           terminalFailureOccurred,
+          executionSequence,
         })
         try {
           if (controller.attemptHistory.length >= MAX_RUN_AGENT_ATTEMPTS) {
@@ -4989,6 +5074,7 @@ class LocalWorkspaceAutoRunner {
                 focusUserMessageId: threadRootId,
                 omitAgentThreadRootId: threadRootId,
               },
+              executionSequence,
             },
             reportedFailures,
           })
@@ -5108,7 +5194,11 @@ class LocalWorkspaceAutoRunner {
             controller.failedKinds.push(executionKind)
           }
           terminalFailureOccurred = true
-          this.removeFailedAgent(group, controller, executionKind, threadRootId)
+          // Preserve timed-out CLIs in the configured group. They are removed
+          // only from this run's active queue and can be retried next turn.
+          if (this.shouldRemoveFailedAgent(error)) {
+            this.removeFailedAgent(group, controller, executionKind, threadRootId)
+          }
           activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
         }
         if (controller.signal.aborted) break
@@ -5126,6 +5216,7 @@ class LocalWorkspaceAutoRunner {
           attachmentRecipients: [...attachmentRecipients],
           totalSuccesses,
           terminalFailureOccurred,
+          executionSequence,
         })
         this.emitChanged()
       }
@@ -5143,6 +5234,7 @@ class LocalWorkspaceAutoRunner {
         attachmentRecipients: [...attachmentRecipients],
         totalSuccesses,
         terminalFailureOccurred,
+        executionSequence,
       })
       if (activeKinds.length < 2) break
       const crossReviewComplete = !controller.unlimitedRounds || controller.currentRound >= 2

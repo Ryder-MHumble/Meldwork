@@ -1309,6 +1309,26 @@ function journalEntries(storagePath) {
     .map(line => JSON.parse(line))
 }
 
+test('compacts a committed journal to a recoverable baseline', (t) => {
+  const { storagePath } = fixture(t)
+  const ledger = new RunLedger({
+    storagePath,
+    now: () => 1000,
+    journalCompactionBytes: 1024,
+  })
+  ledger.checkpoint(runRecord('run-compact', 'group-compact'))
+  ledger.finish('run-compact', 'completed')
+
+  const entries = journalEntries(storagePath)
+  assert.deepEqual(entries.map(entry => entry.sequence), [1, 2])
+  assert.deepEqual(entries.map(entry => entry.phase), ['prepare', 'commit'])
+  fs.writeFileSync(storagePath, '{corrupt snapshot', 'utf8')
+
+  const restored = new RunLedger({ storagePath, now: () => 4000 })
+  assert.equal(restored.loadError, null)
+  assert.equal(restored.get('run-compact').status, 'completed')
+})
+
 test('roundtrips sanitized bounded run and Agent snapshots', (t) => {
   const { storagePath } = fixture(t)
   const events = Array.from({ length: 85 }, (_, index) => ({

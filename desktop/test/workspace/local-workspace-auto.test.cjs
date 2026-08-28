@@ -82,6 +82,40 @@ function challengeBindingInput(workspace, targetKinds, round, bodyHash = 'a'.rep
   }
 }
 
+test('automatic local invocations default to yolo permission approval', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  delete options.defaultYolo
+  let approvals = 0
+  options.runAgent = async (agent, _prompt, _workdir, runOptions) => {
+    const decision = await runOptions.onPermissionRequest({
+      options: [{ optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' }],
+      operation: { kind: 'write', path: 'result.txt' },
+    }, { signal: runOptions.signal })
+    assert.equal(decision.status, 'approved')
+    approvals += 1
+    return { text: `${agent.kind} completed`, sessionRef: `${agent.kind}-session` }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Default yolo permissions',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+    allowWrite: true,
+  })
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Complete without interactive permission prompts.',
+    mode: 'auto',
+    maxRounds: 1,
+    targetKinds: ['codex', 'hermes'],
+  })
+  await workspace.activeRuns.get(group.id).promise
+  assert.equal(approvals, 2)
+  assert.equal(workspace.listHumanGates({ pendingOnly: true }).length, 0)
+})
+
 function synthesisCandidates(targetKinds, overrides = {}) {
   return targetKinds.map((kind, index) => ({
     kind,
@@ -2602,7 +2636,7 @@ test('V4 Auto preserves proposals and continues when a round-two Agent fails', a
   controller = workspace.activeRuns.get(group.id)
   await controller.promise
 
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'openclaw', 'hermes'])
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => (
       message.role === 'agent' && message.threadRootId === controller.threadRootId
@@ -2625,7 +2659,7 @@ test('V4 Auto preserves proposals and continues when a round-two Agent fails', a
   assert.equal(workspace.snapshot().messages.some(message => (
     message.system?.key === 'system.agentRemovedAfterFailure'
       && message.system.params.agent === 'OpenClaw'
-  )), true)
+  )), false)
   assert.equal(ledger.get(controller.runId).status, 'partial')
 })
 
@@ -2969,7 +3003,7 @@ test('V4 Auto continues to round two with healthy Agents after a proposal peer f
     calls.filter(call => call.phase === 'challenge').map(call => call.kind),
     ['codex', 'hermes'],
   )
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'openclaw', 'hermes'])
   const durable = ledger.get(controller.runId)
   assert.equal(durable.currentRound, 2)
   assert.deepEqual(durable.orchestration.snapshot.targetKinds, ['codex', 'openclaw', 'hermes'])
@@ -2988,7 +3022,7 @@ test('V4 Auto continues to round two with healthy Agents after a proposal peer f
   )
 })
 
-test('V4 Auto isolates a heartbeat-only proposal Agent and advances healthy peers', async (t) => {
+test('V4 Auto isolates a heartbeat-only proposal Agent without deleting group membership', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
@@ -3040,11 +3074,14 @@ test('V4 Auto isolates a heartbeat-only proposal Agent and advances healthy peer
     calls.filter(call => call.phase === 'challenge').map(call => call.kind),
     ['codex', 'hermes'],
   )
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'openclaw', 'hermes'])
   assert.equal(ledger.get(controller.runId).currentRound, 2)
   assert.equal(workspace.snapshot().messages.some(message => (
     message.agentKind === 'openclaw' && message.system?.key === 'system.agentCallFailed'
   )), true)
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.agentKind === 'openclaw' && message.system?.key === 'system.agentRemovedAfterFailure'
+  )), false)
 })
 
 test('V4 Auto publishes one visible message per Agent in every bounded discussion round', async (t) => {
@@ -3118,6 +3155,15 @@ test('V4 Auto publishes one visible message per Agent in every bounded discussio
       'hermes round 3 challenge',
     ],
   )
+  const visible = workspace.snapshot().messages.filter(message => (
+    message.role === 'agent' && message.threadRootId === controller.threadRootId
+  ))
+  assert.deepEqual(visible.map(message => [message.trace.round, message.trace.phase]), [
+    [1, 'proposal'], [1, 'proposal'], [1, 'proposal'],
+    [2, 'challenge'], [2, 'challenge'], [2, 'challenge'],
+    [3, 'challenge'], [3, 'challenge'], [3, 'challenge'],
+  ])
+  assert.equal(new Set(visible.map(message => message.responseVersionRootId)).size, 9)
   assert.equal(ledger.get(controller.runId).status, 'round-limit')
   assert.equal(ledger.get(controller.runId).currentRound, 3)
 })
@@ -3865,6 +3911,11 @@ test('automatic dialogue continues complete rounds until every Agent agrees', as
     workspace.snapshot().messages.filter(message => message.role === 'agent')
       .map(message => message.trace.round),
     [1, 1, 2, 2],
+  )
+  assert.deepEqual(
+    workspace.snapshot().messages.filter(message => message.role === 'agent')
+      .map(message => message.trace.executionSequence),
+    [1, 2, 3, 4],
   )
   const reloaded = new LocalWorkspace(options)
   await reloaded.refreshAgents()
@@ -4623,13 +4674,13 @@ test('automatic dialogue exhausts bounded transient retries before continuing', 
   ])
   assert.deepEqual(delays, [1, 2, 4])
   assert.equal(finished[0].status, 'partial')
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes', 'codex'])
   assert.equal(workspace.snapshot().messages.filter(message => (
     message.agentKind === 'hermes' && message.system?.key === 'system.agentCallFailed'
   )).length, 1)
   assert.equal(workspace.snapshot().messages.some(message => (
     message.agentKind === 'hermes' && message.system?.key === 'system.agentRemovedAfterFailure'
-  )), true)
+  )), false)
 })
 
 test('automatic dialogue fails HTTP 401 once, removes the Agent, and continues healthy slots', async (t) => {
@@ -4945,7 +4996,7 @@ test('automatic dialogue recovers repeated protocol failures without removing th
   )).length, 2)
 })
 
-test('automatic dialogue retains a streamed conclusion before removing the failed Agent', async (t) => {
+test('automatic dialogue retains a streamed conclusion while isolating the failed Agent', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledgerPath = path.join(directory, 'run-ledger.json')
@@ -4983,7 +5034,7 @@ test('automatic dialogue retains a streamed conclusion before removing the faile
   ))
   assert.equal(liveFailures.length, 1)
   assert.match(liveFailures[0].content, /Hermes partial conclusion 4/)
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
 
   const restored = new LocalWorkspace({
     ...options,
@@ -4996,7 +5047,7 @@ test('automatic dialogue retains a streamed conclusion before removing the faile
   assert.deepEqual(restoredFailures.map(message => message.content), liveFailures.map(message => message.content))
 })
 
-test('automatic dialogue stops after every failed Agent is removed', async (t) => {
+test('automatic dialogue stops after every Agent fails while retaining group membership', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.retrySleep = async () => {}
@@ -5021,11 +5072,11 @@ test('automatic dialogue stops after every failed Agent is removed', async (t) =
     'codex', 'codex', 'codex', 'codex',
     'hermes', 'hermes', 'hermes', 'hermes',
   ])
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, [])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
   const removals = workspace.snapshot().messages.filter(message => (
     message.system?.key === 'system.agentRemovedAfterFailure'
   ))
-  assert.equal(removals.length, 2)
+  assert.equal(removals.length, 0)
   assert.equal(removals.every(message => message.threadRootId === root.id), true)
   assert.equal(workspace.snapshot().messages.some(message => (
     message.system?.key === 'system.autoRoundLimit'

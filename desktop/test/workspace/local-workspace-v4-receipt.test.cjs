@@ -6,6 +6,7 @@ const path = require('node:path')
 const { runAgent: runCliAgent } = require('../../src/agents/cli/cli-adapters.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
 const { parseV4CollaborationReceipt } = require('../../src/workspace/local-workspace-agent-invocation.cjs')
+const { v4Prompt } = require('../../src/workspace/local-workspace-context.cjs')
 const {
   createLegacyOutboundPayload,
   outboundWirePayloadBytes,
@@ -314,6 +315,73 @@ test('Manual concurrent proposals preserve a valid visible response when a CLI o
     }),
     /LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED/,
   )
+})
+
+test('Natural V4 responses may omit internal receipts without changing visible Markdown', () => {
+  const result = parseV4CollaborationReceipt({
+    text: '# Natural answer\n\nThe Agent explains the result in Markdown.',
+  }, true, 'challenge', { allowMissingV4Receipt: true })
+
+  assert.equal(result.text, '# Natural answer\n\nThe Agent explains the result in Markdown.')
+  assert.equal(result.collaboration, null)
+  assert.throws(
+    () => parseV4CollaborationReceipt({ text: 'Natural answer' }, true, 'challenge'),
+    /LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED/,
+  )
+})
+
+test('Natural V4 prompts carry task context without exposing the receipt template', () => {
+  const prompt = v4Prompt({
+    group: { name: 'Local agents', topic: 'Discussion' },
+    kind: 'pi',
+    phase: 'proposal',
+    role: 'participant',
+    naturalResponse: true,
+    snapshot: {
+      taskText: 'Compare the available skills and suggest useful transfers.',
+      targetKinds: ['codex', 'pi'],
+      history: [],
+    },
+  })
+
+  assert.match(prompt, /Compare the available skills/)
+  assert.match(prompt, /Answer the user naturally in Markdown/)
+  assert.doesNotMatch(prompt, /Receipt JSON shape|MELDWORK_COLLABORATION|MELDWORK_V4_FROZEN_SNAPSHOT_V1/)
+})
+
+test('Natural V4 challenge responses receive a deterministic internal responsibility graph', () => {
+  const { directory, options } = fixture()
+  const workspace = new LocalWorkspace({ ...options, naturalAgentResponses: true })
+  try {
+    const snapshotHash = 'a'.repeat(64)
+    const controller = {
+      targetKinds: ['pi', 'codex'],
+      orchestration: {
+        slots: [
+          { agentKind: 'codex', phase: 'challenge', operationId: 'op-codex' },
+          { agentKind: 'pi', phase: 'challenge', operationId: 'op-pi' },
+        ],
+      },
+    }
+    const result = workspace.autoRunner.v4ReceiptForResult(
+      { text: '## Review\n\nI support the shared direction.' },
+      'challenge',
+      'pi',
+      { slotId: 'slot-pi', operationId: 'op-pi', deliveryWatermark: 0 },
+      snapshotHash,
+      { controller },
+    )
+    assert.equal(result.verdict, 'support')
+    assert.equal(result.receipt.proposedAssignments.length, 2)
+    assert.deepEqual(
+      result.receipt.proposedAssignments.map(item => item.ownerKind).sort(),
+      ['codex', 'pi'],
+    )
+    assert.ok(result.receipt.finalizerKind)
+    assert.equal(result.receipt.verifierKinds.length, 1)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })
 
 test('V4 preserves responsibility endorsements and assigned work item receipts', () => {

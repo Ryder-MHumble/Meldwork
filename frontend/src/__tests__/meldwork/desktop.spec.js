@@ -226,6 +226,7 @@ describe('run event normalization', () => {
       runId: 'run-1',
       agentRunId: 'agent-run-1',
       round: 2,
+      phase: 'challenge',
       status: 'completed',
       summary: 'Final trace summary',
       events: [
@@ -293,6 +294,7 @@ describe('run event normalization', () => {
         sessionProvenance,
       },
     })
+    expect(trace.phase).toBe('challenge')
     expect(trace.events).toEqual([
       {
         evidenceId: 'E-R2-CODEX-01',

@@ -303,7 +303,7 @@ describe('Meldwork workbench', () => {
     await wrapper.get('.run-agent-row').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.trace-waiting-state').text()).toBe('Waiting for your decision')
+    expect(wrapper.get('.trace-waiting-state').text()).toBe('Waiting')
     expect(wrapper.get('.trace-human-gate-section').text())
       .toContain('workspace-write synthesis attempt may have produced side effects')
     expect(wrapper.find('.trace-budget-section').exists()).toBe(false)
@@ -1075,7 +1075,7 @@ describe('Meldwork workbench', () => {
     await wrapper.get('.conversation-link').trigger('click')
     expect(wrapper.find('.run-status-panel').exists()).toBe(false)
     expect(wrapper.findAll('.message-trace-button')).toHaveLength(1)
-    expect(wrapper.find('.trace-inline-details').exists()).toBe(false)
+    expect(wrapper.find('.message-row.agent[data-agent-kind="codex"] .trace-inline-details').exists()).toBe(true)
     await wrapper.get('.message-row.agent[data-agent-kind="codex"] .message-trace-surface').trigger('click')
     await flushPromises()
     expect(wrapper.get('.run-trace-panel').text()).not.toContain('Codex retained conclusion')

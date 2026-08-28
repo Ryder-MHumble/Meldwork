@@ -76,6 +76,41 @@ test('refresh starts credential checks concurrently and reads current runtime st
   assert.deepEqual(events, ['emit', 'snapshot'])
 })
 
+test('concurrent refresh requests run in order instead of racing Agent snapshots', async () => {
+  const first = deferred()
+  const second = deferred()
+  let calls = 0
+  let active = 0
+  let maxActive = 0
+  const { agents, catalog } = fixture({
+    detectAgents: async () => {
+      calls += 1
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      const result = await (calls === 1 ? first.promise : second.promise)
+      active -= 1
+      return result
+    },
+  })
+
+  const initial = catalog.refresh()
+  await new Promise(resolve => setImmediate(resolve))
+  const queued = catalog.refresh()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 1)
+  assert.equal(maxActive, 1)
+
+  first.resolve([{ kind: 'hermes', compatibilityState: 'compatible' }])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 2)
+  assert.equal(maxActive, 1)
+
+  second.resolve([{ kind: 'codex', compatibilityState: 'compatible' }])
+  await Promise.all([initial, queued])
+  assert.deepEqual(agents().map(agent => agent.kind), ['codex'])
+  assert.equal(active, 0)
+})
+
 test('incompatible Agents remain installed but unavailable with ready credentials', async () => {
   const { agents, catalog, events } = fixture({
     detectAgents: async () => [{

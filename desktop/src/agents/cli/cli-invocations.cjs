@@ -6,6 +6,17 @@ const IMAGE_ATTACHMENT_LIMITS = Object.freeze({
   hermes: 1,
   opencode: 4,
 })
+const DEFAULT_INTERNAL_TURN_LIMITS = Object.freeze({
+  // Meldwork already owns the outer discussion rounds. Keep WorkBuddy's
+  // nested tool loop bounded so one participant cannot dominate a round.
+  workbuddy: 8,
+})
+
+function internalTurnLimit(kind, requested) {
+  const value = Number(requested)
+  if (Number.isInteger(value) && value >= 1 && value <= 50) return value
+  return DEFAULT_INTERNAL_TURN_LIMITS[kind]
+}
 
 function codexSandbox(requested) {
   if (requested != null) {
@@ -125,6 +136,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'workbuddy') {
+    const maxTurns = internalTurnLimit(kind, options.maxTurns)
     return {
       command: executable,
       args: [
@@ -132,7 +144,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--output-format', 'stream-json',
         '--include-partial-messages',
         '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
-        '--max-turns', '20',
+        ...(maxTurns ? ['--max-turns', String(maxTurns)] : []),
         ...(sessionRef ? ['--resume', sessionRef] : []),
       ],
       promptArg: true,
@@ -140,24 +152,15 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'pi') {
-    if (options.invocationTransport !== 'json') {
-      return {
-        command: executable,
-        args: ['acp', '--pure', '--cwd', workdir],
-        acpMode: options.sandbox === 'workspace-write' ? 'build' : 'plan',
-        eventTransport: 'acp',
-        fallbackTransport: 'json',
-        fallbackSessionPolicy: 'preserve',
-      }
-    }
     return {
       command: executable,
       args: [
-        'run', '--format', 'json',
-        '--agent', options.sandbox === 'workspace-write' ? 'build' : 'plan',
+        '--mode', 'json', '--print',
+        ...(options.sandbox === 'workspace-write' ? ['--approve'] : ['--no-approve']),
         ...(sessionRef ? ['--session', sessionRef] : []),
       ],
       promptArg: true,
+      eventTransport: 'json',
     }
   }
   if (kind === 'kimi') {

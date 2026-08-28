@@ -297,25 +297,3 @@ button svg {
   margin: 4px 0 0;
   font-size: 24px;
 }
-
-.skeleton-line {
-  width: 180px;
-  height: 4px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: var(--border);
-}
-
-.skeleton-line::after {
-  content: "";
-  display: block;
-  width: 42%;
-  height: 100%;
-  background: var(--accent);
-  animation: loading-line 1.1s ease-in-out infinite alternate;
-}
-
-@keyframes loading-line {
-  from { transform: translateX(0); }
-  to { transform: translateX(140%); }
-}

@@ -50,6 +50,9 @@ const {
   normalizeSessionRef,
   terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
+const {
+  DEFAULT_RUN_AGENT_TOOL_TIMEOUT_MS,
+} = require('./local-workspace-runtime-contracts.cjs')
 const { MAX_RUN_AGENT_ATTEMPTS } = require('../runs/failure-policy.cjs')
 const {
   loadWorkspaceState,
@@ -115,6 +118,10 @@ class LocalWorkspace extends EventEmitter {
       && options.runAgentTimeoutMs > 0
       ? options.runAgentTimeoutMs
       : DEFAULT_RUN_AGENT_TIMEOUT_MS
+    this.runAgentToolTimeoutMs = Number.isFinite(options.runAgentToolTimeoutMs)
+      && options.runAgentToolTimeoutMs > 0
+      ? options.runAgentToolTimeoutMs
+      : DEFAULT_RUN_AGENT_TOOL_TIMEOUT_MS
     this.runAbortGraceMs = Number.isFinite(options.runAbortGraceMs)
       && options.runAbortGraceMs > 0
       ? options.runAbortGraceMs
@@ -242,7 +249,10 @@ class LocalWorkspace extends EventEmitter {
       detectedAgents: () => this.detectedAgents,
       activeRuns: this.activeRuns,
       runAgentTimeoutMs: this.runAgentTimeoutMs,
+      runAgentToolTimeoutMs: this.runAgentToolTimeoutMs,
       runAbortGraceMs: this.runAbortGraceMs,
+      defaultYolo: options.defaultYolo,
+      naturalAgentResponses: options.naturalAgentResponses,
       captureAgentOutputs: (...args) => this.captureAgentOutputsFn(...args),
       captureArtifactOutputs: (...args) => this.captureArtifactOutputsFn(...args),
       captureAgentOutcomeDescriptors: (...args) => (
@@ -286,6 +296,8 @@ class LocalWorkspace extends EventEmitter {
       validateSkillSelections: (...args) => this.validateSkillSelectionsFn(...args),
       validateKnowledgeBaseSelections: (...args) => this.validateKnowledgeBaseSelectionsFn(...args),
       invokeAgent: (...args) => this.invokeAgent(...args),
+      defaultYolo: options.defaultYolo,
+      naturalAgentResponses: options.naturalAgentResponses,
       resetAgentSession: (...args) => this.resetAgentSession(...args),
       refreshAgents: () => this.refreshAgents(),
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),

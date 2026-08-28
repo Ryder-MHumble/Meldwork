@@ -162,6 +162,9 @@ test('Cloud Bridge Agents can create direct and group chats through the Connecto
     bridgeForInstance: instanceId => entries.find(entry => entry.instance.instanceId === instanceId) || null,
     run: async (input) => {
       cloudRuns.push(input)
+      const heartbeat = setInterval(() => input.onActivity?.(), 5)
+      await new Promise(resolve => setTimeout(resolve, 65))
+      clearInterval(heartbeat)
       return { text: `${input.agentId} cloud reply`, outcome: 'completed' }
     },
   }
@@ -178,6 +181,8 @@ test('Cloud Bridge Agents can create direct and group chats through the Connecto
   options.detectAgents = async () => connectors.refresh([])
   options.connectorRuntime = connectors
   options.runAgent = async () => { throw new Error('LOCAL_RUNNER_MUST_NOT_RUN') }
+  options.runAgentTimeoutMs = 20
+  options.runAbortGraceMs = 20
   const workspace = new LocalWorkspace(options)
   const snapshot = await workspace.refreshAgents()
   const codexKind = entries.find(entry => entry.agent.id === 'codex').instance.instanceId
@@ -204,6 +209,7 @@ test('Cloud Bridge Agents can create direct and group chats through the Connecto
     JSON.stringify(workspace.snapshot().messages),
   )
   assert.equal(cloudRuns.every(run => run.permissionMode === 'read-only'), true)
+  assert.equal(cloudRuns.every(run => typeof run.onActivity === 'function'), true)
   assert.deepEqual(
     workspace.snapshot().messages.filter(message => message.role === 'agent')
       .map(message => [message.groupId, message.agentKind, message.content]),
@@ -1782,15 +1788,124 @@ test('per-Agent watchdog persists a timeout trace and continues the automatic ro
   assert.equal(failure.system.params.reason, 'LOCAL_AGENT_TIMEOUT')
   assert.equal(failure.trace.status, 'timeout')
   assert.equal(finished[0].status, 'partial')
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes'])
   assert.equal(workspace.snapshot().messages.some(message => (
     message.agentKind === 'codex' && message.system?.key === 'system.agentRemovedAfterFailure'
-  )), true)
+  )), false)
   assert.equal(events.some(event => (
     event.agentKind === 'codex' && event.type === 'status' && event.status === 'timeout'
   )), true)
   assert.equal(events.some(event => ['late-progress', 'late-tool'].includes(event.id)), false)
   assert.equal(workspace.state.sessions[workspace.sessionKey(group.id, 'codex')], undefined)
+})
+
+test('a real runtime event keeps a quiet long-running Agent alive', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 8
+  options.runAgentToolTimeoutMs = 50
+  options.runAbortGraceMs = 20
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    if (agent.kind !== 'codex') {
+      return {
+        text: `${agent.kind} completed`,
+        sessionRef: `${agent.kind}-session`,
+      }
+    }
+    runOptions.onEvent({
+      id: 'tool-before-quiet',
+      type: 'tool_start',
+      title: 'search',
+      status: 'running',
+    })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    return {
+      text: `${agent.kind} completed after a quiet tool call`,
+      sessionRef: `${agent.kind}-session`,
+    }
+  }
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Quiet runtime event', agentKinds: ['codex', 'hermes'], workdir: directory,
+    allowWrite: false,
+  })
+
+  await workspace.sendMessage({
+    groupId: group.id,
+    text: 'Complete after a long-running tool call',
+    mode: 'auto',
+    maxRounds: 1,
+  })
+  await workspace.activeRuns.get(group.id).promise
+
+  assert.equal(finished[0].status, 'round-limit')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.agentCallFailed'
+      && message.agentKind === 'codex'
+  )), false)
+})
+
+test('an unmatched tool start cannot keep an automatic discussion running forever', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 8
+  options.runAgentToolTimeoutMs = 20
+  options.runAbortGraceMs = 20
+  options.runSilenceWarningMs = 1000
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    if (agent.kind !== 'codex') {
+      return {
+        text: `${agent.kind} completed`,
+        sessionRef: `${agent.kind}-session`,
+      }
+    }
+    runOptions.onEvent({
+      id: 'tool-without-terminal-event',
+      type: 'tool_start',
+      title: 'search',
+      status: 'running',
+    })
+    return new Promise((resolve, reject) => {
+      const heartbeat = setInterval(() => runOptions.onActivity(), 1)
+      const abort = () => {
+        clearInterval(heartbeat)
+        reject(new Error('LOCAL_AGENT_EXECUTION_STOPPED'))
+      }
+      if (runOptions.signal.aborted) abort()
+      else runOptions.signal.addEventListener('abort', abort, { once: true })
+    })
+  }
+  const finished = []
+  const workspace = new LocalWorkspace(options)
+  workspace.on('run-finished', result => finished.push(result))
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Unmatched tool lifecycle',
+    agentKinds: ['codex', 'hermes'],
+    workdir: directory,
+    allowWrite: false,
+  })
+  workspace.addMessage(group.id, 'user', 'Do not remain running after a tool stalls')
+
+  workspace.startAuto({ groupId: group.id, maxRounds: 1 })
+  const runPromise = workspace.activeRuns.get(group.id).promise
+  const settled = await Promise.race([
+    runPromise.then(() => true),
+    new Promise(resolve => setTimeout(() => resolve(false), 100)),
+  ])
+  if (!settled) await workspace.stopAll()
+
+  assert.equal(settled, true)
+  assert.equal(finished.length, 1)
+  assert.equal(finished[0].status, 'partial')
+  const failure = workspace.snapshot().messages.find(message => (
+    message.agentKind === 'codex' && message.system?.key === 'system.agentCallFailed'
+  ))
+  assert.equal(failure?.system?.params?.reason, 'LOCAL_AGENT_TIMEOUT')
+  assert.equal(failure?.trace?.status, 'timeout')
 })
 
 test('automatic discussion hard-stops a heartbeat-only Agent and continues later rounds', async (t) => {
@@ -1839,7 +1954,7 @@ test('automatic discussion hard-stops a heartbeat-only Agent and continues later
     workspace.snapshot().messages.filter(message => message.role === 'agent').length,
     4,
   )
-  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['hermes', 'workbuddy'])
+  assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'hermes', 'workbuddy'])
   assert.equal(finished.length, 1)
   assert.equal(finished[0].status, 'partial')
   assert.equal(workspace.snapshot().messages.some(message => (
@@ -1909,6 +2024,38 @@ test('a slow Agent that keeps reporting progress is not timed out by elapsed wal
 
   const reply = workspace.snapshot().messages.find(message => message.agentKind === 'codex')
   assert.equal(reply.content, 'Slow but active reply')
+  assert.equal(reply.trace.status, 'completed')
+})
+
+test('cloud Agent activity releases the initial watchdog deadline', async (t) => {
+  const { directory, options } = fixture()
+  const cloudKind = 'cloud-0123456789abcdef01234567'
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.runAgentTimeoutMs = 20
+  options.runSilenceWarningMs = 1000
+  options.detectAgents = async () => [{
+    kind: cloudKind, name: 'Hermes @ Cloud server', version: '1', available: true,
+    compatibilityState: 'compatible', cloud: true,
+  }]
+  options.runAgent = async (_agent, _prompt, _workdir, runOptions) => {
+    const heartbeat = setInterval(() => runOptions.onActivity(), 5)
+    try {
+      await new Promise(resolve => setTimeout(resolve, 65))
+      return { text: 'Cloud reply arrived', sessionRef: 'cloud-session' }
+    } finally {
+      clearInterval(heartbeat)
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Cloud watchdog', agentKinds: [cloudKind], workdir: directory,
+  })
+
+  await workspace.sendMessage({ groupId: group.id, text: 'Wait for the cloud reply' })
+
+  const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
+  assert.equal(reply.content, 'Cloud reply arrived')
   assert.equal(reply.trace.status, 'completed')
 })
 

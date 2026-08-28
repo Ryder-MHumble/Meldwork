@@ -43,6 +43,10 @@ const ORCHESTRATION_PHASES = new Set([
   'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
   'commit', 'committed', 'failed', 'stopped', 'human-gate',
 ])
+const TRACE_PHASES = new Set([
+  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification', 'commit',
+  'discussion', 'synthesis-recovery', 'manual_retry',
+])
 const ORCHESTRATION_SLOT_STATUSES = new Set([
   'planned', 'prepared', 'queued', 'running', 'waiting', 'settled', 'completed', 'committed',
   'partial', 'failed', 'stopped', 'timeout', 'interrupted', 'cancelled', 'unknown_outcome',
@@ -423,6 +427,8 @@ export function normalizeMessageTrace(value, message = {}) {
   const agentRunId = identifier(input.agentRunId)
   if (!runId || !agentRunId) return null
   const round = nonNegativeInteger(input.round, 100000)
+  const executionSequence = nonNegativeInteger(input.executionSequence, 100000)
+  const phase = boundedString(input.phase, 40).toLowerCase()
   const context = normalizeTraceContext(input.context)
   const orchestration = normalizeOrchestration(input.orchestration)
   const events = (Array.isArray(input.events) ? input.events : [])
@@ -433,6 +439,8 @@ export function normalizeMessageTrace(value, message = {}) {
     runId,
     agentRunId,
     ...(round != null ? { round } : {}),
+    ...(executionSequence != null ? { executionSequence } : {}),
+    ...(TRACE_PHASES.has(phase) ? { phase } : {}),
     status: normalizedStatus(input.status) || 'completed',
     summary: boundedString(input.summary, 8000),
     events,

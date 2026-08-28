@@ -11,6 +11,10 @@ import {
 } from './desktop-normalization.js'
 
 const HUMAN_GATE_ID = /^human-gate-[a-f0-9]{64}$/
+const AGENT_TERMINAL_SYSTEM_KEYS = new Set([
+  'system.agentCallFailed', 'system.agentStopped', 'system.agentInterrupted',
+  'system.agentBudgetExhausted',
+])
 const HUMAN_GATE_OPTION_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/
 const HUMAN_GATE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/
 const HUMAN_GATE_FIELDS = new Set([
@@ -263,6 +267,7 @@ function normalizeMessage(value) {
   if (!input) return null
   const message = { ...input }
   const responseVersionRootId = message.role === 'agent'
+    || (message.role === 'system' && AGENT_TERMINAL_SYSTEM_KEYS.has(message.system?.key))
     ? identifier(input.responseVersionRootId)
     : ''
   if (responseVersionRootId) message.responseVersionRootId = responseVersionRootId
