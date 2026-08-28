@@ -1524,11 +1524,12 @@ class LocalWorkspaceAgentInvocation {
           ? { maxTurns: context.maxInternalTurns }
           : {}),
         attachments: isolated || frozen ? [] : (stagedInputs?.nativeImagePaths || []),
+        // ACP runtimes are shared by the stable group/task session key. OpenClaw
+        // is excluded because its gateway wrapper owns the process lifetime and
+        // is intentionally torn down after each invocation.
+        ...(kind !== 'openclaw' ? { acpPersistenceKey: key } : {}),
         ...(kind === 'hermes'
-          ? {
-              acpPersistenceKey: key,
-              hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false,
-            }
+          ? { hermesAcpAvailable: HERMES_WORKSPACE_ACP_ENABLED && agent.acpAvailable !== false }
           : {}),
       }
       const runCurrentSession = () => {
