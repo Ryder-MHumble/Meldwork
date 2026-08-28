@@ -1724,6 +1724,41 @@ process.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\\n')
   assert.equal(result.outcome, 'completed')
 })
 
+test('runAgent strips a full long multi-agent prompt echo from Pi output', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-pi-group-echo-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const prompt = [
+    'You are participating in a local multi-agent discussion.',
+    '',
+    'Your role this turn is worker.',
+    '',
+    'The current collaboration phase is proposal.',
+    '',
+    'User task:',
+    'Share a short proposal.',
+    '',
+    'Answer the user naturally in Markdown. Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template.',
+    '',
+    'Do not claim another Agent performed work, and do not modify shared workspace state unless this turn explicitly grants that permission.',
+  ].join('\n')
+  const cli = executable(directory, 'pi-group-prompt-echo.cjs', `
+const prompt = ${JSON.stringify(prompt)}
+process.stdout.write(JSON.stringify({ type: 'session', id: 'pi-group-echo-session' }) + '\\n')
+process.stdout.write(JSON.stringify({
+  type: 'message_update',
+  assistantMessageEvent: { type: 'text_delta', delta: prompt + '\\n\\nProposal: keep the shared task state explicit.' },
+}) + '\\n')
+process.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\\n')
+`)
+  const result = await runAgent(
+    { kind: 'pi', executable: cli, name: 'Pi Agent' },
+    prompt,
+    directory,
+  )
+  assert.equal(result.text, 'Proposal: keep the shared task state explicit.')
+  assert.equal(result.outcome, 'completed')
+})
+
 test('recorded fixtures cover every supported built-in output schema', () => {
   const manifest = JSON.parse(fs.readFileSync(
     path.join(OUTPUT_FIXTURE_DIRECTORY, 'manifest.json'),
