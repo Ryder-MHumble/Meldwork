@@ -527,6 +527,7 @@ class LocalWorkspaceAgentInvocation {
     this.connectorRuntime = options.connectorRuntime || null
     this.attachmentSupport = options.attachmentSupport || (() => ({}))
     this.generateMedia = typeof options.generateMedia === 'function' ? options.generateMedia : null
+    this.activeAgentSnapshots = new Map()
   }
 
   commitSessionState(mutator) {
@@ -596,6 +597,9 @@ class LocalWorkspaceAgentInvocation {
     const detected = this.detectedAgents()
     const activeRun = this.activeRuns.get(group.id)
     const candidate = detected.find(item => item.kind === kind)
+    const snapshotKey = `${group.id}:${activeRun?.runId || 'active'}:${kind}`
+    if (candidate) this.activeAgentSnapshots.set(snapshotKey, { ...candidate })
+    const snapshot = this.activeAgentSnapshots.get(snapshotKey)
     const agent = detected.find(item => item.kind === kind && item.available)
       || (activeRun?.targetKinds?.includes(kind)
         && candidate
@@ -605,7 +609,9 @@ class LocalWorkspaceAgentInvocation {
         && candidate.availabilitySource !== 'runtime-auth-failure'
         && candidate.availabilitySource !== 'none'
         ? candidate
-        : null)
+        : activeRun?.targetKinds?.includes(kind) && !candidate && snapshot
+          ? snapshot
+          : null)
     if (!agent) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const reviewOnly = isCodeReviewAgentKind(kind)
     const invocationContext = isolatedInvocationContext(context)
