@@ -745,7 +745,7 @@ function publicSessionRef(value, childEnv) {
   return safe.includes('[redacted]') ? '' : safe
 }
 
-async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
+async function runAcpTurn(runtime, prompt, options, spec, profile) {
   if (runtime.closed || runtime.failureError) {
     throw runtime.failureError || agentExecutionError('LOCAL_AGENT_PROCESS_FAILED')
   }
@@ -812,9 +812,6 @@ async function runAcpTurn(runtime, prompt, options, spec, profile, persistent) {
 
   try {
     if (!protocolSessionRef) {
-      if (persistent && options.sessionRef) {
-        throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
-      }
       if (spec.acpSessionStrategy !== 'new' && options.sessionRef) {
         protocolSessionRef = String(options.sessionRef)
         await operation(runtime.connection.resumeSession({
@@ -955,9 +952,6 @@ async function runPersistentAcpAgent(agent, prompt, workdir, options, spec, prof
       runtime = null
       if (options.sessionRef) throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
     }
-    if (!runtime && options.sessionRef) {
-      throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
-    }
     if (!runtime) {
       if (shutdownGeneration !== acpShutdownGeneration) {
         throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
@@ -969,7 +963,7 @@ async function runPersistentAcpAgent(agent, prompt, workdir, options, spec, prof
     }
     runtime.active = true
     try {
-      return await runAcpTurn(runtime, prompt, options, spec, profile, true)
+      return await runAcpTurn(runtime, prompt, options, spec, profile)
     } catch (error) {
       acpSessionRuntimes.delete(key)
       await closeAcpRuntime(runtime)
@@ -1003,7 +997,7 @@ async function runDisposableAcpAgent(agent, prompt, workdir, options, spec, prof
       throw agentExecutionError('LOCAL_AGENT_EXECUTION_STOPPED')
     }
     acpDisposableRuntimes.add(runtime)
-    return await runAcpTurn(runtime, prompt, options, spec, profile, false)
+    return await runAcpTurn(runtime, prompt, options, spec, profile)
   } finally {
     if (runtime) {
       acpDisposableRuntimes.delete(runtime)

@@ -70,6 +70,72 @@ test('group OpenCode conversations reuse one persistent ACP runtime key across r
   assert.equal(opencodeCalls[1].runOptions.acpPersistenceKey, opencodeCalls[0].runOptions.acpPersistenceKey)
 })
 
+test('Natural V4 keeps Hermes, OpenCode, and Claude Code on one Session per group task',
+  async (t) => {
+    const { directory, calls, options } = fixture()
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+    options.naturalAgentResponses = true
+    options.detectAgents = async () => [
+      {
+        kind: 'hermes', name: 'Hermes CLI', executable: '/tmp/hermes', version: '2',
+        acpAvailable: true,
+      },
+      { kind: 'opencode', name: 'OpenCode CLI', executable: '/tmp/opencode', version: '1' },
+      { kind: 'claude', name: 'Claude Code', executable: '/tmp/claude', version: '1' },
+    ]
+    options.runAgent = async (agent, prompt, workdir, runOptions) => {
+      calls.push({ agent, prompt, workdir, runOptions })
+      const sessionRef = runOptions.sessionRef || `${agent.kind}-native-session`
+      if (['hermes', 'opencode'].includes(agent.kind)) {
+        await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
+      }
+      return { text: `${agent.kind} round response`, sessionRef, outcome: 'completed' }
+    }
+
+    const workspace = new LocalWorkspace(options)
+    await workspace.refreshAgents()
+    const group = workspace.createGroup({
+      name: 'Native Session continuity',
+      agentKinds: ['hermes', 'opencode', 'claude'],
+      workdir: directory,
+    })
+
+    await workspace.sendMessage({
+      groupId: group.id,
+      text: 'Continue one shared task for three rounds.',
+      mode: 'auto',
+      discussionStyle: 'sequential',
+      targetKinds: group.agentKinds,
+      maxRounds: 3,
+      protocol: 'v4',
+    })
+    const controller = workspace.activeRuns.get(group.id)
+    assert.ok(controller)
+    await controller.promise
+
+    for (const kind of group.agentKinds) {
+      const agentCalls = calls.filter(call => call.agent.kind === kind)
+      assert.deepEqual(agentCalls.map(call => call.runOptions.sessionRef), [
+        '', `${kind}-native-session`, `${kind}-native-session`,
+      ])
+      assert.equal(typeof agentCalls[0].runOptions.acpPersistenceKey, 'string')
+      assert.equal(agentCalls[0].runOptions.acpPersistenceKey.length > 0, true)
+      assert.equal(agentCalls.every(call => (
+        call.runOptions.acpPersistenceKey === agentCalls[0].runOptions.acpPersistenceKey
+      )), true)
+    }
+    assert.deepEqual(
+      calls.filter(call => call.agent.kind === 'hermes')
+        .map(call => call.runOptions.sessionTransport),
+      ['', 'acp', 'acp'],
+    )
+    assert.deepEqual(
+      calls.filter(call => call.agent.kind === 'opencode')
+        .map(call => call.runOptions.sessionTransport),
+      ['', 'acp', 'acp'],
+    )
+  })
+
 test('Workspace stream bridge redacts split credentials and paths while preserving tools', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

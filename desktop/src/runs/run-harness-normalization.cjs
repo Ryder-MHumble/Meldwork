@@ -252,6 +252,10 @@ function normalizeContextStats(input) {
     const value = String(input[field] || '')
     if (SHA256.test(value)) context[field] = value
   }
+  const operationId = cleanId(input.operationId)
+  if (operationId) context.operationId = operationId
+  const snapshotHash = String(input.snapshotHash || '')
+  if (SHA256.test(snapshotHash)) context.snapshotHash = snapshotHash
   if (input.sessionRotated === true) context.sessionRotated = true
   const contextPackId = normalizeContextPackId(input.contextPackId)
   if (contextPackId) context.contextPackId = contextPackId
