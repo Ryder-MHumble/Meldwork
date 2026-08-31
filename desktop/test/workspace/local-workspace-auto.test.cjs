@@ -1422,8 +1422,11 @@ test('V4 invocation boundary resumes delta delivery from durable acknowledgement
   workspace.save()
   const rotatedA = await deliver(workspace, runA, receiptsFor(runA, 3), 'wave-3-rotated')
   assert.ok(rotatedA.result)
-  assert.equal(calls.find(call => call.tag === 'A' && call.attempt === 'wave-3-rotated').sessionRef, '')
-  assert.equal(workspace.state.sessions[sessionKeyA], 'A-codex-native-2')
+  assert.equal(
+    calls.find(call => call.tag === 'A' && call.attempt === 'wave-3-rotated').sessionRef,
+    'A-codex-native-1',
+  )
+  assert.equal(workspace.state.sessions[sessionKeyA], 'A-codex-native-1')
 
   const durableAAtRestart = ledger.get(runA.controller.runId)
   const durableBAtRestart = ledger.get(runB.controller.runId)
@@ -1471,7 +1474,7 @@ test('V4 invocation boundary resumes delta delivery from durable acknowledgement
     watermark: entry.watermark,
   })), [{ sourceAgentKind: 'kimi', watermark: 4 }])
   const postRestartCall = calls.find(call => call.attempt === 'post-restart-delta')
-  assert.equal(postRestartCall.sessionRef, 'A-codex-native-2')
+  assert.equal(postRestartCall.sessionRef, 'A-codex-native-1')
   assert.match(postRestartCall.prompt, /A WAVE_4_kimi_LATEST/)
   assert.doesNotMatch(postRestartCall.prompt, /A WAVE_3_/)
   assert.deepEqual(
@@ -1487,7 +1490,7 @@ test('V4 invocation boundary resumes delta delivery from durable acknowledgement
       .map(entry => ({ watermark: entry.watermark, status: entry.status })),
     [{ watermark: 4, status: 'acknowledged' }],
   )
-  assert.equal(restarted.state.sessions[sessionKeyA], 'A-codex-native-2')
+  assert.equal(restarted.state.sessions[sessionKeyA], 'A-codex-native-1')
   restarted.activeRuns.delete(recoveredRunA.group.id)
 })
 

@@ -83,7 +83,9 @@ function agentReturnedMediaProviderFailure(text) {
 }
 const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const SHA256 = /^[a-f0-9]{64}$/
-const V4_PHASES = new Set(['proposal', 'challenge', 'work', 'synthesis', 'verification'])
+const V4_PHASES = new Set([
+  'proposal', 'discussion', 'challenge', 'work', 'synthesis', 'verification',
+])
 const V4_RECEIPT_MARKER_PREFIX = '[[MELDWORK_COLLABORATION'
 const V4_RECEIPT_MARKER = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?:([\s\S]*?)\]\]/i
 const V4_RECEIPT_BLOCK = /\s*\[\[MELDWORK_COLLABORATION(?:_JSON)?\]\]([\s\S]*?)\[\[\/MELDWORK_COLLABORATION(?:_JSON)?\]\]/i
@@ -326,7 +328,8 @@ function attachInvocationFailure(error, input) {
 }
 
 function isolatedInvocationContext(context) {
-  if (!['isolated', 'frozen'].includes(context?.sessionPolicy)) return null
+  if (!['isolated', 'frozen'].includes(context?.sessionPolicy)
+      && !(context?.v4 === true && typeof context.promptOverride === 'string')) return null
   const promptOverride = typeof context.promptOverride === 'string'
     ? context.promptOverride
     : ''
@@ -339,7 +342,7 @@ function isolatedInvocationContext(context) {
   return {
     promptOverride,
     contextPackId,
-    policy: context.sessionPolicy,
+    policy: ['isolated', 'frozen'].includes(context?.sessionPolicy) ? context.sessionPolicy : '',
   }
 }
 
@@ -712,7 +715,12 @@ class LocalWorkspaceAgentInvocation {
       && !resumedConnectorGate
       ? context.resumedGate
       : null
-    const sessionNeedsRotation = sessionRef && shouldRotateSession(sessionMeta)
+    const preserveV4TaskSession = context.v4 === true
+      && group.conversationType !== 'direct'
+      && Boolean(taskId)
+    const sessionNeedsRotation = sessionRef
+      && shouldRotateSession(sessionMeta)
+      && !preserveV4TaskSession
     if (resumedPermission) {
       const requestHash = sha256(canonicalJson(resumedPermission.request))
       const persistedBinding = {
@@ -1172,6 +1180,12 @@ class LocalWorkspaceAgentInvocation {
         ...(Number.isInteger(context.executionSequence)
           ? { executionSequence: context.executionSequence }
           : {}),
+        ...(v4AgentSlotBinding
+          ? {
+              operationId: v4AgentSlotBinding.operationId,
+              snapshotHash: v4AgentSlotBinding.snapshotHash,
+            }
+          : {}),
         ...runtimeContext,
         ...deliveryContext,
         ...connectorContext,
@@ -1261,12 +1275,14 @@ class LocalWorkspaceAgentInvocation {
       const buildPrompt = (afterKind, contextPackage) => isolated || frozen
         ? v4Prompt
         : [
-            this.promptFor(
-              group, kind, context.completionPolicy === 'typed' ? 'manual' : mode,
-              threadRootId, context.skillHints || [],
-              context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
-              activeRun?.unlimitedRounds === true,
-            ),
+            context.v4 === true && v4Prompt
+              ? v4Prompt
+              : this.promptFor(
+                group, kind, context.completionPolicy === 'typed' ? 'manual' : mode,
+                threadRootId, context.skillHints || [],
+                context.knowledgeBaseHints || [], afterKind, contextPackage, promptMode,
+                activeRun?.unlimitedRounds === true,
+              ),
             stagedAgentInputPrompt(stagedInputs),
             generatedMedia
               ? `Meldwork generated and will attach ${generatedMedia.filename}. Confirm the delivered media briefly; do not claim a different file was created.`

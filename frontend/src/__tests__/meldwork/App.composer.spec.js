@@ -196,7 +196,7 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
-  it('shows the Auto discussion Beta mode with an explanation placeholder and a coming-soon guard', async () => {
+  it('sends the Auto discussion Beta mode as an Agent-led V4 discussion', async () => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'group-auto-beta',
@@ -228,8 +228,18 @@ describe('Meldwork workbench', () => {
     await wrapper.get('.send-button').trigger('click')
     await flushPromises()
 
-    expect(bridge.localWorkspace.send).not.toHaveBeenCalled()
-    expect(wrapper.get('.toast-message').text()).toContain('coming soon')
+    expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
+      groupId: 'group-auto-beta',
+      text: 'Plan a launch',
+      targetKinds: ['codex', 'hermes'],
+      skillHints: [],
+      knowledgeBaseHints: [],
+      attachments: [],
+      mode: 'auto',
+      discussionStyle: 'agent-led',
+      protocol: 'v4',
+      maxRounds: 6,
+    })
     wrapper.unmount()
   })
 

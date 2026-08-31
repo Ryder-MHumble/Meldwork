@@ -346,7 +346,10 @@ test('Natural V4 prompts carry task context without exposing the receipt templat
 
   assert.match(prompt, /Compare the available skills/)
   assert.match(prompt, /Answer the user naturally in Markdown/)
-  assert.doesNotMatch(prompt, /Receipt JSON shape|MELDWORK_COLLABORATION|MELDWORK_V4_FROZEN_SNAPSHOT_V1/)
+  assert.doesNotMatch(
+    prompt,
+    /current collaboration phase|your role|Receipt JSON shape|MELDWORK_COLLABORATION|MELDWORK_V4_FROZEN_SNAPSHOT_V1/i,
+  )
 })
 
 test('Natural V4 challenge responses receive a deterministic internal responsibility graph', () => {

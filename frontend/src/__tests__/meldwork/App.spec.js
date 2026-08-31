@@ -1670,7 +1670,7 @@ describe('Meldwork workbench', () => {
     await range.setValue(6)
     await wrapper.get('.round-unlimited-button').trigger('click')
     await flushPromises()
-    expect(wrapper.get('.confirmation-modal-body').text()).toContain('until consensus or manual stop')
+    expect(wrapper.get('.confirmation-modal-body').text()).toContain('until collaboration ends or you stop it')
     expect(wrapper.find('.round-range-input').exists()).toBe(true)
     await wrapper.get('.confirmation-modal-footer .primary-button').trigger('click')
     await flushPromises()

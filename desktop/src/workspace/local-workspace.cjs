@@ -66,7 +66,29 @@ const TERMINAL_RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
   'budget-exhausted', 'circuit-breaker',
 ])
-const V4_VISIBLE_MESSAGE_PHASES = ['proposal', 'challenge', 'work', 'verification']
+const V4_VISIBLE_MESSAGE_PHASES = ['proposal', 'discussion', 'challenge', 'work', 'verification']
+
+function naturalV4MessageBindingMatches(message, record, phase) {
+  if (!record.orchestration?.discussionStyle || !['proposal', 'discussion'].includes(phase)) {
+    return true
+  }
+  const round = Number(message?.trace?.round) || 0
+  const slot = record.orchestration.slots?.find(candidate => (
+    candidate.agentKind === message.agentKind
+  ))
+  if (round < 1 || !slot?.slotId) return false
+  const operationPhase = phase === 'discussion' ? `discussion:${round}` : phase
+  const operationId = `operation-${createHash('sha256').update(JSON.stringify([
+    record.runId,
+    record.taskId,
+    message.agentKind,
+    slot.slotId,
+    operationPhase,
+    round,
+  ])).digest('hex')}`
+  return message.trace?.context?.operationId === operationId
+    && message.trace?.context?.snapshotHash === record.orchestration.snapshotHash
+}
 
 function isCommittedV4PhaseMessage(message, record) {
   const agentRunId = String(message?.trace?.agentRunId || '')
@@ -74,15 +96,16 @@ function isCommittedV4PhaseMessage(message, record) {
       || message?.trace?.runId !== record.runId || !message.agentKind || !agentRunId) {
     return false
   }
-  return V4_VISIBLE_MESSAGE_PHASES.some(phase => (
-    message.id === `message-${hashValue({
+  return V4_VISIBLE_MESSAGE_PHASES.some((phase) => {
+    if (message.id !== `message-${hashValue({
       agentKind: message.agentKind,
       agentRunId,
       phase,
       runId: record.runId,
       taskId: record.taskId,
-    })}`
-  ))
+    })}`) return false
+    return naturalV4MessageBindingMatches(message, record, phase)
+  })
 }
 
 class LocalWorkspace extends EventEmitter {
@@ -476,7 +499,7 @@ class LocalWorkspace extends EventEmitter {
       const commitState = orchestration?.commitState
       const candidateCommit = orchestration?.candidateCommit
       const resumablePhase = [
-        'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
+        'proposal', 'discussion', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
       ].includes(orchestration?.phase)
       const resumableCommit = ['commit', 'committed', 'completed'].includes(orchestration?.phase)
         && ['committing', 'committed'].includes(commitState?.status)
