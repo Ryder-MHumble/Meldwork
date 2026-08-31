@@ -45,6 +45,8 @@ const {
   validateV4SnapshotBody,
 } = require('./local-workspace-context.cjs')
 
+const DISCUSSION_STYLES = new Set(['sequential', 'agent-led'])
+
 function hardBudgetFailure(error) {
   return error?.code === 'LOCAL_BUDGET_EXHAUSTED'
     || error?.message === 'LOCAL_BUDGET_EXHAUSTED'
@@ -337,15 +339,28 @@ class LocalWorkspaceMessageSubmission {
     if (regenerateMessageId && (mode !== 'manual' || targetKinds.length !== 1)) {
       throw new Error('LOCAL_MESSAGE_REGENERATION_INVALID')
     }
+    const v4 = (mode === 'manual' || mode === 'auto')
+      && group.conversationType !== 'direct'
+      && targetKinds.length > 1
+      && !regenerateMessageId
+      && input.protocol !== 'legacy'
+      && this.v4Requested(input)
+    const requestedDiscussionStyle = input.discussionStyle == null
+      ? ''
+      : cleanInline(input.discussionStyle, 40)
+    if (requestedDiscussionStyle && !DISCUSSION_STYLES.has(requestedDiscussionStyle)) {
+      throw new Error('LOCAL_DISCUSSION_STYLE_INVALID')
+    }
+    if (requestedDiscussionStyle && (mode !== 'auto' || !v4)) {
+      throw new Error('LOCAL_DISCUSSION_STYLE_UNSUPPORTED')
+    }
     return {
       mode,
       targetKinds,
-      v4: (mode === 'manual' || mode === 'auto')
-        && group.conversationType !== 'direct'
-        && targetKinds.length > 1
-        && !regenerateMessageId
-        && input.protocol !== 'legacy'
-        && this.v4Requested(input),
+      v4,
+      discussionStyle: mode === 'auto' && v4
+        ? (requestedDiscussionStyle || 'sequential')
+        : '',
       unlimitedRounds,
       maxRounds,
       requestedThreadRootId,
@@ -1428,6 +1443,7 @@ class LocalWorkspaceMessageSubmission {
       regenerateMessageId,
       routingDecision,
       taskGraph,
+      discussionStyle,
     } = this.validateInput(group, input)
     const regeneration = this.resolveRegeneration(group, regenerateMessageId, targetKinds)
     const reservation = this.reserveRun(
@@ -1439,6 +1455,7 @@ class LocalWorkspaceMessageSubmission {
       unlimitedRounds,
     )
     reservation.v4 = v4
+    reservation.discussionStyle = discussionStyle
     try {
       if (regeneration) reservation.responseVersionRootId = regeneration.responseVersionRootId
       this.configureRunBudget(reservation, input.budget || {})
@@ -1797,6 +1814,18 @@ class LocalWorkspaceMessageSubmission {
       group.id, 'auto', targetKinds, threadRootId, maxRounds, unlimitedRounds,
     )
     reservation.v4 = input.protocol !== 'legacy' && this.v4Requested(input)
+    const requestedDiscussionStyle = input.discussionStyle == null
+      ? ''
+      : cleanInline(input.discussionStyle, 40)
+    if (requestedDiscussionStyle && !DISCUSSION_STYLES.has(requestedDiscussionStyle)) {
+      this.releasePreparation(group.id, reservation)
+      throw new Error('LOCAL_DISCUSSION_STYLE_INVALID')
+    }
+    if (requestedDiscussionStyle && !reservation.v4) {
+      this.releasePreparation(group.id, reservation)
+      throw new Error('LOCAL_DISCUSSION_STYLE_UNSUPPORTED')
+    }
+    reservation.discussionStyle = requestedDiscussionStyle || 'sequential'
     try {
       this.configureRunBudget(reservation, input.budget || {})
       const contextPack = this.createContextPack({

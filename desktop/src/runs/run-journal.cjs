@@ -28,7 +28,7 @@ const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
   'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
   'sessionProvenance', 'outcomeRefs', 'sourceCount', 'sourceHash', 'promptBytes',
-  'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
+  'promptHash', 'wirePayloadBytes', 'wirePayloadHash', 'operationId', 'snapshotHash',
   'connector', 'connectorEventState',
 ])
 

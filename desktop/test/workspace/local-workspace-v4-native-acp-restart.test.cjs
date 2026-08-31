@@ -376,55 +376,27 @@ async function createManualPermissionRestart(t, restartOptions = {}) {
   }
 }
 
-test('Manual V4 native ACP permission restart requires whole-slot recovery and a fresh Gate', async (t) => {
+test('Manual V4 native ACP permission restart resumes the persisted Session without a fresh Gate',
+  async (t) => {
   const recovery = await createManualPermissionRestart(t)
   const {
-    calls, originalGate, restarted, restartedLedger, beforeApprovalCalls, waiting, writerSlot,
+    calls, originalGate, restarted, restartedLedger, beforeApprovalCalls, writerSlot,
   } = recovery
-  const recoveryGate = await pendingGate(restarted, gate => (
-    gate.gateId !== originalGate.gateId && gate.type === 'retry'
-  ))
-  const recoveryRequest = restarted.humanGateStore.request(recoveryGate.gateId)
-  const recovered = restartedLedger.get(originalGate.runId)
-  const recoveredWriter = recovered.orchestration.slots.find(slot => slot.agentKind === 'hermes')
+  const terminal = await terminalRun(restartedLedger, originalGate.runId)
+  const recoveredWriter = terminal.orchestration.slots.find(slot => slot.agentKind === 'hermes')
+  const hermesCalls = calls.filter(call => call.kind === 'hermes')
 
   assert.equal(calls.length, beforeApprovalCalls + 1)
   assert.equal(calls.at(-1).sessionRef, 'hermes-v4-native-session')
-  assert.equal(recovered.status, 'waiting')
-  assert.equal(recoveredWriter.status, 'running')
+  assert.equal(terminal.status, 'completed', terminal.reason)
+  assert.equal(recoveredWriter.status, 'completed')
   assert.equal(recoveredWriter.attempt, writerSlot.attempt)
   assert.equal(recoveredWriter.operationId, writerSlot.operationId)
-  assert.equal(recoveredWriter.commitStatus, 'pending')
-  assert.deepEqual(recoveredWriter.resultRefs.workflowOutcomeRefs || [], [])
-  assert.deepEqual(recoveryRequest, {
-    phase: 'manual-writer-recovery',
-    batchId: waiting.orchestration.batchId,
-    slotId: writerSlot.slotId,
-    operationId: writerSlot.operationId,
-    attempt: writerSlot.attempt,
-    outcomeCertainty: 'unknown_outcome',
-    sideEffectsPossible: true,
-  })
-  for (const kind of ['codex', 'workbuddy']) {
-    assert.equal(calls.filter(call => call.kind === kind).length, 1)
-  }
-
-  restarted.decideHumanGate(recoveryGate.gateId, {
-    status: 'approved', optionId: 'retry-once', actorId: 'local-user',
-  })
-  const freshPermissionGate = await pendingGate(restarted, gate => (
-    gate.type === 'permission' && ![originalGate.gateId, recoveryGate.gateId].includes(gate.gateId)
-  ))
-  assert.equal(calls.filter(call => call.kind === 'hermes').length, 3)
-  assert.equal(calls.at(-1).sessionRef, '')
-  assert.notEqual(freshPermissionGate.gateId, originalGate.gateId)
-
-  restarted.decideHumanGate(freshPermissionGate.gateId, {
-    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
-  })
-  const terminal = await terminalRun(restartedLedger, originalGate.runId)
-  assert.equal(terminal.status, 'completed', terminal.reason)
-  assert.equal(calls.filter(call => call.kind === 'hermes').length, 3)
+  assert.equal(hermesCalls.length, 2)
+  assert.deepEqual(hermesCalls.map(call => call.operationId), [
+    writerSlot.operationId, writerSlot.operationId,
+  ])
+  assert.equal(restarted.listHumanGates({ pendingOnly: true }).length, 0)
   for (const kind of ['codex', 'workbuddy']) {
     assert.equal(calls.filter(call => call.kind === kind).length, 1)
   }
@@ -494,13 +466,28 @@ test('Manual V4 native permission rejects an already accepted bound operation be
     assert.equal(calls.length, beforeApprovalCalls)
   })
 
-test('Manual V4 native permission restart recovers a missing or naturally rotated Session', async (t) => {
+test('Manual V4 native permission restart recovers a missing Session and preserves a V4 Session',
+  async (t) => {
   for (const sessionState of ['missing', 'rotated']) {
     await t.test(sessionState, async (subtest) => {
       const recovery = await createManualPermissionRestart(subtest, { sessionState })
       const {
         calls, originalGate, restarted, restartedLedger, beforeApprovalCalls, writerSlot,
       } = recovery
+      if (sessionState === 'rotated') {
+        const terminal = await terminalRun(restartedLedger, originalGate.runId)
+        const recoveredWriter = terminal.orchestration.slots.find(slot => (
+          slot.agentKind === writerSlot.agentKind
+        ))
+        assert.equal(calls.length, beforeApprovalCalls + 1)
+        assert.equal(calls.at(-1).sessionRef, 'hermes-v4-native-session')
+        assert.equal(terminal.status, 'completed', terminal.reason)
+        assert.equal(recoveredWriter.status, 'completed')
+        assert.equal(recoveredWriter.operationId, writerSlot.operationId)
+        assert.equal(recoveredWriter.attempt, writerSlot.attempt)
+        assert.equal(restarted.listHumanGates({ pendingOnly: true }).length, 0)
+        return
+      }
       const recoveryGate = await pendingGate(restarted, gate => (
         gate.type === 'retry' && gate.gateId !== originalGate.gateId
       ))
@@ -526,7 +513,7 @@ test('Manual V4 native permission restart recovers a missing or naturally rotate
   }
 })
 
-test('Auto V4 read-only native ACP permission restart completes through a fresh Gate', async (t) => {
+test('Auto V4 read-only native ACP permission restart resumes the persisted Session', async (t) => {
   const { directory, options } = fixture()
   const cli = hermesAcpExecutable(directory)
   const ledger = new RunLedger({
@@ -551,7 +538,7 @@ test('Auto V4 read-only native ACP permission restart completes through a fresh 
   })
   const send = workspace.sendMessage({
     groupId: group.id,
-    text: 'Resume one native read-only proposal through a fresh permission Gate.',
+    text: 'Resume one native read-only proposal through its persisted Session.',
     mode: 'auto',
     maxRounds: 3,
     targetKinds: ['codex', 'hermes', 'workbuddy'],
@@ -591,23 +578,19 @@ test('Auto V4 read-only native ACP permission restart completes through a fresh 
     status: 'approved', optionId: 'allow-once', actorId: 'local-user',
   })
 
-  const freshGate = await pendingGate(restarted, gate => (
-    gate.type === 'permission' && gate.gateId !== originalGate.gateId
-  ))
+  const terminal = await terminalRun(restartedLedger, originalGate.runId)
   const resumedCalls = calls.filter(call => (
     call.kind === 'hermes' && call.phase === 'proposal'
   ))
-  assert.equal(calls.length, beforeApprovalCalls + 2)
+  assert.equal(calls[beforeApprovalCalls].kind, 'hermes')
+  assert.equal(calls[beforeApprovalCalls].phase, 'proposal')
+  assert.equal(calls[beforeApprovalCalls].sessionRef, 'hermes-v4-native-session')
   assert.deepEqual(resumedCalls.map(call => call.operationId), [
-    gatedSlot.operationId, gatedSlot.operationId, gatedSlot.operationId,
+    gatedSlot.operationId, gatedSlot.operationId,
   ])
-  assert.equal(resumedCalls.at(-1).sessionRef, '')
-  restarted.decideHumanGate(freshGate.gateId, {
-    status: 'approved', optionId: 'allow-once', actorId: 'local-user',
-  })
-
-  const terminal = await terminalRun(restartedLedger, originalGate.runId)
+  assert.equal(resumedCalls.at(-1).sessionRef, 'hermes-v4-native-session')
   assert.equal(terminal.status, 'completed', terminal.reason)
+  assert.equal(restarted.listHumanGates({ pendingOnly: true }).length, 0)
   for (const kind of ['codex', 'workbuddy']) {
     assert.equal(calls.filter(call => call.kind === kind && call.phase === 'proposal').length, 1)
   }
