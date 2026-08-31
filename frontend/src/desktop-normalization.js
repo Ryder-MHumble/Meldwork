@@ -40,7 +40,7 @@ const EVENT_STATUSES = new Set([
 ])
 const ORCHESTRATION_PHASES = new Set([
   'prepare', 'dispatch', 'running', 'reconcile',
-  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
+  'proposal', 'discussion', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
   'commit', 'committed', 'failed', 'stopped', 'human-gate',
 ])
 const TRACE_PHASES = new Set([

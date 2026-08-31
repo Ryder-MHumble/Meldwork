@@ -19,7 +19,7 @@ const FAILED_AGENT_STATUSES = new Set(['failed', 'stopped', 'timeout'])
 const TERMINAL_PERSISTENCE_STATES = new Set(['pending', 'retrying', 'failed'])
 
 const V4_PHASES = new Set([
-  'prepare', 'dispatch', 'running', 'reconcile', 'proposal', 'challenge',
+  'prepare', 'dispatch', 'running', 'reconcile', 'proposal', 'discussion', 'challenge',
   'coordination', 'work', 'synthesis', 'verification', 'commit', 'committed', 'completed',
   'human-gate', 'stopped', 'failed',
 ])

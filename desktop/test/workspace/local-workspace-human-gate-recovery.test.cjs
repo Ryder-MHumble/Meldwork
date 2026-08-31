@@ -391,6 +391,7 @@ async function verifyAutomaticGateRecovery(t, gateIndex) {
     attachmentRecipients: [],
     totalSuccesses: 0,
     terminalFailureOccurred: false,
+    executionSequence: gateIndex + 1,
   })
   assert.equal(collaboration.version, 1)
   assert.deepEqual(
