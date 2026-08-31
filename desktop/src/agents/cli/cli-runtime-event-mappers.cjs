@@ -345,15 +345,65 @@ function openCodeJsonRuntimeEvents(event) {
   return []
 }
 
-function piJsonRuntimeEvents(event) {
+function createPiRuntimeState() {
+  return {
+    reasoning: new Map(),
+    tools: new Map(),
+  }
+}
+
+function piJsonRuntimeEvents(event, state) {
   if (!event || typeof event !== 'object') return []
-  if (event.type === 'message_update'
-      && event.assistantMessageEvent?.type === 'text_delta'
-      && typeof event.assistantMessageEvent.delta === 'string') {
+  const update = event.assistantMessageEvent
+  if (event.type === 'message_update' && update && typeof update === 'object') {
+    const index = Number.isInteger(update.contentIndex) ? update.contentIndex : 0
+    const id = `content:${index}`
+    if (update.type === 'thinking_start') {
+      state.reasoning.set(id, '')
+      return [{ id, type: 'reasoning_summary', title: 'reasoning', status: 'running' }]
+    }
+    if (update.type === 'thinking_delta' && typeof update.delta === 'string') {
+      const summary = `${state.reasoning.get(id) || ''}${update.delta}`.slice(-2000)
+      state.reasoning.set(id, summary)
+      return [{ id, type: 'reasoning_summary', title: 'reasoning', status: 'running', summary }]
+    }
+    if (update.type === 'thinking_end') {
+      const summary = String(update.content || state.reasoning.get(id) || '').trim()
+      state.reasoning.set(id, summary)
+      return [{ id, type: 'reasoning_summary', title: 'reasoning', status: 'completed', ...(summary ? { summary } : {}) }]
+    }
+    if (update.type === 'text_delta' && typeof update.delta === 'string') {
+      return [{ type: 'answer_delta', status: 'running', delta: update.delta }]
+    }
+    if (['toolcall_start', 'tool_call_start'].includes(update.type)) {
+      const toolId = String(update.toolCallId || update.id || `tool:${index}`)
+      const title = String(update.toolName || update.name || 'tool')
+      state.tools.set(toolId, title)
+      return [{ id: toolId, type: 'tool_start', title, status: 'running' }]
+    }
+    if (['toolcall_end', 'tool_call_end'].includes(update.type)) {
+      const toolId = String(update.toolCallId || update.id || `tool:${index}`)
+      return [{
+        id: toolId,
+        type: 'tool_result_summary',
+        title: state.tools.get(toolId) || String(update.toolName || update.name || 'tool'),
+        status: update.isError === true || update.error ? 'failed' : 'completed',
+      }]
+    }
+  }
+  if (event.type === 'tool_execution_start' || event.type === 'tool_start') {
+    const id = String(event.toolCallId || event.id || 'tool')
+    const title = String(event.toolName || event.name || 'tool')
+    state.tools.set(id, title)
+    return [{ id, type: 'tool_start', title, status: 'running' }]
+  }
+  if (event.type === 'tool_execution_end' || event.type === 'tool_end') {
+    const id = String(event.toolCallId || event.id || 'tool')
     return [{
-      type: 'answer_delta',
-      status: 'running',
-      delta: event.assistantMessageEvent.delta,
+      id,
+      type: 'tool_result_summary',
+      title: state.tools.get(id) || String(event.toolName || event.name || 'tool'),
+      status: event.isError === true || event.error ? 'failed' : 'completed',
     }]
   }
   return []
@@ -447,4 +497,5 @@ module.exports = {
   mimoJsonRuntimeEvents,
   openCodeJsonRuntimeEvents,
   piJsonRuntimeEvents,
+  createPiRuntimeState,
 }

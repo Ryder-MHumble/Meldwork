@@ -298,10 +298,15 @@ class RunHarness {
       status: run.status,
       title: 'agent',
     })
+    const phase = context && typeof context === 'object' ? context.phase : ''
     run.context = normalizeContextStats(context)
     const capsule = traceCapsuleFromAgentRun(run, {
       runId: this.runId,
       status: run.status,
+      phase,
+      executionSequence: context && Number.isInteger(context.executionSequence)
+        ? context.executionSequence
+        : undefined,
       context: run.context,
     })
     return { event, capsule }

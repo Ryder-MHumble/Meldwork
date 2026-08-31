@@ -111,8 +111,13 @@ export function useConversationTraceRuns({
         live: true,
       } : durable)
     }
+    const targetOrder = new Map((activeRun.value?.targetKinds
+      || activeGroup.value?.agentKinds || []).map((kind, index) => [kind, index]))
     return [...byRunAgentId.values()].sort((left, right) => (
       (Number(left.round) || 0) - (Number(right.round) || 0)
+      || (targetOrder.get(left.agentKind) ?? 99) - (targetOrder.get(right.agentKind) ?? 99)
+      || (Date.parse(left.createdAt || left.startedAt || '') || 0)
+        - (Date.parse(right.createdAt || right.startedAt || '') || 0)
     ))
   })
 

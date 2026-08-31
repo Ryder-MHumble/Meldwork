@@ -31,6 +31,10 @@ const FINAL_STATUSES = new Set([
 const CAPSULE_EVENT_TYPES = new Set([
   'reasoning_summary', 'plan', 'tool_start', 'tool_update', 'tool_result_summary', 'warning',
 ])
+const TRACE_PHASES = new Set([
+  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification', 'commit',
+  'discussion', 'synthesis-recovery', 'manual_retry',
+])
 const INCOMPLETE_TOOL_EVENT_TYPES = new Set(['tool_start', 'tool_update'])
 const FAILED_TOOL_STATUSES = new Set(['failed', 'stopped', 'timeout', 'interrupted'])
 const PUBLIC_ID = /^[A-Za-z0-9._:-]{1,120}$/
@@ -248,6 +252,10 @@ function normalizeContextStats(input) {
     const value = String(input[field] || '')
     if (SHA256.test(value)) context[field] = value
   }
+  const operationId = cleanId(input.operationId)
+  if (operationId) context.operationId = operationId
+  const snapshotHash = String(input.snapshotHash || '')
+  if (SHA256.test(snapshotHash)) context.snapshotHash = snapshotHash
   if (input.sessionRotated === true) context.sessionRotated = true
   const contextPackId = normalizeContextPackId(input.contextPackId)
   if (contextPackId) context.contextPackId = contextPackId
@@ -328,6 +336,11 @@ function normalizeCapsuleRound(value, runId, agentRunId, hasExplicitRound) {
   return inferred <= 100000 ? inferred : null
 }
 
+function normalizeTracePhase(value) {
+  const phase = cleanText(value, 40, { inline: true }).toLowerCase()
+  return TRACE_PHASES.has(phase) ? phase : ''
+}
+
 function normalizeTraceCapsule(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return null
   const runId = cleanId(input.runId)
@@ -339,6 +352,8 @@ function normalizeTraceCapsule(input) {
     agentRunId,
     Object.prototype.hasOwnProperty.call(input, 'round'),
   )
+  const phase = normalizeTracePhase(input.phase)
+  const executionSequence = boundedNumber(input.executionSequence, 1, 100000)
   const events = (Array.isArray(input.events) ? input.events : [])
     .slice(0, MAX_CAPSULE_EVENTS)
     .map(normalizeCapsuleEvent)
@@ -347,6 +362,8 @@ function normalizeTraceCapsule(input) {
     runId,
     agentRunId,
     ...(round != null ? { round } : {}),
+    ...(phase ? { phase } : {}),
+    ...(executionSequence != null ? { executionSequence } : {}),
     status: cleanStatus(input.status, 'completed'),
     summary: cleanText(input.summary, 1200),
     events,
@@ -363,6 +380,7 @@ function traceCapsuleFromAgentRun(input, options = {}) {
   const kind = cleanId(input.kind || input.agentKind)
   if (!runId || !agentRunId || !kind) return null
   const round = boundedNumber(input.round, 0, 100000)
+  const phase = normalizeTracePhase(options.phase || input.phase)
   const status = cleanStatus(options.status || input.status, 'interrupted')
   const capsuleEvents = (Array.isArray(input.events) ? input.events : [])
     .filter(item => CAPSULE_EVENT_TYPES.has(String(item?.type || '').toLowerCase()))
@@ -387,6 +405,10 @@ function traceCapsuleFromAgentRun(input, options = {}) {
     runId,
     agentRunId,
     round,
+    ...(phase ? { phase } : {}),
+    ...(Number.isInteger(options.executionSequence)
+      ? { executionSequence: options.executionSequence }
+      : {}),
     status,
     summary: narrative?.summary || input.summary || '',
     events: capsuleEvents,

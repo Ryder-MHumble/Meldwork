@@ -172,6 +172,7 @@ function registerDesktopIpc(options) {
     getAttachmentStore,
     getAgentConnectors,
     getCloudAgentRuntime,
+    getCloudAgentBridges,
     getKnowledgeConnectors,
     getMainWindow,
     getOutcomeStore,
@@ -362,6 +363,44 @@ function registerDesktopIpc(options) {
     if (!LOCAL_RUN_IDENTIFIER.test(normalizedRunId)) throw new Error('CLOUD_AGENT_RUN_INVALID')
     return runtime.cancel(normalizedRunId)
   })
+  registerTrustedHandle('local-cloud-agent-bridge:list', (...args) => {
+    if (args.length) throw new Error('CLOUD_AGENT_BRIDGE_REQUEST_INVALID')
+    const bridges = getCloudAgentBridges?.()
+    if (!bridges) throw new Error('CLOUD_AGENT_BRIDGE_RUNTIME_UNAVAILABLE')
+    return bridges.list()
+  })
+  registerTrustedHandle('local-cloud-agent-bridge:connect', async (...args) => {
+    if (args.length !== 1 || !args[0] || typeof args[0] !== 'object'
+        || Array.isArray(args[0])
+        || Reflect.ownKeys(args[0]).some(key => !['address', 'label'].includes(key))
+        || typeof args[0].address !== 'string'
+        || (args[0].label !== undefined && typeof args[0].label !== 'string')) {
+      throw new Error('CLOUD_AGENT_BRIDGE_REQUEST_INVALID')
+    }
+    const bridges = getCloudAgentBridges?.()
+    if (!bridges) throw new Error('CLOUD_AGENT_BRIDGE_RUNTIME_UNAVAILABLE')
+    const result = await bridges.connect(args[0])
+    await refreshLocalAgentState()
+    return result
+  })
+  registerTrustedHandle('local-cloud-agent-bridge:refresh', async (...args) => {
+    if (args.length) throw new Error('CLOUD_AGENT_BRIDGE_REQUEST_INVALID')
+    const bridges = getCloudAgentBridges?.()
+    if (!bridges) throw new Error('CLOUD_AGENT_BRIDGE_RUNTIME_UNAVAILABLE')
+    const result = await bridges.refresh()
+    await refreshLocalAgentState()
+    return result
+  })
+  registerTrustedHandle('local-cloud-agent-bridge:delete', async (...args) => {
+    if (args.length !== 1 || typeof args[0] !== 'string') {
+      throw new Error('CLOUD_AGENT_BRIDGE_REQUEST_INVALID')
+    }
+    const bridges = getCloudAgentBridges?.()
+    if (!bridges) throw new Error('CLOUD_AGENT_BRIDGE_RUNTIME_UNAVAILABLE')
+    const result = bridges.remove(args[0])
+    await refreshLocalAgentState()
+    return result
+  })
   registerTrustedHandle('local-outcome:record-adoption', (...args) => {
     if (args.length !== 1) throw new Error('LOCAL_ADOPTION_REQUEST_INVALID')
     const outcomeStore = getOutcomeStore?.()
@@ -384,6 +423,11 @@ function registerDesktopIpc(options) {
     const selectedKind = String(kind || '')
     if (customAgentStore.has(selectedKind)) {
       return { supported: false, skills: [], total: 0, limit: 0 }
+    }
+    const cloudSkills = getCloudAgentBridges?.()?.skillsForInstance?.(selectedKind)
+    if (cloudSkills !== null && cloudSkills !== undefined) {
+      const skills = cloudSkills.map(skill => ({ ...skill, targetKind: selectedKind }))
+      return { supported: true, skills, total: skills.length, limit: 64 }
     }
     return installer.skills(selectedKind)
   })

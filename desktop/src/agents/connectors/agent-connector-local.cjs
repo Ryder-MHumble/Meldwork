@@ -17,6 +17,7 @@ const {
   MAX_PACKAGE_BYTES,
   createAgentConnectorPackage,
 } = require('./agent-connector-package-store.cjs')
+const { BRIDGE_RECIPE_ID, SSH_RECIPE_ID } = require('../cloud/cloud-agent-bridge.cjs')
 
 const LOCAL_DELEGATE_RECIPE_ID = 'external.local-agent.delegate'
 const MAX_LOCAL_MANIFESTS = 64
@@ -137,7 +138,7 @@ function fail(code) {
 function exactOptions(value) {
   return value && typeof value === 'object' && !Array.isArray(value)
     && Object.keys(value).every(key => [
-      'fetch', 'instanceStore', 'manifestDirectory', 'packageStore', 'runAgent', 'seedSample',
+      'cloudBridges', 'fetch', 'instanceStore', 'manifestDirectory', 'packageStore', 'runAgent', 'seedSample',
     ].includes(key))
 }
 
@@ -240,6 +241,7 @@ class LocalAgentConnectors {
     this.upstreams = new Map()
     this.detectedUpstreams = []
     this.lastDiagnostics = []
+    this.cloudBridges = options.cloudBridges || null
   }
 
   createRegistry() {
@@ -247,7 +249,7 @@ class LocalAgentConnectors {
       ? this.packageStore.installedPackages().map(item => item.manifest)
       : []
     return new AgentConnectorRegistry({
-      approvedRecipeIds: [LOCAL_DELEGATE_RECIPE_ID, ...SDK_RECIPE_IDS],
+      approvedRecipeIds: [LOCAL_DELEGATE_RECIPE_ID, BRIDGE_RECIPE_ID, SSH_RECIPE_ID, ...SDK_RECIPE_IDS],
       approvedExternalManifestIds: [
         ...APPROVED_AGENT_CONNECTOR_MANIFESTS.map(item => item.manifestId),
         ...installedPackageManifests.map(item => item.manifestId),
@@ -262,6 +264,8 @@ class LocalAgentConnectors {
         [LOCAL_DELEGATE_RECIPE_ID]: input => this.runDelegated(input),
         [SDK_LOCAL_ECHO_RECIPE_ID]: input => this.runLocalEcho(input),
         [SDK_HTTP_JSON_RECIPE_ID]: input => this.runHttpJson(input),
+        [BRIDGE_RECIPE_ID]: input => this.runCloudBridge(input),
+        [SSH_RECIPE_ID]: input => this.runCloudBridge(input),
       },
     })
   }
@@ -350,6 +354,29 @@ class LocalAgentConnectors {
       diagnostics.push({ name: 'instances', code: safeFailureCode(error) })
     }
     const manifests = registry.listManifests()
+    for (const entry of this.cloudBridges?.connectorEntries?.() || []) {
+      try {
+        const manifest = registry.registerBuiltin(entry.manifest)
+        const instance = registry.registerInstance({
+          instanceId: entry.instance.instanceId,
+          connectorId: manifest.connectorId,
+          connectorVersion: manifest.connectorVersion,
+          upstreamVersion: entry.instance.upstreamVersion,
+          label: entry.instance.label,
+          credentialRef: null,
+        })
+        upstreams.set(instance.instanceId, Object.freeze({
+          kind: instance.instanceId,
+          label: instance.label,
+          name: instance.label,
+          version: instance.upstreamVersion,
+          compatibilityState: 'compatible',
+          cloud: true,
+        }))
+      } catch (error) {
+        diagnostics.push({ name: entry.instance.instanceId, code: safeFailureCode(error) })
+      }
+    }
     for (const stored of storedInstances) {
       const manifest = manifests.find(item => (
         item.manifestId === stored.manifestId
@@ -405,9 +432,10 @@ class LocalAgentConnectors {
 
   detectAgents() {
     return this.runtime.detectAgents().map((agent) => {
-      const { instance } = this.registry.resolveInstance(agent.connectorInstanceId)
+      const { instance, manifest } = this.registry.resolveInstance(agent.connectorInstanceId)
       return Object.freeze({
         ...agent,
+        cloud: [BRIDGE_RECIPE_ID, SSH_RECIPE_ID].includes(manifest.invocation.recipeId),
         credentialConfigured: Boolean(instance.credentialRef),
       })
     }).sort((left, right) => (
@@ -563,20 +591,26 @@ class LocalAgentConnectors {
   catalog() {
     return this.detectAgents().map((agent) => {
       const { manifest } = this.registry.resolveInstance(agent.connectorInstanceId)
+      const cloud = [BRIDGE_RECIPE_ID, SSH_RECIPE_ID].includes(manifest.invocation.recipeId)
+      const cloudEntry = cloud ? this.cloudBridges?.bridgeForInstance?.(agent.kind) : null
       return Object.freeze({
         kind: agent.kind,
+        sourceKind: cloudEntry?.agent?.sourceKind || '',
         label: agent.label,
         name: agent.name,
         description: manifest.description,
-        version: agent.version,
+        version: cloudEntry?.agent?.version || agent.version,
         installed: true,
         installSupported: false,
         installErrorCode: '',
         providerCompatible: false,
         providerMode: 'connector',
         imageAttachmentLimit: manifest.inputTypes.includes('image') ? 32 : 0,
-        custom: true,
+        custom: !cloud,
         connector: true,
+        cloud,
+        credentialState: cloudEntry?.agent?.credentialState || 'unknown',
+        serverLabel: cloudEntry?.record?.label || '',
         connectorId: manifest.connectorId,
         connectorVersion: manifest.connectorVersion,
         upstreamVersion: agent.upstreamVersion,
@@ -758,6 +792,64 @@ class LocalAgentConnectors {
       }
       input.emit({ ...terminal, type: 'Completed', outcome: 'completed' })
       return { text: parsed.text, sessionRef: parsed.sessionRef || '', outcome: 'completed' }
+    } catch (error) {
+      if (input.signal?.aborted || error?.name === 'AbortError') {
+        input.emit({ ...terminal, type: 'Cancelled', reason: 'user' })
+        return { outcome: 'cancelled', sessionRef: input.sessionRef || '' }
+      }
+      const failure = failureDetails(error)
+      input.emit({ ...terminal, type: 'Failed', ...failure })
+      return { outcome: 'failed', failure }
+    }
+  }
+
+  async runCloudBridge(input) {
+    const entry = this.cloudBridges?.bridgeForInstance?.(input.connector.instanceId)
+    if (!entry) fail('CLOUD_AGENT_BRIDGE_NOT_FOUND')
+    const terminal = {
+      eventId: `${input.agentRunId}:terminal`,
+      cursor: `${input.agentRunId}:terminal`,
+      sequence: 1,
+    }
+    try {
+      if (!['ssh', 'ssh-tunnel'].includes(entry.record.transport)) {
+        input.onOutboundPayload({ destination: entry.record.address, transport: 'http' })
+      }
+      const result = await this.cloudBridges.run({
+        bridgeId: entry.record.bridgeId,
+        agentId: entry.agent.id,
+        prompt: input.prompt,
+        sessionRef: input.sessionRef,
+        // Cloud bridge tasks never receive local workspace write authority.
+        permissionMode: 'read-only',
+        operationId: input.operationId,
+        resume: input.resume,
+        signal: input.signal,
+        onActivity: input.onActivity,
+      })
+      if (!result || typeof result !== 'object' || Array.isArray(result)
+          || typeof result.text !== 'string' || result.text.includes('\u0000')
+          || (result.sessionRef !== undefined
+            && (typeof result.sessionRef !== 'string' || result.sessionRef.length > 8192
+              || /[\u0000-\u001f\u007f]/.test(result.sessionRef)))
+          || !['completed', 'partial', 'failed', 'cancelled'].includes(result.outcome || 'completed')) {
+        fail('CLOUD_AGENT_BRIDGE_RESPONSE_INVALID')
+      }
+      if (result.outcome === 'failed') {
+        const failure = failureDetails(result.failure || result)
+        input.emit({ ...terminal, type: 'Failed', ...failure })
+        return { outcome: 'failed', failure }
+      }
+      if (result.outcome === 'cancelled') {
+        input.emit({ ...terminal, type: 'Cancelled', reason: 'user' })
+        return { outcome: 'cancelled', sessionRef: result.sessionRef || input.sessionRef || '' }
+      }
+      input.emit({ ...terminal, type: 'Completed', outcome: result.outcome || 'completed' })
+      return {
+        text: result.text,
+        sessionRef: typeof result.sessionRef === 'string' ? result.sessionRef : input.sessionRef || '',
+        outcome: result.outcome || 'completed',
+      }
     } catch (error) {
       if (input.signal?.aborted || error?.name === 'AbortError') {
         input.emit({ ...terminal, type: 'Cancelled', reason: 'user' })

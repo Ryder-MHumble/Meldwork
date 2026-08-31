@@ -50,6 +50,9 @@ const {
   normalizeSessionRef,
   terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
+const {
+  DEFAULT_RUN_AGENT_TOOL_TIMEOUT_MS,
+} = require('./local-workspace-runtime-contracts.cjs')
 const { MAX_RUN_AGENT_ATTEMPTS } = require('../runs/failure-policy.cjs')
 const {
   loadWorkspaceState,
@@ -63,7 +66,29 @@ const TERMINAL_RUN_STATUSES = new Set([
   'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
   'budget-exhausted', 'circuit-breaker',
 ])
-const V4_VISIBLE_MESSAGE_PHASES = ['proposal', 'challenge', 'work', 'verification']
+const V4_VISIBLE_MESSAGE_PHASES = ['proposal', 'discussion', 'challenge', 'work', 'verification']
+
+function naturalV4MessageBindingMatches(message, record, phase) {
+  if (!record.orchestration?.discussionStyle || !['proposal', 'discussion'].includes(phase)) {
+    return true
+  }
+  const round = Number(message?.trace?.round) || 0
+  const slot = record.orchestration.slots?.find(candidate => (
+    candidate.agentKind === message.agentKind
+  ))
+  if (round < 1 || !slot?.slotId) return false
+  const operationPhase = phase === 'discussion' ? `discussion:${round}` : phase
+  const operationId = `operation-${createHash('sha256').update(JSON.stringify([
+    record.runId,
+    record.taskId,
+    message.agentKind,
+    slot.slotId,
+    operationPhase,
+    round,
+  ])).digest('hex')}`
+  return message.trace?.context?.operationId === operationId
+    && message.trace?.context?.snapshotHash === record.orchestration.snapshotHash
+}
 
 function isCommittedV4PhaseMessage(message, record) {
   const agentRunId = String(message?.trace?.agentRunId || '')
@@ -71,15 +96,16 @@ function isCommittedV4PhaseMessage(message, record) {
       || message?.trace?.runId !== record.runId || !message.agentKind || !agentRunId) {
     return false
   }
-  return V4_VISIBLE_MESSAGE_PHASES.some(phase => (
-    message.id === `message-${hashValue({
+  return V4_VISIBLE_MESSAGE_PHASES.some((phase) => {
+    if (message.id !== `message-${hashValue({
       agentKind: message.agentKind,
       agentRunId,
       phase,
       runId: record.runId,
       taskId: record.taskId,
-    })}`
-  ))
+    })}`) return false
+    return naturalV4MessageBindingMatches(message, record, phase)
+  })
 }
 
 class LocalWorkspace extends EventEmitter {
@@ -115,6 +141,10 @@ class LocalWorkspace extends EventEmitter {
       && options.runAgentTimeoutMs > 0
       ? options.runAgentTimeoutMs
       : DEFAULT_RUN_AGENT_TIMEOUT_MS
+    this.runAgentToolTimeoutMs = Number.isFinite(options.runAgentToolTimeoutMs)
+      && options.runAgentToolTimeoutMs > 0
+      ? options.runAgentToolTimeoutMs
+      : DEFAULT_RUN_AGENT_TOOL_TIMEOUT_MS
     this.runAbortGraceMs = Number.isFinite(options.runAbortGraceMs)
       && options.runAbortGraceMs > 0
       ? options.runAbortGraceMs
@@ -242,7 +272,10 @@ class LocalWorkspace extends EventEmitter {
       detectedAgents: () => this.detectedAgents,
       activeRuns: this.activeRuns,
       runAgentTimeoutMs: this.runAgentTimeoutMs,
+      runAgentToolTimeoutMs: this.runAgentToolTimeoutMs,
       runAbortGraceMs: this.runAbortGraceMs,
+      defaultYolo: options.defaultYolo,
+      naturalAgentResponses: options.naturalAgentResponses,
       captureAgentOutputs: (...args) => this.captureAgentOutputsFn(...args),
       captureArtifactOutputs: (...args) => this.captureArtifactOutputsFn(...args),
       captureAgentOutcomeDescriptors: (...args) => (
@@ -286,6 +319,8 @@ class LocalWorkspace extends EventEmitter {
       validateSkillSelections: (...args) => this.validateSkillSelectionsFn(...args),
       validateKnowledgeBaseSelections: (...args) => this.validateKnowledgeBaseSelectionsFn(...args),
       invokeAgent: (...args) => this.invokeAgent(...args),
+      defaultYolo: options.defaultYolo,
+      naturalAgentResponses: options.naturalAgentResponses,
       resetAgentSession: (...args) => this.resetAgentSession(...args),
       refreshAgents: () => this.refreshAgents(),
       consumeAgentControl: (...args) => this.runCoordinator.consumeAgentControl(...args),
@@ -464,7 +499,7 @@ class LocalWorkspace extends EventEmitter {
       const commitState = orchestration?.commitState
       const candidateCommit = orchestration?.candidateCommit
       const resumablePhase = [
-        'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
+        'proposal', 'discussion', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
       ].includes(orchestration?.phase)
       const resumableCommit = ['commit', 'committed', 'completed'].includes(orchestration?.phase)
         && ['committing', 'committed'].includes(commitState?.status)

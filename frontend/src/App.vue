@@ -12,7 +12,7 @@
     <section v-if="booting" class="boot-state" aria-live="polite">
       <img class="boot-logo" :src="productAppIcon" alt="Meldwork" />
       <p>{{ t('app.loading') }}</p>
-      <div class="skeleton-line" />
+      <WavePhysicsLoader :theme="theme" />
     </section>
 
     <section v-else-if="bridgeMissing" class="bridge-state">
@@ -193,11 +193,12 @@ import ConversationTimelineView from './components/ConversationTimelineView.vue'
 import HomeDashboard from './components/HomeDashboard.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import PixelBlast from './components/PixelBlast.vue'
+import WavePhysicsLoader from './components/WavePhysicsLoader.vue'
 import RunTracePanel from './components/RunTracePanel.vue'
 import SystemSettingsView from './components/SystemSettingsView.vue'
 import WorkspaceModalContent from './components/WorkspaceModalContent.vue'
 import WorkspaceSidebar from './components/WorkspaceSidebar.vue'
-import { agentLabel, setCustomAgentProfiles } from './catalog.js'
+import { agentLabel, setCloudAgentProfiles, setCustomAgentProfiles } from './catalog.js'
 import { createConversationControllers } from './conversationControllers.js'
 import { useAgentCatalog } from './composables/useAgentCatalog.js'
 import { useAgentManagement } from './composables/useAgentManagement.js'
@@ -219,6 +220,7 @@ import { useConversationViewport } from './composables/useConversationViewport.j
 import { useDesktopWorkspaceLifecycle } from './composables/useDesktopWorkspaceLifecycle.js'
 import { useEmptyShowcasePlayback } from './composables/useEmptyShowcasePlayback.js'
 import { useAppWindowInteractions } from './composables/useAppWindowInteractions.js'
+import { useCloudAgentBridges } from './composables/useCloudAgentBridges.js'
 import { useKnowledgeBaseSettings } from './composables/useKnowledgeBaseSettings.js'
 import { useMessageActions } from './composables/useMessageActions.js'
 import { useOnboarding } from './composables/useOnboarding.js'
@@ -298,6 +300,7 @@ const installer = computed(() => api.value?.agentInstaller || null)
 const customAgent = computed(() => api.value?.customAgent || null)
 const provider = computed(() => api.value?.localAgentProvider || null)
 const knowledgeBase = computed(() => api.value?.localKnowledgeBase || null)
+const cloudAgentBridge = computed(() => api.value?.cloudAgentBridge || null)
 const attachmentsApi = computed(() => api.value?.localAttachments || null)
 const {
   clearOnboardingPlayback,
@@ -438,6 +441,11 @@ const agentRefresh = useAgentRefresh({
   workspace,
 })
 const { refreshAgents } = agentRefresh
+const cloudAgentBridges = useCloudAgentBridges({
+  bridgeApi: cloudAgentBridge,
+  refreshAgents,
+  showError,
+})
 const agentManagement = useAgentManagement({
   activeView,
   closeModal,
@@ -855,6 +863,7 @@ const {
     activeGroup,
     activeView,
     closeModal,
+    cloudAgentBridges,
     confirmUnlimitedRounds,
     contentInteractionBlocked,
     customAgentDeleteArmed,
@@ -942,6 +951,7 @@ const { booting, bridgeMissing } = useDesktopWorkspaceLifecycle({
   beforeBoot: () => {
     applyTheme(theme.value)
     setCustomAgentProfiles([])
+    setCloudAgentProfiles([])
   },
   defaultDirectory,
   handleOpenGroup,

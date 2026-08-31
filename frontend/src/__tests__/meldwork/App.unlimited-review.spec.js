@@ -15,7 +15,7 @@ afterEach(() => {
   document.body.innerHTML = ''
 })
 
-describe('Unlimited-round review mode', () => {
+describe('Unlimited-round discussion mode', () => {
   it('keeps the normal composer surface while retaining the infinity cue', () => {
     const styles = readStylesSource()
 
@@ -64,7 +64,7 @@ describe('Unlimited-round review mode', () => {
     wrapper.unmount()
   })
 
-  it('explains strict peer review in the confirmation and composer', async () => {
+  it('explains natural collaboration in the confirmation and composer', async () => {
     const { wrapper, state, emitWorkspaceChanged } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'group-1',
@@ -84,8 +84,9 @@ describe('Unlimited-round review mode', () => {
     await wrapper.get('.round-unlimited-button').trigger('click')
     await flushPromises()
 
-    expect(wrapper.get('.confirmation-modal-body').text()).toContain('strict peer review')
-    expect(wrapper.get('.confirmation-modal-body').text()).toContain('independently verify claims')
+    expect(wrapper.get('.confirmation-modal-body').text()).toContain('discuss, divide work, collaborate')
+    expect(wrapper.get('.confirmation-modal-body').text()).toContain('once concrete results exist')
+    expect(wrapper.get('.confirmation-modal-body').text()).not.toContain('strict peer review')
 
     await wrapper.get('.confirmation-modal-footer .primary-button').trigger('click')
     await flushPromises()
@@ -95,9 +96,9 @@ describe('Unlimited-round review mode', () => {
     expect(wrapper.get('.round-settings-trigger').classes()).toContain('unlimited')
     expect(wrapper.get('.round-unlimited-symbol').text()).toBe('∞')
     expect(wrapper.get('.round-settings-trigger').text()).toContain('No round limit')
-    expect(wrapper.get('.round-unlimited-active').text()).toContain('report material defects')
+    expect(wrapper.get('.round-unlimited-active').text()).toContain('review material gaps')
     expect(wrapper.get('.composer-box textarea').attributes('placeholder'))
-      .toBe('Message Review with strict peer review enabled')
+      .toBe('Message Review')
 
     state.runningGroupIds = ['group-1']
     state.runs = [{
@@ -150,7 +151,7 @@ describe('Unlimited-round review mode', () => {
     await flushPromises()
     expect(wrapper.get('.composer-box').classes()).not.toContain('unlimited-mode')
     expect(wrapper.find('.round-unlimited-symbol').exists()).toBe(false)
-    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Message Review')
+    expect(wrapper.get('.composer-box textarea').attributes('placeholder')).toBe('Agents reply one at a time, in turn — each may build on the previous answer, up to the round limit.')
     wrapper.unmount()
   })
 })

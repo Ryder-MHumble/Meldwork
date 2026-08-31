@@ -42,7 +42,7 @@ const CONTEXT_FIELDS = new Set([
   'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
   'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
   'sessionProvenance', 'outcomeRefs', 'sourceCount', 'sourceHash', 'promptBytes',
-  'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
+  'promptHash', 'wirePayloadBytes', 'wirePayloadHash', 'operationId', 'snapshotHash',
   'connector', 'connectorEventState',
 ])
 const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
@@ -62,7 +62,7 @@ const CONTINUATION_FIELDS = new Set([
 ])
 const CONTINUATION_INVOCATION_FIELDS = ['phase', 'slotId', 'operationId', 'snapshotHash']
 const CONTINUATION_V4_PHASES = new Set([
-  'proposal', 'challenge', 'work', 'synthesis', 'verification',
+  'proposal', 'discussion', 'challenge', 'work', 'synthesis', 'verification',
 ])
 const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry', 'input'])
 const CONTINUATION_RESUME_KINDS = new Set([
@@ -75,8 +75,9 @@ const ACTIVE_CONTINUATION_STATES = new Set(['pending', 'ready', 'resuming'])
 const ORCHESTRATION_FIELDS = new Set([
   'version', 'workflow', 'currentKind', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
-  'totalSuccesses', 'terminalFailureOccurred', 'collaboration', 'template', 'taskGraph',
-  'phase', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
+  'totalSuccesses', 'terminalFailureOccurred', 'executionSequence',
+  'collaboration', 'template', 'taskGraph',
+  'phase', 'discussionStyle', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
   'slots', 'deliveryWatermarks', 'deliveryState', 'commitState', 'challengeBindings', 'synthesisBinding',
   'synthesisRecovery', 'convergence', 'coordinationPlan', 'workReceipts', 'candidateCommit',
 ])
@@ -239,7 +240,7 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
     'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
     'contextMode', 'promptChars', 'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
     'sourceCount', 'sourceHash', 'promptBytes', 'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
-    'connector', 'connectorEventState',
+    'operationId', 'snapshotHash', 'connector', 'connectorEventState',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
@@ -489,8 +490,9 @@ function normalizeOrchestration(input) {
   const agreementKinds = normalizeKinds(input.agreementKinds)
   const attachmentRecipients = normalizeKinds(input.attachmentRecipients)
   const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
+  const executionSequence = boundedNumber(input.executionSequence, 0, 1000000)
   const v4OnlyFields = [
-    'phase', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
+    'phase', 'discussionStyle', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
     'slots', 'deliveryWatermarks', 'deliveryState', 'commitState', 'challengeBindings',
     'synthesisBinding', 'synthesisRecovery', 'convergence', 'candidateCommit',
   ]
@@ -498,6 +500,10 @@ function normalizeOrchestration(input) {
       || (version === 1 && hasOwn(input, 'collaboration'))
       || (version === 2 && workflow !== 'auto')
       || (version < 3 && (hasOwn(input, 'template') || hasOwn(input, 'taskGraph')))
+      || (hasOwn(input, 'executionSequence')
+        && (!Number.isInteger(input.executionSequence)
+          || input.executionSequence < 0
+          || input.executionSequence > 1000000))
       || (version < 4 && v4OnlyFields.some(field => hasOwn(input, field)))
       || (version === 3 && (workflow !== 'auto' || input.template !== 'task-graph'))) {
     return undefined
@@ -529,6 +535,7 @@ function normalizeOrchestration(input) {
     attachmentRecipients,
     totalSuccesses,
     terminalFailureOccurred: input.terminalFailureOccurred === true,
+    ...(hasOwn(input, 'executionSequence') ? { executionSequence } : {}),
     ...(version >= 2 ? { collaboration } : {}),
     ...(version === 3 ? { template: 'task-graph', taskGraph } : {}),
   }
@@ -694,6 +701,11 @@ function hasValidStoredRecordShape(input) {
             && (typeof agentRun.context[field] !== 'string'
               || !SHA256.test(agentRun.context[field]))) return false
       }
+      if (hasOwn(agentRun.context, 'operationId')
+          && cleanId(agentRun.context.operationId) !== agentRun.context.operationId) return false
+      if (hasOwn(agentRun.context, 'snapshotHash')
+          && (typeof agentRun.context.snapshotHash !== 'string'
+            || !SHA256.test(agentRun.context.snapshotHash))) return false
       if (hasOwn(agentRun.context, 'contextPackId')
           && normalizeContextPackId(agentRun.context.contextPackId)
             !== agentRun.context.contextPackId) return false

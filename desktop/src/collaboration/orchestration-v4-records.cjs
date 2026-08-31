@@ -9,7 +9,7 @@ const V4_TEMPLATES = new Set(['concurrent-batch', 'discussion'])
 const V4_WORKFLOWS = new Set(['manual', 'auto', 'concurrent-batch', 'discussion'])
 const V4_PHASES = new Set([
   'prepare', 'dispatch', 'running', 'reconcile',
-  'proposal', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
+  'proposal', 'discussion', 'challenge', 'coordination', 'work', 'synthesis', 'verification',
   'commit', 'committed', 'completed', 'failed', 'stopped', 'human-gate',
 ])
 const V4_SLOT_STATUSES = new Set([
@@ -60,7 +60,7 @@ const MESSAGE_ID = /^message-[a-f0-9]{64}$/u
 const EVIDENCE_ID = /^evidence-[a-f0-9]{64}$/u
 
 const ORCHESTRATION_FIELDS = new Set([
-  'version', 'workflow', 'template', 'phase', 'batchId', 'round',
+  'version', 'workflow', 'template', 'phase', 'discussionStyle', 'batchId', 'round',
   'currentKind', 'currentKinds', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
   'totalSuccesses', 'terminalFailureOccurred', 'collaboration', 'taskGraph',
@@ -1784,6 +1784,14 @@ function parseOrchestrationV4(input, options = {}) {
   }
   const { workflow, template } = normalizeWorkflow(input.workflow, input.template)
   const phase = phaseForTemplate(template, String(input.phase || ''))
+  const discussionStyle = hasOwn(input, 'discussionStyle')
+    ? String(input.discussionStyle || '')
+    : ''
+  if (discussionStyle && (
+    workflow !== 'auto'
+    || template !== 'discussion'
+    || !['sequential', 'agent-led'].includes(discussionStyle)
+  )) fail('ORCHESTRATION_V4_SCHEMA_INVALID')
   const batchId = cleanId(input.batchId)
   const snapshotHash = String(input.snapshotHash || '')
   if (!batchId || !SHA256.test(snapshotHash)) fail('ORCHESTRATION_V4_SCHEMA_INVALID')
@@ -2017,6 +2025,7 @@ function parseOrchestrationV4(input, options = {}) {
     workflow,
     template,
     phase,
+    ...(discussionStyle ? { discussionStyle } : {}),
     batchId,
     currentKinds,
     activeKinds,

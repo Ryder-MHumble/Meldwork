@@ -148,7 +148,7 @@
               <span>{{ roundLabel(selectedItem) }}</span>
             </div>
             <span class="trace-summary-statuses">
-              <span v-if="waiting" class="trace-waiting-state">{{ t('humanGate.waiting') }}</span>
+              <TextMorph v-if="waiting" class="trace-waiting-state" :words="waitingWords" />
               <span class="trace-status" :data-status="statusTone(selectedItem.status)">
                 {{ statusLabel(selectedItem.status) }}
               </span>
@@ -415,6 +415,7 @@ import {
   CloseOutline,
 } from '@vicons/ionicons5'
 import { agentLabel, agentLogo } from '../catalog.js'
+import TextMorph from './TextMorph.vue'
 import { retainedTraceEvents } from '../conversationTimelineModel.js'
 import { orchestrationPhase, orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { locale, t } from '../i18n.js'
@@ -444,6 +445,12 @@ const roundSelectTrigger = ref(null)
 const openSelector = ref('')
 const humanGateResponses = reactive({})
 const selectedItem = computed(() => props.items.find(item => item.agentRunId === props.selectedAgentRunId) || props.items.at(-1) || null)
+const waitingWords = computed(() => [
+  t('humanGate.waitingWordOne'),
+  t('humanGate.waitingWordTwo'),
+  t('humanGate.waitingWordThree'),
+  t('humanGate.waitingWordFour'),
+])
 const agentGroups = computed(() => {
   const groups = new Map()
   for (const item of props.items) {
@@ -455,9 +462,20 @@ const agentGroups = computed(() => {
   }
   return [...groups.values()]
 })
-const selectedAgentRuns = computed(() => (
-  agentGroups.value.find(group => group.agentKind === selectedItem.value?.agentKind)?.items || []
-))
+const selectedAgentRuns = computed(() => {
+  const items = agentGroups.value.find(group => group.agentKind === selectedItem.value?.agentKind)?.items || []
+  const byRound = new Map()
+  for (const item of items) {
+    const key = Number.isInteger(Number(item.round)) ? Number(item.round) : 0
+    const previous = byRound.get(key)
+    const itemTime = Date.parse(item.createdAt || item.startedAt || '') || 0
+    const previousTime = Date.parse(previous?.createdAt || previous?.startedAt || '') || 0
+    if (!previous || item.live || itemTime >= previousTime) byRound.set(key, item)
+  }
+  return [...byRound.values()].sort((left, right) => (
+    (Number(left.round) || 0) - (Number(right.round) || 0)
+  ))
+})
 const selectedOrchestration = computed(() => (
   selectedItem.value?.orchestration && typeof selectedItem.value.orchestration === 'object'
     ? selectedItem.value.orchestration

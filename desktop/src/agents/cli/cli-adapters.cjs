@@ -21,6 +21,7 @@ const {
   readHermesMessageWatermark,
   redactChildSecrets,
   runtimeCommandSummary,
+  stripExactMeldworkPromptEcho,
   structuredCliError,
 } = require('./cli-runtime-events.cjs')
 const {
@@ -128,6 +129,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     hermesAcpAvailable,
     invocationTransport: options.invocationTransport,
     sessionTransport: options.sessionTransport,
+    maxTurns: options.maxTurns,
   })
   const profile = resolveConnectorEventProfile(agent.kind, {
     transport: spec.eventTransport,
@@ -246,6 +248,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     let timeout
     let forceKillTimeout
     let forceSettleTimeout
+    let terminalKillTimer
+    let terminalForceKillTimer
     const progress = []
     const progressIndexes = new Map()
     let anonymousProgressId = 0
@@ -274,6 +278,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       && typeof profile.createDecoder === 'function'
       ? profile.createDecoder((event) => {
           structuredOutput.ingest?.(event)
+          observeTerminalEvent(event)
           const progressEvent = profile.mapProgress(event)
           if (progressEvent) emitProgress(progressEvent)
           for (const runtimeEvent of profile.mapEvent(event, runtimeState)) {
@@ -287,6 +292,8 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       clearTimeout(timeout)
       clearTimeout(forceKillTimeout)
       clearTimeout(forceSettleTimeout)
+      clearTimeout(terminalKillTimer)
+      clearTimeout(terminalForceKillTimer)
       options.signal?.removeEventListener('abort', abort)
       callback()
     }
@@ -300,6 +307,27 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       try {
         child.kill(signal)
       } catch { /* the process has already exited */ }
+    }
+    let terminalObserved = false
+    const observeTerminalEvent = (event) => {
+      if (terminalObserved || !event || typeof event !== 'object') return
+      const terminal = (
+        (['workbuddy', 'claude', 'qwen'].includes(agent.kind) && event.type === 'result')
+        || (agent.kind === 'pi' && ['turn_end', 'agent_end'].includes(event.type))
+        || (agent.kind === 'codex' && event.type === 'turn.completed')
+        || (['mimo', 'opencode'].includes(agent.kind) && event.type === 'step_finish')
+        || (agent.kind === 'gemini' && event.type === 'result')
+        || (agent.kind === 'kimi' && event.type === 'session.resume_hint')
+      )
+      if (!terminal) return
+      terminalObserved = true
+      terminalKillTimer = setTimeout(() => {
+        if (settled) return
+        signalProcessTree('SIGTERM')
+        terminalForceKillTimer = setTimeout(() => {
+          if (!settled) signalProcessTree('SIGKILL')
+        }, 1500)
+      }, 250)
     }
     const abort = () => {
       if (settled || stopRequested) return
@@ -381,17 +409,6 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           )
           return
         }
-        if (code !== 0) {
-          const rawStdout = stdout.text()
-          const rawStderr = stderr.text().trim()
-          const structuredDetail = structuredCliError(rawStdout)
-          const detail = redactChildSecrets(
-            [rawStderr, structuredDetail].filter(Boolean).join('\n'),
-            childEnv,
-          )
-          rejectTerminal(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
-          return
-        }
         const rawStderr = stderr.text()
         const nextSessionRef = profile.resolveSessionRef({
           stderr: rawStderr,
@@ -400,7 +417,23 @@ async function runAgent(agent, prompt, workdir, options = {}) {
         })
         let result = structuredOutput.end({
           sessionRef: nextSessionRef,
+          prompt,
         })
+        const rawStdout = stdout.text()
+        const structuredDetail = structuredCliError(rawStdout)
+        const usableNonZeroResult = code !== 0
+          && result
+          && typeof result.text === 'string'
+          && result.text.trim()
+          && ['completed', 'partial'].includes(result.outcome)
+        if (code !== 0 && !usableNonZeroResult) {
+          const detail = redactChildSecrets(
+            [rawStderr, structuredDetail].filter(Boolean).join('\n'),
+            childEnv,
+          )
+          rejectTerminal(failedAgentProcessError(detail, { sessionRef: failureSessionRef }))
+          return
+        }
         if (result.error) {
           rejectTerminal(failedAgentProcessError(
             redactChildSecrets(result.error, childEnv),
@@ -418,6 +451,10 @@ async function runAgent(agent, prompt, workdir, options = {}) {
           runContext: profileRunContext,
           options,
         })
+        result = {
+          ...result,
+          text: stripExactMeldworkPromptEcho(result.text, prompt),
+        }
         if (progress.length) result.progress = progress
         const redactedText = redactChildSecrets(result.text, childEnv)
         let output

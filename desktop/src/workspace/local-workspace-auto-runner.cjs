@@ -70,6 +70,7 @@ const {
   terminalRunStatusForReason,
   unauthorizedFailure,
 } = require('./local-workspace-auto-runner-support.cjs')
+const { traceCapsuleFromAgentRun } = require('../runs/run-harness-normalization.cjs')
 const { v4OutcomeMethods } = require('./local-workspace-auto-runner-v4-outcomes.cjs')
 
 class LocalWorkspaceAutoRunner {
@@ -80,6 +81,8 @@ class LocalWorkspaceAutoRunner {
     this.validateSkillSelections = options.validateSkillSelections
     this.validateKnowledgeBaseSelections = options.validateKnowledgeBaseSelections
     this.invokeAgent = options.invokeAgent
+    this.defaultYolo = options.defaultYolo !== false
+    this.naturalAgentResponses = options.naturalAgentResponses === true
     this.resetAgentSession = options.resetAgentSession
     this.refreshAgents = options.refreshAgents
     this.consumeAgentControl = options.consumeAgentControl
@@ -148,6 +151,16 @@ class LocalWorkspaceAutoRunner {
       )
     }
     return true
+  }
+
+  shouldRemoveFailedAgent(error) {
+    const category = normalizeFailure(error).category
+    // Runtime, provider, rate-limit, protocol, and timeout failures are
+    // isolated to this run. A local CLI may recover on the next turn, so its
+    // configured group membership must remain intact. Only failures proving
+    // that the installed Agent cannot currently authenticate or run are
+    // removed from the persistent group.
+    return ['authentication', 'compatibility'].includes(category)
   }
 
   replacementInstruction(failedKind) {
@@ -461,6 +474,7 @@ class LocalWorkspaceAutoRunner {
       if (context.parallelGraph !== true) this.setCurrentAgent(controller, kind)
       return this.invokeAgent(group, kind, mode, controller.signal, threadRootId, {
         ...context,
+        yolo: context.yolo ?? this.defaultYolo,
         deferCredentialFailure: true,
         operationId,
       })
@@ -777,7 +791,10 @@ class LocalWorkspaceAutoRunner {
       && continuation?.resumeKind === 'agent_slot'
       && continuation.phase === orchestration.phase
       && continuation.round === orchestration.round
-      && ['pending', 'ready', 'resuming'].includes(continuation.state)
+      // `resuming` means the gate decision has already been accepted and the
+      // continuation is actively replaying the gated slot. Blocking that
+      // state makes the resume path fail with its own phase-gate error.
+      && ['pending', 'ready'].includes(continuation.state)
   }
 
   assertV4PhaseCanAdvance(controller) {
@@ -1457,14 +1474,16 @@ class LocalWorkspaceAutoRunner {
     )
   }
 
-  v4OperationId(controller, kind, phase, slotId = '') {
+  v4OperationId(
+    controller, kind, phase, slotId = '', round = controller.currentRound || 0,
+  ) {
     const digest = createHash('sha256').update(JSON.stringify([
       controller.runId,
       controller.taskId,
       kind,
       slotId,
       phase,
-      controller.currentRound || 0,
+      round,
     ])).digest('hex')
     return `operation-${digest}`
   }
@@ -2021,7 +2040,7 @@ class LocalWorkspaceAutoRunner {
   }
 
   v4CheckpointRole(phase, slot, coordinationPlan, workAssignment = null) {
-    if (['proposal', 'challenge'].includes(phase)) return 'participant'
+    if (['proposal', 'discussion', 'challenge'].includes(phase)) return 'participant'
     const assignment = phase === 'work'
       ? (workAssignment || this.v4CoordinationAssignment(coordinationPlan, slot.agentKind))
       : (phase === 'synthesis'
@@ -2036,7 +2055,7 @@ class LocalWorkspaceAutoRunner {
   }
 
   v4PromptRole(phase, kind, coordinationPlan, workAssignment = null) {
-    if (['proposal', 'challenge'].includes(phase)) return 'participant'
+    if (['proposal', 'discussion', 'challenge'].includes(phase)) return 'participant'
     if (phase === 'verification') {
       if (!coordinationPlan?.verifierKinds?.includes(kind)) {
         throw new Error('LOCAL_RUN_V4_COORDINATION_PLAN_INVALID')
@@ -2394,7 +2413,10 @@ class LocalWorkspaceAutoRunner {
       ? this.v4SanitizeDeliveryText(options.assignedProposalText || '', 1600) : ''
     const extraContext = this.v4SanitizeDeliveryText(options.extraContext || '', 6000)
     return [
-      v4Prompt({ group, kind, phase, snapshot, role, skillHints: options.skillHints }),
+      v4Prompt({
+        group, kind, phase, snapshot, role, skillHints: options.skillHints,
+        naturalResponse: this.naturalAgentResponses,
+      }),
       reviewTarget
         ? `Coverage responsibility: explicitly incorporate or challenge ${reviewTarget}'s proposal while negotiating with every peer. This coverage duty does not assign responsibilities or authorize you to allocate work for others.`
         : '',
@@ -2404,6 +2426,443 @@ class LocalWorkspaceAutoRunner {
         : '',
       extraContext,
     ].filter(Boolean).join('\n\n')
+  }
+
+  v4NaturalRouteDecision(text, activeKinds) {
+    const participants = Array.isArray(activeKinds) ? activeKinds : []
+    const finalLine = String(text || '').split(/\r?\n/u)
+      .map(line => line.trim())
+      .filter(Boolean)
+      .at(-1) || ''
+    if (!finalLine || !participants.length) return { status: 'none', kinds: [] }
+    const selected = new Set()
+    const mentionPattern = /@([A-Za-z0-9][A-Za-z0-9_-]{0,39})/gu
+    let cursor = 0
+    for (const match of finalLine.matchAll(mentionPattern)) {
+      const separator = finalLine.slice(cursor, match.index)
+      if (separator.includes('@') || !/^[\s\p{P}]*$/u.test(separator)) {
+        return { status: 'invalid', kinds: [] }
+      }
+      const kind = match[1]
+      if (!participants.includes(kind)) return { status: 'invalid', kinds: [] }
+      selected.add(kind)
+      cursor = match.index + match[0].length
+    }
+    const tail = finalLine.slice(cursor)
+    if (!selected.size) {
+      return finalLine.includes('@')
+        ? { status: 'invalid', kinds: [] }
+        : { status: 'none', kinds: [] }
+    }
+    if (tail.includes('@') || !/^[\s\p{P}]*$/u.test(tail)) {
+      return { status: 'invalid', kinds: [] }
+    }
+    return { status: 'valid', kinds: participants.filter(kind => selected.has(kind)) }
+  }
+
+  v4MentionedNextKinds(text, activeKinds) {
+    return this.v4NaturalRouteDecision(text, activeKinds).kinds
+  }
+
+  v4NaturalMessageMatchesBinding(message, controller) {
+    const phase = String(message?.trace?.phase || '')
+    const kind = String(message?.agentKind || '')
+    const round = Number(message?.trace?.round) || 0
+    if (!['proposal', 'discussion'].includes(phase) || !kind || round < 1) return false
+    if (message.trace?.runId !== controller.runId) return false
+    const slot = controller.orchestration?.slots?.find(candidate => candidate.agentKind === kind)
+    const snapshotHash = String(controller.orchestration?.snapshotHash || '')
+    if (!slot?.slotId || !snapshotHash) return false
+    const operationPhase = phase === 'discussion' ? `discussion:${round}` : phase
+    const expectedOperationId = this.v4OperationId(
+      controller, kind, operationPhase, slot.slotId, round,
+    )
+    return message.trace?.context?.operationId === expectedOperationId
+      && message.trace?.context?.snapshotHash === snapshotHash
+  }
+
+  v4NaturalThreadTranscript(group, threadRootId, options = {}) {
+    const rounds = Array.isArray(options.rounds) ? new Set(options.rounds) : null
+    const blocks = this.state().messages.filter(message => (
+      message.groupId === group.id
+      && message.threadRootId === threadRootId
+      && message.role === 'agent'
+      && message.agentKind
+      && (!rounds || rounds.has(Number(message.trace?.round) || 0))
+      && (!options.controller || this.v4NaturalMessageMatchesBinding(
+        message, options.controller,
+      ))
+    )).map(message => [
+      `Round ${Number(message.trace?.round) || 0} - @${message.agentKind}`,
+      String(message.content || '').trim(),
+    ].filter(Boolean).join('\n'))
+    return this.v4SanitizeDeliveryText(blocks.join('\n\n'), Number.MAX_SAFE_INTEGER)
+  }
+
+  v4NaturalRecoveredPhaseResult(group, controller, threadRootId, phase, kind, slot) {
+    if (!this.naturalAgentResponses || !slot || controller.currentRound < 1) return null
+    if (!['proposal', 'discussion'].includes(phase)) return null
+    const operationId = String(slot.operationId || '')
+    const snapshotHash = String(slot.snapshotHash || '')
+    if (!operationId || !snapshotHash) return null
+    const matchesBinding = context => (
+      context?.operationId === operationId && context?.snapshotHash === snapshotHash
+    )
+    const scopedMessages = [...this.state().messages].reverse().filter(message => (
+      message.groupId === group.id
+      && message.threadRootId === threadRootId
+      && message.role === 'agent'
+      && message.agentKind === kind
+      && message.trace?.runId === controller.runId
+      && message.trace?.phase === phase
+      && Number(message.trace?.round) === controller.currentRound
+    ))
+    if (scopedMessages.some(message => !matchesBinding(message.trace?.context))) {
+      throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
+    }
+    const existingMessage = scopedMessages.find(message => matchesBinding(message.trace?.context))
+    let content = String(existingMessage?.content || '')
+    let trace = existingMessage?.trace || null
+    let metadata = existingMessage ? {
+      ...(existingMessage.elapsedMs != null ? { elapsedMs: existingMessage.elapsedMs } : {}),
+      ...(Array.isArray(existingMessage.toolCalls) ? { toolCalls: existingMessage.toolCalls } : {}),
+      ...(Array.isArray(existingMessage.attachments)
+        ? { attachments: existingMessage.attachments } : {}),
+      ...(existingMessage.responseVersionRootId
+        ? { responseVersionRootId: existingMessage.responseVersionRootId } : {}),
+      trace,
+    } : null
+    if (!content || !trace?.agentRunId) {
+      const scopedRuns = [...(controller.harness?.snapshot?.() || [])].reverse().filter(run => (
+        run.kind === kind
+        && run.round === controller.currentRound
+        && run.status === 'completed'
+        && String(run.output || '')
+      ))
+      if (scopedRuns.some(run => !matchesBinding(run.context))) {
+        throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
+      }
+      const recoveredRun = scopedRuns.find(run => matchesBinding(run.context))
+      if (!recoveredRun) return null
+      content = String(recoveredRun.output)
+      trace = traceCapsuleFromAgentRun(recoveredRun, {
+        runId: controller.runId,
+        status: recoveredRun.status,
+        phase,
+      })
+      if (!trace?.agentRunId) return null
+      metadata = { trace }
+    }
+    return {
+      text: content,
+      pendingMessage: {
+        groupId: group.id,
+        role: 'agent',
+        content,
+        agentKind: kind,
+        threadRootId,
+        system: null,
+        metadata,
+      },
+      collaboration: null,
+      outcomeRefs: trace.context?.outcomeRefs || {},
+      operationId: slot.operationId,
+      consensus: false,
+    }
+  }
+
+  v4NaturalRecoveredDiscussionResult(group, controller, threadRootId, kind, slot) {
+    return this.v4NaturalRecoveredPhaseResult(
+      group, controller, threadRootId, 'discussion', kind, slot,
+    )
+  }
+
+  v4NaturalPhasePrompt(group, kind, phase, snapshot, receiptRecords, activeKinds, options = {}) {
+    const transcript = String(options.transcript || '')
+    const agentList = activeKinds.map(agentKind => `@${agentKind}`).join(', ')
+    return [
+      v4Prompt({
+        group, kind, phase, snapshot, role: 'participant',
+        skillHints: options.skillHints, naturalResponse: true,
+      }),
+      transcript ? `Completed peer turns:\n${transcript}` : '',
+      phase === 'discussion' && options.allowRouting === true
+        ? [
+            'Decide which Agent or Agents should contribute next based on the discussion and the work still needed.',
+            `The final non-empty line may contain only the exact Agent mentions that should respond next: ${agentList}.`,
+            'Use one mention for a single next Agent or multiple mentions for a concurrent batch.',
+            'End without any Agent mention only when you accept the current result and made no substantive change. If you made a substantive change, mention at least one different Agent for review.',
+          ].join('\n')
+        : '',
+    ].filter(Boolean).join('\n\n')
+  }
+
+  v4NaturalDiscussionOperationIds(controller, slots, kinds, round) {
+    return new Map(kinds.map((kind) => {
+      const slot = slots.find(candidate => candidate.agentKind === kind)
+      return [kind, this.v4OperationId(
+        controller, kind, `discussion:${round}`, slot?.slotId || '', round,
+      )]
+    }))
+  }
+
+  v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round) {
+    return this.state().messages.filter(message => (
+      message.groupId === group.id
+      && message.threadRootId === threadRootId
+      && message.role === 'agent'
+      && message.trace?.runId === controller.runId
+      && message.trace?.phase === 'discussion'
+      && Number(message.trace?.round) === round
+      && this.v4NaturalMessageMatchesBinding(message, controller)
+    ))
+  }
+
+  v4NaturalRoundHasPeerConfirmation(
+    group, controller, threadRootId, round, activeKinds,
+  ) {
+    if (round <= 2) return false
+    const currentMessages = this.v4NaturalDiscussionRoundMessages(
+      group, controller, threadRootId, round,
+    )
+    if (!currentMessages.length) return false
+    const currentDecisions = currentMessages.map(message => (
+      this.v4NaturalRouteDecision(message.content, activeKinds)
+    ))
+    if (currentDecisions.some(decision => decision.status !== 'none')) return false
+    const previousMessages = this.v4NaturalDiscussionRoundMessages(
+      group, controller, threadRootId, round - 1,
+    )
+    if (!previousMessages.length) return false
+    const previousDecisions = previousMessages.map(message => ({
+      agentKind: message.agentKind,
+      decision: this.v4NaturalRouteDecision(message.content, activeKinds),
+    }))
+    const peerSelected = currentMessages.some(message => previousDecisions.some(previous => (
+      previous.agentKind !== message.agentKind
+      && previous.decision.status === 'valid'
+      && previous.decision.kinds.includes(message.agentKind)
+    )))
+    if (peerSelected) return true
+    return previousDecisions.every(previous => previous.decision.status === 'none')
+      && currentMessages.some(message => (
+        previousMessages.every(previous => previous.agentKind !== message.agentKind)
+      ))
+  }
+
+  v4NaturalConfirmationKind(activeKinds, currentKinds) {
+    const current = new Set(currentKinds)
+    return activeKinds.find(kind => !current.has(kind)) || ''
+  }
+
+  async runV4SequentialDiscussion(group, controller, threadRootId, context, input) {
+    const {
+      targetKinds, activeKinds: initialActiveKinds, writerKind, batchId,
+      snapshot, snapshotRecord, snapshotHash, slots: initialSlots, receiptRecords,
+      checkpointPhase, removePhaseFailures,
+    } = input
+    let activeKinds = [...initialActiveKinds]
+    let slots = initialSlots
+    let round = Math.max(1, Number(controller.currentRound) || 1)
+    let pendingKinds = controller.orchestration?.discussionStyle === 'sequential'
+      && controller.orchestration?.phase === 'discussion'
+      && controller.orchestration?.round === round
+      ? (controller.orchestration.pendingKinds || []).filter(kind => activeKinds.includes(kind))
+      : [...activeKinds]
+    if (!pendingKinds.length && controller.orchestration?.phase === 'discussion') {
+      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) return 'completed'
+      round += 1
+      pendingKinds = [...activeKinds]
+    }
+    while (!controller.signal.aborted) {
+      controller.currentRound = round
+      while (pendingKinds.length && !controller.signal.aborted) {
+        const kind = pendingKinds[0]
+        const remainingKinds = pendingKinds.slice(1)
+        const dispatch = await this.runV4Phase(group, controller, threadRootId, context, {
+          phase: 'discussion',
+          activeKinds: [kind],
+          targetKinds,
+          participantKinds: activeKinds,
+          writerKind,
+          batchId,
+          snapshot,
+          snapshotRecord,
+          snapshotHash,
+          slots,
+          receiptRecords,
+          challengeBindings: null,
+          coordinationPlan: null,
+          workReceipts: [],
+          operationIds: this.v4NaturalDiscussionOperationIds(
+            controller, slots, [kind], round,
+          ),
+          pendingKinds,
+          remainingKinds,
+          sessionPolicy: null,
+          disableDeliveryPrompt: true,
+          promptBuilder: ({ kind: promptKind }) => this.v4NaturalPhasePrompt(
+            group, promptKind, 'discussion', snapshot, receiptRecords, activeKinds, {
+              transcript: this.v4NaturalThreadTranscript(
+                group, threadRootId, { controller },
+              ),
+              skillHints: context.rootSkillsByKind.get(promptKind) || [],
+            },
+          ),
+        })
+        slots = dispatch.slots || slots
+        if (!dispatch.ok) {
+          if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+          const failedKinds = removePhaseFailures(dispatch)
+          activeKinds = activeKinds.filter(agentKind => !failedKinds.includes(agentKind))
+          if (!activeKinds.length) {
+            return dispatch.phasePendingMessages?.length ? 'partial' : 'failed'
+          }
+        }
+        pendingKinds = remainingKinds.filter(agentKind => activeKinds.includes(agentKind))
+      }
+      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) return 'completed'
+      round += 1
+      controller.currentRound = round
+      pendingKinds = [...activeKinds]
+    }
+    return terminalRunStatusForReason(controller.stopReason)
+  }
+
+  async runV4AgentLedDiscussion(group, controller, threadRootId, context, input) {
+    const {
+      targetKinds, activeKinds: initialActiveKinds, writerKind, batchId,
+      snapshot, snapshotRecord, snapshotHash, slots: initialSlots, receiptRecords,
+      latestFor, runPhase, checkpointPhase, removePhaseFailures, addRoundLimitNotice,
+    } = input
+    let activeKinds = [...initialActiveKinds]
+    let slots = initialSlots
+    let round = Math.max(1, Number(controller.currentRound) || 1)
+    const proposalCompleteBeforeRun = activeKinds.every(kind => Boolean(latestFor('proposal', kind)))
+    if (!proposalCompleteBeforeRun) {
+      controller.currentRound = 1
+      const proposal = await runPhase('proposal', activeKinds)
+      slots = proposal.slots || slots
+      if (!proposal.ok) {
+        const failedKinds = removePhaseFailures(proposal)
+        activeKinds = activeKinds.filter(kind => !failedKinds.includes(kind))
+        checkpointPhase('proposal', [], slots, null)
+        if (!activeKinds.length) return proposal.phasePendingMessages?.length ? 'partial' : 'failed'
+      }
+    }
+    const proposalComplete = activeKinds.every(kind => Boolean(latestFor('proposal', kind)))
+    if (!proposalComplete) {
+      return activeKinds.some(kind => Boolean(latestFor('proposal', kind))) ? 'partial' : 'failed'
+    }
+    if (!controller.unlimitedRounds && (controller.maxRounds || 6) <= 1) return 'completed'
+
+    let nextKinds = []
+    if (controller.orchestration?.phase === 'discussion') {
+      round = Math.max(2, Number(controller.orchestration.round) || 2)
+      nextKinds = (controller.orchestration.pendingKinds || [])
+        .filter(kind => activeKinds.includes(kind))
+      if (!nextKinds.length) {
+        const roundMessages = this.v4NaturalDiscussionRoundMessages(
+          group, controller, threadRootId, round,
+        )
+        nextKinds = [...new Set(roundMessages.flatMap((message) => {
+          const decision = this.v4NaturalRouteDecision(message.content, activeKinds)
+          return decision.status === 'valid' ? decision.kinds : []
+        }))]
+        if (!nextKinds.length) {
+          if (this.v4NaturalRoundHasPeerConfirmation(
+            group, controller, threadRootId, round, activeKinds,
+          )) return 'completed'
+          const confirmationKind = this.v4NaturalConfirmationKind(
+            activeKinds, roundMessages.map(message => message.agentKind),
+          )
+          if (!confirmationKind) return roundMessages.length ? 'partial' : 'failed'
+          nextKinds = [confirmationKind]
+        }
+        if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+          addRoundLimitNotice()
+          return 'round-limit'
+        }
+        round += 1
+      }
+    } else {
+      round = 2
+      nextKinds = activeKinds.slice(0, 1)
+    }
+
+    while (!controller.signal.aborted) {
+      controller.currentRound = round
+      const dispatch = await this.runV4Phase(group, controller, threadRootId, context, {
+        phase: 'discussion',
+        activeKinds: nextKinds,
+        targetKinds,
+        participantKinds: activeKinds,
+        writerKind,
+        batchId,
+        snapshot,
+        snapshotRecord,
+        snapshotHash,
+        slots,
+        receiptRecords,
+        challengeBindings: null,
+        coordinationPlan: null,
+        workReceipts: [],
+        operationIds: this.v4NaturalDiscussionOperationIds(
+          controller, slots, nextKinds, round,
+        ),
+        pendingKinds: nextKinds,
+        remainingKinds: [],
+        sessionPolicy: null,
+        disableDeliveryPrompt: true,
+        promptBuilder: ({ kind }) => this.v4NaturalPhasePrompt(
+          group, kind, 'discussion', snapshot, receiptRecords, activeKinds, {
+            transcript: this.v4NaturalThreadTranscript(group, threadRootId, { controller }),
+            skillHints: context.rootSkillsByKind.get(kind) || [],
+            allowRouting: true,
+          },
+        ),
+      })
+      slots = dispatch.slots || slots
+      if (!dispatch.ok) {
+        if (controller.signal.aborted) return terminalRunStatusForReason(controller.stopReason)
+        const failedKinds = removePhaseFailures(dispatch)
+        activeKinds = activeKinds.filter(kind => !failedKinds.includes(kind))
+        if (!activeKinds.length) return dispatch.phasePendingMessages?.length ? 'partial' : 'failed'
+      }
+      const roundMessages = this.v4NaturalDiscussionRoundMessages(
+        group, controller, threadRootId, round,
+      )
+      nextKinds = [...new Set(roundMessages.flatMap((message) => {
+        const decision = this.v4NaturalRouteDecision(message.content, activeKinds)
+        return decision.status === 'valid' ? decision.kinds : []
+      }))].filter(kind => activeKinds.includes(kind))
+      if (!nextKinds.length) {
+        if (this.v4NaturalRoundHasPeerConfirmation(
+          group, controller, threadRootId, round, activeKinds,
+        )) return 'completed'
+        const confirmationKind = this.v4NaturalConfirmationKind(
+          activeKinds, roundMessages.map(message => message.agentKind),
+        )
+        if (!confirmationKind) return roundMessages.length ? 'partial' : 'failed'
+        nextKinds = [confirmationKind]
+      }
+      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+        addRoundLimitNotice()
+        return 'round-limit'
+      }
+      round += 1
+      controller.currentRound = round
+    }
+    return terminalRunStatusForReason(controller.stopReason)
+  }
+
+  async runV4NaturalDiscussion(group, controller, threadRootId, context, input) {
+    const style = controller.orchestration?.discussionStyle
+      || controller.discussionStyle
+      || 'sequential'
+    return style === 'agent-led'
+      ? this.runV4AgentLedDiscussion(group, controller, threadRootId, context, input)
+      : this.runV4SequentialDiscussion(group, controller, threadRootId, context, input)
   }
 
   recordV4ReviewerFindings({ controller, phase, kind, result, verdict, summary,
@@ -2447,7 +2906,56 @@ class LocalWorkspaceAutoRunner {
   }
 
   v4ReceiptForResult(result, phase, kind, slot, snapshotHash, options = {}) {
-    const raw = result?.collaboration
+    let raw = result?.collaboration
+    if ((!raw || typeof raw !== 'object' || Array.isArray(raw))
+        && this.naturalAgentResponses) {
+      const visibleSummary = (publicCollaborationText(
+        result?.text || result?.message?.content || '', 800,
+      ) || `Completed the ${phase} phase.`).replace(/\s+/gu, ' ').trim()
+      const controller = options.controller || {}
+      const targetKinds = [...new Set(
+        (Array.isArray(controller.targetKinds) && controller.targetKinds.length
+          ? controller.targetKinds
+          : controller.orchestration?.targetKinds || [kind])
+          .filter(value => typeof value === 'string' && value),
+      )].sort()
+      const phaseSlots = Array.isArray(controller.orchestration?.slots)
+        ? controller.orchestration.slots
+        : []
+      const taskIdFor = agentKind => `natural-${hashValue({ snapshotHash, agentKind }).slice(0, 24)}`
+      const finalizerKind = targetKinds[0] || kind
+      const verifierKinds = targetKinds.filter(agentKind => agentKind !== finalizerKind)
+      const proposedAssignments = targetKinds.map(agentKind => ({
+        taskId: taskIdFor(agentKind),
+        ownerKind: agentKind,
+        role: agentKind === finalizerKind ? 'integrator' : 'verifier',
+        objective: `Address the current user task as ${agentKind}.`,
+        expectedOutput: 'Return the result in natural Markdown.',
+        inputRefs: [],
+        artifactIds: [],
+        dependsOn: [],
+      }))
+      raw = {
+        summary: visibleSummary,
+        capabilities: ['Delivered a natural-language response'],
+        intendedWork: ['Addressed the current user task'],
+        deliverables: ['Natural-language Markdown response'],
+        dependencies: [],
+        ...(phase === 'challenge' ? {
+          verdict: 'support',
+          proposedAssignments,
+          finalizerKind,
+          verifierKinds,
+          agreeToPlan: true,
+        } : {}),
+        ...(phase === 'work' ? {
+          workItemId: options.workItemId || taskIdFor(kind),
+          deliverables: ['Natural-language Markdown response'],
+        } : {}),
+        ...(phase === 'synthesis' ? { resolvedIssueIds: [] } : {}),
+        ...(phase === 'verification' ? { verdict: 'support' } : {}),
+      }
+    }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
       throw new Error('LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED')
     }
@@ -2725,6 +3233,9 @@ class LocalWorkspaceAutoRunner {
       workflow: 'auto',
       template: 'discussion',
       phase,
+      discussionStyle: controller.discussionStyle
+        || controller.orchestration?.discussionStyle
+        || 'sequential',
       batchId,
       round: Math.max(0, Number(controller.currentRound) || 0),
       currentKind: '',
@@ -2896,22 +3407,27 @@ class LocalWorkspaceAutoRunner {
     const settled = await Promise.all(dispatches.map(async (dispatch) => {
       const { kind, slot, context } = dispatch
       try {
-        const invocation = await this.invokeWithUnauthorizedRecovery({
-          group,
-          kind,
-          controller,
-          activeKinds: participantKinds,
-          threadRootId,
-          context: {
-            ...context,
-            onLeaseAcquired: (leaseState) => {
-              if (!leaseState?.agentRunId) throw new Error('LOCAL_RUN_PERSIST_FAILED')
-              slot.agentRunId = leaseState.agentRunId
-              slot.status = 'running'
-              checkpoint()
-            },
-          },
-        })
+        const recoveredResult = this.v4NaturalRecoveredPhaseResult(
+          group, controller, threadRootId, 'proposal', kind, slot,
+        )
+        const invocation = recoveredResult
+          ? { result: recoveredResult }
+          : await this.invokeWithUnauthorizedRecovery({
+              group,
+              kind,
+              controller,
+              activeKinds: participantKinds,
+              threadRootId,
+              context: {
+                ...context,
+                onLeaseAcquired: (leaseState) => {
+                  if (!leaseState?.agentRunId) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+                  slot.agentRunId = leaseState.agentRunId
+                  slot.status = 'running'
+                  checkpoint()
+                },
+              },
+            })
         if (controller.signal.aborted) {
           slot.status = 'stopped'
           slot.commitStatus = 'partial'
@@ -3063,10 +3579,13 @@ class LocalWorkspaceAutoRunner {
           || resultTrace?.runId !== controller.runId) {
         throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
       }
-      const receiptRecord = this.v4ReceiptForResult(
-        result, 'work', item.kind, slot, snapshotHash, { controller },
-      )
       const assignment = workAssignments?.find(candidate => candidate.ownerKind === item.kind)
+      const receiptRecord = this.v4ReceiptForResult(
+        result, 'work', item.kind, slot, snapshotHash, {
+          controller,
+          workItemId: assignment?.taskId || '',
+        },
+      )
       if (!assignment || receiptRecord.receipt.workItemId !== assignment.taskId
           || !this.v4ReceiptReferencesComplete(receiptRecord, '', {
             runId: controller.runId,
@@ -3209,7 +3728,9 @@ class LocalWorkspaceAutoRunner {
     const synthesisAttempt = phase === 'synthesis'
       ? this.v4ActiveSynthesisAttempt(synthesisRecovery)
       : null
-    const operationIds = synthesisAttempt
+    const operationIds = phaseInput.operationIds instanceof Map
+      ? phaseInput.operationIds
+      : synthesisAttempt
       ? new Map([[synthesisAttempt.writerKind, synthesisAttempt.operationId]])
       : (phase === 'work'
         ? new Map(activeKinds.map((kind) => {
@@ -3250,6 +3771,9 @@ class LocalWorkspaceAutoRunner {
         slot.status = phase === 'synthesis' ? 'queued' : 'running'
       }
     }
+    const cursorPendingKinds = Array.isArray(phaseInput.pendingKinds)
+      ? phaseInput.pendingKinds
+      : activeKinds
     this.v4CheckpointPhase(group, controller, {
       targetKinds,
       phase,
@@ -3259,7 +3783,7 @@ class LocalWorkspaceAutoRunner {
       slots: phaseSlots,
       writerKind,
       currentKinds: activeKinds,
-      pendingKinds: activeKinds,
+      pendingKinds: cursorPendingKinds,
       participantKinds,
       receipts: receiptRecords,
       challengeBindings,
@@ -3280,6 +3804,7 @@ class LocalWorkspaceAutoRunner {
             skillHints: context.rootSkillsByKind.get(kind) || [],
           },
         )
+        const sessionPolicy = this.naturalAgentResponses ? null : 'frozen'
         return {
           kind,
           slot,
@@ -3289,7 +3814,7 @@ class LocalWorkspaceAutoRunner {
             batchId,
             slotId: slot.slotId,
             snapshotHash,
-            sessionPolicy: 'frozen',
+            ...(sessionPolicy ? { sessionPolicy } : {}),
             promptOverride: prompt,
             contextPackId: controller.contextPackId,
             snapshotSourceMessageIds,
@@ -3299,6 +3824,7 @@ class LocalWorkspaceAutoRunner {
             parallelGraph: true,
             deferMessage: true,
             allowMissingProposalReceipt: true,
+            allowMissingV4Receipt: this.naturalAgentResponses,
             operationId: slot.operationId,
             ...(resumedGateFor(slot) ? { resumedGate: resumedGateFor(slot) } : {}),
             skillHints: context.rootSkillsByKind.get(kind) || [],
@@ -3367,27 +3893,39 @@ class LocalWorkspaceAutoRunner {
         phase, kind, coordinationPlan, workAssignmentsByKind.get(kind) || null,
       )
       const extraContext = extraContextFor(kind)
-      const prompt = this.v4PhasePrompt(
-        group,
-        kind,
-        phase,
-        snapshot,
-        deliveryReceiptRecords,
-        role,
-        {
-          reviewTarget: phase === 'challenge'
-            ? challengeBinding?.proposalKind || ''
-            : '',
-          assignedProposalText,
-          packageText: '',
-          extraContext,
-          snapshotHash,
-          skillHints: context.rootSkillsByKind.get(kind) || [],
-        },
-      )
+      const promptOptions = {
+        reviewTarget: phase === 'challenge'
+          ? challengeBinding?.proposalKind || ''
+          : '',
+        assignedProposalText,
+        packageText: '',
+        extraContext,
+        snapshotHash,
+        skillHints: context.rootSkillsByKind.get(kind) || [],
+      }
+      const prompt = typeof phaseInput.promptBuilder === 'function'
+        ? phaseInput.promptBuilder({ kind, slot, role, options: promptOptions })
+        : this.v4PhasePrompt(
+          group,
+          kind,
+          phase,
+          snapshot,
+          deliveryReceiptRecords,
+          role,
+          promptOptions,
+        )
+      const sessionPolicy = phaseInput.sessionPolicy === undefined
+        ? 'frozen'
+        : phaseInput.sessionPolicy
       let preparedDelivery = null
       let item
       const resumedSlotGate = resumedGateFor(slot)
+      const recoveredResult = phase === 'discussion'
+        ? this.v4NaturalRecoveredDiscussionResult(
+            group, controller, threadRootId, kind, slot,
+          )
+        : null
+      if (recoveredResult) return { kind, invocation: { result: recoveredResult } }
       try {
         const invocation = await this.invokeWithUnauthorizedRecovery({
           group,
@@ -3401,7 +3939,7 @@ class LocalWorkspaceAutoRunner {
             batchId,
             slotId: slot.slotId,
             snapshotHash,
-            sessionPolicy: 'frozen',
+            ...(sessionPolicy ? { sessionPolicy } : {}),
             promptOverride: prompt,
             contextPackId: controller.contextPackId,
             snapshotSourceMessageIds,
@@ -3413,6 +3951,7 @@ class LocalWorkspaceAutoRunner {
             singleWriterKind: writerKind,
             parallelGraph: true,
             deferMessage: true,
+            allowMissingV4Receipt: this.naturalAgentResponses,
             operationId: slot.operationId,
             ...(resumedSlotGate ? { resumedGate: resumedSlotGate } : {}),
             v4SynthesisRecovery: phase === 'synthesis',
@@ -3448,7 +3987,7 @@ class LocalWorkspaceAutoRunner {
                 slots: phaseSlots,
                 writerKind,
                 currentKinds: activeKinds,
-                pendingKinds: activeKinds,
+                pendingKinds: cursorPendingKinds,
                 participantKinds,
                 receipts: receiptRecords,
                 challengeBindings,
@@ -3458,26 +3997,30 @@ class LocalWorkspaceAutoRunner {
                 workAssignments,
               })
             },
-            v4PromptBuilder: (sessionBinding) => {
-              const built = this.v4DeliveryPrompt(group, controller, {
-                kind, phase, snapshot, receiptRecords: deliveryReceiptRecords,
-                role, targetKinds: participantKinds, slot,
-                options: {
-                  reviewTarget: phase === 'challenge'
-                    ? challengeBinding?.proposalKind || ''
-                    : '',
-                  assignedProposalText,
-                  extraContext,
-                  ...(['synthesis', 'verification'].includes(phase)
-                    ? { artifactContext: { coordinationPlan } }
-                    : {}),
-                },
-                sessionBinding,
-                skillHints: context.rootSkillsByKind.get(kind) || [],
-              })
-              preparedDelivery = built.delivery
-              return built
-            },
+            ...(phaseInput.disableDeliveryPrompt === true
+              ? {}
+              : {
+                  v4PromptBuilder: (sessionBinding) => {
+                    const built = this.v4DeliveryPrompt(group, controller, {
+                      kind, phase, snapshot, receiptRecords: deliveryReceiptRecords,
+                      role, targetKinds: participantKinds, slot,
+                      options: {
+                        reviewTarget: phase === 'challenge'
+                          ? challengeBinding?.proposalKind || ''
+                          : '',
+                        assignedProposalText,
+                        extraContext,
+                        ...(['synthesis', 'verification'].includes(phase)
+                          ? { artifactContext: { coordinationPlan } }
+                          : {}),
+                      },
+                      sessionBinding,
+                      skillHints: context.rootSkillsByKind.get(kind) || [],
+                    })
+                    preparedDelivery = built.delivery
+                    return built
+                  },
+                }),
             skillHints: context.rootSkillsByKind.get(kind) || [],
             knowledgeBaseHints: context.rootKnowledgeBasesByKind.get(kind) || [],
           },
@@ -3563,6 +4106,9 @@ class LocalWorkspaceAutoRunner {
           snapshotHash,
           {
             controller,
+            ...(phase === 'work'
+              ? { workItemId: workAssignmentsByKind.get(item.kind)?.taskId || '' }
+              : {}),
             reviewedArtifactId: phase === 'challenge'
               ? challengeBindings?.find(binding => (
                 binding.reviewerKind === item.kind
@@ -3616,7 +4162,7 @@ class LocalWorkspaceAutoRunner {
           synthesisPendingMessage = result.pendingMessage || result.message || null
         } else if (result.pendingMessage?.content) {
           phasePendingMessages.push({ kind: item.kind, pendingMessage: result.pendingMessage })
-          if (phase === 'challenge') {
+          if (['discussion', 'challenge'].includes(phase)) {
             this.commitV4PhaseMessage({
               group, controller, threadRootId, phase, kind: item.kind,
               pendingMessage: result.pendingMessage,
@@ -3701,6 +4247,9 @@ class LocalWorkspaceAutoRunner {
         && !this.completeV4ResumedAgentSlotContinuation(controller, resumedGate)) {
       throw new Error('LOCAL_RUN_PERSIST_FAILED')
     }
+    const remainingKinds = Array.isArray(phaseInput.remainingKinds)
+      ? phaseInput.remainingKinds
+      : []
     this.v4CheckpointPhase(group, controller, {
       targetKinds,
       phase,
@@ -3710,7 +4259,7 @@ class LocalWorkspaceAutoRunner {
       slots: phaseSlots,
       writerKind,
       currentKinds: [],
-      pendingKinds: [],
+      pendingKinds: remainingKinds,
       participantKinds,
       receipts: receiptRecords,
       challengeBindings,
@@ -3977,6 +4526,9 @@ class LocalWorkspaceAutoRunner {
       ? controller.orchestration
       : null
     const targetKinds = [...snapshotTargetKinds]
+    controller.discussionStyle = existing?.discussionStyle
+      || controller.discussionStyle
+      || 'sequential'
     let activeKinds = Array.isArray(existing?.activeKinds) && existing.activeKinds.length
       ? existing.activeKinds.filter(kind => targetKinds.includes(kind))
       : [...targetKinds]
@@ -4253,16 +4805,13 @@ class LocalWorkspaceAutoRunner {
       return aggregate
     }
     const commitPhaseMessages = (phase, result) => {
-      let committed = 0
-      for (const item of result?.phasePendingMessages || []) {
-        const pendingMessage = item?.pendingMessage
-        if (!pendingMessage?.content || !item.kind) continue
-        this.commitV4PhaseMessage({
-          group, controller, threadRootId, phase, kind: item.kind, pendingMessage,
-        })
-        committed += 1
-      }
-      return committed
+      // Proposal/work runners commit each pending Agent message at the same
+      // time they persist its receipt and slot. Replaying those messages here
+      // creates a second commit attempt with live metadata and can reject a
+      // valid first-round result as LOCAL_RUN_COMMIT_INVALID.
+      return (result?.phasePendingMessages || []).filter(item => (
+        item?.pendingMessage?.content && item.kind
+      )).length
     }
     const removePhaseFailures = (result) => {
       const failedKinds = [...new Set((result?.failures || [])
@@ -4275,16 +4824,24 @@ class LocalWorkspaceAutoRunner {
         .filter(Boolean))]
       const removed = []
       for (const kind of failedKinds) {
-        const didRemove = this.removeFailedAgent(group, controller, kind, threadRootId)
+        const failure = (result?.failures || []).find(item => item.kind === kind)?.error
+        // A local CLI timeout is a run-scoped availability problem. Keep the
+        // configured group membership intact so a later turn can retry it.
+        const didRemove = this.shouldRemoveFailedAgent(failure)
+          ? this.removeFailedAgent(group, controller, kind, threadRootId)
+          : false
+        // The failed slot is still isolated from this run's active queue even
+        // when its configured group membership is retained.
+        removed.push(kind)
         if (didRemove) {
           removedKinds.add(kind)
-          removed.push(kind)
         }
       }
       return removed
     }
     const finalStatus = (status) => {
-      if (!removedKinds.size || status !== 'completed') return status
+      if (status !== 'completed') return status
+      if (!removedKinds.size && !controller.failedKinds.length) return status
       controller.failedKinds = [...new Set([...controller.failedKinds, ...removedKinds])]
       return 'partial'
     }
@@ -4526,6 +5083,24 @@ class LocalWorkspaceAutoRunner {
         slots, receiptRecords, challengeBindings, synthesisBinding, synthesisRecovery,
         coordinationPlan, workReceipts, convergence: existing.convergence,
         writerKind, verificationKinds, acceptance, participantKinds: activeKinds,
+      })
+    }
+    if (this.naturalAgentResponses && !coordinationPlan && !synthesisBinding && !synthesisRecovery) {
+      return this.runV4NaturalDiscussion(group, controller, threadRootId, context, {
+        targetKinds,
+        activeKinds,
+        writerKind,
+        batchId,
+        snapshot,
+        snapshotRecord,
+        snapshotHash,
+        slots,
+        receiptRecords,
+        latestFor,
+        runPhase,
+        checkpointPhase,
+        removePhaseFailures,
+        addRoundLimitNotice,
       })
     }
     while (!controller.signal.aborted) {
@@ -4904,6 +5479,7 @@ class LocalWorkspaceAutoRunner {
     const attachmentRecipients = new Set(cursor?.attachmentRecipients || [])
     let terminalFailureOccurred = cursor?.terminalFailureOccurred === true
     let activeKinds = cursor ? [...cursor.activeKinds] : [...controller.targetKinds]
+    let executionSequence = Number(cursor?.executionSequence) || 0
     let totalSuccesses = cursor?.totalSuccesses || 0
     let consensusReached = false
     const reportedFailures = new Set()
@@ -4936,6 +5512,7 @@ class LocalWorkspaceAutoRunner {
           attachmentRecipients: [...attachmentRecipients],
           totalSuccesses,
           terminalFailureOccurred,
+          executionSequence,
         })
       }
       this.emitChanged()
@@ -4948,6 +5525,7 @@ class LocalWorkspaceAutoRunner {
         }
         if (controller.signal.aborted) break
         const executionKind = kind
+        executionSequence += 1
         this.setCurrentAgent(controller, executionKind)
         this.checkpointOrchestration(group, controller, {
           currentKind: executionKind,
@@ -4958,6 +5536,7 @@ class LocalWorkspaceAutoRunner {
           attachmentRecipients: [...attachmentRecipients],
           totalSuccesses,
           terminalFailureOccurred,
+          executionSequence,
         })
         try {
           if (controller.attemptHistory.length >= MAX_RUN_AGENT_ATTEMPTS) {
@@ -4989,6 +5568,7 @@ class LocalWorkspaceAutoRunner {
                 focusUserMessageId: threadRootId,
                 omitAgentThreadRootId: threadRootId,
               },
+              executionSequence,
             },
             reportedFailures,
           })
@@ -5108,7 +5688,11 @@ class LocalWorkspaceAutoRunner {
             controller.failedKinds.push(executionKind)
           }
           terminalFailureOccurred = true
-          this.removeFailedAgent(group, controller, executionKind, threadRootId)
+          // Preserve timed-out CLIs in the configured group. They are removed
+          // only from this run's active queue and can be retried next turn.
+          if (this.shouldRemoveFailedAgent(error)) {
+            this.removeFailedAgent(group, controller, executionKind, threadRootId)
+          }
           activeKinds = activeKinds.filter(activeKind => activeKind !== executionKind)
         }
         if (controller.signal.aborted) break
@@ -5126,6 +5710,7 @@ class LocalWorkspaceAutoRunner {
           attachmentRecipients: [...attachmentRecipients],
           totalSuccesses,
           terminalFailureOccurred,
+          executionSequence,
         })
         this.emitChanged()
       }
@@ -5143,6 +5728,7 @@ class LocalWorkspaceAutoRunner {
         attachmentRecipients: [...attachmentRecipients],
         totalSuccesses,
         terminalFailureOccurred,
+        executionSequence,
       })
       if (activeKinds.length < 2) break
       const crossReviewComplete = !controller.unlimitedRounds || controller.currentRound >= 2
@@ -5197,6 +5783,7 @@ class LocalWorkspaceAutoRunner {
       group.id, 'auto', targetKinds, threadRootId, reservation, maxRounds, unlimitedRounds,
     )
     controller.v4 = v4
+    controller.discussionStyle = reservation?.discussionStyle || 'sequential'
     const promise = (async () => {
       let runStatus = 'failed'
       try {

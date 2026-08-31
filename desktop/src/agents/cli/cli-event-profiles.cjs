@@ -27,6 +27,7 @@ const {
   createAcpRuntimeState,
   createClaudeQwenRuntimeState,
   createGeminiRuntimeState,
+  createPiRuntimeState,
   finalOnlyRuntimeEvents,
   geminiStreamJsonRuntimeEvents,
   kimiStreamJsonRuntimeEvents,
@@ -357,16 +358,16 @@ const OPENCODE_JSON_EVENTS_PROFILE = profile({
 })
 
 const PI_JSON_EVENTS_PROFILE = profile({
-  profileId: 'pi-json-events-v1',
-  protocol: 'pi-json-events',
+  profileId: 'pi-json-events-v2',
+  protocol: 'pi-json',
   framing: 'jsonl',
   source: 'stdout',
   capabilities: {
-    answerMode: 'delta', tools: NO_TOOL_LIFECYCLE,
-    plan: false, reasoning: false, session: true, terminal: true,
+    answerMode: 'delta', tools: FULL_TOOL_LIFECYCLE,
+    plan: false, reasoning: true, session: true, terminal: true,
   },
   createDecoder: createJsonLineParser,
-  createState: createStatelessRuntimeState,
+  createState: createPiRuntimeState,
   mapEvent: piJsonRuntimeEvents,
   createFinalOutputAccumulator: createFinalOutputAccumulator('pi'),
 })
@@ -469,6 +470,7 @@ const TRANSPORT_EVENT_PROFILES = Object.freeze({
   openclaw: Object.freeze({ legacy: OPENCLAW_TERMINAL_DOCUMENT_PROFILE }),
   kimi: Object.freeze({ 'stream-json': KIMI_STREAM_JSON_PROFILE }),
   mimo: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
+  pi: Object.freeze({ json: PI_JSON_EVENTS_PROFILE }),
   opencode: Object.freeze({ acp: ACP_JSONRPC_PROFILE }),
   workbuddy: Object.freeze({ 'stream-json': ANTHROPIC_STREAM_JSON_PROFILE }),
 })

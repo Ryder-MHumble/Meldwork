@@ -22,6 +22,16 @@
         <button
           type="button"
           role="tab"
+          :aria-selected="systemSettingsSection === 'cloud-agents'"
+          :class="{ active: systemSettingsSection === 'cloud-agents' }"
+          @click="selectSystemSettingsSection('cloud-agents')"
+        >
+          <CloudOutline />
+          {{ t('systemSettings.cloudServers') }}
+        </button>
+        <button
+          type="button"
+          role="tab"
           :aria-selected="systemSettingsSection === 'providers'"
           :class="{ active: systemSettingsSection === 'providers' }"
           @click="selectSystemSettingsSection('providers')"
@@ -67,6 +77,11 @@
         @request-install="requestInstall"
       />
 
+      <CloudAgentBridgePanel
+        v-else-if="systemSettingsSection === 'cloud-agents'"
+        :controller="cloudAgentBridges"
+      />
+
       <KnowledgeBaseSettingsPanel
         v-else-if="systemSettingsSection === 'knowledge-bases'"
         :icon="knowledgeBaseIcon"
@@ -96,8 +111,9 @@
 </template>
 
 <script setup>
-import { KeyOutline, LibraryOutline, TerminalOutline } from '@vicons/ionicons5'
+import { CloudOutline, KeyOutline, LibraryOutline, TerminalOutline } from '@vicons/ionicons5'
 import AgentSettingsPanel from './AgentSettingsPanel.vue'
+import CloudAgentBridgePanel from './CloudAgentBridgePanel.vue'
 import KnowledgeBaseSettingsPanel from './KnowledgeBaseSettingsPanel.vue'
 import ProviderSettingsPanel from './ProviderSettingsPanel.vue'
 
@@ -112,6 +128,7 @@ const {
   agentSkillLabel,
   agentState,
   cancelInstall,
+  cloudAgentBridges,
   focusedAgentKind,
   formError,
   installConfirmKind,

@@ -78,6 +78,7 @@
               :class="{ active: discussionMode === 'manual' }"
               :aria-pressed="discussionMode === 'manual'"
               :disabled="Boolean(activeRun) || sending"
+              :title="t('composer.concurrentResponsesHint')"
               @click="discussionMode = 'manual'"
             >
               {{ manualModeLabel }}
@@ -88,9 +89,24 @@
               :class="{ active: discussionMode === 'auto' }"
               :aria-pressed="discussionMode === 'auto'"
               :disabled="Boolean(activeRun) || sending"
+              :title="t('composer.sequentialHint')"
               @click="discussionMode = 'auto'"
             >
               {{ t('composer.auto') }}
+            </button>
+            <button
+              type="button"
+              data-mode="auto-beta"
+              class="mode-beta"
+              :class="{ active: discussionMode === 'auto-beta' }"
+              :aria-pressed="discussionMode === 'auto-beta'"
+              :disabled="Boolean(activeRun) || sending"
+              :title="t('composer.autoBetaHint')"
+              :aria-label="`${t('composer.autoBeta')} — ${t('composer.autoBetaHint')}`"
+              @click="discussionMode = 'auto-beta'"
+            >
+              {{ t('composer.autoBeta') }}
+              <span class="mode-beta-badge" :aria-label="t('composer.autoBetaBadge')">{{ t('composer.autoBetaBadge') }}</span>
             </button>
           </div>
 
@@ -104,11 +120,11 @@
                 :style="{ '--stack-index': index }"
                 type="button"
                 :title="agentLabel(kind)"
-                :aria-label="discussionMode === 'auto'
+                :aria-label="(discussionMode === 'auto' || discussionMode === 'auto-beta')
                   ? t('composer.autoTarget', { agent: agentLabel(kind) })
                   : t(isComposerTargetSelected(kind) ? 'composer.removeTarget' : 'composer.addTarget', { agent: agentLabel(kind) })"
                 :aria-pressed="isComposerTargetSelected(kind)"
-                :disabled="Boolean(activeRun) || sending || discussionMode === 'auto' || automaticTeamFormation"
+                :disabled="Boolean(activeRun) || sending || discussionMode === 'auto' || discussionMode === 'auto-beta' || automaticTeamFormation"
                 @click="toggleTarget(kind)"
               >
                 <img :src="agentLogo(kind, theme)" alt="" />
@@ -118,7 +134,7 @@
           </div>
 
           <div
-            v-if="discussionMode === 'auto'"
+            v-if="discussionMode === 'auto' || discussionMode === 'auto-beta'"
             ref="roundSettingsControl"
             class="round-settings-control"
             @click.stop
@@ -284,13 +300,7 @@
             ref="composerInput"
             v-model="draft"
             rows="1"
-            :placeholder="automaticTeamFormation
-              ? t('composer.smartTeamPlaceholder')
-              : t(discussionMode === 'auto' && unlimitedRounds
-                ? 'composer.unlimitedPlaceholder'
-                : 'composer.placeholder', {
-                  name: groupName(activeGroup),
-                })"
+            :placeholder="composerPlaceholder"
             :disabled="Boolean(activeRun) || sending"
             role="combobox"
             aria-autocomplete="list"
@@ -573,6 +583,23 @@ const unlimitedModeActive = computed(() => (
     ? activeUnlimitedAutoRun.value
     : discussionMode.value === 'auto' && unlimitedRounds.value === true
 ))
+const modeExplanation = computed(() => {
+  if (discussionMode.value === 'auto') return t('composer.sequentialHint')
+  if (discussionMode.value === 'auto-beta') return t('composer.autoBetaHint')
+  return t('composer.concurrentResponsesHint')
+})
+const composerPlaceholder = computed(() => {
+  const group = activeGroup.value
+  if (!group) return t('composer.placeholder', { name: '' })
+  if (group.conversationType === 'direct') {
+    return t('composer.placeholder', { name: groupName(group) })
+  }
+  if (automaticTeamFormation.value) return t('composer.smartTeamPlaceholder')
+  if (discussionMode.value === 'auto' && unlimitedRounds.value) {
+    return t('composer.unlimitedPlaceholder', { name: groupName(group) })
+  }
+  return modeExplanation.value
+})
 const composerMentionSignature = computed(() => JSON.stringify([
   selectedAgentKinds.value,
   selectedKnowledgeBases.value.map(source => source.kind),

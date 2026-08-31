@@ -44,6 +44,9 @@ function fixture() {
     createRunId: () => `run-${++runId}`,
     retryBaseDelayMs: 1,
     retryMaxDelayMs: 4,
+    // Gate-focused tests opt out explicitly; production defaults to yolo.
+    defaultYolo: false,
+    naturalAgentResponses: false,
   }
   Object.defineProperty(options, 'runAgent', {
     enumerable: true,

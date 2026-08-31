@@ -5,6 +5,7 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import { AGENTS, agentLogo } from '../catalog.js'
+import { MAX_ATTACHMENTS } from './useComposerAttachments.js'
 
 export function useAgentCatalog({
   activeGroup,
@@ -14,7 +15,23 @@ export function useAgentCatalog({
   t,
   theme,
 }) {
-  const mergedCatalog = computed(() => AGENTS.map((profile) => {
+  const mergedCatalog = computed(() => {
+    const extraProfiles = (installCatalog.value.agents || [])
+      .filter(agent => agent?.cloud === true && !AGENTS.some(profile => profile.kind === agent.kind))
+      .map(agent => ({
+        kind: agent.kind,
+        sourceKind: agent.sourceKind,
+        label: agent.label,
+        logo: agent.logo,
+        providerMode: agent.providerMode || 'connector',
+        imageLimit: Number(agent.imageAttachmentLimit || 0),
+        custom: false,
+        connector: true,
+        description: agent.description || '',
+        cloud: agent.cloud === true,
+      }))
+    const profiles = [...AGENTS, ...extraProfiles]
+    return profiles.map((profile) => {
     const installedProfile = installCatalog.value.agents?.find(agent => agent.kind === profile.kind) || {}
     const detected = snapshot.value.agents.find(agent => agent.kind === profile.kind) || {}
     return {
@@ -22,7 +39,10 @@ export function useAgentCatalog({
       ...installedProfile,
       ...detected,
       label: profile.label,
-      logo: agentLogo(profile.kind, theme.value),
+      logo: agentLogo(
+        detected.sourceKind || installedProfile.sourceKind || profile.sourceKind || profile.kind,
+        theme.value,
+      ),
       providerMode: profile.providerMode,
       imageLimit: profile.custom
         ? MAX_ATTACHMENTS
@@ -30,17 +50,44 @@ export function useAgentCatalog({
       installed: Boolean(installedProfile.installed || detected.installed),
       ready: detected.available === true,
     }
-  }))
+    })
+  })
 
   const agentCatalogGroups = computed(() => [
     {
       id: 'official',
       titleKey: 'systemSettings.officialAgents',
       subtitleKey: 'systemSettings.officialAgentsHint',
-      agents: mergedCatalog.value.filter(agent => !agent.custom),
+      agents: mergedCatalog.value.filter(agent => !agent.custom && !agent.cloud),
     },
-  ])
+    {
+      id: 'cloud',
+      titleKey: 'systemSettings.cloudAgents',
+      subtitleKey: 'systemSettings.cloudAgentsHint',
+      agents: mergedCatalog.value.filter(agent => agent.cloud === true),
+    },
+    {
+      id: 'custom',
+      titleKey: 'systemSettings.customAgents',
+      subtitleKey: 'systemSettings.customAgentsHint',
+      agents: mergedCatalog.value.filter(agent => agent.custom && agent.cloud !== true),
+    },
+  ].filter(category => category.agents.length > 0))
   const readyAgents = computed(() => mergedCatalog.value.filter(agent => agent.ready))
+  const readyAgentGroups = computed(() => [
+    {
+      id: 'local',
+      titleKey: 'agentLocation.local',
+      hintKey: 'group.agentLocationLocalHint',
+      agents: readyAgents.value.filter(agent => !agent.cloud),
+    },
+    {
+      id: 'cloud',
+      titleKey: 'agentLocation.cloud',
+      hintKey: 'group.agentLocationCloudHint',
+      agents: readyAgents.value.filter(agent => agent.cloud),
+    },
+  ].filter(group => group.agents.length))
   const readyAgentSignature = computed(() => readyAgents.value.map(agent => agent.kind).join('\u0000'))
   const readyAgentKinds = computed(() => new Set(readyAgents.value.map(agent => agent.kind)))
   const readyCount = computed(() => readyAgents.value.length)
@@ -49,6 +96,18 @@ export function useAgentCatalog({
     if (agent.ready) return agent.showInSidebar !== false
     return directGroupsFor(agent.kind).length > 0
   }))
+  const sidebarAgentGroups = computed(() => [
+    {
+      id: 'local',
+      titleKey: 'agentLocation.local',
+      agents: sidebarAgents.value.filter(agent => !agent.cloud),
+    },
+    {
+      id: 'cloud',
+      titleKey: 'agentLocation.cloud',
+      agents: sidebarAgents.value.filter(agent => agent.cloud),
+    },
+  ].filter(group => group.agents.length))
   const activeDirectAgent = computed(() => {
     if (activeGroup.value?.conversationType !== 'direct') return null
     return mergedCatalog.value.find(agent => agent.kind === activeGroup.value.directAgentKind) || null
@@ -60,12 +119,14 @@ export function useAgentCatalog({
 
   function agentDescription(kind) {
     const profile = mergedCatalog.value.find(agent => agent.kind === kind)
+    if (profile?.cloud && profile.description) return profile.description
     if (profile?.custom && profile.description) return profile.description
     if (profile?.custom) return t('customAgent.defaultDescription')
     return t(`agent.description.${kind}`)
   }
 
   function agentSoul(agent) {
+    if (agent?.cloud) return agent.description || t('cloudAgents.agentDescription')
     if (agent?.custom) return agent.description || t('customAgent.detailBody')
     return t(`agent.soul.${agent?.kind}`)
   }
@@ -103,9 +164,11 @@ export function useAgentCatalog({
     mergedCatalog,
     providerModeShortLabel,
     readyAgentKinds,
+    readyAgentGroups,
     readyAgentSignature,
     readyAgents,
     readyCount,
     sidebarAgents,
+    sidebarAgentGroups,
   }
 }

@@ -52,7 +52,9 @@
           <span>{{ t('nav.sidebarAgents') }}</span>
         </button>
         <div v-if="!sidebarAgentsCollapsed" id="sidebar-agent-list">
-          <article v-for="agent in sidebarAgents" :key="agent.kind" class="sidebar-agent">
+          <div v-for="agentGroup in sidebarAgentGroups" :key="agentGroup.id" class="sidebar-agent-location-group">
+            <p class="sidebar-agent-location-heading">{{ t(agentGroup.titleKey) }}</p>
+            <article v-for="agent in agentGroup.agents" :key="agent.kind" class="sidebar-agent">
             <header class="sidebar-agent-header">
               <button
                 class="sidebar-agent-main"
@@ -63,7 +65,10 @@
                 :aria-controls="directGroupsFor(agent.kind).length ? sidebarAgentSessionListId(agent.kind) : undefined"
                 @click="handleSidebarAgentMain(agent)"
               >
-                <img :src="agent.logo" :alt="agent.label" />
+                <span class="agent-logo-cloud" :class="{ cloud: agent.cloud }">
+                  <img :src="agent.logo" :alt="agent.label" />
+                  <CloudOutline v-if="agent.cloud" aria-hidden="true" />
+                </span>
                 <span>
                   <strong>{{ agent.label }}</strong>
                   <small>
@@ -161,9 +166,10 @@
                 <span>{{ t(isDirectSessionListExpanded(agent.kind) ? 'nav.lessItems' : 'nav.moreItems') }}</span>
               </button>
             </div>
-          </article>
+            </article>
+          </div>
         </div>
-        <p v-if="!sidebarAgents.length && !sidebarAgentsCollapsed" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
+        <p v-if="!sidebarAgentGroups.length && !sidebarAgentsCollapsed" class="nav-empty">{{ t('nav.noSidebarAgents') }}</p>
       </section>
 
       <section class="nav-section group-nav-section">
@@ -192,7 +198,9 @@
                 :aria-current="isSelectedConversation(group) ? 'page' : undefined"
                 @click="selectGroup(group.id)"
               >
-                <span class="group-avatar"><ChatbubblesOutline /></span>
+                <span class="group-avatar stack" :aria-label="groupAgentSummary(group)">
+                  <img v-for="kind in group.agentKinds.slice(0, 3)" :key="kind" :src="agentLogo(kind, theme)" alt="" />
+                </span>
                 <span>{{ groupName(group) }}</span>
                 <span
                   v-if="isGroupRunning(group.id) && !isSelectedConversation(group)"
@@ -344,7 +352,9 @@
           :aria-current="activeView === 'conversation' && selectedGroupId === group.id ? 'page' : undefined"
           @click="selectGroup(group.id)"
         >
-          <span class="group-avatar"><ChatbubblesOutline /></span>
+          <span class="group-avatar stack" :aria-label="groupAgentSummary(group)">
+            <img v-for="kind in group.agentKinds.slice(0, 3)" :key="kind" :src="agentLogo(kind, theme)" alt="" />
+          </span>
           <span class="collapsed-group-option-main">
             <strong>{{ groupName(group) }}</strong>
             <small>{{ groupAgentSummary(group) }}</small>
@@ -397,6 +407,7 @@ import {
   CheckmarkCircleOutline,
   ChevronBackOutline,
   ChevronForwardOutline,
+  CloudOutline,
   LanguageOutline,
   MoonOutline,
   PencilOutline,
@@ -405,6 +416,7 @@ import {
   SunnyOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
+import { agentLogo } from '../catalog.js'
 
 const props = defineProps({
   controller: { type: Object, required: true },
@@ -446,7 +458,7 @@ const {
   selectGroup,
   selectedGroupId,
   sidebarAgentSessionListId,
-  sidebarAgents,
+  sidebarAgentGroups,
   sidebarAgentsCollapsed,
   sidebarGroupsCollapsed,
   sidebarCollapsed,

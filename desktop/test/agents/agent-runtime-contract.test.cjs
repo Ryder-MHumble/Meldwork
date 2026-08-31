@@ -10,6 +10,7 @@ const {
   normalizeExternalRunRef,
   outcomeForAcpStopReason,
   requireTerminalAgentResult,
+  terminalAuthenticationDiagnostic,
 } = require('../../src/agents/agent-runtime-contract.cjs')
 const { ALLOWED_KINDS } = require('../../src/agents/cli/cli-discovery.cjs')
 
@@ -97,4 +98,22 @@ test('failed and cancelled outcomes do not become successful results', () => {
     (error) => error.message === 'LOCAL_AGENT_EXECUTION_STOPPED'
       && error.failure.category === 'cancellation',
   )
+})
+
+test('short terminal HTTP credential diagnostics cannot become successful results', () => {
+  const diagnostic = 'HTTP 401: Invalid token (request id: request-1)'
+  assert.equal(terminalAuthenticationDiagnostic(diagnostic), diagnostic)
+  assert.equal(
+    terminalAuthenticationDiagnostic('HTTP 403: Forbidden'),
+    'HTTP 403: Forbidden',
+  )
+  assert.throws(
+    () => requireTerminalAgentResult({ outcome: 'completed', text: diagnostic }),
+    error => error.message === 'LOCAL_AGENT_AUTH_REQUIRED'
+      && error.failure.category === 'authentication'
+      && error.diagnostic === diagnostic,
+  )
+  assert.equal(terminalAuthenticationDiagnostic(
+    'When an API returns HTTP 401: Invalid token, refresh the configured credential.',
+  ), '')
 })
