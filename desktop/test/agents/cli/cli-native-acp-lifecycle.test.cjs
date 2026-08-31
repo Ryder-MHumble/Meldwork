@@ -51,9 +51,15 @@ input.on('line', (line) => {
   } else if (message.method === 'session/prompt') {
     promptCount += 1
     if (resumed) {
+      const prompt = message.params?.prompt?.[0]?.text || ''
       update(sessionId, {
         sessionUpdate: 'agent_message_chunk',
-        content: { type: 'text', text: 'HTTP 401: Invalid token' },
+        content: {
+          type: 'text',
+          text: prompt === 'auth prompt'
+            ? 'HTTP 401: Invalid token (request id: request-1)'
+            : 'resumed turn',
+        },
       })
       send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'end_turn' } })
       return
@@ -120,12 +126,22 @@ input.on('line', (line) => {
   assert.equal(typeof adapters.shutdownAcpSessionRuntime, 'function')
   await adapters.shutdownAcpSessionRuntime()
   await within(readWhenReady(stoppedFile))
-  await assert.rejects(() => adapters.runAgent(agent, 'stale prompt', directory, {
+  const resumed = await adapters.runAgent(agent, 'resumed prompt', directory, {
     acpPersistenceKey: 'workspace:hermes:direct',
     sessionRef: first.sessionRef,
     sessionTransport: 'acp',
     env: { MELDWORK_TEST_SPAWN_COUNT_FILE: spawnCountFile },
-  }), { message: 'LOCAL_AGENT_SESSION_INVALID' })
+  })
+  assert.equal(resumed.text, 'resumed turn')
+  assert.equal(resumed.sessionRef, first.sessionRef)
+  assert.equal(fs.readFileSync(spawnCountFile, 'utf8'), '2')
+  await assert.rejects(() => adapters.runAgent(agent, 'auth prompt', directory, {
+    acpPersistenceKey: 'workspace:hermes:direct',
+    sessionRef: first.sessionRef,
+    sessionTransport: 'acp',
+    env: { MELDWORK_TEST_SPAWN_COUNT_FILE: spawnCountFile },
+  }), error => error.message === 'LOCAL_AGENT_AUTH_REQUIRED'
+    && error.failure?.category === 'authentication')
 })
 
 test('ACP closes a start-only tool with the partial terminal outcome', async (t) => {

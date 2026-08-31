@@ -62,12 +62,9 @@ export function useConversationExecution({
     const text = draft.value.trim()
     const attachments = composerAttachments.value.map(safeAttachmentPayload)
     const mode = composerMode.value
+    const backendMode = mode === 'auto-beta' ? 'auto' : mode
     if (!text && !attachments.length) {
       notify(t('composer.messageRequired'))
-      return
-    }
-    if (mode === 'auto-beta') {
-      notify(`${t('composer.autoBetaLockTitle')} — ${t('composer.autoBetaLockBody')}`)
       return
     }
     const targets = [...composerTargetKinds.value]
@@ -75,7 +72,7 @@ export function useConversationExecution({
       notify(t('composer.selectTarget'))
       return
     }
-    if (mode === 'auto' && targets.length < 2) {
+    if (backendMode === 'auto' && targets.length < 2) {
       notify(t('error.autoAgentCount'))
       return
     }
@@ -91,7 +88,7 @@ export function useConversationExecution({
     const previousComposerContext = captureComposerContext()
     const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
     const v4GroupRun = group.conversationType !== 'direct'
-      && (mode === 'manual' || mode === 'auto')
+      && (backendMode === 'manual' || backendMode === 'auto')
       && (targets.length > 1 || automaticTeamFormation.value)
     clearComposerContext()
     composerAttachments.value = []
@@ -107,10 +104,11 @@ export function useConversationExecution({
         skillHints,
         knowledgeBaseHints,
         attachments,
-        mode,
+        mode: backendMode,
+        ...(mode === 'auto-beta' ? { discussionStyle: 'agent-led' } : {}),
         ...(v4GroupRun ? { protocol: 'v4' } : {}),
         maxRounds: maxRounds.value,
-        ...(mode === 'auto' && unlimitedRounds.value ? { unlimitedRounds: true } : {}),
+        ...(backendMode === 'auto' && unlimitedRounds.value ? { unlimitedRounds: true } : {}),
       })
       snapshot.value = normalizeSnapshot(await workspace.value.get())
     } catch (error) {

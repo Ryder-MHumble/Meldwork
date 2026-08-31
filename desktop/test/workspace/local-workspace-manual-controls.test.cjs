@@ -3,7 +3,10 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 
-const { runAgent } = require('../../src/agents/cli/cli-adapters.cjs')
+const {
+  runAgent,
+  shutdownAcpSessionRuntime,
+} = require('../../src/agents/cli/cli-adapters.cjs')
 const { LocalWorkspace } = require('../../src/workspace/local-workspace.cjs')
 const { createLegacyOutboundPayload } = require('../../src/collaboration/outbound-payload.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
@@ -460,7 +463,10 @@ test('LocalWorkspace persists and resumes ACP permission approval and rejection 
 
 test('ACP permission Gate survives shutdown and resumes the persisted Session after approval', async (t) => {
   const { directory, options } = fixture()
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  t.after(async () => {
+    await shutdownAcpSessionRuntime()
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
   const ledgerPath = path.join(directory, 'run-ledger.json')
   const cli = acpPermissionExecutable(directory)
   const ledger = new RunLedger({ storagePath: ledgerPath })

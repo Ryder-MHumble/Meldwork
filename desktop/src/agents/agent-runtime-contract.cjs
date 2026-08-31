@@ -210,6 +210,15 @@ function normalizeExternalRunRef(value) {
   return EXTERNAL_RUN_REF.test(ref) ? ref : ''
 }
 
+function terminalAuthenticationDiagnostic(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim()
+  if (!text || text.length > 2000) return ''
+  return /^HTTP\s+(?:401|403)\s*:\s*(?:(?:unauthorized|forbidden)\b|(?:invalid|expired|missing)\b[\s\S]*(?:token|credential|api[ _-]?key|auth))/i
+    .test(text)
+    ? text
+    : ''
+}
+
 function failureCategory(code) {
   const value = String(code || '')
   if (value === 'LOCAL_AGENT_SESSION_INVALID') return 'session'
@@ -299,6 +308,10 @@ function requireTerminalAgentResult(result) {
       failure,
     )
   }
+  const authenticationDiagnostic = terminalAuthenticationDiagnostic(normalized.text)
+  if (authenticationDiagnostic) {
+    throw agentRuntimeError('LOCAL_AGENT_AUTH_REQUIRED', authenticationDiagnostic)
+  }
   return normalized
 }
 
@@ -332,4 +345,5 @@ module.exports = {
   normalizeOutcome,
   outcomeForAcpStopReason,
   requireTerminalAgentResult,
+  terminalAuthenticationDiagnostic,
 }

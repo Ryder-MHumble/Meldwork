@@ -230,8 +230,9 @@ function v4Prompt({
   const selectedAgentCount = Array.isArray(snapshot?.targetKinds) ? snapshot.targetKinds.length : 0
   const requiredVerifierCount = Math.max(0, selectedAgentCount - 1)
   const phaseInstruction = naturalResponse
-    ? {
+      ? {
         proposal: 'Work independently on the user task and offer your own analysis, recommendations, and next steps.',
+        discussion: 'Continue from the available peer responses. Add useful evidence, challenge weak assumptions, resolve disagreements where possible, and advance the shared result.',
         challenge: 'Review the available peer context as a subject-matter peer. Explain what you agree with, what is missing, and the clearest correction or direction.',
         work: 'Complete the responsibility assigned to you. Report useful work, evidence, blockers, or handoffs in your own words.',
         synthesis: 'Combine the available work into the clearest useful answer for the user. Resolve contradictions where possible and state remaining uncertainty plainly.',
@@ -270,12 +271,12 @@ function v4Prompt({
   if (naturalResponse) {
     return [
       'You are participating in a local multi-agent discussion.',
-      `Your role this turn is ${role}.`,
-      `The current collaboration phase is ${phase}.`,
       `User task:\n${cleanText(snapshot?.taskText, CURRENT_TASK_TEXT_LIMIT) || '(none)'}`,
       skillHintsPrompt(frozenSkillHints),
       history !== '(none)' ? `Relevant prior context:\n${history}` : '',
       phaseInstruction,
+      'Engage with the other Agents as peers: discuss differences, challenge weak assumptions, build agreement where justified, and collaborate on the user\'s requested outcome.',
+      'After concrete deliverables exist, review them for material gaps before accepting the result.',
       'Answer the user naturally in Markdown. Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template.',
       'Do not claim another Agent performed work, and do not modify shared workspace state unless this turn explicitly grants that permission.',
     ].filter(Boolean).join('\n\n')
