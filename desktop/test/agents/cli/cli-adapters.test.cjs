@@ -1547,20 +1547,15 @@ test('Hermes receives selected Skill snapshots through the prompt without native
   assert.deepEqual(acpSpec.args, ['acp'])
 })
 
-test('Pi receives provider settings through supported top-level JSON flags', () => {
+test('Pi uses non-interactive JSON flags and keeps provider settings out of arguments', () => {
   const spec = invocation('pi', '/tmp/pi', '/tmp', 'pi-session-123', {
     provider: { id: 'zgci', model: 'glm' },
   })
   assert.deepEqual(spec.args, [
-    '--mode', 'json',
-    '--tools', 'read,grep,find,ls',
-    '--provider', 'zgci',
-    '--model', 'glm',
-    '--session-id', 'pi-session-123',
-    '-p',
+    '--mode', 'json', '--print', '--no-approve', '--session', 'pi-session-123',
   ])
   assert.equal(spec.promptArg, true)
-  assert.equal(spec.eventTransport, 'pi-json-events')
+  assert.equal(spec.eventTransport, 'json')
   assert.equal(typeof parsePiOutput, 'function')
 })
 
