@@ -76,7 +76,7 @@ Custom Agents and the local Agent Connector SDK provide explicit extension paths
 | inspectable evidence, bounded run traces, and explicit acceptance | automatic participant selection from a large roster |
 | local files, Skills, knowledge references, and opt-in workspace writes | enterprise SSO, centralized governance, or organization-wide audit today |
 
-Remote Agents, Cloud and Channel Connectors, automatic participant selection, enterprise governance, and an Outcome Network are outside the current public preview boundary. The preview is also not a commercial license; see [License](LICENSE) and [Commercial use](COMMERCIAL_USE.md).
+Remote Agents, Cloud and Channel Connectors, automatic participant selection, enterprise governance, and an Outcome Network are outside the current public preview boundary. License terms follow the [Apache License 2.0](LICENSE); see [Commercial use](COMMERCIAL_USE.md) for a practical summary.
 
 ## Workflow
 
@@ -160,4 +160,4 @@ Read the [architecture](architecture.md) and [security policy](SECURITY.md) for 
 
 ## License
 
-Meldwork is source-available under the [Meldwork Non-Commercial Source License](LICENSE). It is not open source in the OSI sense. You may inspect, run, modify, and share it for non-commercial purposes. Commercial use requires prior written permission; see [COMMERCIAL_USE.md](COMMERCIAL_USE.md).
+Meldwork is licensed under the [Apache License 2.0](LICENSE). You may use, modify, and redistribute the repository under its terms; third-party Agent products, models, dependencies, and brand assets remain subject to their own licenses and notices.

@@ -76,7 +76,7 @@ Custom Agent 和本地 Agent Connector SDK 提供明确的扩展路径。Connect
 | 需要可检查的 Evidence、受边界约束的运行轨迹和明确验收 | 需要从大型候选池自动选人组队 |
 | 需要本地文件、Skill、知识引用和显式开启的工作区写入 | 当前就需要企业 SSO、集中治理或组织级审计 |
 
-远程 Agent、Cloud 和 Channel Connector、自动选人组队、企业治理以及 Outcome Network 不在当前公开预览边界内。本预览版也不等于商业授权；请查看[许可证](LICENSE)和[商业使用说明](COMMERCIAL_USE.md)。
+远程 Agent、Cloud 和 Channel Connector、自动选人组队、企业治理以及 Outcome Network 不在当前公开预览边界内。许可证条款遵循 [Apache License 2.0](LICENSE)；实际使用说明见[商业使用说明](COMMERCIAL_USE.md)。
 
 ## 使用流程
 
@@ -160,4 +160,4 @@ npm --prefix desktop test
 
 ## 许可证
 
-Meldwork 采用 [Meldwork 非商用源码许可](LICENSE)。它不是 OSI 意义上的开源许可证。你可以为非商用目的查看、运行、修改和分享；商业使用需要事先书面许可，详见[商业使用说明](COMMERCIAL_USE.md)。
+Meldwork 采用 [Apache License 2.0](LICENSE)。你可以按照许可证条款使用、修改和再发布本仓库；第三方 Agent 产品、模型、依赖和品牌资产仍分别受其自身许可证与声明约束。

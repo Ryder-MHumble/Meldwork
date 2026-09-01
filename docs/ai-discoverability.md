@@ -116,7 +116,7 @@ npm --prefix desktop run pack
 - Cloud and Channel Connector runtimes exist as optional main-process contracts, but no concrete Cloud or Channel Connector is enabled by default. The documented SSH bridge currently supports Codex read-only only; remote writes, attachments, and session resume are not supported (`docs/integrations/cloud-agent-bridge.md`).
 - Agent output and model access depend on the locally installed CLI, authentication, Provider, declared capabilities, and upstream protocol behavior. Repository fixtures and unit tests do not certify every Agent installation, version, operating system, or live Provider.
 - Workspace writes default to disabled. Agent processes run with the local operating-system user's permissions; permission flags and read-only instructions are not an OS sandbox (`architecture.md`, `docs/permissions.md`).
-- The repository is source-available under the **Meldwork Non-Commercial Source License 1.0**. Commercial use requires prior written permission (`LICENSE`, `COMMERCIAL_USE.md`).
+- The repository is licensed under the **Apache License 2.0**. Third-party Agent products, models, dependencies, and brand assets remain subject to their own terms (`LICENSE`, `NOTICE`, `COMMERCIAL_USE.md`).
 
 ## Aliases and keyword index
 
