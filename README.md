@@ -1,24 +1,28 @@
+<!-- <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/logos/meldwork-wordmark-v3-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="frontend/public/logos/meldwork-wordmark-v3.svg">
+    <img src="frontend/public/logos/meldwork-wordmark-v3.svg" alt="Meldwork" width="360">
+  </picture>
+</p> -->
+
 <p align="center">
-  <img src="frontend/public/logos/meldwork-wordmark-v3.svg" alt="Meldwork local-first AI Agent workspace" width="260">
+  <img src="frontend/public/logos/meldwork-readme-banner-en.png" alt="Meldwork README banner" width="100%">
 </p>
 
 <p align="center">
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-# Meldwork - Local-first Multi-Agent Collaboration Workspace
+# Meldwork builds the organization layer for AI agents.
 
-> Coordinate local Agent CLIs, compare independent work, and review evidence before anything is written.
+**Most tools help humans run more agents. Meldwork is built for a different job: make multi-agent work legible, accountable, and reusable.**
 
-Meldwork is a source-available Electron desktop app and local-first multi-agent collaboration workspace for developers, researchers, and technical teams who use more than one AI Agent. It brings local Agent CLIs such as Codex, Claude Code, Gemini CLI, OpenCode, and Qwen Code into one place for direct chats, concurrent responses, evidence-aware runs, and human-in-the-loop Agent orchestration.
-
-The current public preview is a single-user Apple-silicon macOS work cell. You choose the participants, working directory, context, permissions, and final adoption decision. No Meldwork account, server, or hosted conversation store is required.
+The current preview is a local work cell for supported Agent CLIs. It keeps participants explicit, context scoped, collaboration bounded, run state inspectable, and human review in the loop. Selected Agents can now respond concurrently or move through independent proposals, peer negotiation, responsibility-based work, single-writer integration, and independent verification around one goal.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>Download the Apple silicon macOS preview</strong></a>
-  · <a href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3">Release notes</a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>Download Meldwork V1.0.3 for Apple silicon macOS</strong></a>
   · <a href="architecture.md">Architecture</a>
-  · <a href="desktop/README.md">Desktop guide</a>
   · <a href="LICENSE">License</a>
 </p>
 
@@ -87,24 +91,25 @@ Meldwork detects and invokes an installed command when its adapter and the CLI v
 
 <table>
   <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/codex.svg" alt="Codex logo" width="32" height="32"><br><strong>Codex</strong><br><code>codex</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/hermes.png" alt="Hermes logo" width="32" height="32"><br><strong>Hermes</strong><br><code>hermes</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/openclaw-transparent.png" alt="OpenClaw logo" width="32" height="32"><br><strong>OpenClaw</strong><br><code>openclaw</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/codex.svg" alt="Codex logo" width="32" height="32"><br><strong>Codex</strong><br><code>codex</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/hermes.png" alt="Hermes logo" width="32" height="32"><br><strong>Hermes</strong><br><code>hermes</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/openclaw-transparent.png" alt="OpenClaw logo" width="32" height="32"><br><strong>OpenClaw</strong><br><code>openclaw</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/workbuddy.png" alt="WorkBuddy logo" width="32" height="32"><br><strong>WorkBuddy</strong><br><code>codebuddy</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/pi.svg" alt="Pi Agent logo" width="32" height="32"><br><strong>Pi Agent</strong><br><code>pi</code> · <code>pi-agent</code> · <code>piagent</code></td>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/workbuddy.png" alt="WorkBuddy logo" width="32" height="32"><br><strong>WorkBuddy</strong><br><code>codebuddy</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/pi.svg" alt="Pi Agent logo" width="32" height="32"><br><strong>Pi Agent</strong><br><code>pi</code> · <code>pi-agent</code> · <code>piagent</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/kimi.png" alt="Kimi Code logo" width="32" height="32"><br><strong>Kimi Code</strong><br><code>kimi</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/kimi.png" alt="Kimi Code logo" width="32" height="32"><br><strong>Kimi Code</strong><br><code>kimi</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/mimo.svg" alt="MiMo Code logo" width="32" height="32"><br><strong>MiMo Code</strong><br><code>mimo</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/claude.png" alt="Claude Code logo" width="32" height="32"><br><strong>Claude Code</strong><br><code>claude</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/gemini.svg" alt="Gemini CLI logo" width="32" height="32"><br><strong>Gemini CLI</strong><br><code>gemini</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/opencode.svg" alt="OpenCode logo" width="32" height="32"><br><strong>OpenCode</strong><br><code>opencode</code></td>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/mimo.svg" alt="MiMo Code logo" width="32" height="32"><br><strong>MiMo Code</strong><br><code>mimo</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/claude.png" alt="Claude Code logo" width="32" height="32"><br><strong>Claude Code</strong><br><code>claude</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/gemini.svg" alt="Gemini CLI logo" width="32" height="32"><br><strong>Gemini CLI</strong><br><code>gemini</code></td>
-  </tr>
-  <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/opencode.svg" alt="OpenCode logo" width="32" height="32"><br><strong>OpenCode</strong><br><code>opencode</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/qwen.svg" alt="Qwen Code logo" width="32" height="32"><br><strong>Qwen Code</strong><br><code>qwen</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/opencodereview.svg" alt="OpenCodeReview logo" width="32" height="32"><br><strong>OpenCodeReview</strong><br><code>ocr</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/qwen.svg" alt="Qwen Code logo" width="32" height="32"><br><strong>Qwen Code</strong><br><code>qwen</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/opencodereview.svg" alt="OpenCodeReview logo" width="32" height="32"><br><strong>OpenCodeReview</strong><br><code>ocr</code></td>
+    <td align="center" valign="top" width="20%">&nbsp;</td>
+    <td align="center" valign="top" width="20%">&nbsp;</td>
+    <td align="center" valign="top" width="20%">&nbsp;</td>
   </tr>
 </table>
 
