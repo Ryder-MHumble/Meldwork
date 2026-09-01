@@ -47,11 +47,37 @@ Meldwork 是一个源码可见的 Electron 桌面应用，也是本地优先的�
 
 参与者始终由用户选择。从更大候选池自动选人不属于当前预览版。
 
+## Meldwork 与相邻产品的区别
+
+Meldwork 是面向多 Agent 评审与决策可追溯性的本地优先 AI Agent 工作空间，不是终端、云端 Agent Fleet、通信网络或可编程编排框架。它把你已经在使用的本地 Agent 工具连接到可形成决定的评审流程，并在一个本地工作单元中保留独立发现、证据、责任和人工采用决定。
+
+| 项目 | 类别 | 主要解决什么 | Meldwork 的区别 |
+| --- | --- | --- | --- |
+| [Buzz](https://github.com/block/buzz) | Agent 通信网络 | 身份、频道、事件和持续协作。 | 面向单个 Case 的独立判断，以及有证据支持的 Decision 和 Disposition。 |
+| [Pragma](https://github.com/pqpo/pragma) | 方法与工作流运行时 | 可复用的 Expert、Flow、Memory、Evaluation 和 DSL 资产。 | 在流程固定前保留分歧、复验和采用记录。 |
+| [Munder Difflin](https://github.com/chaitanyagiri/munder-difflin) | 可视化 Agent 公司 | Boss -> Manager -> Workers，以及任务和活动状态。 | 追踪 Finding -> Evidence -> Decision -> Disposition，不让中心经理隐藏分歧。 |
+| [Superset](https://github.com/superset-sh/superset) / [Conductor](https://www.conductor.build/) / [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | 并行编码工作台 | 并行 Coding Agent、隔离工作区、Diff 和 Merge。 | 面向异构 CLI 的本地优先评审，不以终端数量、Worktree 吞吐量或云 Sandbox 竞争。 |
+| [cmux](https://github.com/manaflow-ai/cmux) | Agent 原生终端 | 低摩擦终端、通知和多任务处理。 | 增加冻结上下文、独立结果和人工采用门。 |
+| [Nimbalyst](https://github.com/nimbalyst/nimbalyst) | Agent 与 Artifact 工作空间 | 并行 Agent，以及 Markdown、Mockup 和 Diagram。 | 在 Artifact 旁边保留证据和可追责的决定。 |
+| [Paperclip](https://github.com/paperclipai/paperclip) | Agent 组织管理 | 公司、岗位、预算、审批和组织图。 | 将责任落在真实 Finding 和结果上，而不是虚拟公司。 |
+| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) | Agent 通信基础设施 | 身份、收件箱、Thread 和 advisory file lease。 | 在传输层之上保留 Case 和评审语义。 |
+| LangGraph / CrewAI / AutoGen / OpenAI Agents SDK / Google ADK | 可编程多 Agent 框架 | 面向开发者的 Graph、角色、路由、工具和审批。 | 团队无需编写编排框架代码即可获得桌面评审流程。 |
+| Warp Oz / Devin / Factory / OpenHands Cloud | 云端 Agent 控制面 | 托管 Sandbox、远程执行和 Agent Fleet。 | 在本地 Electron 工作单元中使用现有 CLI，并保持本地数据边界。 |
+
 ## 运行示例
 
-| 本地 Agent 检测 | 多 Agent 评审 | 直接会话中的多模态工作 |
-| --- | --- | --- |
-| [![Meldwork 本地优先多 Agent 工作空间检测 Agent CLI](assets/meldwork-agent-discovery.png)](assets/meldwork-agent-discovery.png) | [![Meldwork 多 Agent 协作、证据与人工复核](assets/meldwork-multi-agent-review.png)](assets/meldwork-multi-agent-review.png) | [![Meldwork 直接 Agent 工作空间处理本地文件和媒体](assets/meldwork-direct-multimodal.png)](assets/meldwork-direct-multimodal.png) |
+<table>
+  <tr>
+    <th>本地 Agent 检测</th>
+    <th>多 Agent 评审</th>
+    <th>直接会话中的多模态工作</th>
+  </tr>
+  <tr>
+    <td align="center"><a href="assets/meldwork-agent-discovery.png"><img src="assets/meldwork-agent-discovery.png" alt="Meldwork 本地优先多 Agent 工作空间检测 Agent CLI" width="320" height="205"></a></td>
+    <td align="center"><a href="assets/meldwork-multi-agent-review.png"><img src="assets/meldwork-multi-agent-review.png" alt="Meldwork 多 Agent 协作、证据与人工复核" width="320" height="205"></a></td>
+    <td align="center"><a href="assets/meldwork-direct-multimodal.png"><img src="assets/meldwork-direct-multimodal.png" alt="Meldwork 直接 Agent 工作空间处理本地文件和媒体" width="320" height="205"></a></td>
+  </tr>
+</table>
 
 示例：把同一份变更评审上下文交给 Codex、Claude Code 和 Gemini CLI，比较各自的独立发现，再只采用你批准且有证据支持的结果。
 
@@ -59,7 +85,28 @@ Meldwork 是一个源码可见的 Electron 桌面应用，也是本地优先的�
 
 当适配器和 CLI 版本兼容时，Meldwork 会检测并调用已安装的命令：
 
-**Codex**（`codex`）· **Hermes**（`hermes`）· **OpenClaw**（`openclaw`）· **WorkBuddy**（`codebuddy`）· **Pi Agent**（`pi`、`pi-agent`、`piagent`）· **Kimi Code**（`kimi`）· **MiMo Code**（`mimo`）· **Claude Code**（`claude`）· **Gemini CLI**（`gemini`）· **OpenCode**（`opencode`）· **Qwen Code**（`qwen`）· **OpenCodeReview**（`ocr`）
+<table>
+  <tr>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/codex.svg" alt="Codex logo" width="32" height="32"><br><strong>Codex</strong><br><code>codex</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/hermes.png" alt="Hermes logo" width="32" height="32"><br><strong>Hermes</strong><br><code>hermes</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/openclaw-transparent.png" alt="OpenClaw logo" width="32" height="32"><br><strong>OpenClaw</strong><br><code>openclaw</code></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/workbuddy.png" alt="WorkBuddy logo" width="32" height="32"><br><strong>WorkBuddy</strong><br><code>codebuddy</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/pi.svg" alt="Pi Agent logo" width="32" height="32"><br><strong>Pi Agent</strong><br><code>pi</code> · <code>pi-agent</code> · <code>piagent</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/kimi.png" alt="Kimi Code logo" width="32" height="32"><br><strong>Kimi Code</strong><br><code>kimi</code></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/mimo.svg" alt="MiMo Code logo" width="32" height="32"><br><strong>MiMo Code</strong><br><code>mimo</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/claude.png" alt="Claude Code logo" width="32" height="32"><br><strong>Claude Code</strong><br><code>claude</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/gemini.svg" alt="Gemini CLI logo" width="32" height="32"><br><strong>Gemini CLI</strong><br><code>gemini</code></td>
+  </tr>
+  <tr>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/opencode.svg" alt="OpenCode logo" width="32" height="32"><br><strong>OpenCode</strong><br><code>opencode</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/qwen.svg" alt="Qwen Code logo" width="32" height="32"><br><strong>Qwen Code</strong><br><code>qwen</code></td>
+    <td align="center" valign="top"><img src="frontend/public/agent-logos/opencodereview.svg" alt="OpenCodeReview logo" width="32" height="32"><br><strong>OpenCodeReview</strong><br><code>ocr</code></td>
+  </tr>
+</table>
 
 已批准的 Agent Connector 可通过 [Agent Connector SDK](docs/agent-connector-sdk.md) 接入；自定义可执行 Agent 使用桌面端的自定义 Agent 入口。完整适配器和能力矩阵见[桌面端指南](desktop/README.md)。
 
