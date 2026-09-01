@@ -10,7 +10,7 @@
 
 > Coordinate local Agent CLIs, compare independent work, and review evidence before anything is written.
 
-Meldwork is a source-available Electron desktop app and AI Agent orchestration workspace for developers, researchers, and technical teams who use more than one AI Agent. It brings local Agent CLIs such as Codex, Claude Code, Gemini CLI, OpenCode, and Qwen Code into one local-first AI agent workspace for direct chats, concurrent responses, evidence-aware runs, and human-in-the-loop review.
+Meldwork is a source-available Electron desktop app and local-first multi-agent collaboration workspace for developers, researchers, and technical teams who use more than one AI Agent. It brings local Agent CLIs such as Codex, Claude Code, Gemini CLI, OpenCode, and Qwen Code into one place for direct chats, concurrent responses, evidence-aware runs, and human-in-the-loop Agent orchestration.
 
 The current public preview is a single-user Apple-silicon macOS work cell. You choose the participants, working directory, context, permissions, and final adoption decision. No Meldwork account, server, or hosted conversation store is required.
 
