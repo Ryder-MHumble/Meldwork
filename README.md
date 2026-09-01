@@ -21,7 +21,7 @@
 The current preview is a local work cell for supported Agent CLIs. It keeps participants explicit, context scoped, collaboration bounded, run state inspectable, and human review in the loop. Selected Agents can now respond concurrently or move through independent proposals, peer negotiation, responsibility-based work, single-writer integration, and independent verification around one goal.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>Download Meldwork V1.0.3 for Apple silicon macOS</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg"><strong>Download Meldwork V1.0.4 for Apple silicon macOS</strong></a>
   · <a href="architecture.md">Architecture</a>
   · <a href="LICENSE">License</a>
 </p>
@@ -47,7 +47,7 @@ Use Meldwork when you:
 | --- | --- | --- |
 | **Direct** | One selected Agent keeps its conversation and native session when supported. | Focused work with one Agent. |
 | **Concurrent Responses** | Selected Agents receive the same frozen task snapshot and return independent replies in stable order. | Comparing approaches before choosing one. |
-| **Auto Discussion V4** | Selected Agents propose, challenge, negotiate responsibilities, execute dependency-aware work, then verify the result. | Multi-round work that needs explicit responsibility and review. |
+| **Auto Discussion V4** | The first round runs concurrent proposals. Later turns follow the discussion: one Agent can route the next turn with `@Agent`, or several Agents can be selected for a concurrent response. Native Agent sessions continue across rounds. | Multi-round work that benefits from discussion, flexible routing, and review. |
 
 Participants are always selected by the user. Automatic selection from a larger roster is outside the current preview.
 
@@ -114,7 +114,7 @@ Approved Agent Connectors can be added through the [Agent Connector SDK](docs/ag
 
 ### Apple silicon macOS preview
 
-Download [`Meldwork-0.1.3-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg) from the [official V1.0.3 prerelease](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3), move Meldwork to Applications, and install at least one supported local Agent CLI. The prerelease is ad-hoc signed and not notarized; macOS may require **Open Anyway** in **System Settings -> Privacy & Security** on first launch.
+Download [`Meldwork-0.1.4-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg) from the [official V1.0.4 prerelease](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4), move Meldwork to Applications, and install at least one supported local Agent CLI. The prerelease is ad-hoc signed and not notarized; macOS may require **Open Anyway** in **System Settings -> Privacy & Security** on first launch.
 
 ### Run from source
 

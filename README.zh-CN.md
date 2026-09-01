@@ -18,10 +18,10 @@
 
 **多数工具是在帮人类管更多 Agent；Meldwork 解决的是另一件事：让多 Agent 协作变得可见、可追责、可复用。**
 
-当前预览版是一个面向已支持本地 Agent CLI 的本地工作单元。它把参与者、上下文、协作边界、运行状态和人类复核放在同一个工作空间里。已选 Agent 现在可以并发回复，也可以围绕同一目标先独立提案、再协商职责、分工执行、单写者整合并由其他 Agent 独立复核。
+当前预览版是一个面向已支持本地 Agent CLI 的本地工作单元。它把参与者、上下文、协作边界、运行状态和人类复核放在同一个工作空间里。已选 Agent 现在可以并发回复，也可以围绕同一目标先独立提案，再根据讨论互相指定下一位参与者，最后协作完成工作并进行复核。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>下载 Meldwork V1.0.3 Apple 芯片 macOS 版</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg"><strong>下载 Meldwork V1.0.4 Apple 芯片 macOS 版</strong></a>
   · <a href="architecture.md">架构</a>
   · <a href="LICENSE">许可证</a>
 </p>
@@ -47,7 +47,7 @@
 | --- | --- | --- |
 | **直接会话** | 一个已选 Agent 在适配器支持时保持对话和原生会话。 | 使用单个 Agent 完成聚焦工作。 |
 | **并发回复** | 已选 Agent 收到同一份冻结任务快照，并按稳定顺序返回独立回复。 | 在选择方案前比较不同路径。 |
-| **Auto Discussion V4** | 已选 Agent 先提案、质询并协商责任，按依赖执行工作，再独立复核结果。 | 需要明确责任和复核的多轮工作。 |
+| **Auto Discussion V4** | 首轮并发提案。后续轮次由 Agent 根据讨论结果通过最后一行的 `@Agent` 决定下一位参与者；@ 一个 Agent 时单独运行，@ 多个 Agent 时并发运行。每个 Agent 在同一任务中持续使用原生会话。 | 需要讨论、灵活分工和复核的多轮工作。 |
 
 参与者始终由用户选择。从更大候选池自动选人不属于当前预览版。
 
@@ -114,7 +114,7 @@ Meldwork 是面向多 Agent 评审与决策可追溯性的本地优先 AI Agent 
 
 ### Apple 芯片 macOS 预览版
 
-从[官方 V1.0.3 预发布页](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3)下载 [`Meldwork-0.1.3-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg)，将 Meldwork 移入“应用程序”，并至少安装一个受支持的本地 Agent CLI。该预发布版使用 ad-hoc 临时签名且未公证；首次启动时，macOS 可能要求你在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
+从[官方 V1.0.4 预发布页](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4)下载 [`Meldwork-0.1.4-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg)，将 Meldwork 移入“应用程序”，并至少安装一个受支持的本地 Agent CLI。该预发布版使用 ad-hoc 临时签名且未公证；首次启动时，macOS 可能要求你在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
 
 ### 从源码运行
 

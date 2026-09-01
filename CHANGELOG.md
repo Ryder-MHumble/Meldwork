@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.4 - 2026-09-01 (Meldwork-V1.0.4 prerelease)
+
+### Natural Group Discussions
+
+- Sequential discussion mode now runs one Agent at a time in the configured CLI order and records every round visibly.
+- Auto Discussion starts with concurrent proposals, then lets Agent responses route the next turn through exact final-line `@Agent` mentions. One mention runs one Agent; multiple mentions run concurrently.
+- Natural discussion prompts allow Agents to exchange views before work and review instead of forcing every turn into a review-only role.
+
+### Session And Recovery
+
+- Reuses one native Agent session per Agent task across discussion rounds and restarts.
+- Persists round messages and checkpoints before and after Agent execution so completed turns are recovered without duplicate reruns.
+- Rejects stale operation and snapshot bindings before late results can be committed.
+
+### Verification And Distribution
+
+- Focused natural discussion coverage: 17/17 tests passed.
+- Desktop syntax checks and `git diff --check` passed.
+- The Apple silicon DMG and ZIP are ad-hoc signed and not notarized. Live CLI behavior still depends on each installed Agent's version, authentication, Provider, and capabilities.
+
 ## 0.1.3 - 2026-08-18 (Meldwork-V1.0.3 prerelease)
 
 ### Concurrent Conversations
