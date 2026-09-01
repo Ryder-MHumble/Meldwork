@@ -10,9 +10,9 @@
 
 > 协同本地 Agent CLI，比较独立结果，在写入前检查证据。
 
-Meldwork 是一个源码可见的 Electron 桌面应用和本地优先的多 Agent 协作工作空间，也是 AI Agent 编排工作空间，面向使用多个 AI Agent 的开发者、研究人员和技术团队。它把 Codex、Claude Code、Gemini CLI、OpenCode、Qwen Code 等本地 Agent CLI 放进同一个工作空间，支持直接会话、并发回复、有证据可追溯（evidence-aware）运行和人类在环（human-in-the-loop）复核。
+Meldwork 是一个源码可见的 Electron 桌面应用，也是本地优先的多 Agent 协作与 AI Agent 编排工作空间，面向使用多个 AI Agent 的开发者、研究人员和技术团队。它把 Codex、Claude Code、Gemini CLI、OpenCode、Qwen Code 等本地 Agent CLI 放进同一个工作空间，支持直接会话、并发回复、有证据可追溯（evidence-aware）运行和人类在环（human-in-the-loop）复核。
 
-当前公开预览版是 Apple 芯片 macOS 上的单用户工作单元。参与者、工作目录、上下文、权限和最终采用决定都由你选择。Meldwork 不要求账号、服务器或托管式对话存储。
+当前公开预览版是 Apple 芯片 macOS 上的单用户工作单元。参与者、工作目录、上下文、权限以及是否采用最终结果，都由你决定。Meldwork 不要求账号、服务器或托管式对话存储。
 
 <p align="center">
   <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>下载 Apple 芯片 macOS 预览版</strong></a>
