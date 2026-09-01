@@ -1,24 +1,28 @@
+<!-- <p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="frontend/public/logos/meldwork-wordmark-v3-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="frontend/public/logos/meldwork-wordmark-v3.svg">
+    <img src="frontend/public/logos/meldwork-wordmark-v3.svg" alt="Meldwork" width="360">
+  </picture>
+</p> -->
+
 <p align="center">
-  <img src="frontend/public/logos/meldwork-wordmark-v3.svg" alt="Meldwork 本地优先 AI Agent 工作空间" width="260">
+  <img src="frontend/public/logos/meldwork-readme-banner-cn.png" alt="Meldwork README banner" width="100%">
 </p>
 
 <p align="center">
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-# Meldwork：本地优先（local-first）多 Agent 协作工作空间
+# Meldwork 为 AI Agent 构建组织层
 
-> 协同本地 Agent CLI，比较独立结果，在写入前检查证据。
+**多数工具是在帮人类管更多 Agent；Meldwork 解决的是另一件事：让多 Agent 协作变得可见、可追责、可复用。**
 
-Meldwork 是一个源码可见的 Electron 桌面应用，也是本地优先的多 Agent 协作与 AI Agent 编排工作空间，面向使用多个 AI Agent 的开发者、研究人员和技术团队。它把 Codex、Claude Code、Gemini CLI、OpenCode、Qwen Code 等本地 Agent CLI 放进同一个工作空间，支持直接会话、并发回复、有证据可追溯（evidence-aware）运行和人类在环（human-in-the-loop）复核。
-
-当前公开预览版是 Apple 芯片 macOS 上的单用户工作单元。参与者、工作目录、上下文、权限以及是否采用最终结果，都由你决定。Meldwork 不要求账号、服务器或托管式对话存储。
+当前预览版是一个面向已支持本地 Agent CLI 的本地工作单元。它把参与者、上下文、协作边界、运行状态和人类复核放在同一个工作空间里。已选 Agent 现在可以并发回复，也可以围绕同一目标先独立提案、再协商职责、分工执行、单写者整合并由其他 Agent 独立复核。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>下载 Apple 芯片 macOS 预览版</strong></a>
-  · <a href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3">发布说明</a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg"><strong>下载 Meldwork V1.0.3 Apple 芯片 macOS 版</strong></a>
   · <a href="architecture.md">架构</a>
-  · <a href="desktop/README.md">桌面端指南</a>
   · <a href="LICENSE">许可证</a>
 </p>
 
@@ -87,24 +91,25 @@ Meldwork 是面向多 Agent 评审与决策可追溯性的本地优先 AI Agent 
 
 <table>
   <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/codex.svg" alt="Codex logo" width="32" height="32"><br><strong>Codex</strong><br><code>codex</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/hermes.png" alt="Hermes logo" width="32" height="32"><br><strong>Hermes</strong><br><code>hermes</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/openclaw-transparent.png" alt="OpenClaw logo" width="32" height="32"><br><strong>OpenClaw</strong><br><code>openclaw</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/codex.svg" alt="Codex logo" width="32" height="32"><br><strong>Codex</strong><br><code>codex</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/hermes.png" alt="Hermes logo" width="32" height="32"><br><strong>Hermes</strong><br><code>hermes</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/openclaw-transparent.png" alt="OpenClaw logo" width="32" height="32"><br><strong>OpenClaw</strong><br><code>openclaw</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/workbuddy.png" alt="WorkBuddy logo" width="32" height="32"><br><strong>WorkBuddy</strong><br><code>codebuddy</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/pi.svg" alt="Pi Agent logo" width="32" height="32"><br><strong>Pi Agent</strong><br><code>pi</code>、<code>pi-agent</code>、<code>piagent</code></td>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/workbuddy.png" alt="WorkBuddy logo" width="32" height="32"><br><strong>WorkBuddy</strong><br><code>codebuddy</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/pi.svg" alt="Pi Agent logo" width="32" height="32"><br><strong>Pi Agent</strong><br><code>pi</code> · <code>pi-agent</code> · <code>piagent</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/kimi.png" alt="Kimi Code logo" width="32" height="32"><br><strong>Kimi Code</strong><br><code>kimi</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/kimi.png" alt="Kimi Code logo" width="32" height="32"><br><strong>Kimi Code</strong><br><code>kimi</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/mimo.svg" alt="MiMo Code logo" width="32" height="32"><br><strong>MiMo Code</strong><br><code>mimo</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/claude.png" alt="Claude Code logo" width="32" height="32"><br><strong>Claude Code</strong><br><code>claude</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/gemini.svg" alt="Gemini CLI logo" width="32" height="32"><br><strong>Gemini CLI</strong><br><code>gemini</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/opencode.svg" alt="OpenCode logo" width="32" height="32"><br><strong>OpenCode</strong><br><code>opencode</code></td>
   </tr>
   <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/mimo.svg" alt="MiMo Code logo" width="32" height="32"><br><strong>MiMo Code</strong><br><code>mimo</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/claude.png" alt="Claude Code logo" width="32" height="32"><br><strong>Claude Code</strong><br><code>claude</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/gemini.svg" alt="Gemini CLI logo" width="32" height="32"><br><strong>Gemini CLI</strong><br><code>gemini</code></td>
-  </tr>
-  <tr>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/opencode.svg" alt="OpenCode logo" width="32" height="32"><br><strong>OpenCode</strong><br><code>opencode</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/qwen.svg" alt="Qwen Code logo" width="32" height="32"><br><strong>Qwen Code</strong><br><code>qwen</code></td>
-    <td align="center" valign="top"><img src="frontend/public/agent-logos/opencodereview.svg" alt="OpenCodeReview logo" width="32" height="32"><br><strong>OpenCodeReview</strong><br><code>ocr</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/qwen.svg" alt="Qwen Code logo" width="32" height="32"><br><strong>Qwen Code</strong><br><code>qwen</code></td>
+    <td align="center" valign="top" width="20%"><img src="frontend/public/agent-logos/opencodereview.svg" alt="OpenCodeReview logo" width="32" height="32"><br><strong>OpenCodeReview</strong><br><code>ocr</code></td>
+    <td align="center" valign="top" width="20%">&nbsp;</td>
+    <td align="center" valign="top" width="20%">&nbsp;</td>
+    <td align="center" valign="top" width="20%">&nbsp;</td>
   </tr>
 </table>
 
