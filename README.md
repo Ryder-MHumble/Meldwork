@@ -6,7 +6,7 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-# Meldwork - Local-first AI Agent Workspace
+# Meldwork - Local-first Multi-Agent Collaboration Workspace
 
 > Coordinate local Agent CLIs, compare independent work, and review evidence before anything is written.
 

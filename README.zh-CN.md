@@ -6,7 +6,7 @@
   <a href="README.md">English</a> · <strong>简体中文</strong>
 </p>
 
-# Meldwork：本地优先（Local-first）AI Agent 工作空间
+# Meldwork：本地优先（local-first）多 Agent 协作工作空间
 
 > 协同本地 Agent CLI，比较独立结果，在写入前检查证据。
 
