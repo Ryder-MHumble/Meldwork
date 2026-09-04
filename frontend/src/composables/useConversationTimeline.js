@@ -18,6 +18,7 @@ import {
   traceRound,
 } from '../conversationTimelineModel.js'
 import { orchestrationPhase, orchestrationSlotCompleted } from '../desktop-normalization.js'
+import { activeMediaGenerationForRun } from '../mediaFileCard.js'
 import { messageScopedTargetKinds } from '../messageContext.js'
 import { useConversationTimelineLabels } from './useConversationTimelineLabels.js'
 import { useConversationTimelineUiState } from './useConversationTimelineUiState.js'
@@ -95,6 +96,7 @@ export function useConversationTimeline({
   ))
   const activeRunHasAgentRuns = computed(() => activeRunAgentRuns.value.length > 0)
   const activeRunProgress = computed(() => Array.isArray(activeRun.value?.progress) ? activeRun.value.progress.slice(0, 8) : [])
+  const activeMediaGeneration = computed(() => activeMediaGenerationForRun(activeRunAgentRuns.value))
   const liveOutputSignature = computed(() => activeRunAgentRuns.value.map(agent => (
     `${agent.agentRunId}:${String(agent.output || '').length}:${agent.events?.at(-1)?.seq || 0}`
   )).join('\u0000'))
@@ -610,6 +612,7 @@ export function useConversationTimeline({
 
   return {
     activeMessages,
+    activeMediaGeneration,
     activeRun,
     activeRunAgentKind,
     activeRunAgentRuns,
