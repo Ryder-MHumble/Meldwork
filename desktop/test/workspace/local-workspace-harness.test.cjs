@@ -1557,7 +1557,7 @@ test('direct Harness rebuilds compressed context once when a reused legacy sessi
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['codex-stale-session', ''])
   assert.deepEqual(calls.map(call => call.runOptions.sessionTransport), ['legacy', ''])
   assert.doesNotMatch(calls[0].prompt, /Previous Codex conclusion/)
-  assert.match(calls[1].prompt, /Previous Codex conclusion/)
+  assert.doesNotMatch(calls[1].prompt, /Previous Codex conclusion/)
   assert.match(calls[1].prompt, /Continue after session recovery/)
   const snapshot = workspace.snapshot()
   const task = snapshot.messages.find(message => (
