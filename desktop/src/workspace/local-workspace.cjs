@@ -114,7 +114,6 @@ class LocalWorkspace extends EventEmitter {
     this.storagePath = options.storagePath
     this.detectAgentsFn = options.detectAgents
     this.runAgentFn = options.runAgent
-    this.generateMediaFn = options.generateMedia || null
     this.resolveAttachmentsFn = options.resolveAttachments || (async (attachments) => {
       if (attachments?.length) throw new Error('LOCAL_ATTACHMENT_STORAGE_UNAVAILABLE')
       return []
@@ -310,7 +309,6 @@ class LocalWorkspace extends EventEmitter {
       completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
       connectorRuntime: options.connectorRuntime,
       attachmentSupport: (...args) => this.attachmentSupportFn(...args),
-      generateMedia: (...args) => this.generateMediaFn?.(...args),
     })
     this.autoRunner = new LocalWorkspaceAutoRunner({
       state: () => this.state,

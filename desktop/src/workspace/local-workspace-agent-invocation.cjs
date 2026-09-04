@@ -69,18 +69,6 @@ function mergeOutcomeRefs(sources, options = {}) {
   return normalizeOutcomeRefs(merged)
 }
 
-function canUseNativeMediaFallback(error) {
-  const code = String(error?.code || error?.message || '')
-  return /^(?:MEDIA_GENERATION_(?:PROVIDER_UNAVAILABLE|MODEL_UNAVAILABLE|NETWORK_FAILED|INVALID_RESPONSE|FAILED|DOWNLOAD_FAILED)|MEDIA_GENERATION_(?:HTTP|DOWNLOAD_HTTP)_\d+)$/.test(code)
-}
-
-function agentReturnedMediaProviderFailure(text) {
-  const normalized = String(text || '').replace(/\s+/g, ' ').trim()
-  if (!normalized) return false
-  return /configured providers do not offer the required media model/i.test(normalized)
-    || /use a provider credential with access to (?:that|the) image, audio, or video model/i.test(normalized)
-    || /provider.+(?:does not|do not).+(?:offer|support).+(?:media|image|audio|video).+model/i.test(normalized)
-}
 const OPERATION_ID = /^[A-Za-z0-9._:-]{1,120}$/
 const SHA256 = /^[a-f0-9]{64}$/
 const V4_PHASES = new Set([
@@ -529,7 +517,6 @@ class LocalWorkspaceAgentInvocation {
     this.completeHumanGateContinuation = options.completeHumanGateContinuation
     this.connectorRuntime = options.connectorRuntime || null
     this.attachmentSupport = options.attachmentSupport || (() => ({}))
-    this.generateMedia = typeof options.generateMedia === 'function' ? options.generateMedia : null
     this.activeAgentSnapshots = new Map()
   }
 
@@ -1128,8 +1115,6 @@ class LocalWorkspaceAgentInvocation {
     let outputBaseline = null
     let artifactOutputBaseline = null
     let stagedInputs = null
-    let generatedMedia = null
-    let nativeMediaFallback = false
     let result
     let operationStarted = false
     let sideEffectsStarted = false
@@ -1239,21 +1224,6 @@ class LocalWorkspaceAgentInvocation {
           /* artifact output capture is best effort */
         }
       }
-      if (allowWrite && context.mediaRequest && this.generateMedia) {
-        sideEffectsStarted = true
-        try {
-          generatedMedia = await abortableOperation(() => this.generateMedia({
-            kind,
-            request: context.mediaRequest,
-            workdir: group.workdir,
-            signal: agentController.signal,
-            onEvent: emitRuntimeEvent,
-          }), agentController.signal)
-        } catch (error) {
-          if (agentController.signal.aborted || !canUseNativeMediaFallback(error)) throw error
-          nativeMediaFallback = true
-        }
-      }
       const nativeImageLimit = Math.max(
         0,
         Math.floor(Number(this.attachmentSupport(kind)?.image) || 0),
@@ -1284,16 +1254,6 @@ class LocalWorkspaceAgentInvocation {
                 activeRun?.unlimitedRounds === true,
               ),
             stagedAgentInputPrompt(stagedInputs),
-            generatedMedia
-              ? `Meldwork generated and will attach ${generatedMedia.filename}. Confirm the delivered media briefly; do not claim a different file was created.`
-              : '',
-            nativeMediaFallback
-              ? [
-                  'Meldwork shared media generator was unavailable. Use your native media-generation tools or installed local skills to fulfill the current request.',
-                  'Write or copy every real generated media file into .meldwork-output/ so Meldwork can validate and attach it to the reply.',
-                  'Do not return only a prompt and do not claim success unless a real media file was created. If no native media tool is available, explain that accurately.',
-                ].join('\n')
-              : '',
             runtimeInstruction ? `Harness recovery task:\n${runtimeInstruction}` : '',
             regenerationInstruction
               ? `Fresh response instruction:\n${regenerationInstruction}`
@@ -1756,18 +1716,6 @@ class LocalWorkspaceAgentInvocation {
         ? parseAutoReply(collaborationReply.text)
         : { text: collaborationReply.text, consensus: false }
       if (!reply.text) throw new Error('LOCAL_AGENT_EMPTY_RESPONSE')
-      if (allowWrite && context.mediaRequest && this.generateMedia && nativeMediaFallback
-          && !generatedMedia && agentReturnedMediaProviderFailure(reply.text)) {
-        sideEffectsStarted = true
-        generatedMedia = await abortableOperation(() => this.generateMedia({
-          kind,
-          request: context.mediaRequest,
-          workdir: group.workdir,
-          signal: agentController.signal,
-          onEvent: emitRuntimeEvent,
-        }), agentController.signal)
-        reply.text = `Meldwork generated and attached ${generatedMedia.filename}.`
-      }
       const progress = attemptProgress.length ? attemptProgress : result.progress
       const toolCalls = cleanProgressSteps(progress).map(step => ({
         ...step,

@@ -80,7 +80,8 @@ describe('Meldwork workbench', () => {
     })
     expect(wrapper.get('.composer-attachment img').attributes('src')).toBe('data:image/png;base64,AQID')
     expect(wrapper.get('.composer-attachment').classes()).toContain('is-image')
-    expect(wrapper.get('.composer-attachment').text()).toBe('')
+    expect(wrapper.get('.composer-attachment').text()).toContain('diagram.png')
+    expect(wrapper.get('.composer-attachment').text()).toContain('3 B')
     expect(wrapper.get('.send-button').attributes()).not.toHaveProperty('disabled')
 
     await wrapper.get('.send-button').trigger('click')
@@ -174,7 +175,7 @@ describe('Meldwork workbench', () => {
       'report.pdf', 'notes.md', 'preview.html',
     ])
     expect(wrapper.findAll('.composer-attachment small').map(item => item.text())).toEqual([
-      'PDF', 'MD', 'HTML',
+      '9 B', '8 B', '16 B',
     ])
     expect(wrapper.find('.composer-drop-overlay').exists()).toBe(false)
     expect(wrapper.find('.toast-message').exists()).toBe(false)
@@ -212,7 +213,8 @@ describe('Meldwork workbench', () => {
       name: 'diagram.png',
       mimeType: 'image/png',
     }))
-    expect(wrapper.get('.composer-attachment').text()).toBe('')
+    expect(wrapper.get('.composer-attachment').text()).toContain('diagram.png')
+    expect(wrapper.get('.composer-attachment').text()).toContain('7 B')
     expect(wrapper.get('.composer-attachment').classes()).toContain('is-image')
     expect(wrapper.find('.toast-message').exists()).toBe(false)
     wrapper.unmount()
@@ -663,11 +665,18 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.message-attachment-grid video').attributes('src'))
       .toBe('meldwork-media://attachment/demo-video')
     expect(wrapper.find('.message-attachment-grid figcaption').exists()).toBe(false)
+    const audioCardInfo = wrapper.get('.message-audio-card-info')
+    const inlineAudio = wrapper.get('.message-audio-card audio').element
+    inlineAudio.play = vi.fn(async () => {})
+    await audioCardInfo.trigger('click')
+    await flushPromises()
+    expect(inlineAudio.play).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('.attachment-media-preview-dialog')).toBeNull()
     wrapper.unmount()
   })
 
   it('opens uploaded images and generated videos in the original-media preview', async () => {
-    const { wrapper } = await mountApp(({ state }) => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'direct-codex',
         conversationType: 'direct',
@@ -720,6 +729,11 @@ describe('Meldwork workbench', () => {
     const previewVideo = document.querySelector('.attachment-media-preview-dialog video')
     expect(previewVideo?.getAttribute('src')).toBe('meldwork-media://attachment/generated-video-id')
     expect(previewVideo?.hasAttribute('autoplay')).toBe(true)
+    document.querySelector('[aria-label="Download result.mp4"]')?.dispatchEvent(
+      new MouseEvent('click', { bubbles: true }),
+    )
+    await flushPromises()
+    expect(bridge.localAttachments.save).toHaveBeenCalledWith('generated-video-id')
 
     document.querySelector('.attachment-media-preview-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     await flushPromises()
@@ -831,7 +845,7 @@ describe('Meldwork workbench', () => {
     await flushPromises()
     const documentCard = wrapper.get('.message-document-attachment')
     expect(documentCard.text()).toContain('report.pdf')
-    expect(documentCard.text()).toContain('PDF · 2 KB')
+    expect(documentCard.text()).toContain('2 KB')
     expect(documentCard.get('[data-document-icon]').attributes('data-document-icon')).toBe('pdf')
     expect(documentCard.html()).not.toContain('/tmp/')
     await documentCard.trigger('click')
@@ -863,7 +877,7 @@ describe('Meldwork workbench', () => {
     await flushPromises()
 
     expect(wrapper.findAll('[data-document-icon]').map(item => item.attributes('data-document-icon')))
-      .toEqual(['code', 'spreadsheet', 'presentation', 'archive'])
+      .toEqual(['default', 'excel', 'ppt', 'zip'])
     expect(wrapper.findAll('.message-document-list')).toHaveLength(1)
     expect(wrapper.get('.message-document-list').findAll('.message-document-attachment')).toHaveLength(4)
     expect(wrapper.get('.message-document-list').findAll('figure')).toHaveLength(0)

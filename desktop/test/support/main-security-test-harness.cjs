@@ -73,6 +73,7 @@ const LOCAL_IPC_CHANNELS = Object.freeze([
   'local-attachments:import',
   'local-attachments:preview',
   'local-attachments:open',
+  'local-attachments:save',
   'local-attachments:discard',
   'local-agent-provider:status',
   'local-agent-provider:probe',
@@ -745,6 +746,10 @@ function loadMain(userData, options = {}) {
       showOpenDialog: async (...args) => {
         dialogCalls.push(args)
         return options.dialogResult || { canceled: true, filePaths: [] }
+      },
+      showSaveDialog: async (...args) => {
+        dialogCalls.push(args)
+        return options.saveDialogResult || { canceled: true, filePath: '' }
       },
       showMessageBox: async (...args) => {
         dialogCalls.push(args)
