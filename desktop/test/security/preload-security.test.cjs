@@ -418,7 +418,7 @@ test('local preload exposes attachment import and open without filesystem read o
   assert.equal(Object.isFrozen(api.localAttachments), true)
   assert.deepEqual(
     Object.keys(api.localAttachments).sort(),
-    ['discard', 'importAttachment', 'open', 'pickAttachments', 'preview'],
+    ['discard', 'importAttachment', 'open', 'pickAttachments', 'preview', 'save'],
   )
   assert.equal('read' in api.localAttachments, false)
   assert.equal('resolve' in api.localAttachments, false)
@@ -440,6 +440,7 @@ test('local preload exposes attachment import and open without filesystem read o
   archiveBytes[0] = 0
   await api.localAttachments.preview('attachment-1')
   await api.localAttachments.open('attachment-1')
+  await api.localAttachments.save('attachment-1')
   await api.localAttachments.discard(['attachment-1'])
   assert.deepEqual(invocations, [
     { channel: 'local-attachments:pick', args: [2] },
@@ -465,6 +466,7 @@ test('local preload exposes attachment import and open without filesystem read o
     },
     { channel: 'local-attachments:preview', args: ['attachment-1'] },
     { channel: 'local-attachments:open', args: ['attachment-1'] },
+    { channel: 'local-attachments:save', args: ['attachment-1'] },
     { channel: 'local-attachments:discard', args: [['attachment-1']] },
   ])
 })

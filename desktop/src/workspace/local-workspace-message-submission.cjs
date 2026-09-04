@@ -19,7 +19,6 @@ const {
   terminalRunStatusForReason,
 } = require('./local-workspace-inputs.cjs')
 const { MAX_RUN_AGENT_ATTEMPTS } = require('../runs/failure-policy.cjs')
-const { mediaGenerationRequest } = require('../media/media-generation-request.cjs')
 const { createTaskGraph } = require('../collaboration/task-graph-records.cjs')
 const { assertLocalSkillExecution } = require('../skills/local-skill-contract.cjs')
 const {
@@ -256,7 +255,6 @@ class LocalWorkspaceMessageSubmission {
     ]))
     return {
       text,
-      mediaRequest: mediaGenerationRequest(text),
       attachments,
       skillHintsByKind,
       skillHints: targetKinds.flatMap(kind => publicSkillHintsByKind.get(kind) || []),
@@ -1604,7 +1602,6 @@ class LocalWorkspaceMessageSubmission {
         let activeKinds = [...targetKinds]
         const pendingKinds = [...targetKinds]
         const replacementInstructions = new Map()
-        const mediaOwnerKind = prepared.mediaRequest ? targetKinds[0] : ''
         while (pendingKinds.length) {
           const kind = pendingKinds.shift()
           if (!activeKinds.includes(kind)) continue
@@ -1636,7 +1633,6 @@ class LocalWorkspaceMessageSubmission {
                 attachmentSnapshots: prepared.attachments,
                 sessionThreadRootId: requestedThreadRootId || threadRootId,
                 runtimeInstruction: replacementInstructions.get(kind) || '',
-                mediaRequest: kind === mediaOwnerKind ? prepared.mediaRequest : null,
                 responseVersionRootId: regeneration?.responseVersionRootId || '',
                 regenerationInstruction: regeneration ? this.regenerationInstruction() : '',
                 contextOptions: regeneration
