@@ -446,46 +446,74 @@
                   v-attachment-preview="isImageAttachment(attachment) ? attachment : null"
                   :class="`media-${attachmentKind(attachment)}`"
                 >
-                  <button
-                    v-if="isImageAttachment(attachment) && (attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment))"
-                    class="message-media-preview-trigger"
-                    type="button"
-                    :title="t('attachment.preview', { name: attachment.name })"
-                    :aria-label="t('attachment.preview', { name: attachment.name })"
-                    @click="openMediaPreview(attachment)"
+                  <div
+                    v-if="attachmentKind(attachment) !== 'audio'"
+                    class="message-media-frame"
+                    :class="{ loaded: isMediaLoaded(attachment.id) }"
                   >
-                    <img
-                      :src="attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment)"
-                      :alt="attachment.name"
-                      loading="lazy"
-                      decoding="async"
-                    />
-                  </button>
-                  <audio
-                    v-else-if="attachmentKind(attachment) === 'audio'"
-                    :src="attachmentMediaUrl(attachment)"
-                    :aria-label="attachment.name"
-                    controls
-                    preload="metadata"
-                  />
-                  <button
-                    v-else-if="attachmentKind(attachment) === 'video'"
-                    class="message-media-preview-trigger"
-                    type="button"
-                    :title="t('attachment.preview', { name: attachment.name })"
-                    :aria-label="t('attachment.preview', { name: attachment.name })"
-                    @click="openMediaPreview(attachment)"
-                  >
-                    <video
+                    <span class="message-media-shimmer" aria-hidden="true" />
+                    <button
+                      v-if="isImageAttachment(attachment) && (attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment))"
+                      class="message-media-preview-trigger"
+                      type="button"
+                      :title="t('attachment.preview', { name: attachment.name })"
+                      :aria-label="t('attachment.preview', { name: attachment.name })"
+                      @click="openMediaPreview(attachment)"
+                    >
+                      <img
+                        :src="attachmentPreviewUrl(attachment) || attachmentMediaUrl(attachment)"
+                        :alt="attachment.name"
+                        loading="lazy"
+                        decoding="async"
+                        @load="markMediaLoaded(attachment.id)"
+                        @error="markMediaLoaded(attachment.id)"
+                      />
+                    </button>
+                    <button
+                      v-else-if="attachmentKind(attachment) === 'video'"
+                      class="message-media-preview-trigger"
+                      type="button"
+                      :title="t('attachment.preview', { name: attachment.name })"
+                      :aria-label="t('attachment.preview', { name: attachment.name })"
+                      @click="openMediaPreview(attachment)"
+                    >
+                      <video
+                        :src="attachmentMediaUrl(attachment)"
+                        :aria-label="attachment.name"
+                        muted
+                        preload="metadata"
+                        playsinline
+                        @loadeddata="markMediaLoaded(attachment.id)"
+                        @error="markMediaLoaded(attachment.id)"
+                      />
+                    </button>
+                    <span v-else class="message-media-fallback" aria-hidden="true">
+                      <FileTypeIcon :icon-key="attachmentFileCardKey(attachment)" />
+                    </span>
+                  </div>
+                  <div v-else class="message-audio-card">
+                    <button
+                      class="message-audio-card-info"
+                      type="button"
+                      :title="t('attachment.play', { name: attachment.name })"
+                      :aria-label="t('attachment.play', { name: attachment.name })"
+                      @click="playInlineAudio"
+                    >
+                      <FileTypeIcon icon-key="audio" class="message-audio-icon" />
+                      <span class="message-audio-copy">
+                        <strong :title="attachment.name">{{ attachment.name }}</strong>
+                        <small>{{ formatAttachmentSize(attachment) }}</small>
+                      </span>
+                    </button>
+                    <audio
                       :src="attachmentMediaUrl(attachment)"
                       :aria-label="attachment.name"
-                      muted
+                      controls
                       preload="metadata"
-                      playsinline
                     />
-                  </button>
+                  </div>
                   <figcaption
-                    v-if="attachmentKind(attachment) !== 'file' && message.role !== 'agent'"
+                    v-if="attachmentKind(attachment) === 'image' && message.role !== 'agent'"
                     :title="attachment.name"
                   >
                     {{ attachment.name }}
@@ -504,15 +532,15 @@
                     :aria-label="t('attachment.open', { name: attachment.name })"
                     @click="openAttachment(attachment)"
                   >
-                    <component
-                      :is="attachmentDocumentIcon(attachment)"
+                    <FileTypeIcon
                       class="message-document-icon"
-                      :data-document-icon="attachmentDocumentIconName(attachment)"
+                      :icon-key="attachmentFileCardKey(attachment)"
+                      :data-document-icon="attachmentFileCardKey(attachment)"
                       aria-hidden="true"
                     />
                     <span>
                       <strong>{{ attachment.name }}</strong>
-                      <small>{{ attachmentTypeLabel(attachment) }} · {{ formatAttachmentSize(attachment) }}</small>
+                      <small>{{ formatAttachmentSize(attachment) }}</small>
                     </span>
                     <OpenOutline aria-hidden="true" />
                   </button>
@@ -749,6 +777,42 @@
               <TerminalOutline />
             </button>
           </header>
+          <div
+            v-if="activeMediaGeneration"
+            class="media-generation-card"
+            :class="[`is-${activeMediaGeneration.type}`, `is-${activeMediaGeneration.phase}`]"
+            role="status"
+            aria-live="polite"
+          >
+            <span
+              v-if="activeMediaGeneration.phase === 'running'"
+              class="media-generation-shimmer"
+              aria-hidden="true"
+            />
+            <span
+              v-if="activeMediaGeneration.phase === 'running'"
+              class="media-generation-star"
+              aria-hidden="true"
+            >
+              <StarOutline />
+            </span>
+            <FileTypeIcon
+              v-else
+              class="media-generation-icon"
+              :icon-key="activeMediaGeneration.type"
+              aria-hidden="true"
+            />
+            <span class="media-generation-copy">
+              <strong>{{ mediaGenerationLabel(activeMediaGeneration) }}</strong>
+              <small>{{ runStatusLabel(activeMediaGeneration.status) }}</small>
+            </span>
+            <CheckmarkCircleOutline
+              v-if="activeMediaGeneration.phase === 'complete'"
+              class="media-generation-check"
+              aria-hidden="true"
+            />
+            <span v-else class="media-generation-spinner" aria-hidden="true" />
+          </div>
           <div v-if="isDisplayedCoordinatedRun" class="run-agent-list" :aria-label="t('run.agents')">
             <button
               v-for="(kind, index) in displayedRunTargetKinds"
@@ -788,14 +852,14 @@
               </span>
             </button>
           </div>
-          <div v-if="activeRunProgress.length && !activeRunHasAgentRuns" class="execution-details run-progress-details">
+          <div v-if="displayedRunProgress.length && !activeRunHasAgentRuns" class="execution-details run-progress-details">
             <div class="execution-progress-header">
               <TerminalOutline />
               <span>{{ t('run.progress') }}</span>
-              <small>{{ activeRunProgress.length }}</small>
+              <small>{{ displayedRunProgress.length }}</small>
             </div>
             <ol>
-              <li v-for="(step, index) in activeRunProgress" :key="`${step.title}-${index}`">
+              <li v-for="(step, index) in displayedRunProgress" :key="`${step.title}-${index}`">
                 <span>{{ localizedStepTitle(step, index) }}</span>
                 <small :class="runStatusTone(step.status)">{{ runStatusLabel(step.status) }}</small>
               </li>
@@ -822,9 +886,13 @@
     v-if="mediaPreviewAttachment"
     :attachment="mediaPreviewAttachment"
     :close-label="t('attachment.closePreview')"
+    :download-label="t('attachment.download', { name: mediaPreviewAttachment.name })"
+    :zoom-in-label="t('attachment.zoomIn')"
+    :zoom-out-label="t('attachment.zoomOut')"
     :source="attachmentMediaUrl(mediaPreviewAttachment)"
     :type="attachmentKind(mediaPreviewAttachment)"
     @close="closeMediaPreview"
+    @save="saveAttachment(mediaPreviewAttachment)"
   />
 </template>
 
@@ -832,8 +900,6 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   ArrowDownOutline,
-  AttachOutline,
-  ArchiveOutline,
   CheckmarkCircleOutline,
   ChevronBackOutline,
   ChevronDownOutline,
@@ -841,16 +907,11 @@ import {
   CloudOutline,
   CloseCircleOutline,
   CloseOutline,
-  CodeOutline,
   CopyOutline,
-  DocumentOutline,
-  DocumentTextOutline,
-  EaselOutline,
-  GridOutline,
   LibraryOutline,
   OpenOutline,
-  ReaderOutline,
   RefreshOutline,
+  StarOutline,
   TerminalOutline,
   TrashOutline,
   WarningOutline,
@@ -859,9 +920,11 @@ import { agentLabel, agentLogo, isCloudAgentKind } from '../catalog.js'
 import { skillKey } from '../composables/useComposerContext.js'
 import { orchestrationSlotCompleted } from '../desktop-normalization.js'
 import { locale } from '../i18n.js'
+import { fileCardIconKey } from '../mediaFileCard.js'
 import { messageKnowledgeBases, messageSkills, messageTargetKinds } from '../messageContext.js'
 import { isAgentFailureMessage, responseVersionRootId } from '../conversationTimelineModel.js'
 import AttachmentMediaPreview from './AttachmentMediaPreview.vue'
+import FileTypeIcon from './FileTypeIcon.vue'
 import MarkdownMessage from './MarkdownMessage.vue'
 
 const props = defineProps({
@@ -870,6 +933,7 @@ const props = defineProps({
 
 const {
   activeGroup,
+  activeMediaGeneration,
   activeRun,
   activeRunHasAgentRuns,
   activeRunProgress,
@@ -877,7 +941,6 @@ const {
   attachmentKind,
   attachmentMediaUrl,
   attachmentPreviewUrl,
-  attachmentTypeLabel,
   conversationEmptyVisible,
   copyMessageContent,
   deletingMessageId,
@@ -945,6 +1008,7 @@ const {
   runRoundProgress,
   runStatusLabel,
   runStatusTone,
+  saveAttachment,
   scrollToLatest,
   selectResponseVersion,
   showScrollToLatest,
@@ -984,24 +1048,44 @@ const expandedUserMessageIds = ref(new Set())
 let userMessageResizeObserver = null
 let userMessageMeasurementQueued = false
 const mediaPreviewAttachment = ref(null)
-const DOCUMENT_ICON_COMPONENTS = {
-  archive: ArchiveOutline,
-  code: CodeOutline,
-  document: DocumentOutline,
-  pdf: DocumentTextOutline,
-  presentation: EaselOutline,
-  spreadsheet: GridOutline,
-  text: ReaderOutline,
+const mediaLoadedIds = ref(new Set())
+const MEDIA_GENERATION_STEP_TITLE = /^(image|audio|video)[_-]generation$/i
+const MAX_MEDIA_LOADED_ENTRIES = 512
+
+const displayedRunProgress = computed(() => activeRunProgress.value.filter(step => (
+  !MEDIA_GENERATION_STEP_TITLE.test(String(step?.title || '').trim())
+)))
+
+function attachmentFileCardKey(attachment) {
+  return fileCardIconKey({
+    name: attachment?.name,
+    mimeType: attachment?.mimeType,
+    kind: attachmentKind(attachment),
+  })
 }
-const DOCUMENT_ICON_BY_EXTENSION = {
-  '7z': 'archive', gz: 'archive', tar: 'archive', tgz: 'archive', zip: 'archive',
-  c: 'code', cc: 'code', cjs: 'code', cpp: 'code', css: 'code', go: 'code', h: 'code',
-  hpp: 'code', html: 'code', java: 'code', js: 'code', json: 'code', md: 'code', mjs: 'code',
-  py: 'code', rs: 'code', sh: 'code', ts: 'code', tsx: 'code', vue: 'code', xml: 'code', yaml: 'code', yml: 'code',
-  csv: 'spreadsheet', ods: 'spreadsheet', xls: 'spreadsheet', xlsx: 'spreadsheet',
-  doc: 'text', docx: 'text', odt: 'text', rtf: 'text', txt: 'text',
-  key: 'presentation', odp: 'presentation', ppt: 'presentation', pptx: 'presentation',
-  pdf: 'pdf',
+
+function isMediaLoaded(id) {
+  return mediaLoadedIds.value.has(String(id || ''))
+}
+
+function markMediaLoaded(id) {
+  const key = String(id || '')
+  if (!key || mediaLoadedIds.value.has(key)) return
+  const next = new Set(mediaLoadedIds.value)
+  next.add(key)
+  mediaLoadedIds.value = next.size > MAX_MEDIA_LOADED_ENTRIES ? new Set() : next
+}
+
+// Start-loading / load-complete labels only. Provider summaries are never
+// rendered, so no progress number can surface.
+function mediaGenerationLabel(activity) {
+  if (activity?.phase === 'complete') return t('run.mediaGenerationComplete')
+  const key = {
+    image: 'run.mediaGeneratingImage',
+    audio: 'run.mediaGeneratingAudio',
+    video: 'run.mediaGeneratingVideo',
+  }[String(activity?.type || '')]
+  return key ? t(key) : t('run.mediaGenerating')
 }
 
 function sameIds(left, right) {
@@ -1081,6 +1165,12 @@ function openMediaPreview(attachment) {
   mediaPreviewAttachment.value = attachment
 }
 
+function playInlineAudio(event) {
+  const audio = event.currentTarget?.closest('.message-audio-card')?.querySelector('audio')
+  if (!audio) return
+  void audio.play().catch(() => {})
+}
+
 function closeMediaPreview() {
   mediaPreviewAttachment.value = null
 }
@@ -1094,15 +1184,6 @@ function openAgentMessageTrace(message, event) {
   const selection = typeof window.getSelection === 'function' ? window.getSelection() : null
   if (selection && String(selection).trim()) return
   openTraceForMessage(message, event?.currentTarget || null)
-}
-
-function attachmentDocumentIconName(attachment) {
-  const extension = String(attachment?.name || '').split('.').pop()?.toLowerCase() || ''
-  return DOCUMENT_ICON_BY_EXTENSION[extension] || 'document'
-}
-
-function attachmentDocumentIcon(attachment) {
-  return DOCUMENT_ICON_COMPONENTS[attachmentDocumentIconName(attachment)] || DocumentOutline
 }
 
 function mediaMessageAttachments(message) {

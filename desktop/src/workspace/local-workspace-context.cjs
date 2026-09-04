@@ -827,6 +827,22 @@ function promptFor({
       knowledgeBaseHintsPrompt(knowledgeBaseHints),
     ].filter(Boolean).join('\n')
   }
+  if (group.conversationType === 'direct') {
+    // A private 1:1 chat has no group framing, no multi-agent context, and no
+    // "Current user task" label wrapping the query. The agent's native session
+    // owns the conversation history, so only the operational contracts that the
+    // agent cannot infer on its own (workspace/deliverable capture, response
+    // language) and the raw user query are delivered. The query is the prompt
+    // body, never nested under a system-prompt label.
+    return [
+      mediaDelivery,
+      languageContract,
+      unlimitedReviewText,
+      skillHintsPrompt(skillHints),
+      knowledgeBaseHintsPrompt(knowledgeBaseHints),
+      packed.currentTaskText || '(none)',
+    ].filter(Boolean).join('\n')
+  }
   return [
     `You are participating in the local "${group.name || 'Meldwork group'}" conversation as ${label}.`,
     `Group topic: ${cleanText(group.topic, 200) || '(not specified)'}`,

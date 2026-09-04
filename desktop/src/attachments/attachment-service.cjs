@@ -90,7 +90,7 @@ function normalizeAttachmentPickLimit(value) {
   return Math.max(1, Math.min(MAX_ATTACHMENT_PICK_REQUEST, Math.floor(limit)))
 }
 
-function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath }) {
+function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath, showSaveDialog }) {
   function availableStore() {
     const store = getStore()
     if (!store) throw new Error('LOCAL_ATTACHMENT_STORAGE_UNAVAILABLE')
@@ -205,6 +205,18 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
     return true
   }
 
+  async function save(id) {
+    if (typeof showSaveDialog !== 'function') throw new Error('LOCAL_ATTACHMENT_SAVE_UNAVAILABLE')
+    const entry = availableStore().resolve([String(id || '')])[0]
+    const result = await showSaveDialog({
+      defaultPath: entry.name,
+      showOverwriteConfirmation: true,
+    })
+    if (result?.canceled || !result?.filePath) return { saved: false }
+    fs.writeFileSync(result.filePath, availableStore().readWithMetadata(entry.id).bytes)
+    return { saved: true }
+  }
+
   return {
     availableStore,
     discardUnreferenced,
@@ -212,6 +224,7 @@ function createAttachmentService({ getStore, getSnapshot, nativeImage, openPath 
     importFiles,
     normalizePickLimit: normalizeAttachmentPickLimit,
     open,
+    save,
     preview,
     registerProtocol: protocol => protocol?.handle?.(MEDIA_SCHEME, request => mediaResponse(request)),
   }

@@ -580,9 +580,9 @@
 .composer-attachment-list {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 4px;
   overflow-x: auto;
-  padding: 9px 12px 4px;
+  padding: 6px 8px 2px;
   border-bottom: 0;
   background: transparent;
 }
@@ -591,75 +591,53 @@
   position: relative;
   width: 56px;
   height: 56px;
-  min-width: 0;
+  min-width: 56px;
   flex: 0 0 56px;
   display: grid;
   align-items: center;
   border: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   background: transparent;
-}
-
-.composer-attachment > img {
-  width: 56px;
-  height: 56px;
-  border-radius: 8px;
-  object-fit: cover;
 }
 
 .composer-attachment.is-file,
 .composer-attachment.is-audio,
 .composer-attachment.is-video {
-  width: 184px;
-  min-width: 184px;
-  flex-basis: 184px;
-  grid-template-columns: 38px minmax(0, 1fr);
-  gap: 9px;
-  padding: 6px 28px 6px 7px;
-  background: color-mix(in srgb, var(--surface-hover) 70%, transparent);
+  width: 176px;
+  height: 50px;
+  min-width: 176px;
+  flex-basis: 176px;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 7px;
+  padding: 3px 24px 3px 3px;
 }
 
+.composer-attachment-thumb,
 .composer-attachment-media-icon {
-  width: 38px;
-  height: 38px;
+  width: 44px;
+  height: 44px;
   display: grid;
   place-items: center;
-  border-radius: 4px;
-  background: color-mix(in srgb, var(--surface-raised) 78%, var(--surface-active) 22%);
-  color: var(--accent);
+  overflow: hidden;
+  border-radius: 5px;
+  background: transparent;
 }
 
-.composer-attachment-media-icon[data-attachment-icon="spreadsheet"] {
-  color: #3f7d5b;
+.composer-attachment-thumb {
+  width: 56px;
+  height: 56px;
 }
 
-.composer-attachment-media-icon[data-attachment-icon="presentation"] {
-  color: #b15d3b;
-}
-
-.composer-attachment-media-icon[data-attachment-icon="pdf"] {
-  color: #c14f4f;
-}
-
-.composer-attachment-media-icon[data-attachment-icon="code"] {
-  color: #5866a9;
-}
-
-.composer-attachment-media-icon[data-attachment-icon="archive"] {
-  color: #8b6841;
-}
-
-.composer-attachment-media-icon[data-attachment-icon="audio"] {
-  color: #8b5aa5;
-}
-
-.composer-attachment-media-icon[data-attachment-icon="video"] {
-  color: #397d89;
+.composer-attachment-thumb img {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  object-fit: cover;
 }
 
 .composer-attachment-media-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 34px;
+  height: 34px;
 }
 
 .composer-attachment-file-copy {
@@ -684,7 +662,6 @@
 .composer-attachment-file-copy small {
   color: var(--muted);
   font-size: 10px;
-  text-transform: uppercase;
 }
 
 .composer-attachment > button,
@@ -702,18 +679,28 @@
 
 .composer-attachment > button {
   position: absolute;
-  top: 3px;
-  right: 3px;
-  width: 26px;
-  height: 26px;
+  top: 1px;
+  right: 1px;
+  width: 20px;
+  height: 20px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.16s ease, color 0.16s ease;
 }
 
 .composer-attachment-remove svg {
-  width: 17px;
-  height: 17px;
+  width: 15px;
+  height: 15px;
 }
 
-.composer-attachment > button:hover,
+.composer-attachment:hover > .composer-attachment-remove,
+.composer-attachment:focus-within > .composer-attachment-remove,
+.composer-attachment > .composer-attachment-remove:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.composer-attachment > .composer-attachment-remove:hover,
 .selected-skill button:hover,
 .selected-agent-tag button:hover {
   color: var(--text);
