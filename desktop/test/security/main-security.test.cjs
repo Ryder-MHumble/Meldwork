@@ -923,6 +923,7 @@ test('attachment storage initialization failure does not block text chat startup
     ['local-attachments:import', [{ name: 'x.png', mimeType: 'image/png', bytes: [1] }]],
     ['local-attachments:preview', ['attachment-1']],
     ['local-attachments:open', ['attachment-1']],
+    ['local-attachments:save', ['attachment-1']],
     ['local-attachments:discard', [['attachment-1']]],
   ]) {
     await assert.rejects(
@@ -1781,8 +1782,10 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
   const first = path.join(directory, 'diagram.png')
   const second = path.join(directory, 'flow.png')
   const third = path.join(directory, 'overflow.png')
+  const saved = path.join(directory, 'saved.png')
   const { harness } = loadMain(directory, {
     dialogResult: { canceled: false, filePaths: [first, second, third] },
+    saveDialogResult: { canceled: false, filePath: saved },
   })
   await harness.ready()
 
@@ -1838,6 +1841,15 @@ test('attachment IPC returns bounded metadata, opens private files, and never ex
   assert.deepEqual(harness.openPathCalls, [
     path.join(directory, 'attachments', picked.attachments[0].id, 'image.png'),
   ])
+  const savedResult = await harness.ipcHandlers.get('local-attachments:save')(
+    harness.event(), picked.attachments[0].id,
+  )
+  assert.deepEqual(savedResult, { saved: true })
+  assert.deepEqual(harness.dialogCalls[1][1], {
+    defaultPath: 'diagram.png',
+    showOverwriteConfirmation: true,
+  })
+  assert.deepEqual(fs.readFileSync(saved), pngHeader())
   assert.equal(JSON.stringify(opened).includes(directory), false)
 })
 

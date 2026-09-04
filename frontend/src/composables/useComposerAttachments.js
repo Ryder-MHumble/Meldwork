@@ -1,5 +1,6 @@
 import { computed, ref } from 'vue'
 import { errorCode } from '../desktop.js'
+import { formatFileCardSize } from '../mediaFileCard.js'
 import { useAttachmentPreviews } from './useAttachmentPreviews.js'
 
 export const MAX_ATTACHMENTS = 32
@@ -177,11 +178,21 @@ export function useComposerAttachments({
     return String(attachment?.mimeType || 'FILE').split('/').pop()?.toUpperCase() || 'FILE'
   }
 
+  async function saveAttachment(attachment) {
+    const save = attachmentsApi.value?.save
+    const id = String(attachment?.id || '')
+    if (typeof save !== 'function' || !id) {
+      notify(t('composer.attachmentsUnavailable'))
+      return
+    }
+    try {
+      const result = await save(id)
+      if (result?.saved) notify(t('attachment.downloadSaved', { name: attachment?.name || '' }))
+    } catch (error) { showError(error) }
+  }
+
   function formatAttachmentSize(attachment) {
-    const size = Math.max(0, Number(attachment?.size) || 0)
-    if (size < 1024) return `${size} B`
-    if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`
-    return `${(size / (1024 * 1024)).toFixed(size < 10 * 1024 * 1024 ? 1 : 0)} MB`
+    return formatFileCardSize(attachment?.size)
   }
 
   async function openAttachment(attachment) {
@@ -457,6 +468,7 @@ export function useComposerAttachments({
     pickAttachments,
     removeAttachment,
     safeAttachmentPayload,
+    saveAttachment,
     vAttachmentPreview,
   }
 }

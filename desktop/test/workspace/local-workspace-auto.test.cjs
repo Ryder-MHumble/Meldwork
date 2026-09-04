@@ -3321,7 +3321,6 @@ test('V4 Auto checkpoints a completed proposal before a queued peer and recovers
       rootAttachments: [],
       rootSkillsByKind: new Map(partial.targetKinds.map(kind => [kind, []])),
       rootKnowledgeBasesByKind: new Map(partial.targetKinds.map(kind => [kind, []])),
-      rootMediaRequest: null,
     }, true,
   )
 

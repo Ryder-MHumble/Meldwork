@@ -876,7 +876,7 @@ describe('Meldwork workbench', () => {
     expect(source).toMatch(/\.message-row\.agent \.message-attachment-grid\s*\{[^}]*align-items:\s*flex-start;/s)
     expect(source).not.toMatch(/\.message-attachment-grid\s*\{[^}]*flex-wrap:\s*wrap;/s)
     expect(source).toMatch(/\.message-document-list\s*\{[^}]*display:\s*flex;[^}]*flex-wrap:\s*nowrap;[^}]*gap:\s*6px;[^}]*overflow-x:\s*auto;/s)
-    expect(source).toMatch(/\.message-document-attachment\s*\{[^}]*width:\s*168px;[^}]*min-width:\s*148px;[^}]*min-height:\s*44px;[^}]*border:\s*0;/s)
+    expect(source).toMatch(/\.message-document-attachment\s*\{[^}]*width:\s*192px;[^}]*min-width:\s*168px;[^}]*min-height:\s*52px;[^}]*border:\s*0;/s)
     expect(source).toMatch(/\.direct-session-open\s*\{[^}]*grid-column:\s*1;/s)
     expect(source).toMatch(/\.direct-session-action\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s)
     expect(source).toMatch(/\.direct-session-row:hover \.direct-session-action,[^{]+\.direct-session-row:focus-within \.direct-session-action\s*\{[^}]*opacity:\s*0\.62;[^}]*pointer-events:\s*auto;/s)

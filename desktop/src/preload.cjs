@@ -174,6 +174,7 @@ if (isLocalDocument) Object.assign(desktopApi, {
     ),
     preview: id => ipcRenderer.invoke('local-attachments:preview', id),
     open: id => ipcRenderer.invoke('local-attachments:open', id),
+    save: id => ipcRenderer.invoke('local-attachments:save', id),
     discard: ids => ipcRenderer.invoke('local-attachments:discard', ids),
   }),
   localAgentProvider: Object.freeze({

@@ -659,6 +659,7 @@ function registerDesktopIpc(options) {
   registerTrustedHandle('local-attachments:import', input => attachments.importBuffer(input))
   registerTrustedHandle('local-attachments:preview', id => attachments.preview(String(id || '')))
   registerTrustedHandle('local-attachments:open', id => attachments.open(String(id || '')))
+  registerTrustedHandle('local-attachments:save', id => attachments.save(String(id || '')))
   registerTrustedHandle('local-attachments:discard', ids => attachments.discardUnreferenced(ids))
   registerTrustedHandle('local-agent-provider:status', kind => (
     providerStore.status(providerAgentKind(kind))

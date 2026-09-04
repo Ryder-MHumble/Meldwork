@@ -214,24 +214,29 @@
             class="composer-attachment"
             :class="`is-${attachmentKind(attachment)}`"
           >
-            <img
-              v-if="isImageAttachment(attachment)"
-              :src="attachment.previewDataUrl || attachmentMediaUrl(attachment)"
-              :alt="attachment.name"
-            />
+            <span v-if="isImageAttachment(attachment)" class="composer-attachment-thumb" aria-hidden="true">
+              <img
+                :src="attachment.previewDataUrl || attachmentMediaUrl(attachment)"
+                :alt="attachment.name"
+              />
+            </span>
             <template v-else>
               <span
                 class="composer-attachment-media-icon"
-                :data-attachment-icon="composerAttachmentIconName(attachment)"
+                :data-attachment-icon="composerAttachmentIconKey(attachment)"
                 aria-hidden="true"
               >
-                <component :is="composerAttachmentIcon(attachment)" />
+                <FileTypeIcon :icon-key="composerAttachmentIconKey(attachment)" />
               </span>
               <span class="composer-attachment-file-copy">
                 <strong :title="attachment.name">{{ attachment.name }}</strong>
-                <small>{{ attachmentTypeLabel(attachment) }}</small>
+                <small>{{ formatAttachmentSize(attachment) }}</small>
               </span>
             </template>
+            <span v-if="isImageAttachment(attachment)" class="composer-attachment-file-copy">
+              <strong :title="attachment.name">{{ attachment.name }}</strong>
+              <small>{{ formatAttachmentSize(attachment) }}</small>
+            </span>
             <button
               class="composer-attachment-remove"
               type="button"
@@ -240,7 +245,7 @@
               :disabled="Boolean(activeRun) || sending"
               @click="removeAttachment(attachment.id)"
             >
-              <CloseCircleOutline />
+              <CloseOutline aria-hidden="true" />
             </button>
           </article>
         </div>
@@ -437,66 +442,30 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AddOutline,
-  ArchiveOutline,
   AttachOutline,
   AtOutline,
   ChevronDownOutline,
-  CloseCircleOutline,
   CloseOutline,
-  CodeOutline,
-  DocumentOutline,
-  DocumentTextOutline,
-  EaselOutline,
-  GridOutline,
   LibraryOutline,
-  MusicalNotesOutline,
-  ReaderOutline,
   RefreshOutline,
   SendOutline,
   StopCircleOutline,
-  VideocamOutline,
 } from '@vicons/ionicons5'
+import FileTypeIcon from './FileTypeIcon.vue'
 import { agentLabel, agentLogo } from '../catalog.js'
+import { fileCardIconKey } from '../mediaFileCard.js'
 import { MAX_SKILLS, skillKey } from '../composables/useComposerContext.js'
 
 const props = defineProps({
   controller: { type: Object, required: true },
 })
 
-const COMPOSER_FILE_ICON_COMPONENTS = {
-  archive: ArchiveOutline,
-  code: CodeOutline,
-  document: DocumentOutline,
-  pdf: DocumentTextOutline,
-  presentation: EaselOutline,
-  spreadsheet: GridOutline,
-  text: ReaderOutline,
-}
-const COMPOSER_FILE_ICON_BY_EXTENSION = {
-  '7z': 'archive', gz: 'archive', tar: 'archive', tgz: 'archive', zip: 'archive',
-  c: 'code', cc: 'code', cjs: 'code', cpp: 'code', css: 'code', go: 'code', h: 'code',
-  hpp: 'code', html: 'code', java: 'code', js: 'code', json: 'code', md: 'code', mjs: 'code',
-  py: 'code', rs: 'code', sh: 'code', ts: 'code', tsx: 'code', vue: 'code', xml: 'code', yaml: 'code', yml: 'code',
-  csv: 'spreadsheet', ods: 'spreadsheet', xls: 'spreadsheet', xlsx: 'spreadsheet',
-  doc: 'text', docx: 'text', odt: 'text', rtf: 'text', txt: 'text',
-  key: 'presentation', odp: 'presentation', ppt: 'presentation', pptx: 'presentation',
-  pdf: 'pdf',
-}
-
-function composerAttachmentIcon(attachment) {
-  const name = composerAttachmentIconName(attachment)
-  if (name === 'audio') return MusicalNotesOutline
-  if (name === 'video') return VideocamOutline
-  if (name === 'attachment') return AttachOutline
-  return COMPOSER_FILE_ICON_COMPONENTS[name] || DocumentOutline
-}
-
-function composerAttachmentIconName(attachment) {
-  const type = attachmentKind(attachment)
-  if (type === 'audio' || type === 'video') return type
-  if (type !== 'file') return 'attachment'
-  const extension = String(attachment?.name || '').split('.').pop()?.toLowerCase() || ''
-  return COMPOSER_FILE_ICON_BY_EXTENSION[extension] || 'document'
+function composerAttachmentIconKey(attachment) {
+  return fileCardIconKey({
+    name: attachment?.name,
+    mimeType: attachment?.mimeType,
+    kind: attachmentKind(attachment),
+  })
 }
 
 const {
@@ -507,7 +476,6 @@ const {
   attachmentActionLabel,
   attachmentKind,
   attachmentMediaUrl,
-  attachmentTypeLabel,
   canSendMessage,
   composerAttachmentSupported,
   composerAttachments,
@@ -524,6 +492,7 @@ const {
   composerMenuOptionTitle,
   discussionMode,
   draft,
+  formatAttachmentSize,
   groupName,
   handleComposerDragEnter,
   handleComposerDragLeave,

@@ -252,6 +252,7 @@ export function createBridge() {
       previewDataUrl: 'data:image/png;base64,AQID',
     })),
     open: vi.fn(async () => true),
+    save: vi.fn(async () => ({ saved: true })),
     discard: vi.fn(async ids => ({ discardedIds: [...ids], retainedIds: [] })),
   }
   return {
