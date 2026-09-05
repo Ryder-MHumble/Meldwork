@@ -1,98 +1,58 @@
-# DESIGN.md — Meldwork
+# Meldwork Landing Design
 
-Meldwork's own design system, extracted from the shipped app (`frontend/src/styles/base-foundation.css`) and the v3 Trace brand marks. Generated per the Google Stitch DESIGN.md format (design-md skill). All landing/marketing UI must consume these tokens exactly.
+## 目标与阅读顺序
 
-## 1. Visual Theme & Atmosphere
+这是 Meldwork 桌面产品的 landing。访问者应先知道产品名称与用途，再检查实际界面、协作方式和采用条件。
 
-Dark, quiet, instrument-panel calm. Meldwork is a local-first work cell where multiple AI agents are reviewed by a human — the visual mood is "traceability made visible": a near-black field, a faint dot-matrix of evidence points, one continuous coral work line, and generous negative space. Density is low; motion is slow and deliberate; nothing loops aggressively. Retro dot-matrix display type signals the "run state / terminal" heritage without becoming a gimmick.
+顺序：Meldwork 与多 Agent 研究/方案复核 → 完整产品截图 → 已有 Agent 适配器 → 任务流程与协作模式 → 明确标注的产品方案示例 → 本地架构与外部服务边界 → FAQ → 下载。
 
-## 2. Color Palette & Roles
+具体定位与能力约束见 `AUDIT.md`。不将 roadmap、单次 Agent 输出或示例对话描述为已经证实的客户结果。
 
-| Token | HEX | Role |
-|---|---|---|
-| `bg` | `#000000` | Page base (marketing) |
-| `bg-deep` | `#06080a` | Canvas / media backdrop |
-| `surface` | `#101315` | Raised panels, cards |
-| `surface-raised` | `#1b1f21` | Pills, dark buttons (app dark token) |
-| `surface-hover` | `#24292c` | Dark button hover |
-| `ink` | `#f7f8fa` | Primary text on dark (wordmark ink) |
-| `ink-soft` | `#c3cdd1` | Secondary text |
-| `muted` | `#93a0a5` | Labels, captions (app dark muted) |
-| `faint` | `#707b80` | Disabled / tertiary |
-| `coral` | `#ef5a45` | Brand accent — the "acceptance point"; active indicators, glyphs, focus |
-| `coral-deep` | `#d45f52` | Accent on light surfaces (app light accent) |
-| `line` | `rgba(255,255,255,0.10)` | Hairline borders on dark |
-| `pill-white` | `#ffffff` | Nav pill, primary CTA, logo badge |
-| `nav-ink` | `#26343c` | Text on white pills (app light text) |
+## 品牌与文字
 
-Light/dark mapping: marketing pages are dark-only. App light-theme tokens (`#f3f6f8` bg, `#d45f52` accent) appear only inside product screenshots.
+保留珊瑚色 Trace 标识、首屏点阵字和现有 H3 视频。H1 为品牌名 Meldwork；其余标题使用可读的无衬线字，正文直接说明行为和价值。
 
-## 3. Typography Rules
+- 页面底色：`#0b0d0f`；浅色主题使用 `#f8fafb`。
+- 主要文字：`#f5f7f8`；次要文字：`#c2ccd0` / `#a1afb6`。
+- 品牌强调：`#ef5a45`；浅色小字使用更深的珊瑚色保证对比。
+- 点阵字仅用于品牌。正文优先本机无衬线字体，中英均支持。
+- 字距为 0；字号通过明确断点调整，不与视口宽度线性缩放。
+- 白色导航与徽章保留品牌识别；徽章使用深色 Trace 标识。
 
-Families:
-- UI: `"Inter", "Segoe UI", system-ui, sans-serif` (weights 400/500/600)
-- Display: `"BubbledotICG-FinePos", "Geist Pixel Circle", monospace` — retro dot-matrix, Latin only
-- Mono accents: same display stack for stat glyphs
+不添加自动打字、字符扰动、虚构计数或遮住正文的入口动画。
 
-| Level | Size | Weight | Tracking | Line-height |
-|---|---|---|---|---|
-| Display / h1 | clamp(40px, 6.2vw, 84px) | 400 (display font) | -0.04em | 1.08 |
-| h2 section | clamp(28px, 3.6vw, 44px) | 400 display | -0.03em | 1.15 |
-| h3 card | 18–20px | 600 Inter | -0.01em | 1.3 |
-| Body | 15–16.5px | 400 | 0 | 1.6 |
-| Eyebrow | 12px | 600 | +0.18em uppercase | 1 |
-| Caption / label | 11–12.5px | 500 | +0.01em | 1.4 |
+## 布局
 
-Solid ink headlines only — no gradient text, no shimmer on type.
+章节共用连续底色和最大 1160px 内容宽度，通过排版与间距分隔。章节不是浮动卡片；协作模式和示例工具可有真实边界，圆角不超过 8px。
 
-## 4. Component Stylings
+首屏采用流式布局，不用绝对定位的统计数字挤占文案。常见桌面与手机视口露出下一节标题。320px 短屏收起已在后文提供的次要事实，保留完整用途、主下载操作与媒体控制。
 
-- **White pill nav**: bg `#fff`, radius 999, height 44–48, shadow `0 4px 14px rgba(0,0,0,0.16)`; links `nav-ink` 500, opacity .5/.78/1; active = three 3px coral dots under label.
-- **Primary CTA**: white pill, `nav-ink` 600, padding 12–13 × 22–28, glow `0 0 0 1px rgba(255,255,255,.15), 0 0 22px rgba(255,255,255,.32), 0 0 44px rgba(239,90,69,.18)`; hover translateY(-2px) scale(1.02).
-- **Dark pill**: `surface-raised`, text `#c8c8c8`; hover `surface-hover` + white text + translateY(-1px).
-- **Logo badge**: white circle 42–48px, Trace mark at 72% contain; hover scale(1.06).
-- **Card**: `surface` bg, `line` border, radius 16–20, padding 24–30; hover: coral-tinted border + cursor spotlight.
-- **Avatar ring** (agent logos): dark ring `#16191b` + `rgba(255,255,255,.35)` border, 5px padding, inner white disc; overlap -42%.
-- Buttons/links focus-visible: 2px coral outline, offset 2.
+产品截图使用手动 tabs，不倾斜、不裁边、不自动切换。四张图共用稳定比例的媒体区域，采用 `object-fit: contain`；图注解释当前真实界面，原图可直接打开。
 
-## 5. Layout Principles
+Agent 标识按产品目录顺序静态排布，避免跑马灯隐藏兼容项。示例讨论始终可读，不模拟快速播放的真实客户会话。
 
-- 4px base scale; section vertical rhythm clamp(96px, 14vh, 160px).
-- Content max-width 1120px; hero copy max-width 900px; text columns ≤ 620px.
-- Single centered column narrative; grids 3-up (modes) / 2-up (screenshots) / 4-up (stats), collapsing 3→1, 2→1, 4→2.
-- Whitespace over dividers: no boxed section frames; hairlines only inside cards.
+## 背景与过渡
 
-## 6. Depth & Elevation
+使用现有 H3 视频 `meldwork-bg-v2.mp4`，1440 × 704、24fps、8.032 秒。视频尺寸不决定页面或章节高度。
 
-- Shadow-1 (nav/pills): `0 4px 14px rgba(0,0,0,0.16)`
-- Shadow-2 (cards): `0 16px 42px rgba(0,0,0,0.42)` (app dark shadow)
-- Shadow-3 (overlays): `0 30px 90px rgba(0,0,0,0.6)`
-- z-order: canvas 0 → veil 1 → content 2 → nav 40 → menu 50.
-- Surfaces differ by bg lightness steps (`#06080a` → `#101315` → `#1b1f21`), not by borders.
+`.bg` 固定覆盖视口。宽屏按中心裁切，手机按素材焦点调整为 67% 水平位置。正文单独响应式排版，所有标题、按钮和截图保持 DOM 可读内容。
 
-## 7. Do's and Don'ts
+滚动离开 hero 时，背景透明度按平滑曲线从 1 降到 0，退回同一个页面底色。没有按章节切换不同视频的加载时差、黑边或亮度硬切。两个视频副本在循环接缝交叉淡入，出场视频保持在底层直到淡入完成。
 
-Do:
-- Use coral only for acceptance/active/focus moments — it must stay rare.
-- Keep the trace-line metaphor consistent: continuous rounded line, round terminals, one bright end point.
-- Respect `prefers-reduced-motion`: static frame, final states, no marquee.
-- Ground every claim in README facts (12 CLIs, 3 modes, local-first, human gate, V1.0.3).
+减少动态效果时不请求视频，使用静帧。手动暂停、后台与离屏暂停共用生命周期控制。无 JavaScript 时背景限于 hero，避免静帧覆盖整页。播放失败保留静帧和全部内容。
 
-Don't:
-- No gradient/shimmer headlines; no glassmorphism everywhere; no neon multi-color.
-- No cards in the hero composition; hero stays one full-bleed scene.
-- No stock enterprise logo walls (Microsoft/Google) — only real supported Agent CLI marks.
-- No heavy shadows beyond the three defined levels; no border-radius < 12 on cards.
+本轮没有新增 H3 镜头。后续确需更换素材时，先验证中心文案安全区、竖屏裁切、首尾连续性，再按 zgci-long-video 的草稿与终稿流程生成；不能用更多固定尺寸视频替代响应式布局。
 
-## 8. Responsive Behavior
+## 交互与降级
 
-- Breakpoints: 1024 / 720 / 420.
-- ≤1024: modes 3→1 column wide cards; screenshots 2→1 at 720.
-- ≤720: pill nav → burger + white sheet menu (radius 28, staggered links); stats 4→2; hero type clamps down; canvas renders static frame on coarse pointers.
-- Touch targets ≥ 44px.
+语言切换同步正文、标题、描述、图片替代文本、辅助名称和 FAQ 结构化数据。新文字保持 `data-en` / `data-zh` 的本页模式，不混入渲染器逻辑。
 
-## 9. Agent Prompt Guide
+菜单支持 Escape、背景滚动锁定、焦点限制与关闭后归还。截图 tabs 支持左右方向键、Home、End。FAQ 使用原生 details，不依赖脚本。
 
-Quick reference: bg `#000`, surface `#101315`, ink `#f7f8fa`, muted `#93a0a5`, coral `#ef5a45`, white pill nav, dot-matrix display type, soft shadow `0 4px 14px rgba(0,0,0,.16)`.
+默认正文和截图可见，JavaScript 只增强交互。语言、主题、媒体按钮在无 JavaScript 时隐藏；导航仍可使用。存储不可用不阻止切换或阅读。
 
-Prompt template: "Dark instrument-panel landing for a local-first multi-agent review tool: near-black field with faint dot-matrix, one continuous coral trace line ending in a glowing acceptance point, white pill navigation, dot-matrix display headline in solid white, generous whitespace, slow deliberate motion, coral reserved for active states only."
+## 验证基线
+
+修改后检查 1920×1080、1440×900、1280×720、768×1024、390×844、320×568 与 720×450；分别覆盖中英文和明暗主题。
+
+除静态截图，还必须检查视频像素变化、循环衔接、滚动退场、暂停恢复、减少动态效果、失败回退及无脚本状态。具体命令与本轮结果见 README 和 AUDIT。
