@@ -10,7 +10,6 @@
    · ScrollVelocity (scroll-aware marquee speed)
    · Magnet (mouse-follow on CTAs)
    · GlareHover (CSS-driven shine)
-   · Stepper (scenario timeline)
    · Accordion (FAQ)
    · ScrollProgress + ScrollSpy
    · Mobile menu + Escape + a11y
@@ -109,6 +108,11 @@
     var duration = 900;
     var start = performance.now();
     function frame(now) {
+      if (el.dataset.text && el.dataset.text !== target) {
+        el.textContent = el.dataset.text;
+        el.classList.remove("is-scrambling");
+        return;
+      }
       var p = Math.min((now - start) / duration, 1);
       var revealCount = Math.floor(target.length * p);
       var out = "";
@@ -305,116 +309,52 @@
     }
   }
 
-  /* =========================================================
-     9. SCENARIO STEPPER — auto-cycle the timeline
-     ========================================================= */
-    var scenario = doc.querySelector("[data-scenario]");
-  if (scenario) {
-    var steps = scenario.querySelectorAll(".t-step");
-    var total = steps.length;
-    var current = 0;
-    var isInView = false;
-    var autoTimer = null;
-    var autoDelay = 1600;
-    var scnMode = "auto"; // "auto" = step-by-step playback, "order" = full transcript
-    var railFill = scenario.querySelector("[data-rail]");
-    var railStatus = scenario.querySelector("[data-status]");
-    var roundLabel = scenario.querySelector("[data-round]");
-    var roundNames = [
-      "Round 1 · Propose",
-      "Round 1 · Critique",
-      "Round 2 · Propose",
-      "Round 2 · Reconcile",
-      "Adoption · Human Gate"
-    ];
-
-    function setStep(idx, revealAll) {
-      current = (idx + total) % total;
-      steps.forEach(function (s, i) {
-        if (revealAll || i <= current) s.classList.add("is-visible");
-        else s.classList.remove("is-visible");
-        s.classList.toggle("is-active", i === current);
-      });
-      if (railFill) railFill.style.height = (((current + 1) / total) * 100) + "%";
-      if (railStatus) railStatus.textContent = (current + 1) + " / " + total;
-      if (roundLabel) roundLabel.textContent = roundNames[current];
+  /* FAQ uses native details semantics, with interruptible open/close animation. */
+  var faqAnimations = new Map();
+  function expandFaq(item, open) {
+    var previous = faqAnimations.get(item);
+    var startHeight = item.getBoundingClientRect().height;
+    if (previous) previous.cancel();
+    item.dataset.expanded = String(open);
+    item.querySelector("summary").setAttribute("aria-expanded", String(open));
+    item.open = true;
+    var endHeight = item.querySelector("summary").getBoundingClientRect().height +
+      (open ? item.querySelector(".faq-answer").getBoundingClientRect().height : 0);
+    function finish() {
+      item.open = open;
+      item.style.height = "";
+      faqAnimations.delete(item);
     }
-    function startAuto() {
-      stopAuto();
-      autoTimer = setInterval(function () {
-        setStep(current + 1);
-      }, autoDelay);
-    }
-    function stopAuto() { if (autoTimer) { clearInterval(autoTimer); autoTimer = null; } }
-
-    scenario.querySelector("[data-prev]").addEventListener("click", function () {
-      setStep(current - 1); startAuto();
-    });
-    scenario.querySelector("[data-next]").addEventListener("click", function () {
-      setStep(current + 1); startAuto();
-    });
-    scenario.addEventListener("mouseenter", stopAuto);
-    scenario.addEventListener("mouseleave", function () {
-      if (isInView && scnMode === "auto") startAuto();
-    });
-
-    // macOS segmented control — Auto vs Sequence
-    var segBtns = scenario.querySelectorAll(".seg-btn");
-    function setMode(mode) {
-      scnMode = mode;
-      scenario.classList.toggle("is-order", mode === "order");
-      segBtns.forEach(function (b) {
-        b.classList.toggle("is-on", b.dataset.mode === mode);
-      });
-      if (mode === "order") {
-        stopAuto();
-        setStep(total - 1, true); // full transcript, rail at 100%, gate highlighted
-      } else {
-        setStep(0);
-        if (isInView && !reduced) startAuto();
-      }
-    }
-    segBtns.forEach(function (b) {
-      b.addEventListener("click", function () { setMode(b.dataset.mode); });
-    });
-
-    if ("IntersectionObserver" in win) {
-      var scnObs = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
-          isInView = entry.isIntersecting;
-          if (isInView) {
-            if (scnMode === "auto") {
-              setStep(0);
-              if (!reduced) startAuto();
-            } else {
-              setStep(total - 1, true);
-            }
-          } else stopAuto();
-        });
-      }, { threshold: 0.25 });
-      scnObs.observe(scenario);
-    } else setStep(0);
+    if (win.matchMedia("(prefers-reduced-motion: reduce)").matches || !item.animate) { finish(); return; }
+    var animation = item.animate({ height: [startHeight + "px", endHeight + "px"] },
+      { duration: 280, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" });
+    faqAnimations.set(item, animation);
+    animation.onfinish = finish;
   }
-
-  /* =========================================================
-     10. FAQ ACCORDION
-     ========================================================= */
-  doc.querySelectorAll(".acc-item").forEach(function (item) {
-    var trigger = item.querySelector(".acc-trigger");
-    var panel = item.querySelector(".acc-panel");
-    trigger.addEventListener("click", function () {
-      var isOpen = item.classList.contains("is-open");
-      // close siblings
-      doc.querySelectorAll(".acc-item.is-open").forEach(function (o) {
-        if (o !== item) {
-          o.classList.remove("is-open");
-          o.querySelector(".acc-trigger").setAttribute("aria-expanded", "false");
-          o.querySelector(".acc-panel").style.maxHeight = "";
-        }
+  doc.querySelectorAll(".faq-item").forEach(function (item, index) {
+    item.open = index === 0;
+    item.dataset.expanded = String(item.open);
+    item.querySelector("summary").setAttribute("aria-expanded", String(item.open));
+    item.querySelector("summary").addEventListener("click", function (event) {
+      event.preventDefault();
+      var open = item.dataset.expanded !== "true";
+      doc.querySelectorAll('.faq-item[data-expanded="true"]').forEach(function (other) {
+        if (other !== item) expandFaq(other, false);
       });
-      item.classList.toggle("is-open", !isOpen);
-      trigger.setAttribute("aria-expanded", String(!isOpen));
-      panel.style.maxHeight = !isOpen ? panel.scrollHeight + "px" : "";
+      expandFaq(item, open);
+    });
+  });
+  win.addEventListener("meldwork:languagechange", function () {
+    faqAnimations.forEach(function (animation, item) {
+      animation.cancel();
+      item.open = item.dataset.expanded === "true";
+      item.style.height = "";
+    });
+    faqAnimations.clear();
+    doc.querySelectorAll("[data-split]").forEach(function (el) {
+      delete el.dataset.splitDone;
+      splitText(el);
+      el.classList.add("play");
     });
   });
 
@@ -424,7 +364,7 @@
   var nav = doc.getElementById("topnav");
   function setNavScrolled() {
     if (!nav) return;
-    if (win.scrollY > 8) nav.classList.add("scrolled");
+    if (win.scrollY > 64) nav.classList.add("scrolled");
     else nav.classList.remove("scrolled");
   }
   setNavScrolled();

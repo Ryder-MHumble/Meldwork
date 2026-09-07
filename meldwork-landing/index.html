@@ -19,7 +19,7 @@
       "name": "Meldwork",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "macOS (Apple silicon)",
-      "softwareVersion": "1.0.3",
+      "softwareVersion": "1.0.4",
       "description": "Meldwork is a local-first work cell for AI coding agents. It orchestrates agent CLIs such as Codex, Claude Code, and Gemini CLI around one frozen task snapshot, records every finding as evidence, and puts a human adoption gate before any workspace change.",
       "featureList": "Local Agent discovery, Multi-agent review, Auto Discussion V4, Direct mode, Human Gate, Evidence Trail, Frozen Context",
       "offers": {
@@ -32,7 +32,7 @@
         "name": "Meldwork",
         "url": "https://github.com/Ryder-MHumble/Meldwork"
       },
-      "downloadUrl": "https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3"
+      "downloadUrl": "https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4"
     },
     {
       "@type": "FAQPage",
@@ -108,6 +108,7 @@
 
   <!-- ================= NAV ================= -->
   <header class="topnav" id="topnav">
+    <div class="nav-start">
     <a class="logo-badge" href="#top" aria-label="Meldwork home">
       <img src="assets/meldwork-mark-v3-dark.svg" alt="" width="52" height="52" data-theme-src="assets/meldwork-mark-v3.svg" />
     </a>
@@ -119,16 +120,21 @@
       <a href="#compare" class="nav-link" data-spy="compare"><span>How it differs</span></a>
       <a href="#faq" class="nav-link" data-spy="faq"><span>FAQ</span></a>
     </nav>
-    <a class="cta-dark magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3" target="_blank" rel="noopener">
-      <span class="cta-status"></span> Download V1.0.3
+    <button type="button" class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenu">
+      <span class="burger-bar"></span><span class="burger-bar"></span><span class="burger-bar"></span>
+    </button>
+    </div>
+    <div class="nav-actions">
+    <a class="cta-dark" href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4" target="_blank" rel="noopener" aria-label="Download V1.0.4">
+      <span class="cta-status"></span><span class="nav-download-label">Download V1.0.4</span>
+      <svg class="nav-download-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
     </a>
     <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
       <svg class="sun-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
       <svg class="moon-icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
     </button>
-    <button type="button" class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenu">
-      <span class="burger-bar"></span><span class="burger-bar"></span><span class="burger-bar"></span>
-    </button>
+    <a class="locale-toggle" id="localeToggle" href="?lang=en" aria-label="Switch to English">EN</a>
+    </div>
   </header>
 
   <div class="overlay" id="overlay" hidden></div>
@@ -139,7 +145,7 @@
     <a href="#scenario" class="m-link"><span>In a run</span></a>
     <a href="#compare" class="m-link"><span>How it differs</span></a>
     <a href="#faq" class="m-link"><span>FAQ</span></a>
-    <a href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.3" target="_blank" rel="noopener" class="m-link m-signin"><span>Download V1.0.3</span></a>
+    <a href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4" target="_blank" rel="noopener" class="m-link m-signin"><span>Download V1.0.4</span></a>
   </nav>
 
   <!-- ================= HERO ================= -->
@@ -168,9 +174,9 @@
       <p class="subhead">Meldwork builds the <strong>organization layer</strong> for AI agents — a local work cell that keeps participants explicit, context scoped, run state inspectable, and human review in the loop.</p>
 
       <div class="cta-row">
-        <a class="cta-primary magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.3/Meldwork-0.1.3-arm64.dmg">
+        <a class="cta-primary magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg">
           <span class="cta-label">Download for macOS</span>
-          <span class="cta-meta">V1.0.3 · Apple silicon</span>
+          <span class="cta-meta">V1.0.4 · Apple silicon</span>
         </a>
         <a class="cta-ghost" href="https://github.com/Ryder-MHumble/Meldwork" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">↗</span></a>
       </div>
@@ -215,6 +221,11 @@
   </section>
 
   <!-- ================= AGENT LOGO LOOP ================= -->
+  <div class="chapter-scene" aria-hidden="true"><canvas id="chapterCanvas"></canvas></div>
+  <button class="chapter-motion-toggle" id="chapterMotionToggle" type="button" aria-label="Pause background animation" aria-pressed="false" hidden>
+    <svg class="pause-icon" viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="32" d="M176 96h16v320h-16z M320 96h16v320h-16z" /></svg>
+    <svg class="play-icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M112 111v290c0 17.44 17 28.52 31 20.16l247.9-148.37c12.12-7.25 12.12-26.33 0-33.58L143 90.84c-14-8.36-31 2.72-31 20.16z" fill="none" stroke="currentColor" stroke-miterlimit="10" stroke-width="32" /></svg>
+  </button>
   <section class="section agents" id="agents">
     <p class="eyebrow reveal" data-reveal>DETECTED ON YOUR MACHINE</p>
     <h2 class="section-title reveal" data-reveal>Works with the agents you already run.</h2>
@@ -372,82 +383,49 @@
     </div>
   </section>
 
-  <!-- ================= SCENARIO (animated stepper) ================= -->
+  <!-- ================= COLLABORATION DEMO ================= -->
   <section class="section scenario" id="scenario">
-    <p class="eyebrow reveal" data-reveal>INSIDE A REAL RUN</p>
-    <h2 class="section-title reveal" data-reveal>Launch Readiness Council — three rounds, one gate.</h2>
-    <p class="section-sub reveal" data-reveal>Below: the actual evidence from a V1.0.3 session where Codex, Hermes, and OpenCodeReview reviewed a private-beta release decision. Scroll or wait — the timeline advances on its own.</p>
-
-    <div class="scenario-stage reveal" data-reveal data-scenario>
-      <div class="mac-titlebar">
-        <span class="mac-lights" aria-hidden="true"><i class="light-r"></i><i class="light-y"></i><i class="light-g"></i></span>
-        <div class="scenario-meta">
-          <span class="meta-pill"><span class="meta-dot"></span> Auto Discussion V4</span>
-          <span class="meta-name">Launch Readiness Council</span>
-        </div>
-        <div class="titlebar-right">
-          <span class="meta-round" data-round>Round 1 · Propose</span>
-          <div class="seg-control" role="group" aria-label="Playback mode">
-            <button type="button" class="seg-btn is-on" data-mode="auto">Auto</button>
-            <button type="button" class="seg-btn" data-mode="order">Sequence</button>
-          </div>
-        </div>
+    <p class="eyebrow" data-en="INSIDE A REAL RUN" data-zh="协作进行时">INSIDE A REAL RUN</p>
+    <h2 class="section-title" data-en="One task. Three ways forward." data-zh="同一个任务，三种协作方式。">One task. Three ways forward.</h2>
+    <p class="section-sub" data-en="A focused conversation, independent perspectives, or Agents building on each other's work." data-zh="与一个 Agent 深入对话，让多个 Agent 独立作答，或让它们接续彼此的工作。">A focused conversation, independent perspectives, or Agents building on each other's work.</p>
+    <div class="run-demo" data-run-demo data-mode="auto" data-phase="0">
+      <div class="run-tabs" role="tablist" aria-label="Collaboration modes">
+        <button id="run-direct" class="run-tab" role="tab" aria-selected="false" aria-controls="run-panel" tabindex="-1" data-run-mode="direct">
+          <span class="run-tab-number">01</span><span data-en="Direct" data-zh="直接会话">Direct</span>
+          <small data-en="You + one Agent" data-zh="你与一个 Agent">You + one Agent</small>
+        </button>
+        <button id="run-concurrent" class="run-tab" role="tab" aria-selected="false" aria-controls="run-panel" tabindex="-1" data-run-mode="concurrent">
+          <span class="run-tab-number">02</span><span data-en="Concurrent Responses" data-zh="并发回复">Concurrent Responses</span>
+          <small data-en="One brief, independent replies" data-zh="同一任务，独立回复">One brief, independent replies</small>
+        </button>
+        <button id="run-auto" class="run-tab" role="tab" aria-selected="true" aria-controls="run-panel" data-run-mode="auto">
+          <span class="run-tab-number">03</span><span data-en="Auto Discussion" data-zh="自动讨论">Auto Discussion</span>
+          <small data-en="Agents lead the next turn" data-zh="Agent 自主接续讨论">Agents lead the next turn</small>
+        </button>
       </div>
-
-      <div class="scenario-body">
-        <div class="timeline-track" data-timeline>
-          <div class="timeline-rail" aria-hidden="true">
-            <span class="rail-line"></span>
-            <span class="rail-progress" data-rail></span>
-          </div>
-          <ol class="timeline" data-timeline-list>
-            <li class="t-step is-active" data-step="0">
-              <span class="t-node" data-node></span>
-              <span class="t-time">R1 · 05:34</span>
-              <div class="t-bubble t-bubble-codex">
-                <header><img src="assets/agents/codex.svg" alt="" /><strong>Codex</strong><span class="t-role">Proposal</span></header>
-                <p>Ship a <strong>private, invitation-only preview</strong> with one promise: keep a real task coherent while users move between Agents. Don't market workflow automation, universal compatibility, or public distribution readiness yet.</p>
-              </div>
-            </li>
-            <li class="t-step" data-step="1">
-              <span class="t-node" data-node></span>
-              <span class="t-time">R1 · 05:38</span>
-              <div class="t-bubble t-bubble-hermes">
-                <header><img src="assets/agents/hermes.svg" alt="" /><strong>Hermes</strong><span class="t-role">Evidence challenge</span></header>
-                <p>The beta should <strong>test behavior</strong>, not enthusiasm. Measure whether users resume the same task, bring in a second Agent for a clear reason, and use the trace before accepting a result. Without those signals, the category story is still unproven.</p>
-              </div>
-            </li>
-            <li class="t-step" data-step="2">
-              <span class="t-node" data-node></span>
-              <span class="t-time">R2 · 05:44</span>
-              <div class="t-bubble t-bubble-ocr">
-                <header><img src="assets/agents/opencodereview.svg" alt="" /><strong>OpenCodeReview</strong><span class="t-role">Engineering review</span></header>
-                <p>The MVP <strong>is</strong> stable enough for a controlled evaluation, but not for a public download. Tests and packaging pass; the blocker is trusted macOS signing and notarization. Keep the first release private and label unsupported platforms explicitly.</p>
-              </div>
-            </li>
-            <li class="t-step" data-step="3">
-              <span class="t-node" data-node></span>
-              <span class="t-time">R2 · 05:52</span>
-              <div class="t-bubble t-bubble-you">
-                <header><span class="you-dot">You</span><strong>You</strong><span class="t-role">Reconciliation</span></header>
-                <p>Round 2: reconcile the disagreement. Keep only decisions we can verify this week and give me <strong>one acceptance gate</strong>.</p>
-              </div>
-            </li>
-            <li class="t-step" data-step="4">
-              <span class="t-node" data-node></span>
-              <span class="t-time">Adoption</span>
-              <div class="t-bubble t-bubble-gate">
-                <header><span class="gate-dot"></span><strong>Human Gate</strong><span class="t-role">Decision</span></header>
-                <p>Ship V1.0.3 to the private preview only. <strong>No-Go for public release.</strong> Reopen after Developer ID signing and notarization pass on a clean Mac.</p>
-              </div>
-            </li>
-          </ol>
+      <div id="run-panel" class="run-panel" role="tabpanel" aria-labelledby="run-auto" tabindex="0">
+        <div class="run-explanation">
+          <p data-run-description></p>
+          <span class="run-example-label" data-en="Illustrative workflow" data-zh="协作流程示意">Illustrative workflow</span>
         </div>
-
-        <div class="scenario-controls">
-          <button type="button" class="rail-btn" data-prev aria-label="Previous step">‹</button>
-          <span class="rail-status" data-status>1 / 5</span>
-          <button type="button" class="rail-btn" data-next aria-label="Next step">›</button>
+        <div class="run-window">
+          <div class="run-window-bar" aria-hidden="true">
+            <span class="run-window-lights"><i></i><i></i><i></i></span>
+            <span class="run-window-title" data-en="Local run window" data-zh="本地协作窗口">Local run window</span>
+          </div>
+          <div class="run-window-body">
+            <div class="run-chat" tabindex="0" aria-label="Example conversation">
+              <ol class="run-messages" data-run-messages></ol>
+            </div>
+          </div>
+        </div>
+        <div class="run-playback">
+          <div class="run-progress" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+          <span data-run-status></span>
+          <button class="run-play-toggle" type="button" aria-label="Pause demo" title="Pause demo" aria-pressed="false" data-run-pause>
+            <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H5v16h4zM19 4h-4v16h4z" fill="currentColor"/></svg>
+            <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 4 14 8-14 8z" fill="currentColor"/></svg>
+          </button>
         </div>
       </div>
     </div>
@@ -950,6 +928,9 @@
       >
     </footer>
 
+  <script src="locale.js" defer></script>
   <script src="main.js" defer></script>
+  <script src="chapter-scene.js" defer></script>
+  <script src="run-demo.js" defer></script>
 </body>
 </html>
