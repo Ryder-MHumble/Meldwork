@@ -1413,7 +1413,7 @@ test('V4 invocation boundary resumes delta delivery from durable acknowledgement
   assert.ok(secondA.result)
   assert.equal(calls.find(call => call.tag === 'A' && call.attempt === 'wave-2').sessionRef,
     'A-codex-native-1')
-  const sessionKeyA = workspace.sessionKey(runA.group.id, 'codex', runA.task.id)
+  const sessionKeyA = workspace.sessionKey(runA.group.id, 'codex')
   workspace.state.sessionMeta[sessionKeyA] = {
     ...workspace.state.sessionMeta[sessionKeyA],
     turns: 1000,
@@ -4002,7 +4002,7 @@ test('automatic dialogue reuses Kimi ACP sessions across rounds', async (t) => {
   await workspace.activeRuns.get(group.id).promise
 
   const kimiCalls = calls.filter(call => call.agent.kind === 'kimi')
-  const kimiSessionKey = workspace.sessionKey(group.id, 'kimi', started.threadRootId)
+  const kimiSessionKey = workspace.sessionKey(group.id, 'kimi')
   assert.deepEqual(kimiCalls.map(call => call.runOptions.sessionRef), ['', 'kimi-acp-session'])
   assert.deepEqual(kimiCalls.map(call => call.runOptions.sessionTransport), ['', 'acp'])
   assert.equal(workspace.state.sessions[kimiSessionKey], 'kimi-acp-session')
@@ -4043,7 +4043,7 @@ test('automatic dialogue keeps Hermes on one persistent ACP session across round
   await workspace.activeRuns.get(group.id).promise
 
   const hermesCalls = calls.filter(call => call.agent.kind === 'hermes')
-  const hermesSessionKey = workspace.sessionKey(group.id, 'hermes', started.threadRootId)
+  const hermesSessionKey = workspace.sessionKey(group.id, 'hermes')
   assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionRef), ['', 'hermes-acp-session'])
   assert.deepEqual(hermesCalls.map(call => call.runOptions.sessionTransport), ['', 'acp'])
   assert.deepEqual(hermesCalls.map(call => call.runOptions.hermesAcpAvailable), [true, true])
@@ -4784,6 +4784,34 @@ test('direct dialogue reports HTTP 401 once without removing its Agent', async (
   assert.equal(failures[0].system.params.reason, 'HTTP 401; authentication failed; Agent retained')
 })
 
+test('group authentication recovery retains the existing native session', async (t) => {
+  const { directory, calls, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let authenticated = false
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    if (!authenticated) throw agentRuntimeError('LOCAL_AGENT_AUTH_REQUIRED', 'HTTP 401: expired credential')
+    return { text: 'Recovered conversation', sessionRef: runOptions.sessionRef, outcome: 'completed' }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({ name: 'Auth continuity', agentKinds: ['hermes'], workdir: directory })
+  const key = workspace.sessionKey(group.id, 'hermes')
+  workspace.state.sessions[key] = 'hermes-auth-session'
+  workspace.save()
+  await workspace.sendMessage({ groupId: group.id, text: 'First attempt', targetKinds: ['hermes'] })
+  assert.equal(workspace.state.sessions[key], 'hermes-auth-session')
+
+  authenticated = true
+  workspace.markRuntimeCredential('hermes', 'ready')
+  workspace.updateGroup(group.id, { agentKinds: ['hermes'] })
+  await workspace.refreshAgents()
+  await workspace.sendMessage({ groupId: group.id, text: 'Continue after login', targetKinds: ['hermes'] })
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['hermes-auth-session', 'hermes-auth-session'])
+  assert.equal(workspace.state.sessions[key], 'hermes-auth-session')
+  assert.equal(workspace.snapshot().messages.some(message => message.content === 'Recovered conversation'), true)
+})
+
 test('automatic dialogue does not send an authentication recovery handoff to another Agent', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
@@ -4852,7 +4880,7 @@ test('automatic dialogue keeps a failed authentication slot out of later group c
   ])
   const normalCodexCall = calls[0]
   assert.equal(normalCodexCall.runOptions.sessionRef, '')
-  const codexSessionKey = workspace.sessionKey(group.id, 'codex', root.id)
+  const codexSessionKey = workspace.sessionKey(group.id, 'codex')
   assert.equal(workspace.state.sessions[codexSessionKey], 'codex-task-session')
   const agentMessages = workspace.snapshot().messages.filter(message => message.role === 'agent')
   assert.equal(agentMessages.some(message => /repaired auth/.test(message.content)), false)
@@ -4897,8 +4925,8 @@ test('automatic dialogue persists one failed 401 attempt and removes the Agent',
   ])
   assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['codex', 'workbuddy'])
   assert.equal(
-    workspace.state.sessions[workspace.sessionKey(group.id, 'hermes', root.id)],
-    undefined,
+    workspace.state.sessions[workspace.sessionKey(group.id, 'hermes')],
+    'unusable-hermes-session',
   )
   assert.equal(
     workspace.snapshot().agents.find(agent => agent.kind === 'hermes').credentialState,
@@ -5149,7 +5177,7 @@ test('automatic dialogue reuses a session captured before a successful protocol 
   assert.equal(calls[1].runOptions.sessionRef, 'kimi-created-before-failure')
   assert.deepEqual(workspace.getGroup(group.id).agentKinds, ['kimi', 'codex'])
   assert.equal(
-    workspace.state.sessions[workspace.sessionKey(group.id, 'kimi', root.id)],
+    workspace.state.sessions[workspace.sessionKey(group.id, 'kimi')],
     'kimi-created-before-failure',
   )
 })

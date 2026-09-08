@@ -5,6 +5,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { EventEmitter } = require('node:events')
 const { PassThrough } = require('node:stream')
+const { probeAgentCapabilities } = require('../../../src/agents/cli/cli-discovery.cjs')
 const {
   detectAgents,
   imageAttachmentLimit,
@@ -35,6 +36,68 @@ test('search path includes common user CLI locations', () => {
   assert.match(searchPath(), /\.local\/bin/)
   assert.match(searchPath(), /\.kimi-code\/bin/)
   assert.match(searchPath(), /\.mimocode\/bin/)
+})
+
+test('capability timeouts retry once and remain inconclusive when both attempts time out', async () => {
+  for (const recover of [true, false]) {
+    const timeouts = []
+    const result = await probeAgentCapabilities('pi', '/test/timeout-pi', {
+      env: {},
+      execFileFn: async (_command, _args, options) => {
+        timeouts.push(options.timeout)
+        if (!recover || timeouts.length === 1) {
+          throw Object.assign(new Error('timeout'), { killed: true })
+        }
+        return { stdout: 'Pi help' }
+      },
+    })
+    assert.deepEqual(timeouts, [8000, 16000])
+    assert.equal(result.compatibilityState, recover ? 'compatible' : 'unknown')
+    if (!recover) assert.equal(result.incompatibilityReason, 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT')
+  }
+})
+
+test('only unchanged recently verified executables survive inconclusive capability probes', async () => {
+  const executable = '/test/cached-workbuddy'
+  let identity = 1
+  let mode = 'success'
+  const options = {
+    env: {}, version: '2.115.0',
+    statFn: () => ({ dev: 1, ino: identity, size: 100, mtimeMs: 1, ctimeMs: 1 }),
+    execFileFn: async () => {
+      if (mode === 'timeout') throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })
+      return { stdout: mode === 'success'
+        ? '--print --output-format --permission-mode --max-turns --resume json plan acceptEdits'
+        : 'different CLI help' }
+    },
+  }
+  assert.equal((await probeAgentCapabilities('workbuddy', executable, options)).compatibilityState, 'compatible')
+  mode = 'timeout'
+  assert.equal((await probeAgentCapabilities('workbuddy', executable, options)).compatibilityState, 'compatible')
+  identity = 2
+  assert.equal((await probeAgentCapabilities('workbuddy', executable, options)).compatibilityState, 'unknown')
+  identity = 1
+  options.version = '2.132.0'
+  assert.equal((await probeAgentCapabilities('workbuddy', executable, options)).compatibilityState, 'unknown')
+  options.version = '2.115.0'
+  mode = 'incompatible'
+  assert.equal((await probeAgentCapabilities('workbuddy', executable, options)).compatibilityState, 'incompatible')
+  mode = 'timeout'
+  assert.equal((await probeAgentCapabilities('workbuddy', executable, options)).compatibilityState, 'unknown')
+})
+
+test('Agent detection does not promote an inconclusive capability check to compatible', async () => {
+  const [agent] = await detectAgents({
+    env: {},
+    resolveExecutableFn: async kind => kind === 'pi' ? '/test/cold-pi' : null,
+    execFileFn: async (_command, args) => {
+      if (args[0] === '--version') return { stdout: '0.84.2' }
+      throw Object.assign(new Error('timeout'), { killed: true })
+    },
+  })
+  assert.equal(agent.kind, 'pi')
+  assert.equal(agent.compatibilityState, 'unknown')
+  assert.equal(agent.incompatibilityReason, 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT')
 })
 
 test('Agent discovery scans independent Agent kinds concurrently', async () => {
@@ -900,7 +963,7 @@ test('Agent detection passes only allowlisted system environment to version comm
   }
 })
 
-test('Agent detection excludes executable shims that cannot report a version', async () => {
+test('Agent detection retains a broken installation with unavailable capabilities', async () => {
   const found = await detectAgents({
     platform: 'darwin',
     env: {},
@@ -908,7 +971,24 @@ test('Agent detection excludes executable shims that cannot report a version', a
     execFileFn: async () => { throw new Error('broken shim') },
   })
 
-  assert.deepEqual(found, [])
+  assert.equal(found.length, 1)
+  assert.equal(found[0].kind, 'codex')
+  assert.equal(found[0].compatibilityState, 'incompatible')
+  assert.equal(found[0].incompatibilityReason, 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING')
+})
+
+test('Agent detection uses capability evidence when the version command fails', async () => {
+  const found = await detectAgents({
+    env: { CODEX_HOME: '/tmp/custom-codex' },
+    resolveExecutableFn: async kind => kind === 'codex' ? '/tmp/codex' : null,
+    execFileFn: async (_command, args, options) => {
+      assert.equal(options.env.CODEX_HOME, '/tmp/custom-codex')
+      if (args[0] === '--version') throw Object.assign(new Error('timeout'), { killed: true })
+      return { stdout: '--json --sandbox --skip-git-repo-check --image read-only workspace-write' }
+    },
+  })
+  assert.equal(found.length, 1)
+  assert.equal(found[0].compatibilityState, 'compatible')
 })
 
 test('runAgent hides executable paths from spawn failures', async () => {

@@ -1552,7 +1552,7 @@ test('Pi uses non-interactive JSON flags and keeps provider settings out of argu
     provider: { id: 'zgci', model: 'glm' },
   })
   assert.deepEqual(spec.args, [
-    '--mode', 'json', '--print', '--no-approve', '--session', 'pi-session-123',
+    '--mode', 'json', '--print', '--no-approve', '--tools', 'read,grep,find,ls', '--session', 'pi-session-123',
   ])
   assert.equal(spec.promptArg, true)
   assert.equal(spec.eventTransport, 'json')

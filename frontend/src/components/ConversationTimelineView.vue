@@ -296,7 +296,11 @@
                     @keydown.enter.prevent="openAgentMessageTrace(message, $event)"
                     @keydown.space.prevent="openAgentMessageTrace(message, $event)"
                   >
-                    <MarkdownMessage v-if="message.content" :content="message.content" />
+                    <MarkdownMessage
+                      v-if="message.content"
+                      :content="message.content"
+                      :mention-profiles="(activeGroup.agentKinds || []).map(kind => ({ kind, label: agentLabel(kind) }))"
+                    />
                     <span v-else class="trace-waiting-output">
                       <span class="typing-bars" aria-hidden="true"><span /><span /><span /></span>
                       {{ t('trace.waitingOutput') }}

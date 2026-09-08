@@ -374,6 +374,9 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
   const runOptions = { ...options }
   delete runOptions.connectorCredentialIsolation
   const status = providerStore.status(agent.kind)
+  if (!connectorCredentialIsolation && status.error) {
+    throw new Error('PROVIDER_CREDENTIAL_UNAVAILABLE')
+  }
   const shellEnvironment = connectorCredentialIsolation ? null : await nativeShellEnvironment()
   const nativeRuntime = !connectorCredentialIsolation
     && agent.kind === 'openclaw' && !status.configured

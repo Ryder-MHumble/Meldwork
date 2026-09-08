@@ -8,6 +8,37 @@ afterEach(() => {
 })
 
 describe('Markdown messages', () => {
+  const mentionProfiles = [
+    { kind: 'claude', label: 'Claude Code' },
+    { kind: 'pi', label: 'Pi Agent' },
+  ]
+
+  it('highlights group Agent mentions in prose without moving them to a footer', async () => {
+    const wrapper = mount(MarkdownMessage, {
+      props: { content: '方案已确定，@Claude Code 请核对。随后请 **@pi** 评审。继续执行。', mentionProfiles },
+    })
+    expect(wrapper.findAll('.agent-inline-mention').map(node => node.text()))
+      .toEqual(['@Claude Code', '@pi'])
+    expect(wrapper.get('[data-agent-kind="claude"]').text()).toBe('@Claude Code')
+    expect(wrapper.text()).toBe('方案已确定，@Claude Code 请核对。随后请 @pi 评审。继续执行。')
+    await wrapper.setProps({ content: '请 @Pi Agent 继续。' })
+    expect(wrapper.get('.agent-inline-mention').text()).toBe('@Pi Agent')
+  })
+
+  it('does not decorate code, quotes, links, email, partial names or nonmembers', () => {
+    const content = '`@pi`\n\n```text\n@claude\n```\n\n> @pi\n\n[@pi](https://example.com/@pi) user@pi.dev @pilot @unknown /@pi @pi.'
+    const wrapper = mount(MarkdownMessage, { props: { content, mentionProfiles } })
+    expect(wrapper.findAll('.agent-inline-mention').map(node => node.text())).toEqual(['@pi'])
+    expect(wrapper.get('a').attributes('href')).toBe('https://example.com/@pi')
+  })
+
+  it('keeps mention labels as text and sanitizes HTML when decorating mentions', () => {
+    const html = renderMarkdown('@pi <img src=x onerror=alert(1)>', mentionProfiles)
+    expect(html).toContain('agent-inline-mention')
+    expect(html).not.toContain('onerror')
+    expect(renderMarkdown('@pi')).not.toContain('agent-inline-mention')
+  })
+
   it('renders ordinary GitHub-flavored Markdown through the message component', () => {
     const content = '**Decision**\n\n- Keep the local workflow\n- Add a focused test'
     const html = renderMarkdown(content)

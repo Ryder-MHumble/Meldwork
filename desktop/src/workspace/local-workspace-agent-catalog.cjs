@@ -3,6 +3,15 @@ const {
 } = require('../agents/agent-runtime-contract.cjs')
 
 const RECENT_VERIFICATION_MS = 24 * 60 * 60 * 1000
+const AUTH_FAILURE_RETRY_MS = 30 * 1000
+
+function expiredAuthFailure(runtime, now) {
+  if (runtime?.credentialState !== 'missing') return false
+  const checkedAt = Date.parse(String(runtime.checkedAt || ''))
+  const current = Date.parse(String(now || ''))
+  return !Number.isFinite(checkedAt) || (Number.isFinite(current)
+    && (current < checkedAt || current - checkedAt >= AUTH_FAILURE_RETRY_MS))
+}
 
 function agentVersionIdentified(agent) {
   if (agent?.custom === true) return true
@@ -70,7 +79,8 @@ class LocalWorkspaceAgentCatalog {
     const nativeStates = await Promise.all(detected.map((agent) => {
       const runtime = runtimeAtRefreshStart.get(agent.kind)
       const sharedProviderReady = Boolean(this.sharedProviderReady(agent.kind))
-      if (sharedProviderReady && runtime?.credentialState === 'missing') {
+      if (sharedProviderReady && runtime?.credentialState === 'missing'
+          && !expiredAuthFailure(runtime, this.now())) {
         return { state: 'missing', source: 'runtime-auth-failure' }
       }
       if (sharedProviderReady) {
@@ -87,6 +97,14 @@ class LocalWorkspaceAgentCatalog {
       const nativeState = ['ready', 'missing'].includes(native?.state) ? native.state : 'unknown'
       const authoritativeNativeState = native?.source === 'native-auth-status'
       const sharedProviderRequired = native?.source === 'shared-provider-required'
+      // Give corrected native credentials a retry after the cooldown, never erase a newer failure.
+      if (expiredAuthFailure(runtime, this.now())
+          && !(authoritativeNativeState && nativeState === 'ready')
+          && runtime === runtimeAtRefreshStart.get(agent.kind)) {
+        delete state.agentRuntime[agent.kind]
+        runtime = undefined
+        recoveredRuntimeCredential = true
+      }
       // A probe that started before a newer runtime failure cannot clear that failure.
       if (authoritativeNativeState && nativeState === 'ready'
           && ['missing', 'unknown'].includes(runtime?.credentialState)

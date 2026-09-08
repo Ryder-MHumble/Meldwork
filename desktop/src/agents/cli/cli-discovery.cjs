@@ -26,6 +26,8 @@ const AGENT_PROFILES = {
 }
 const ALLOWED_KINDS = Object.keys(AGENT_PROFILES)
 const DEFAULT_WINDOWS_PATHEXT = ['.COM', '.EXE', '.BAT', '.CMD']
+const CAPABILITY_CACHE_TTL_MS = 5 * 60 * 1000
+const capabilityCache = new Map()
 const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
   'HOME', 'USER', 'LOGNAME', 'SHELL',
   'TMPDIR', 'TMP', 'TEMP',
@@ -39,6 +41,7 @@ const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
   'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
   'OS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'NUMBER_OF_PROCESSORS',
   'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR',
 ])
 
 function envValue(env, name) {
@@ -334,27 +337,49 @@ async function probeAgentCapabilities(kind, executable, options = {}) {
     ...systemChildEnvironment(env, platform),
     PATH: searchPath(options),
   }
+  let identity = ''
+  try {
+    const stat = (options.statFn || fs.statSync)(executable)
+    identity = JSON.stringify([
+      kind, executable, options.version || '', stat.dev, stat.ino,
+      stat.size, stat.mtimeMs, stat.ctimeMs,
+    ])
+  } catch { /* caching requires a verifiable executable identity */ }
+  const cacheKey = `${kind}:${executable}`
+  const prior = capabilityCache.get(cacheKey)
+  const recentCompatible = identity && prior?.identity === identity
+    && Date.now() - prior.checkedAt < CAPABILITY_CACHE_TTL_MS
   const results = await Promise.all(capabilityProbes(kind).map(async (probe) => {
-    try {
-      const command = prepareCommandFn(executable, probe.args, options)
-      const result = await execFileFn(command.command, command.args, {
-        timeout: 8000,
-        windowsHide: true,
-        env: childEnv,
-      })
-      return {
-        probe,
-        output: `${result.stdout || ''}\n${result.stderr || ''}`,
-      }
-    } catch {
-      return {
-        probe,
-        error: true,
+    for (const timeout of [8000, 16000]) {
+      try {
+        const command = prepareCommandFn(executable, probe.args, options)
+        const result = await execFileFn(command.command, command.args, {
+          timeout,
+          windowsHide: true,
+          env: childEnv,
+        })
+        return { probe, output: `${result.stdout || ''}\n${result.stderr || ''}` }
+      } catch (error) {
+        const timedOut = error?.killed === true || error?.code === 'ETIMEDOUT'
+        if (timedOut && timeout === 8000) continue
+        return { probe, error: true, timedOut }
       }
     }
   }))
+  const failed = results.find(result => !result.timedOut && (result.error
+    || result.probe.requiredText.some(value => !result.output.includes(value))))
+  if (failed) capabilityCache.delete(cacheKey)
   for (const result of results) {
     const { probe } = result
+    if (result.timedOut && !failed) {
+      if (recentCompatible) continue
+      return {
+        compatibilityState: 'unknown',
+        incompatibilityReason: 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT',
+        incompatibilityProbe: probe.id,
+      }
+    }
+    if (result.timedOut) continue
     if (result.error) {
       return {
         compatibilityState: 'incompatible',
@@ -371,6 +396,9 @@ async function probeAgentCapabilities(kind, executable, options = {}) {
         incompatibilityProbe: probe.id,
       }
     }
+  }
+  if (identity && !results.some(result => result.timedOut)) {
+    capabilityCache.set(cacheKey, { identity, checkedAt: Date.now() })
   }
   return {
     compatibilityState: 'compatible',
@@ -402,18 +430,17 @@ async function inspectAgentCandidate(kind, executable, options, childEnv) {
         version: identified?.line || '',
         versionIdentified: Boolean(identified),
       }
-    } catch { /* a broken shim is not a usable CLI */ }
+    } catch { /* capability probes can still establish whether this installation works */ }
     return { succeeded: false, version: '', versionIdentified: false }
   })()
 
-  const { succeeded: versionCommandSucceeded, version } = await versionTask
-  if (!versionCommandSucceeded) return null
+  const { version } = await versionTask
   const versionCompatibility = assessAgentVersion(kind, version)
   const capabilityTask = Promise.resolve().then(async () => {
     const result = await (options.probeAgentCapabilitiesFn || probeAgentCapabilities)(
       kind,
       executable,
-      { ...options, childEnv },
+      { ...options, childEnv, version },
     )
     return result && typeof result === 'object' ? result : incompatibleCapabilities
   }).catch(() => incompatibleCapabilities)
@@ -433,7 +460,7 @@ async function inspectAgentCandidate(kind, executable, options, childEnv) {
       })()
     : Promise.resolve(undefined)
   const [capabilityCompatibility, acpAvailable] = await Promise.all([capabilityTask, acpTask])
-  const compatibility = capabilityCompatibility.compatibilityState === 'incompatible'
+  const compatibility = capabilityCompatibility.compatibilityState !== 'compatible'
     ? { ...versionCompatibility, ...capabilityCompatibility }
     : {
         ...versionCompatibility,

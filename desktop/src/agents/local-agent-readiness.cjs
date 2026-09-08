@@ -33,7 +33,7 @@ const CREDENTIAL_ENV_KEYS = Object.freeze({
   hermes: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'],
   openclaw: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY'],
   workbuddy: ['CODEBUDDY_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
-  pi: ['PI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'],
+  pi: ['PI_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY', 'GEMINI_API_KEY'],
   kimi: ['MOONSHOT_API_KEY', 'KIMI_API_KEY', 'KIMI_MODEL_API_KEY', 'OPENAI_API_KEY'],
   mimo: ['MIMO_API_KEY'],
   claude: ['ANTHROPIC_API_KEY'],
@@ -43,7 +43,7 @@ const CREDENTIAL_ENV_KEYS = Object.freeze({
   opencodereview: ['OCR_LLM_TOKEN', 'OPENAI_API_KEY'],
 })
 const RUNTIME_ENV_KEYS = Object.freeze({
-  codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
+  codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'CODEX_HOME'],
   hermes: [
     'OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY',
     'OPENAI_BASE_URL', 'OPENAI_MODEL', 'HERMES_INFERENCE_PROVIDER', 'HERMES_INFERENCE_MODEL',
@@ -56,6 +56,7 @@ const RUNTIME_ENV_KEYS = Object.freeze({
   pi: [
     'PI_API_KEY', 'PI_BASE_URL', 'PI_MODEL',
     'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'ANTHROPIC_API_KEY',
+    'OPENROUTER_API_KEY', 'GEMINI_API_KEY', 'PI_CODING_AGENT_DIR',
   ],
   kimi: [
     'MOONSHOT_API_KEY', 'KIMI_API_KEY', 'KIMI_MODEL_API_KEY',
@@ -63,7 +64,7 @@ const RUNTIME_ENV_KEYS = Object.freeze({
     'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL',
   ],
   mimo: ['MIMO_API_KEY', 'MIMO_BASE_URL', 'MIMO_MODEL'],
-  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL'],
+  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR'],
   qwen: ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
   gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_MODEL'],
   opencode: [
@@ -94,6 +95,8 @@ function readCredentialFile(filename) {
 function containsCredential(value) {
   if (!value || typeof value !== 'object') return false
   if (Array.isArray(value)) return value.some(containsCredential)
+  if (value.type === 'api_key' && credentialLiteral(value.key)) return true
+  if (value.type === 'oauth' && (credentialLiteral(value.access) || credentialLiteral(value.refresh))) return true
   return Object.entries(value).some(([key, child]) => {
     if (CREDENTIAL_FIELD.test(key) && credentialLiteral(child)) return true
     return child && typeof child === 'object' && containsCredential(child)
@@ -245,6 +248,9 @@ function resolveNativeShellEnvironment(options = {}) {
 function nativeCredentialState(kind, options = {}) {
   const home = options.home || os.homedir()
   const env = options.env || process.env
+  const codexHome = env.CODEX_HOME || path.join(home, '.codex')
+  const claudeHome = env.CLAUDE_CONFIG_DIR || path.join(home, '.claude')
+  const piHome = env.PI_CODING_AGENT_DIR || path.join(home, '.pi', 'agent')
   if (Object.keys(nativeCredentialKeyEnvironment(kind, env)).length) {
     return {
       state: 'ready',
@@ -253,11 +259,13 @@ function nativeCredentialState(kind, options = {}) {
   }
 
   const jsonFiles = {
-    codex: [path.join(home, '.codex', 'auth.json'), path.join(home, '.codex', 'config.json')],
+    codex: [path.join(codexHome, 'auth.json'), path.join(codexHome, 'config.json')],
     hermes: [path.join(home, '.hermes', 'auth.json'), path.join(home, '.hermes', 'config.json')],
     openclaw: [path.join(home, '.openclaw', 'openclaw.json')],
     workbuddy: [path.join(home, '.workbuddy', 'models.json')],
     pi: [
+      path.join(piHome, 'auth.json'),
+      path.join(piHome, 'models.json'),
       path.join(home, '.pi', 'auth.json'),
       path.join(home, '.pi', 'config.json'),
       path.join(home, '.pi-agent', 'auth.json'),
@@ -265,16 +273,16 @@ function nativeCredentialState(kind, options = {}) {
     ],
     kimi: [path.join(home, '.kimi-code', 'credentials', 'kimi-code.json')],
     claude: [
-      path.join(home, '.claude', '.credentials.json'),
-      path.join(home, '.claude', 'settings.json'),
-      path.join(home, '.claude', 'settings.local.json'),
+      path.join(claudeHome, '.credentials.json'),
+      path.join(claudeHome, 'settings.json'),
+      path.join(claudeHome, 'settings.local.json'),
     ],
     qwen: [path.join(home, '.qwen', 'oauth_creds.json'), path.join(home, '.qwen', 'settings.json')],
     gemini: [
       path.join(home, '.gemini', 'oauth_creds.json'),
       path.join(home, '.gemini', 'settings.json'),
     ],
-    opencode: [path.join(home, '.local', 'share', 'opencode', 'auth.json')],
+    opencode: [path.join(env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'opencode', 'auth.json')],
     opencodereview: [path.join(home, '.opencodereview', 'config.json')],
   }[kind] || []
   if (jsonFiles.some(jsonContainsCredential)) {
@@ -282,7 +290,7 @@ function nativeCredentialState(kind, options = {}) {
   }
 
   const textFiles = {
-    codex: [path.join(home, '.codex', '.env'), path.join(home, '.codex', 'config.toml')],
+    codex: [path.join(codexHome, '.env'), path.join(codexHome, 'config.toml')],
     hermes: [
       path.join(home, '.hermes', '.env'),
       path.join(home, '.hermes', 'config.yaml'),
@@ -302,7 +310,7 @@ function nativeCredentialState(kind, options = {}) {
       path.join(home, '.kimi-code', '.env'),
     ],
     mimo: [path.join(home, '.mimo', '.env'), path.join(home, '.mimocode', '.env')],
-    claude: [path.join(home, '.claude', '.env')],
+    claude: [path.join(claudeHome, '.env')],
     qwen: [path.join(home, '.qwen', '.env')],
     gemini: [path.join(home, '.gemini', '.env')],
     opencode: [
@@ -329,6 +337,8 @@ function probeEnvironment(kind, options = {}) {
     'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'USERNAME',
     'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
     'APPDATA', 'LOCALAPPDATA',
+    'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
+    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
   ]) {
     if (typeof source[key] === 'string' && source[key]) env[key] = source[key]
   }

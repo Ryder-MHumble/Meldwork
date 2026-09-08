@@ -925,6 +925,16 @@
 
 .markdown-body > :first-child { margin-top: 0; }
 .markdown-body > :last-child { margin-bottom: 0; }
+.markdown-body .agent-inline-mention {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
 .markdown-body p,
 .markdown-body ul,
 .markdown-body ol,

@@ -1260,7 +1260,7 @@ test('terminal Agent traces hand compact partial evidence to the next Agent only
   assert.doesNotMatch(afterCodex, /Partial conclusion for Hermes/)
 })
 
-test('Harness rotates an over-budget native session while retaining compressed continuity', async (t) => {
+test('Harness retains a group native session beyond the former rotation budget', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1287,19 +1287,19 @@ test('Harness rotates an over-budget native session while retaining compressed c
     targetKinds: ['codex'],
   })
 
-  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(calls[0].runOptions.sessionRef, 'old-session')
   assert.match(calls[0].prompt, /Previous conclusion/)
   const snapshot = workspace.snapshot()
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue with a fresh context'
   ))
-  const key = workspace.sessionKey(group.id, 'codex', currentUser.id)
+  const key = workspace.sessionKey(group.id, 'codex')
   const trace = snapshot.messages.at(-1).trace
-  assert.equal(trace.context.sessionRotated, true)
+  assert.notEqual(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
   assert.equal(workspace.state.sessions[key], 'new-session')
-  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  assert.equal(workspace.state.sessionMeta[key].turns, 19)
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > calls[0].prompt.length, true)
 })
 
@@ -1341,7 +1341,7 @@ test('Session rotation restores the previous ref and provenance when saving fail
   assert.equal(calls.length, 0)
 })
 
-test('Hermes starts task-scoped persistent ACP while a frozen Skill stays prompt-only', async (t) => {
+test('Hermes retains group-scoped persistent ACP while a frozen Skill stays prompt-only', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.detectAgents = async () => [{
@@ -1379,8 +1379,8 @@ test('Hermes starts task-scoped persistent ACP while a frozen Skill stays prompt
     }],
   })
 
-  assert.equal(calls[0].runOptions.sessionRef, '')
-  assert.equal(calls[0].runOptions.sessionTransport, '')
+  assert.equal(calls[0].runOptions.sessionRef, 'hermes-acp-session')
+  assert.equal(calls[0].runOptions.sessionTransport, 'acp')
   assert.equal(calls[0].runOptions.hermesAcpAvailable, true)
   assert.equal(typeof calls[0].runOptions.acpPersistenceKey, 'string')
   assert.equal(calls[0].runOptions.skills, undefined)
@@ -1390,13 +1390,13 @@ test('Hermes starts task-scoped persistent ACP while a frozen Skill stays prompt
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue with the selected skill'
   ))
-  const key = workspace.sessionKey(group.id, 'hermes', currentUser.id)
+  const key = workspace.sessionKey(group.id, 'hermes')
   assert.equal(calls[0].runOptions.acpPersistenceKey, key)
   assert.equal(workspace.state.sessions[key], 'hermes-acp-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
-  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  assert.equal(workspace.state.sessionMeta[key].turns, 3)
   const trace = snapshot.messages.at(-1).trace
-  assert.equal(trace.context.sessionRotated, true)
+  assert.notEqual(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
@@ -1413,6 +1413,7 @@ test('Hermes replaces an unavailable stored ACP runtime with rebuilt context', a
   }]
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
     calls.push({ agent, prompt, workdir, runOptions })
+    if (calls.length === 1) throw new Error('LOCAL_AGENT_SESSION_INVALID')
     await runOptions.onSessionRef('hermes-recovered-session', { transport: 'acp' })
     return { text: 'Recovered conclusion', sessionRef: 'hermes-recovered-session' }
   }
@@ -1436,8 +1437,10 @@ test('Hermes replaces an unavailable stored ACP runtime with rebuilt context', a
     targetKinds: ['hermes'],
   })
 
-  assert.equal(calls[0].runOptions.sessionRef, '')
-  assert.equal(calls[0].runOptions.sessionTransport, '')
+  assert.equal(calls[0].runOptions.sessionRef, 'hermes-stale-acp-session')
+  assert.equal(calls[0].runOptions.sessionTransport, 'acp')
+  assert.equal(calls[1].runOptions.sessionRef, '')
+  assert.equal(calls[1].runOptions.sessionTransport, '')
   assert.equal(calls[0].runOptions.hermesAcpAvailable, true)
   assert.equal(typeof calls[0].runOptions.acpPersistenceKey, 'string')
   assert.match(calls[0].prompt, /Previous Hermes conclusion/)
@@ -1446,7 +1449,7 @@ test('Hermes replaces an unavailable stored ACP runtime with rebuilt context', a
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue after recovering the session'
   ))
-  const key = workspace.sessionKey(group.id, 'hermes', currentUser.id)
+  const key = workspace.sessionKey(group.id, 'hermes')
   assert.equal(calls[0].runOptions.acpPersistenceKey, key)
   assert.equal(workspace.state.sessions[key], 'hermes-recovered-session')
   assert.equal(workspace.state.sessionMeta[key].transport, 'acp')
@@ -1457,7 +1460,7 @@ test('Hermes replaces an unavailable stored ACP runtime with rebuilt context', a
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
 })
 
-test('Harness discards an over-budget conversation OpenClaw Session for a new Task key', async (t) => {
+test('Harness retains an over-budget conversation OpenClaw Session for a new Task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1489,20 +1492,18 @@ test('Harness discards an over-budget conversation OpenClaw Session for a new Ta
   const currentUser = snapshot.messages.find(message => (
     message.role === 'user' && message.content === 'Continue with bounded context'
   ))
-  const key = workspace.sessionKey(group.id, 'openclaw', currentUser.id)
-  const currentTaskSessionRef = workspace.openClawSessionRef(group, '', currentUser.id)
-  assert.notEqual(calls[0].runOptions.sessionRef, previousSessionRef)
-  assert.equal(calls[0].runOptions.sessionRef, currentTaskSessionRef)
+  const key = workspace.sessionKey(group.id, 'openclaw')
+  assert.equal(calls[0].runOptions.sessionRef, previousSessionRef)
   assert.match(calls[0].prompt, /Prior OpenClaw conclusion/)
   const trace = snapshot.messages.at(-1).trace
-  assert.equal(trace.context.sessionRotated, true)
+  assert.notEqual(trace.context.sessionRotated, true)
   assert.deepEqual(trace.sourceMessageIds, [currentUser.id, oldUser.id, previousAgent.id])
   assert.equal(trace.context.includedCount, trace.sourceMessageIds.length)
   assert.equal(workspace.state.sessions[key], calls[0].runOptions.sessionRef)
-  assert.equal(workspace.state.sessionMeta[key].turns, 1)
+  assert.equal(workspace.state.sessionMeta[key].turns, 19)
 })
 
-test('legacy conversation Sessions are not resumed by a new group Task', async (t) => {
+test('legacy conversation Sessions resume for a new group Task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1519,9 +1520,9 @@ test('legacy conversation Sessions are not resumed by a new group Task', async (
   const task = workspace.snapshot().messages.find(message => (
     message.role === 'user' && message.content === 'Resume safely'
   ))
-  const key = workspace.sessionKey(group.id, 'codex', task.id)
-  assert.equal(calls[0].runOptions.sessionRef, '')
-  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), false)
+  const key = workspace.sessionKey(group.id, 'codex')
+  assert.equal(calls[0].runOptions.sessionRef, 'legacy-codex-session')
+  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), true)
   assert.equal(workspace.state.sessionMeta[key].turns, 1)
   assert.equal(workspace.state.sessionMeta[key].estimatedChars > 0, true)
 })
@@ -1592,7 +1593,7 @@ test('invalid Session recovery restores the reused ref when saving the rebuild f
     name: 'Atomic invalid Session rebuild', agentKinds: ['codex'], workdir: directory,
   })
   const task = workspace.addMessage(group.id, 'user', 'Recover atomically')
-  const key = workspace.sessionKey(group.id, 'codex', task.id)
+  const key = workspace.sessionKey(group.id, 'codex')
   workspace.state.sessions[key] = 'codex-before-rebuild'
   workspace.state.sessionMeta[key] = {
     turns: 2,
@@ -3478,6 +3479,36 @@ test('the Agent watchdog covers output capture and import phases', async (t) => 
       assert.equal(workspace.snapshot().messages.some(message => message.role === 'agent'), false)
     })
   }
+})
+
+test('reset before migration revokes conversation, thread and legacy task sessions only for its Agent', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const workspace = new LocalWorkspace(options)
+  const group = { id: 'reset-group', conversationType: 'group' }
+  const taskIds = ['legacy-task', 'legacy/task-with-hashed-key']
+  workspace.state.messages.push(...taskIds.map(id => ({ id, groupId: group.id, role: 'user', content: 'Prior task' })))
+  const revokedKeys = [
+    workspace.sessionKey(group.id, 'codex'),
+    ...taskIds.map(id => workspace.sessionKey(group.id, 'codex', id)),
+    `${group.id}:codex:thread:legacy-root`,
+    `${group.id}:task:orphan-task:codex`,
+    workspace.sessionKey(group.id, 'codex', 'pending/task'),
+  ]
+  assert.match(revokedKeys[2], /^session:/)
+  const retainedKeys = [workspace.sessionKey(group.id, 'hermes', taskIds[0]), workspace.sessionKey('other-group', 'codex', taskIds[0])]
+  for (const key of [...revokedKeys, ...retainedKeys]) {
+    workspace.state.sessions[key] = 'legacy-native-session'
+    workspace.state.sessionMeta[key] = { turns: 2, estimatedChars: 100 }
+  }
+  workspace.resetAgentSession(group, 'codex', true, 'pending/task')
+  for (const key of revokedKeys) {
+    assert.equal(workspace.state.sessions[key], undefined, key)
+    assert.equal(workspace.state.sessionMeta[key], undefined, key)
+  }
+  for (const key of retainedKeys) assert.equal(workspace.state.sessions[key], 'legacy-native-session', key)
+  assert.equal(workspace.sessionState(group, 'codex', taskIds[0], taskIds[0]).sessionRef, '')
+  assert.equal(workspace.sessionState(group, 'codex', taskIds[1], taskIds[1]).sessionRef, '')
 })
 
 test('session references stay opaque and OpenClaw group scopes do not collide', async (t) => {

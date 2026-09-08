@@ -354,7 +354,7 @@ function createdSessionProvenance(group, taskId, stateless = false) {
     }
   }
   return {
-    scope: group.conversationType === 'direct' ? 'conversation' : 'task',
+    scope: 'conversation',
     reuse: false,
     origin: 'created',
     originTaskId: taskId || null,
@@ -715,12 +715,10 @@ class LocalWorkspaceAgentInvocation {
       && !resumedConnectorGate
       ? context.resumedGate
       : null
-    const preserveV4TaskSession = context.v4 === true
-      && group.conversationType !== 'direct'
-      && Boolean(taskId)
+    const preserveGroupSession = group.conversationType !== 'direct'
     const sessionNeedsRotation = sessionRef
       && shouldRotateSession(sessionMeta)
-      && !preserveV4TaskSession
+      && !preserveGroupSession
     if (resumedPermission) {
       const requestHash = sha256(canonicalJson(resumedPermission.request))
       const persistedBinding = {
@@ -808,7 +806,9 @@ class LocalWorkspaceAgentInvocation {
         idempotencyMode,
       })
     }
-    let transcriptAfterKind = !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
+    const knownSessionHistory = group.conversationType === 'direct'
+      || sessionProvenance.completeness !== 'unknown-legacy'
+    let transcriptAfterKind = knownSessionHistory && !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
       ? kind
       : ''
     // Group Sessions already contain the immutable bootstrap instructions after
@@ -817,6 +817,7 @@ class LocalWorkspaceAgentInvocation {
     let promptMode = group.conversationType !== 'direct'
       && Boolean(sessionRef)
       && !sessionRotated
+      && knownSessionHistory
       && sessionMeta.turns > 0
       ? 'continuation'
       : 'bootstrap'
@@ -2017,25 +2018,33 @@ class LocalWorkspaceAgentInvocation {
   }
 
   resetSession(group, kind, rotateOpenClaw = true, taskId = '') {
-    const scopedTaskId = group.conversationType === 'direct' ? '' : cleanText(taskId, 120)
-    const key = this.sessionKey(group.id, kind, scopedTaskId)
+    const key = this.sessionKey(group.id, kind)
     const legacyPrefix = `${group.id}:${kind}:thread:`
     return this.commitSessionState((state) => {
+      const legacyKeys = new Set([
+        key,
+        ...(taskId ? [this.sessionKey(group.id, kind, taskId)] : []),
+        ...state.messages.filter(message => message.groupId === group.id && message.role === 'user')
+          .map(message => this.sessionKey(group.id, kind, message.id)),
+      ])
+      const belongsToSession = candidate => legacyKeys.has(candidate)
+        || candidate.startsWith(legacyPrefix)
+        || (candidate.startsWith(`${group.id}:task:`) && candidate.endsWith(`:${kind}`))
       let changed = false
       for (const candidate of Object.keys(state.sessions)) {
-        if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
+        if (!belongsToSession(candidate)) continue
         delete state.sessions[candidate]
         changed = true
       }
       for (const candidate of Object.keys(state.sessionMeta)) {
-        if (candidate !== key && !candidate.startsWith(legacyPrefix)) continue
+        if (!belongsToSession(candidate)) continue
         delete state.sessionMeta[candidate]
         changed = true
       }
       if (kind === 'openclaw' && rotateOpenClaw) {
         const generation = randomUUID().replace(/[^a-zA-Z0-9]/g, '').slice(0, 12) || 'session'
         const provenance = createdSessionProvenance(group, cleanText(taskId, 120))
-        state.sessions[key] = this.openClawSessionRef(group, generation, scopedTaskId)
+        state.sessions[key] = this.openClawSessionRef(group, generation)
         state.sessionMeta[key] = normalizeSessionMeta(provenanceMeta(provenance))
         changed = true
       }

@@ -68,7 +68,7 @@ export const DESKTOP_ERROR_MESSAGE_KEYS = Object.freeze({
   PROVIDER_ENCRYPTION_FAILED: 'error.providerEncryption',
   PROVIDER_ENCRYPTION_UNAVAILABLE: 'error.providerEncryption',
   PROVIDER_INVALID_CREDENTIAL: 'error.providerEncryption',
-  PROVIDER_CREDENTIAL_UNAVAILABLE: 'error.providerEncryption',
+  PROVIDER_CREDENTIAL_UNAVAILABLE: 'error.providerCredentialUnavailable',
   PROVIDER_INVALID_METADATA: 'error.providerMetadata',
   PROVIDER_INSECURE_BASE_URL: 'error.providerMetadata',
   PROVIDER_STORAGE_PATH_REQUIRED: 'error.generic',

@@ -53,6 +53,28 @@ describe('Provider settings model', () => {
     expect(supportsExternalProvider({ kind: 'custom-0123456789abcdef' })).toBe(false)
   })
 
+  it('shows invocable local CLIs without requiring duplicate keys or claiming verified login', () => {
+    const native = agent({ ready: true, availabilitySource: 'local-cli' })
+    const statuses = { codex: { configured: false } }
+    expect(nativeProviderReady(native)).toBe(false)
+    expect(providerActiveSourceFor([native], statuses, 'codex')).toBe('official')
+    expect(providerAgentState({ agents: [native], checking: false, kind: 'codex', statuses, t }).id)
+      .toBe('native-available')
+    expect(providerSummaryLabel({ agent: native, statuses, t })).toBe('provider.localCliAvailable:{}')
+    expect(providerAgentState({
+      agents: [{ ...native, credentialState: 'missing', ready: false }],
+      checking: false, kind: 'codex', statuses, t,
+    }).id).toBe('login-required')
+  })
+
+  it('does not turn a capability timeout into a missing Provider configuration', () => {
+    const timedOut = agent({ incompatibilityReason: 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT' })
+    const statuses = { codex: { configured: false } }
+    expect(providerAgentState({ agents: [timedOut], checking: false, kind: 'codex', statuses, t }).id)
+      .toBe('detection-timeout')
+    expect(providerSummaryLabel({ agent: timedOut, statuses, t })).toBe('agent.detectionTimedOut:{}')
+  })
+
   it('resolves Provider card states in the original priority order', () => {
     const states = [
       providerAgentState({ agents: [], checking: true, kind: 'codex', statuses: {}, t }),

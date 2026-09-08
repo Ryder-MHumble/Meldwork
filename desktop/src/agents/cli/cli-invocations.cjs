@@ -156,7 +156,9 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
       command: executable,
       args: [
         '--mode', 'json', '--print',
-        ...(options.sandbox === 'workspace-write' ? ['--approve'] : ['--no-approve']),
+        ...(options.sandbox === 'workspace-write'
+          ? ['--approve']
+          : ['--no-approve', '--tools', 'read,grep,find,ls']),
         ...(sessionRef ? ['--session', sessionRef] : []),
       ],
       promptArg: true,

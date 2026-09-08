@@ -332,10 +332,38 @@ test('corrupt credentials stay unavailable and are never returned', (t) => {
     mode: 0o600,
   })
 
-  assert.deepEqual(store.status('hermes'), emptyStatus(true))
+  assert.deepEqual(store.status('hermes'), { ...emptyStatus(true), error: true })
   assert.throws(() => store.envForAgent('hermes'), {
     message: 'PROVIDER_CREDENTIAL_UNAVAILABLE',
   })
+})
+
+test('temporarily locked credentials preserve saved profiles and recover without reconfiguration', (t) => {
+  const safeStorage = encryptedSafeStorage()
+  const { directory, storagePath, store } = fixture(safeStorage)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  store.save('hermes', credential())
+  const contents = fs.readFileSync(storagePath, 'utf8')
+  const decrypt = safeStorage.decryptString
+  safeStorage.isEncryptionAvailable = () => false
+
+  const locked = store.status('hermes')
+  assert.equal(locked.error, true)
+  assert.equal(locked.configured, false)
+  assert.equal(locked.activePreset, 'custom')
+  assert.deepEqual(locked.profiles.custom, { ...PROVIDER, configured: false })
+  assert.throws(() => store.save('hermes', credential('replacement')), {
+    message: 'PROVIDER_ENCRYPTION_UNAVAILABLE',
+  })
+  assert.equal(fs.readFileSync(storagePath, 'utf8'), contents)
+
+  safeStorage.isEncryptionAvailable = () => true
+  safeStorage.decryptString = () => { throw new Error('temporarily locked') }
+  assert.equal(store.status('hermes').error, true)
+  assert.equal(fs.readFileSync(storagePath, 'utf8'), contents)
+  safeStorage.decryptString = decrypt
+  assert.deepEqual(store.status('hermes'), configuredStatus())
+  assert.equal(store.envForAgent('hermes').OPENAI_API_KEY, 'test-provider-key')
 })
 
 test('delete removes the local credential even when encryption is unavailable', (t) => {

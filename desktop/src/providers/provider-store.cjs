@@ -116,31 +116,34 @@ class ProviderStore {
     const encryptionAvailable = this.encryptionAvailable()
     let metadata = EMPTY_METADATA
     let configured = false
+    let credentialUnavailable = false
     let activePreset = 'official'
     const profiles = {}
-    if (encryptionAvailable && credentialStored) {
+    if (credentialStored) {
       try {
         const agent = this.readDocument().agents[targetKind]
         if (agent) {
           activePreset = agent.activePreset
           for (const [preset, entry] of Object.entries(agent.profiles)) {
+            profiles[preset] = {
+              provider: entry.provider,
+              baseUrl: entry.baseUrl,
+              model: entry.model,
+              configured: false,
+            }
             try {
               this.decryptEntry(entry)
-              profiles[preset] = {
-                provider: entry.provider,
-                baseUrl: entry.baseUrl,
-                model: entry.model,
-                configured: true,
-              }
-            } catch { /* keep an unreadable profile unavailable */ }
+              profiles[preset].configured = true
+            } catch { /* retain saved metadata while the credential is unavailable */ }
           }
           const activeEntry = profiles[activePreset]
           if (activeEntry) {
             metadata = activeEntry
-            configured = true
+            configured = activeEntry.configured
+            credentialUnavailable = !configured
           }
         }
-      } catch { /* unreadable credentials stay unavailable */ }
+      } catch { credentialUnavailable = true }
     }
     return {
       provider: metadata.provider,
@@ -150,6 +153,7 @@ class ProviderStore {
       profiles,
       encryptionAvailable,
       configured,
+      ...(credentialUnavailable ? { error: true } : {}),
     }
   }
 

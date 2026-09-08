@@ -114,7 +114,7 @@ test('Natural sequential V4 runs every Agent once per round in configured CLI or
   assert.equal(record.orchestration.discussionStyle, 'sequential')
 })
 
-test('Natural Agent-led V4 uses the full first-round transcript and final-line mentions', async (t) => {
+test('Natural Agent-led V4 uses the full first-round transcript and inline mentions', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
@@ -151,7 +151,7 @@ test('Natural Agent-led V4 uses the full first-round transcript and final-line m
     routedRunning -= 1
     if (agent.kind === 'codex') {
       return {
-        text: 'The body quotes @hermes but routing is decided only below.\n\n@hermes @workbuddy',
+        text: '@hermes please validate the proposal; @workbuddy check the implementation risks.\n\nBoth findings will inform our decision.',
         sessionRef: runOptions.sessionRef,
       }
     }
@@ -203,7 +203,7 @@ test('Natural Agent-led V4 uses the full first-round transcript and final-line m
   assert.equal(ledger.get(controller.runId).status, 'completed')
 })
 
-test('Natural Agent-led routing reads only canonical mentions on the final non-empty line', () => {
+test('Natural Agent-led routing reads inline canonical mentions but excludes quoted examples', () => {
   const { directory, options } = fixture()
   const workspace = new LocalWorkspace(options)
   try {
@@ -211,11 +211,11 @@ test('Natural Agent-led routing reads only canonical mentions on the final non-e
     assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
       'Body mentions @hermes and quotes `@workbuddy`.\n\n@codex',
       activeKinds,
-    ), ['codex'])
+    ), ['codex', 'hermes'])
     assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
       'Body mention only: @hermes\n\nDiscussion complete.',
       activeKinds,
-    ), [])
+    ), ['hermes'])
     assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
       'Discussion complete.\n\n@所有人',
       activeKinds,
@@ -227,11 +227,11 @@ test('Natural Agent-led routing reads only canonical mentions on the final non-e
     assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
       'Continue.\n\nPlease ask @hermes next.',
       activeKinds,
-    ), [])
+    ), ['hermes'])
     assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
       'Continue.\n\n@HERMES',
       activeKinds,
-    ), [])
+    ), ['hermes'])
     assert.equal(workspace.autoRunner.v4NaturalRouteDecision(
       'Continue.\n\n@hermes @ghost',
       activeKinds,
@@ -240,6 +240,156 @@ test('Natural Agent-led routing reads only canonical mentions on the final non-e
       'Continue.\n\n@hermes，@workbuddy；@hermes',
       activeKinds,
     ), ['hermes', 'workbuddy'])
+    assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
+      '> Historical request: @codex\n\n```text\n@workbuddy\n```\n\nPlease review this, @hermes.',
+      activeKinds,
+    ), ['hermes'])
+    assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
+      'Contact me@hermes.example; install @codex/package; escape \\@workbuddy; quote `@codex`; [@codex](https://example.test).',
+      activeKinds,
+    ), [])
+    assert.equal(workspace.autoRunner.v4NaturalRouteDecision(
+      'Please review @所有人', activeKinds,
+    ).status, 'invalid')
+    workspace.autoRunner.agentLabel = kind => ({
+      codex: 'Codex CLI', hermes: 'Custom Reviewer', workbuddy: 'Pi Agent',
+    })[kind]
+    assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
+      '@Custom Reviewer check this; @Pi Agent reproduce the problem; @Codex finalize it.',
+      activeKinds,
+    ), activeKinds)
+    assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds('@Pi check this.', activeKinds), ['workbuddy'])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('Natural Agent-led V4 includes neglected peers and supplies multiple rounds of context', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.naturalAgentResponses = true
+  const calls = []
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = naturalPhase(prompt)
+    calls.push({ kind: agent.kind, phase, prompt })
+    return {
+      text: phase === 'proposal' ? `${agent.kind} proposes an independent approach.`
+        : agent.kind === 'codex' ? '@hermes please validate the remaining issue.\nCodex evidence.'
+          : agent.kind === 'hermes' ? '@codex please check this finding.\nHermes evidence.'
+            : 'WorkBuddy finds an additional implementation constraint.',
+      sessionRef: runOptions.sessionRef || `${agent.kind}-task-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Fair peer routing', agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory, allowWrite: false,
+  })
+  await runDiscussion(workspace, group, { discussionStyle: 'agent-led', maxRounds: 5 })
+  const peer = calls.find(call => call.kind === 'workbuddy' && call.phase === 'discussion')
+  assert.ok(peer, 'A repeated two-peer exchange must include the neglected participant')
+  assert.match(peer.prompt, /Round 2 - @codex/)
+  assert.match(peer.prompt, /Round 3 - @hermes/)
+  assert.match(peer.prompt, /Round 4 - @codex/)
+  assert.match(peer.prompt, /beside its concrete question/)
+  assert.doesNotMatch(peer.prompt, /final non-empty line/)
+})
+
+test('Natural Agent-led V4 keeps a peer request when another concurrent peer accepts', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.naturalAgentResponses = true
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  const calls = []
+  let codexTurns = 0
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    const phase = naturalPhase(prompt)
+    calls.push(`${phase}:${agent.kind}`)
+    if (phase === 'discussion' && agent.kind === 'codex') codexTurns += 1
+    return {
+      text: phase === 'proposal' ? `${agent.kind} proposal.`
+        : agent.kind === 'codex' && codexTurns === 1 ? '@hermes assess feasibility; @workbuddy validate risks.'
+          : agent.kind === 'workbuddy' ? '@codex address this remaining risk before proceeding.'
+            : 'I accept the current result without changes.',
+      sessionRef: runOptions.sessionRef || `${agent.kind}-task-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Pending peer request', agentKinds: ['codex', 'hermes', 'workbuddy'],
+    workdir: directory, allowWrite: false,
+  })
+  const controller = await runDiscussion(workspace, group, {
+    discussionStyle: 'agent-led', maxRounds: 5,
+  })
+  assert.deepEqual(calls, [
+    'proposal:codex', 'proposal:hermes', 'proposal:workbuddy',
+    'discussion:codex', 'discussion:hermes', 'discussion:workbuddy', 'discussion:codex',
+  ])
+  assert.equal(ledger.get(controller.runId).status, 'completed')
+})
+
+test('Natural Agent-led V4 terminates repeated handoffs even with unlimited rounds', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  options.naturalAgentResponses = true
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  let calls = 0
+  options.runAgent = async (agent, prompt, _workdir, runOptions) => {
+    calls += 1
+    assert.ok(calls < 20, 'An unchanged reciprocal handoff must stop')
+    return {
+      text: naturalPhase(prompt) === 'proposal' ? `${agent.kind} initial proposal.`
+        : `Please review the same unresolved question, @${agent.kind === 'codex' ? 'hermes' : 'codex'}.`,
+      sessionRef: runOptions.sessionRef || `${agent.kind}-task-session`,
+    }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Repeated handoff stop', agentKinds: ['codex', 'hermes'],
+    workdir: directory, allowWrite: false,
+  })
+  const controller = await runDiscussion(workspace, group, {
+    discussionStyle: 'agent-led', unlimitedRounds: true,
+  })
+  assert.equal(ledger.get(controller.runId).status, 'partial')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.threadRootId === controller.threadRootId
+      && message.system?.key === 'system.autoDiscussionStalled'
+  )), true)
+  assert.ok(calls < 20)
+})
+
+test('Natural Agent-led repetition detection reads a bounded history window and preceding replies', () => {
+  const { directory, options } = fixture()
+  const workspace = new LocalWorkspace(options)
+  try {
+    let contentReads = 0
+    const messages = Array.from({ length: 1000 }, (_, index) => ({
+      groupId: 'group', threadRootId: 'thread', role: 'agent',
+      agentKind: index % 2 ? 'hermes' : 'codex',
+      trace: { phase: 'discussion', runId: 'run', round: index + 1 },
+      get content() {
+        contentReads += 1
+        assert.ok(index >= 994, 'Old rounds should not be reprocessed once each baseline is found')
+        return 'The same unresolved contribution.'
+      },
+    }))
+    workspace.autoRunner.state = () => ({ messages })
+    workspace.autoRunner.v4NaturalMessageMatchesBinding = () => true
+    assert.equal(workspace.autoRunner.v4NaturalDiscussionIsRepeating(
+      { id: 'group' }, { runId: 'run' }, 'thread', 1000, ['codex', 'hermes'],
+    ), true)
+    assert.equal(contentReads, 6)
+    messages[999] = { ...messages[999], content: 'New evidence changes the decision.' }
+    assert.equal(workspace.autoRunner.v4NaturalDiscussionIsRepeating(
+      { id: 'group' }, { runId: 'run' }, 'thread', 1000, ['codex', 'hermes'],
+    ), false)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -880,13 +1030,13 @@ test('Natural Agent-led V4 does not accept a self-only route without peer confir
 
   assert.deepEqual(calls, [
     'proposal:codex', 'proposal:hermes',
-    'discussion:codex', 'discussion:codex', 'discussion:hermes',
+    'discussion:codex', 'discussion:hermes', 'discussion:codex',
   ])
   const messages = workspace.snapshot().messages.filter(message => (
     message.role === 'agent' && message.threadRootId === controller.threadRootId
   ))
   assert.deepEqual(messages.map(message => `${message.trace.round}:${message.agentKind}`), [
-    '1:codex', '1:hermes', '2:codex', '3:codex', '4:hermes',
+    '1:codex', '1:hermes', '2:codex', '3:hermes', '4:codex',
   ])
 })
 
@@ -929,8 +1079,8 @@ test('Natural Agent-led V4 does not treat concurrent self-routes as peer confirm
     'proposal:codex', 'proposal:hermes', 'proposal:workbuddy',
     'discussion:codex',
     'discussion:hermes', 'discussion:workbuddy',
-    'discussion:hermes', 'discussion:workbuddy',
     'discussion:codex',
+    'discussion:hermes',
   ])
   const messages = workspace.snapshot().messages.filter(message => (
     message.role === 'agent' && message.threadRootId === controller.threadRootId
@@ -938,7 +1088,7 @@ test('Natural Agent-led V4 does not treat concurrent self-routes as peer confirm
   assert.deepEqual(messages.map(message => `${message.trace.round}:${message.agentKind}`), [
     '1:codex', '1:hermes', '1:workbuddy',
     '2:codex', '3:hermes', '3:workbuddy',
-    '4:hermes', '4:workbuddy', '5:codex',
+    '4:codex', '5:hermes',
   ])
 })
 

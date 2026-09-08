@@ -2022,6 +2022,26 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.PATH, '/opt/native-agent/bin:/usr/bin')
 })
 
+test('unreadable saved Provider credentials never silently fall back to native execution', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-provider-locked-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const { harness } = loadMain(directory)
+  await harness.ready()
+  const store = harness.providerInstances[0]
+  const originalStatus = store.status.bind(store)
+  store.status = () => ({ configured: false, error: true, activePreset: 'custom' })
+  await assert.rejects(harness.workspaceInstances[0].input.runAgent(
+    { kind: 'hermes', executable: '/tmp/hermes' }, 'hello', directory,
+  ), { message: 'PROVIDER_CREDENTIAL_UNAVAILABLE' })
+  assert.equal(harness.runAgentCalls.length, 0)
+
+  store.status = originalStatus
+  await harness.workspaceInstances[0].input.runAgent(
+    { kind: 'hermes', executable: '/tmp/hermes' }, 'hello', directory,
+  )
+  assert.equal(harness.runAgentCalls.length, 1)
+})
+
 test('OpenClaw native auth is routed through the app-owned isolated runtime', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-native-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

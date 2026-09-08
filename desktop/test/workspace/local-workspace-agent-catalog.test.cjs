@@ -179,7 +179,9 @@ test('shared Provider readiness cannot override a recorded runtime auth failure'
     credentialState: async () => ({ state: 'ready', source: 'native-credential' }),
     sharedProviderReady: () => true,
   })
-  state.agentRuntime.codex = { credentialState: 'missing' }
+  state.agentRuntime.codex = {
+    credentialState: 'missing', checkedAt: '2026-08-03T00:00:00.000Z',
+  }
 
   await catalog.refresh()
 
@@ -212,6 +214,49 @@ test('shared Provider readiness skips slow native credential probes', async () =
   assert.equal(agents()[0].invocable, true)
   assert.equal(agents()[0].recentlyVerified, false)
   assert.equal(agents()[0].available, true)
+})
+
+test('expired auth failures allow native and shared credentials to be tried again', async () => {
+  for (const shared of [false, true]) {
+    const { agents, catalog, state } = fixture({
+      detectAgents: async () => [{ kind: 'codex', compatibilityState: 'compatible' }],
+      credentialState: async () => ({ state: 'unknown', source: 'unverified' }),
+      sharedProviderReady: () => shared,
+    })
+    state.agentRuntime.codex = {
+      credentialState: 'missing', checkedAt: '2026-08-02T23:59:29.000Z',
+    }
+    await catalog.refresh()
+    assert.equal(agents()[0].invocable, true)
+    assert.equal(state.agentRuntime.codex, undefined)
+    assert.equal(agents()[0].recentlyVerified, false)
+  }
+})
+
+test('legacy authentication failures with missing or invalid timestamps permit re-evaluation', async () => {
+  for (const checkedAt of [undefined, 'invalid', '2026-08-04T00:00:00.000Z']) {
+    const { agents, catalog, state } = fixture({
+      detectAgents: async () => [{ kind: 'pi', compatibilityState: 'compatible' }],
+    })
+    state.agentRuntime.pi = { credentialState: 'missing', checkedAt }
+    await catalog.refresh()
+    assert.equal(agents()[0].invocable, true)
+    assert.equal(agents()[0].recentlyVerified, false)
+    assert.equal(state.agentRuntime.pi, undefined)
+  }
+})
+
+test('recent runtime authentication failures stay blocked during the retry cooldown', async () => {
+  const { agents, catalog, state } = fixture({
+    detectAgents: async () => [{ kind: 'codex', compatibilityState: 'compatible' }],
+    credentialState: async () => ({ state: 'ready', source: 'native-credential' }),
+  })
+  state.agentRuntime.codex = {
+    credentialState: 'missing', checkedAt: '2026-08-02T23:59:45.000Z',
+  }
+  await catalog.refresh()
+  assert.equal(agents()[0].invocable, false)
+  assert.equal(agents()[0].availabilitySource, 'runtime-auth-failure')
 })
 
 test('configured credentials do not make an Agent invocable when runtime prerequisites fail', async () => {

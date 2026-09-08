@@ -1772,7 +1772,7 @@ test('Gemini and OpenCode messages keep their Agent names', async (t) => {
   )
 })
 
-test('group messages create distinct task roots and task-scoped native sessions', async (t) => {
+test('group messages create distinct task roots while reusing one native session', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1792,15 +1792,17 @@ test('group messages create distinct task roots and task-scoped native sessions'
   assert.equal(userMessages.every(message => !message.threadRootId), true)
   assert.notEqual(userMessages[0].id, userMessages[1].id)
   assert.deepEqual(agentMessages.map(message => message.threadRootId), userMessages.map(message => message.id))
-  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', ''])
-  const firstKey = workspace.sessionKey(group.id, 'codex', userMessages[0].id)
-  const secondKey = workspace.sessionKey(group.id, 'codex', userMessages[1].id)
-  assert.notEqual(firstKey, secondKey)
-  assert.equal(workspace.state.sessions[firstKey], 'codex-session')
-  assert.equal(workspace.state.sessions[secondKey], 'codex-session')
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
+  const key = workspace.sessionKey(group.id, 'codex')
+  assert.deepEqual(workspace.state.sessions, { [key]: 'codex-session' })
+  const restarted = new LocalWorkspace(options)
+  await restarted.refreshAgents()
+  await restarted.sendMessage({ groupId: group.id, text: '第三条', targetKinds: ['codex'] })
+  assert.equal(calls.at(-1).runOptions.sessionRef, 'codex-session')
+  assert.deepEqual(restarted.state.sessions, { [key]: 'codex-session' })
 })
 
-test('a new targeted group task discards a legacy conversation Session and stays authoritative', async (t) => {
+test('a new targeted group task reuses its conversation Session and stays authoritative', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -1823,13 +1825,13 @@ test('a new targeted group task discards a legacy conversation Session and stays
   })
 
   assert.equal(calls.length, 1)
-  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(calls[0].runOptions.sessionRef, 'legacy-shared-session')
   assert.match(calls[0].prompt, /Current user task \(authoritative\):\nNEW_IMAGE_TASK/)
   assert.match(calls[0].prompt, /older group messages and conclusions as reference only/i)
   assert.match(calls[0].prompt, /Final response scope:[\s\S]*Do not append an answer to an older task/)
   assert.ok(calls[0].prompt.lastIndexOf('Final response scope:') > calls[0].prompt.lastIndexOf('OLD_RESEARCH_TASK'))
   assert.doesNotMatch(calls[0].prompt, /Continue this group Session/)
-  assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), false)
+  assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), true)
 })
 
 test('a targeted non-Codex group image task replaces legacy research context and returns media', async (t) => {
@@ -1868,13 +1870,13 @@ test('a targeted non-Codex group image task replaces legacy research context and
   assert.equal(generationCalls[0].request.type, 'image')
   assert.equal(calls.length, 1)
   assert.equal(calls[0].agent.kind, 'hermes')
-  assert.equal(calls[0].runOptions.sessionRef, '')
+  assert.equal(calls[0].runOptions.sessionRef, 'legacy-hermes-research-session')
   assert.match(calls[0].prompt, /Current user task \(authoritative\):\nNEW_IMAGE_TASK/)
   assert.match(calls[0].prompt, /new-city-poster\.png/)
   assert.match(calls[0].prompt, /Final response scope:[\s\S]*Do not append an answer to an older task/)
   assert.ok(calls[0].prompt.lastIndexOf('Final response scope:') > calls[0].prompt.lastIndexOf('OLD_RESEARCH_TASK'))
   assert.doesNotMatch(calls[0].prompt, /Continue this group Session/)
-  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), false)
+  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), true)
   const reply = workspace.snapshot().messages.find(message => (
     message.role === 'agent' && message.threadRootId && message.agentKind === 'hermes'
   ))
@@ -1883,7 +1885,7 @@ test('a targeted non-Codex group image task replaces legacy research context and
   ])
 })
 
-test('every built-in conversational Agent starts a newly targeted group task outside its legacy Session', async (t) => {
+test('every built-in conversational Agent retains its group Session for a newly targeted task', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kinds = [
@@ -1912,7 +1914,7 @@ test('every built-in conversational Agent starts a newly targeted group task out
       targetKinds: [kind],
       mode: 'manual',
     })
-    assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), false, kind)
+    assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), true, kind)
   }
 
   assert.deepEqual(calls.map(call => call.agent.kind), kinds)
@@ -1923,9 +1925,8 @@ test('every built-in conversational Agent starts a newly targeted group task out
         /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/,
       )
     } else {
-      assert.equal(call.runOptions.sessionRef, '', call.agent.kind)
+      assert.equal(call.runOptions.sessionRef, `legacy-${call.agent.kind}-session`, call.agent.kind)
     }
-    assert.notEqual(call.runOptions.sessionRef, `legacy-${call.agent.kind}-session`)
   }
   for (const [index, call] of calls.entries()) {
     assert.match(
@@ -1936,7 +1937,7 @@ test('every built-in conversational Agent starts a newly targeted group task out
   }
 })
 
-test('task sessions migrate only their exact legacy root without guessing another task', async (t) => {
+test('group sessions migrate the current or most recent legacy root per Agent', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -1966,16 +1967,16 @@ test('task sessions migrate only their exact legacy root without guessing anothe
   await workspace.activeRuns.get(group.id).promise
 
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    'codex-current-root', '',
+    'codex-current-root', 'hermes-recent-root',
   ])
   assert.equal(calls.every(call => call.prompt.includes('最近活跃话题结论')), true)
   assert.equal(
-    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', currentRoot.id)],
+    workspace.state.sessions[workspace.sessionKey(group.id, 'codex')],
     'codex-current-root',
   )
   assert.equal(
-    workspace.state.sessions[workspace.sessionKey(group.id, 'hermes', currentRoot.id)],
-    'hermes-session',
+    workspace.state.sessions[workspace.sessionKey(group.id, 'hermes')],
+    'hermes-recent-root',
   )
   assert.equal(
     Object.hasOwn(workspace.state.sessions, `${group.id}:codex:thread:${currentRoot.id}`),
@@ -1983,12 +1984,12 @@ test('task sessions migrate only their exact legacy root without guessing anothe
   )
   assert.equal(
     workspace.state.sessions[`${group.id}:hermes:thread:${recentRoot.id}`],
-    'hermes-recent-root',
+    undefined,
   )
   assert.doesNotMatch(JSON.stringify(workspace.snapshot()), /sessionRef|codex-current-root|hermes-recent-root/)
 })
 
-test('legacy GEO context survives without cross-task native session reuse', async (t) => {
+test('legacy GEO sessions survive across automatic rounds and subsequent user tasks', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -2045,21 +2046,21 @@ test('legacy GEO context survives without cross-task native session reuse', asyn
   assert.ok(second.threadRootId)
   assert.notEqual(first.threadRootId, second.threadRootId)
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    '', '', '', '',
+    'codex-old-scope', 'hermes-old-scope', 'codex-old-scope', 'hermes-old-scope',
   ])
   assert.equal(calls.every(call => call.prompt.includes('GEO 调研任务')), true)
   assert.equal(calls.every(call => call.prompt.includes('海外为主')), true)
   assert.equal(calls.every(call => call.prompt.includes('商业和市场洞悉力')), true)
   assert.equal(
-    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', first.threadRootId)],
-    'codex-group-session',
+    workspace.state.sessions[workspace.sessionKey(group.id, 'codex')],
+    'codex-old-scope',
   )
   assert.equal(
-    workspace.state.sessions[workspace.sessionKey(group.id, 'codex', second.threadRootId)],
-    'codex-group-session',
+    workspace.state.sessions[workspace.sessionKey(group.id, 'hermes')],
+    'hermes-old-scope',
   )
-  assert.equal(workspace.state.sessions[`${group.id}:codex:thread:${scope.id}`], 'codex-old-scope')
-  assert.equal(workspace.state.sessions[`${group.id}:hermes:thread:${scope.id}`], 'hermes-old-scope')
+  assert.equal(workspace.state.sessions[`${group.id}:codex:thread:${scope.id}`], undefined)
+  assert.equal(workspace.state.sessions[`${group.id}:hermes:thread:${scope.id}`], undefined)
 })
 
 test('prompts retain bounded topic and stable user turns plus group-wide final messages', async (t) => {
@@ -2109,7 +2110,7 @@ test('prompts retain bounded topic and stable user turns plus group-wide final m
   assert.doesNotMatch(prompt, /PROCESS_METADATA_SHOULD_NOT_REACH_AGENT|write_file|elapsedMs/)
 })
 
-test('fresh group task sessions receive bounded shared conclusions from earlier tasks', async (t) => {
+test('continued group sessions receive bounded shared conclusions from earlier tasks', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -2136,19 +2137,19 @@ test('fresh group task sessions receive bounded shared conclusions from earlier 
   })
 
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    '', '', '', '',
+    '', '', 'codex-session', 'codex-session',
   ])
   assert.match(calls[1].prompt, /Current user task \(authoritative\):\n第一条稳定约束/)
   assert.match(calls[1].prompt, /Codex: codex final 1/)
   assert.match(calls[2].prompt, /Hermes: hermes final 2/)
-  assert.match(calls[2].prompt, /Codex: codex final 1/)
-  assert.match(calls[2].prompt, /Stable user instructions and constraints:\n[\s\S]*第一条稳定约束/)
+  assert.doesNotMatch(calls[2].prompt, /Codex: codex final 1/)
+  assert.match(calls[2].prompt, /Stable constraints:\n[\s\S]*第一条稳定约束/)
   assert.match(calls[2].prompt, /Current user task \(authoritative\):\n第二条当前任务/)
   assert.equal(calls[2].prompt.match(/第二条当前任务/g)?.length, 1)
   assert.match(calls[3].prompt, /Current user task \(authoritative\):\n第三条继续任务/)
   assert.equal(calls[3].prompt.match(/第三条继续任务/g)?.length, 1)
-  assert.match(calls[3].prompt, /Hermes: hermes final 2/)
-  assert.match(calls[3].prompt, /Codex: codex final 3/)
+  assert.doesNotMatch(calls[3].prompt, /Hermes: hermes final 2/)
+  assert.doesNotMatch(calls[3].prompt, /Codex: codex final 3/)
 })
 
 test('Harness continuation context stays bounded while retaining the latest shared conclusion', async (t) => {
@@ -2178,7 +2179,7 @@ test('Harness continuation context stays bounded while retaining the latest shar
   assert.doesNotMatch(packed.continuationText, /共享结论 0 /)
 })
 
-test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
+test('Kimi and OpenClaw retain native sessions within a group and isolate different groups', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const workspace = new LocalWorkspace(options)
@@ -2207,10 +2208,10 @@ test('Kimi and OpenClaw isolate native sessions by group task', async (t) => {
   await workspace.sendMessage({ groupId: second.id, text: 'OpenClaw B', targetKinds: ['openclaw'] })
 
   const sessionRefs = calls.map(call => call.runOptions.sessionRef)
-  assert.deepEqual(sessionRefs.slice(0, 2), ['', ''])
+  assert.deepEqual(sessionRefs.slice(0, 2), ['', 'kimi-session'])
   assert.match(sessionRefs[2], /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/)
   assert.match(sessionRefs[3], /^agent:main:desktop-meldwork-[a-f0-9]{20}-openclaw$/)
-  assert.notEqual(sessionRefs[3], sessionRefs[2])
+  assert.equal(sessionRefs[3], sessionRefs[2])
   assert.notEqual(sessionRefs[4], sessionRefs[2])
   assert.notEqual(workspace.state.sessions[openClawKey], 'explicit:meldwork-legacy-openclaw')
   assert.notEqual(workspace.sessionKey(first.id, 'openclaw', firstRoot), openClawKey)

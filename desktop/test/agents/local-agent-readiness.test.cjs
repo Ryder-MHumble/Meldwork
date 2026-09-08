@@ -25,6 +25,49 @@ function openClawModelsCatalog(apiKey, baseUrl = 'https://provider.example/v1') 
   })
 }
 
+test('native readiness respects custom config roots and the Pi coding agent auth directory', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-native-roots-'))
+  const cases = [
+    ['pi', {}, path.join(home, '.pi', 'agent', 'auth.json')],
+    ['pi', { PI_CODING_AGENT_DIR: path.join(home, 'custom-pi') }, path.join(home, 'custom-pi', 'auth.json')],
+    ['codex', { CODEX_HOME: path.join(home, 'custom-codex') }, path.join(home, 'custom-codex', 'auth.json')],
+    ['claude', { CLAUDE_CONFIG_DIR: path.join(home, 'custom-claude') }, path.join(home, 'custom-claude', '.credentials.json')],
+    ['opencode', { XDG_DATA_HOME: path.join(home, 'data') }, path.join(home, 'data', 'opencode', 'auth.json')],
+  ]
+  try {
+    for (const [kind, env, filename] of cases) {
+      fs.mkdirSync(path.dirname(filename), { recursive: true })
+      fs.writeFileSync(filename, JSON.stringify({ provider: kind === 'pi'
+        ? { type: 'api_key', key: 'test-only-secret' }
+        : { apiKey: 'test-only-secret' } }))
+      assert.deepEqual(nativeCredentialState(kind, { home, env }), {
+        state: 'ready', source: 'native-credential',
+      })
+      if (kind !== 'opencode') {
+        assert.deepEqual(nativeCredentialEnvironment(kind, env), env)
+      }
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('Pi native OAuth credentials use access and refresh fields', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-pi-oauth-'))
+  const directory = path.join(home, '.pi', 'agent')
+  try {
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(path.join(directory, 'auth.json'), JSON.stringify({
+      anthropic: { type: 'oauth', access: 'test-access', refresh: 'test-refresh' },
+    }))
+    assert.deepEqual(nativeCredentialState('pi', { home, env: {} }), {
+      state: 'ready', source: 'native-credential',
+    })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
 test('Hermes readiness detects a native credential without returning its value', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-hermes-readiness-'))
   const secret = 'hermes-secret-value'

@@ -123,4 +123,13 @@ describe('Agent compatibility state', () => {
     expect(state.label).toBe(label)
     expect(state.tone).toBe('warning')
   })
+
+  it('distinguishes a timed-out probe from an absent or incompatible installation', () => {
+    setLocale('en')
+    const state = catalogFor({
+      kind: 'workbuddy', installed: true, available: false, credentialState: 'ready',
+      compatibilityState: 'unknown', incompatibilityReason: 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT',
+    })
+    expect(state.label).toBe('Detection timed out; retry')
+  })
 })

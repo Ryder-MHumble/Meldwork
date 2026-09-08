@@ -141,6 +141,9 @@ export function useAgentCatalog({
     if (agent.ready) return { label: t('agent.ready'), tone: 'ready', icon: CheckmarkCircleOutline }
     if (agent.custom) return { label: t('customAgent.executableUnavailable'), tone: 'warning', icon: WarningOutline }
     if (!agent.installed) return { label: t('agent.notInstalled'), tone: 'off', icon: DownloadOutline }
+    if (agent.incompatibilityReason === 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT') {
+      return { label: t('agent.detectionTimedOut'), tone: 'warning', icon: WarningOutline }
+    }
     if (agent.compatibilityState === 'incompatible') {
       const reasonKey = ({
         LOCAL_AGENT_VERSION_UNSUPPORTED: 'agent.incompatibleVersion',

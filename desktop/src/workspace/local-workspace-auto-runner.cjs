@@ -533,7 +533,6 @@ class LocalWorkspaceAutoRunner {
             idempotencyMode,
           }),
         })
-        this.resetAgentSession(group, kind, false, controller.taskId)
         throw sanitizedAuthenticationError(error)
       }
     }
@@ -2430,33 +2429,39 @@ class LocalWorkspaceAutoRunner {
 
   v4NaturalRouteDecision(text, activeKinds) {
     const participants = Array.isArray(activeKinds) ? activeKinds : []
-    const finalLine = String(text || '').split(/\r?\n/u)
-      .map(line => line.trim())
-      .filter(Boolean)
-      .at(-1) || ''
-    if (!finalLine || !participants.length) return { status: 'none', kinds: [] }
-    const selected = new Set()
-    const mentionPattern = /@([A-Za-z0-9][A-Za-z0-9_-]{0,39})/gu
-    let cursor = 0
-    for (const match of finalLine.matchAll(mentionPattern)) {
-      const separator = finalLine.slice(cursor, match.index)
-      if (separator.includes('@') || !/^[\s\p{P}]*$/u.test(separator)) {
-        return { status: 'invalid', kinds: [] }
+    // Quoted history and code examples are evidence, not new requests to peers.
+    const prose = String(text || '')
+      .replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gmu, '')
+      .replace(/^\s*>.*$/gmu, '')
+      .replace(/(`+)[\s\S]*?\1/gu, '')
+      .replace(/!?\[[^\]\n]*\]\([^\n)]*\)/gu, '')
+    if (!prose || !participants.length) return { status: 'none', kinds: [] }
+    const aliases = new Map()
+    for (const kind of participants) {
+      const label = String(this.agentLabel?.(kind) || kind).trim()
+      for (const alias of new Set([kind, label, label.replace(/\s+(?:code|cli|agent)$/iu, '')])) {
+        const key = alias.toLowerCase()
+        if (!key) continue
+        aliases.set(key, aliases.has(key) && aliases.get(key) !== kind ? null : kind)
       }
-      const kind = match[1]
-      if (!participants.includes(kind)) return { status: 'invalid', kinds: [] }
-      selected.add(kind)
-      cursor = match.index + match[0].length
     }
-    const tail = finalLine.slice(cursor)
-    if (!selected.size) {
-      return finalLine.includes('@')
-        ? { status: 'invalid', kinds: [] }
-        : { status: 'none', kinds: [] }
-    }
-    if (tail.includes('@') || !/^[\s\p{P}]*$/u.test(tail)) {
+    const alternatives = [...aliases.keys()].sort((a, b) => b.length - a.length)
+      .map(alias => alias.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
+    const mentionPattern = new RegExp(
+      `(?<![A-Za-z0-9_/@\\\\])@(${alternatives.join('|')})(?![A-Za-z0-9_/-]|\\.[A-Za-z0-9])`, 'giu',
+    )
+    const selected = new Set()
+    let ambiguous = false
+    const remaining = prose.replace(mentionPattern, (_match, alias) => {
+      const kind = aliases.get(alias.toLowerCase())
+      if (kind) selected.add(kind)
+      else ambiguous = true
+      return ''
+    })
+    if (ambiguous || /(?<![A-Za-z0-9_/@\\])@[\p{L}\p{N}][\p{L}\p{N}_-]*(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])/u.test(remaining)) {
       return { status: 'invalid', kinds: [] }
     }
+    if (!selected.size) return { status: 'none', kinds: [] }
     return { status: 'valid', kinds: participants.filter(kind => selected.has(kind)) }
   }
 
@@ -2588,9 +2593,10 @@ class LocalWorkspaceAutoRunner {
       transcript ? `Completed peer turns:\n${transcript}` : '',
       phase === 'discussion' && options.allowRouting === true
         ? [
-            'Decide which Agent or Agents should contribute next based on the discussion and the work still needed.',
-            `The final non-empty line may contain only the exact Agent mentions that should respond next: ${agentList}.`,
-            'Use one mention for a single next Agent or multiple mentions for a concurrent batch.',
+            'Read the completed peer turns across recent rounds. Decide who should contribute next from their earlier evidence, unresolved questions, and work still needed; do not automatically reply only to whoever last mentioned you.',
+            `Address peers naturally inside your explanation using exact mentions: ${agentList}. Put each mention beside its concrete question or requested contribution; no separate final-line mention list is needed.`,
+            'Use one mention for a single next Agent or multiple mentions for a concurrent batch. Do not mention yourself. Quote historical mentions in blockquotes or code so they are not interpreted as new requests.',
+            'Avoid repeating the same handoff or conclusions. Invite a peer who has not recently contributed when their earlier proposal can resolve the issue, and state what new evidence or decision you need.',
             'End without any Agent mention only when you accept the current result and made no substantive change. If you made a substantive change, mention at least one different Agent for review.',
           ].join('\n')
         : '',
@@ -2653,6 +2659,69 @@ class LocalWorkspaceAutoRunner {
   v4NaturalConfirmationKind(activeKinds, currentKinds) {
     const current = new Set(currentKinds)
     return activeKinds.find(kind => !current.has(kind)) || ''
+  }
+
+  v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds) {
+    const current = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
+    const selected = new Set(current.flatMap(message => (
+      this.v4NaturalRouteDecision(message.content, activeKinds).kinds
+        .filter(kind => kind !== message.agentKind)
+    )))
+    if (!selected.size) return []
+    // Rebuild fairness from committed turns so recovery makes the same routing decision.
+    const recent = [round - 2, round - 1, round].flatMap(value => (
+      this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, value)
+    ))
+    if (round >= 4) {
+      for (const kind of activeKinds) {
+        if (!recent.some(message => message.agentKind === kind)) selected.add(kind)
+      }
+    }
+    return activeKinds.filter(kind => selected.has(kind))
+  }
+
+  v4NaturalDiscussionIsRepeating(group, controller, threadRootId, round, activeKinds) {
+    const window = Math.max(4, activeKinds.length * 2)
+    if (round < window + 2) return false
+    const firstRound = round - window + 1
+    const previous = new Map()
+    const observedRounds = new Set()
+    const messages = this.state().messages
+    // Inspect only the recent window and each speaker's preceding reply, including after recovery.
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      const messageRound = Number(message.trace?.round) || 0
+      if (message.groupId !== group.id || message.threadRootId !== threadRootId
+          || message.role !== 'agent' || message.trace?.phase !== 'discussion'
+          || message.trace?.runId !== controller.runId || messageRound < 2
+          || messageRound > round || !this.v4NaturalMessageMatchesBinding(message, controller)) continue
+      const content = String(message.content || '')
+        .replace(/@[A-Za-z0-9][A-Za-z0-9_-]*/gu, '')
+        .replace(/\s+/gu, ' ').trim()
+      if (previous.has(message.agentKind) && previous.get(message.agentKind) !== content) {
+        return false
+      }
+      if (messageRound >= firstRound) {
+        observedRounds.add(messageRound)
+        previous.set(message.agentKind, content)
+      } else {
+        previous.delete(message.agentKind)
+        if (observedRounds.size === window && previous.size === 0) return true
+      }
+    }
+    return false
+  }
+
+  v4NaturalStopRepeatingDiscussion(group, controller, threadRootId, round, activeKinds) {
+    if (!this.v4NaturalDiscussionIsRepeating(group, controller, threadRootId, round, activeKinds)) {
+      return false
+    }
+    this.addMessage(
+      group.id, 'system',
+      'Automatic discussion stopped because repeated handoffs produced no new contribution.',
+      '', threadRootId, { key: 'system.autoDiscussionStalled' },
+    )
+    return true
   }
 
   async runV4SequentialDiscussion(group, controller, threadRootId, context, input) {
@@ -2765,10 +2834,10 @@ class LocalWorkspaceAutoRunner {
         const roundMessages = this.v4NaturalDiscussionRoundMessages(
           group, controller, threadRootId, round,
         )
-        nextKinds = [...new Set(roundMessages.flatMap((message) => {
-          const decision = this.v4NaturalRouteDecision(message.content, activeKinds)
-          return decision.status === 'valid' ? decision.kinds : []
-        }))]
+        nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
+        if (this.v4NaturalStopRepeatingDiscussion(
+          group, controller, threadRootId, round, activeKinds,
+        )) return 'partial'
         if (!nextKinds.length) {
           if (this.v4NaturalRoundHasPeerConfirmation(
             group, controller, threadRootId, round, activeKinds,
@@ -2832,10 +2901,10 @@ class LocalWorkspaceAutoRunner {
       const roundMessages = this.v4NaturalDiscussionRoundMessages(
         group, controller, threadRootId, round,
       )
-      nextKinds = [...new Set(roundMessages.flatMap((message) => {
-        const decision = this.v4NaturalRouteDecision(message.content, activeKinds)
-        return decision.status === 'valid' ? decision.kinds : []
-      }))].filter(kind => activeKinds.includes(kind))
+      nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
+      if (this.v4NaturalStopRepeatingDiscussion(
+        group, controller, threadRootId, round, activeKinds,
+      )) return 'partial'
       if (!nextKinds.length) {
         if (this.v4NaturalRoundHasPeerConfirmation(
           group, controller, threadRootId, round, activeKinds,

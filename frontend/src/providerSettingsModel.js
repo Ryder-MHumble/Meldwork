@@ -56,6 +56,10 @@ export function nativeProviderReady(agent) {
   return Boolean(agent?.ready && NATIVE_PROVIDER_READY_SOURCES.has(String(agent.availabilitySource || '')))
 }
 
+function nativeCliAvailable(agent) {
+  return Boolean(agent?.ready && agent.availabilitySource === 'local-cli' && agent.credentialState !== 'missing')
+}
+
 export function activeSavedProviderPreset(statuses, kind) {
   const status = providerStatusFor(statuses, kind)
   if (!hasProviderStatus(statuses, kind) || status.error || !status.configured) return ''
@@ -68,7 +72,7 @@ export function providerActiveSourceFor(agents, statuses, kind) {
   if (!agent?.installed || !hasProviderStatus(statuses, kind) || providerStatusFor(statuses, kind).error) return ''
   const savedPreset = activeSavedProviderPreset(statuses, kind)
   if (savedPreset) return savedPreset
-  return nativeProviderReady(agent) ? 'official' : ''
+  return nativeProviderReady(agent) || nativeCliAvailable(agent) ? 'official' : ''
 }
 
 export function providerAgentState({ agents, checking, kind, statuses, t }) {
@@ -89,6 +93,15 @@ export function providerAgentState({ agents, checking, kind, statuses, t }) {
       label: t('provider.checking'),
       detail: t('provider.state.checkingBody', { agent: agentName }),
       tone: 'checking',
+      icon: RefreshOutline,
+    }
+  }
+  if (agent.incompatibilityReason === 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT') {
+    return {
+      id: 'detection-timeout',
+      label: t('agent.detectionTimedOut'),
+      detail: t('provider.state.detectionTimedOutBody', { agent: agentName }),
+      tone: 'warning',
       icon: RefreshOutline,
     }
   }
@@ -121,6 +134,15 @@ export function providerAgentState({ agents, checking, kind, statuses, t }) {
       icon: CheckmarkCircleOutline,
     }
   }
+  if (nativeCliAvailable(agent)) {
+    return {
+      id: 'native-available',
+      label: t('provider.localCliAvailable'),
+      detail: t('provider.state.nativeAvailableBody', { agent: agentName }),
+      tone: 'neutral',
+      icon: CheckmarkCircleOutline,
+    }
+  }
   if (agent.credentialState === 'missing') {
     return {
       id: 'login-required',
@@ -146,8 +168,10 @@ export function providerSummaryLabel({ agent, statuses, t }) {
     const status = providerStatusFor(statuses, agent.kind)
     if (!hasProviderStatus(statuses, agent.kind)) return t('provider.checking')
     if (status.error) return t('provider.unavailable')
+    if (agent.incompatibilityReason === 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT') return t('agent.detectionTimedOut')
     if (status.configured) return t('provider.configured')
     if (nativeProviderReady(agent)) return t('provider.nativeReady')
+    if (nativeCliAvailable(agent)) return t('provider.localCliAvailable')
     return t('provider.notConfigured')
   }
   if (agent.ready) return t('provider.nativeConnected')

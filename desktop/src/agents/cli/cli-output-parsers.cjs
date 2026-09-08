@@ -216,13 +216,14 @@ function ingestStructuredEvent(state, event) {
   }
 
   if (state.kind === 'pi') {
-    if (typeof event.id === 'string') state.sessionRef = event.id
+    if (event.type === 'session' && typeof event.id === 'string') state.sessionRef = event.id
     const update = event.assistantMessageEvent
     if (event.type === 'message_update' && update?.type === 'text_delta'
         && typeof update.delta === 'string') {
       appendStructuredText(state, update.delta, '')
     }
-    if (event.type === 'message_end' && Array.isArray(event.message?.content)) {
+    if (event.type === 'message_end' && event.message?.role === 'assistant'
+        && Array.isArray(event.message?.content)) {
       for (const block of event.message.content) {
         if (block?.type === 'text' && typeof block.text === 'string') {
           if (!state.text) appendStructuredText(state, block.text, '')
@@ -234,7 +235,15 @@ function ingestStructuredEvent(state, event) {
     if (event.type === 'turn_end') {
       state.outcome = stepFinishOutcome(event.message?.stopReason || event.stopReason || 'stop')
     }
-    if (event.type === 'agent_end') state.outcome = 'completed'
+    if (event.type === 'agent_end') {
+      const lastAssistant = event.messages?.findLast(message => message?.role === 'assistant')
+      if (lastAssistant?.stopReason) state.outcome = stepFinishOutcome(lastAssistant.stopReason)
+      else if (!state.outcome) state.outcome = 'completed'
+      if (state.outcome === 'completed' && event.willRetry !== true) {
+        state.failure = null
+        state.diagnostic = ''
+      }
+    }
     if (state.outcome === 'failed') markStructuredFailure(state)
     return
   }
@@ -709,7 +718,8 @@ function parsePiOutput(stdout) {
         && typeof event.assistantMessageEvent.delta === 'string') {
       text += event.assistantMessageEvent.delta
     }
-    if (!text && event.type === 'message_end' && Array.isArray(event.message?.content)) {
+    if (!text && event.type === 'message_end' && event.message?.role === 'assistant'
+        && Array.isArray(event.message?.content)) {
       text = event.message.content
         .filter(block => block?.type === 'text' && typeof block.text === 'string')
         .map(block => block.text)
@@ -718,7 +728,7 @@ function parsePiOutput(stdout) {
   }
   const parsedText = text.trim()
   const answer = stripPiInternalPromptEcho(parsedText)
-  return { text: parsedText ? answer : String(stdout || '').trim(), sessionRef }
+  return { text: parsedText ? answer : events.length ? '' : String(stdout || '').trim(), sessionRef }
 }
 
 function openCodeReviewText(output) {
@@ -833,8 +843,11 @@ function classifyCliOutcome(kind, stdout) {
   }
   if (kind === 'pi') {
     const terminal = events.findLast(event => event?.type === 'turn_end' || event?.type === 'agent_end')
-    const reason = terminal?.message?.stopReason || terminal?.stopReason || 'stop'
-    return { outcome: stepFinishOutcome(reason) }
+    const lastAssistant = terminal?.messages?.findLast(message => message?.role === 'assistant')
+    const previousTurn = events.findLast(event => event?.type === 'turn_end')
+    const reason = terminal?.message?.stopReason || terminal?.stopReason || lastAssistant?.stopReason
+      || previousTurn?.message?.stopReason || previousTurn?.stopReason
+    return { outcome: reason ? stepFinishOutcome(reason) : terminal ? 'completed' : 'partial' }
   }
   if (['mimo', 'opencode'].includes(kind)) {
     const finish = events.findLast(event => (

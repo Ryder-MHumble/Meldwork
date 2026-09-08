@@ -265,7 +265,7 @@ test('Run inputs and exact outbound payloads remain immutable across mutation an
     attachmentBytes,
   )
   assert.deepEqual(delivery.sessionProvenance, {
-    scope: 'task',
+    scope: 'conversation',
     reuse: false,
     origin: 'created',
     originTaskId: task.id,
@@ -523,7 +523,7 @@ test('Delivery comparison fails closed before a mismatched payload can dispatch'
   assert.equal(success, undefined)
 })
 
-test('group Tasks reuse native Sessions only within the same automatic Task', async (t) => {
+test('group Tasks reuse native Sessions across automatic rounds and later Tasks', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -561,31 +561,30 @@ test('group Tasks reuse native Sessions only within the same automatic Task', as
   })
 
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), [
-    '', '', 'codex-task-session', 'hermes-task-session', '',
+    '', '', 'codex-task-session', 'hermes-task-session', 'codex-task-session',
   ])
   const results = workspace.snapshot().messages.filter(message => message.role === 'agent')
   const codexResults = results.filter(message => message.agentKind === 'codex')
   const deliveries = codexResults.map(message => deliveryForMessage(workspace, message))
   assert.deepEqual(deliveries.map(delivery => delivery.sessionProvenance), [
     {
-      scope: 'task', reuse: false, origin: 'created',
+      scope: 'conversation', reuse: false, origin: 'created',
       originTaskId: automatic.threadRootId, inheritedTaskIds: [], completeness: 'complete',
     },
     {
-      scope: 'task', reuse: true, origin: 'resumed',
+      scope: 'conversation', reuse: true, origin: 'resumed',
       originTaskId: automatic.threadRootId, inheritedTaskIds: [], completeness: 'complete',
     },
     {
-      scope: 'task', reuse: false, origin: 'created',
-      originTaskId: codexResults[2].threadRootId,
+      scope: 'conversation', reuse: true, origin: 'resumed',
+      originTaskId: automatic.threadRootId,
       inheritedTaskIds: [], completeness: 'complete',
     },
   ])
   assert.notEqual(codexResults[0].threadRootId, codexResults[2].threadRootId)
-  assert.notEqual(
-    workspace.sessionKey(group.id, 'codex', codexResults[0].threadRootId),
-    workspace.sessionKey(group.id, 'codex', codexResults[2].threadRootId),
-  )
+  assert.equal(Object.keys(workspace.state.sessions).length, 2)
+  assert.deepEqual(workspace.state.sessionMeta[workspace.sessionKey(group.id, 'codex')].inheritedTaskIds,
+    [codexResults[2].threadRootId])
 })
 
 test('continuation traces describe only the exact outbound context and fingerprints', async (t) => {
@@ -708,7 +707,7 @@ test('direct Session deliveries expose bounded Task ancestry across messages', a
   )
 })
 
-test('legacy conversation Sessions are discarded before a new group Task', async (t) => {
+test('legacy conversation Sessions retain unknown provenance across group Tasks', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.runAgent = async (agent, prompt, workdir, runOptions) => {
@@ -731,25 +730,25 @@ test('legacy conversation Sessions are discarded before a new group Task', async
   await workspace.sendMessage({ groupId: group.id, text: 'Migrate once', targetKinds: ['codex'] })
   await workspace.sendMessage({ groupId: group.id, text: 'Do not reuse it again', targetKinds: ['codex'] })
 
-  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', ''])
+  assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['codex-legacy-global', 'codex-legacy-global'])
   const results = workspace.snapshot().messages.filter(message => message.role === 'agent')
   assert.deepEqual(deliveryForMessage(workspace, results[0]).sessionProvenance, {
-    scope: 'task',
-    reuse: false,
-    origin: 'created',
-    originTaskId: results[0].threadRootId,
+    scope: 'unknown-legacy',
+    reuse: true,
+    origin: 'unknown-legacy',
+    originTaskId: null,
     inheritedTaskIds: [],
-    completeness: 'complete',
+    completeness: 'unknown-legacy',
   })
   assert.deepEqual(deliveryForMessage(workspace, results[1]).sessionProvenance, {
-    scope: 'task',
-    reuse: false,
-    origin: 'created',
-    originTaskId: results[1].threadRootId,
+    scope: 'unknown-legacy',
+    reuse: true,
+    origin: 'unknown-legacy',
+    originTaskId: null,
     inheritedTaskIds: [],
-    completeness: 'complete',
+    completeness: 'unknown-legacy',
   })
-  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), false)
+  assert.equal(Object.hasOwn(workspace.state.sessions, legacyKey), true)
 })
 
 test('Session ref and provenance persistence rolls back together when saving fails', async (t) => {

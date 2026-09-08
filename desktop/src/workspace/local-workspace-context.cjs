@@ -370,12 +370,8 @@ function unknownLegacySessionMeta(meta) {
 function resolveSessionState({
   state, group, kind, threadRootId = '', taskId = '', save,
 }) {
-  const scopedTaskId = group.conversationType === 'direct'
-    ? ''
-    : cleanText(taskId || threadRootId, 100)
   const currentTaskId = cleanText(taskId || threadRootId, 100)
-  const key = sessionKey(group.id, kind, scopedTaskId)
-  const globalKey = sessionKey(group.id, kind)
+  const key = sessionKey(group.id, kind)
   const legacyPrefix = `${group.id}:${kind}:thread:`
   let stateChanged = false
   const validStoredRef = (candidateKey) => {
@@ -393,7 +389,7 @@ function resolveSessionState({
       const legacyBase = `agent:main:desktop-meldwork-${legacyScope}-openclaw`
       if (candidate === legacyBase || candidate.startsWith(`${legacyBase}-`)) {
         const generation = candidate.slice(legacyBase.length).replace(/^-/, '')
-        candidate = openClawSessionRef(group, generation, scopedTaskId)
+        candidate = openClawSessionRef(group, generation)
         state.sessions[candidateKey] = candidate
         stateChanged = true
       }
@@ -413,42 +409,41 @@ function resolveSessionState({
     return candidate
   }
 
-  const currentLegacyKey = scopedTaskId
-    ? `${legacyPrefix}${scopedTaskId}`
-    : ''
+  const legacyKeys = [...new Set([
+    ...(currentTaskId ? [sessionKey(group.id, kind, currentTaskId), `${legacyPrefix}${currentTaskId}`] : []),
+    ...[...(state.messages || [])].reverse()
+      .filter(message => message.groupId === group.id && message.role === 'user')
+      .flatMap(message => [sessionKey(group.id, kind, message.id), `${legacyPrefix}${message.id}`]),
+    ...Object.keys(state.sessions).reverse().filter(candidate => (
+      candidate.startsWith(legacyPrefix)
+      || (candidate.startsWith(`${group.id}:task:`) && candidate.endsWith(`:${kind}`))
+    )),
+  ])].filter(candidate => candidate !== key)
   let migration = ''
-  let sessionReset = false
   let created = false
   let stored = validStoredRef(key)
-  if (!stored && currentLegacyKey) {
-    const legacyRef = validStoredRef(currentLegacyKey)
-    if (legacyRef) {
+  for (const legacyKey of legacyKeys) {
+    const legacyRef = validStoredRef(legacyKey)
+    if (!stored && legacyRef) {
       state.sessions[key] = legacyRef
-      state.sessionMeta[key] = completeSessionMeta(
-        state.sessionMeta[currentLegacyKey], 'task', scopedTaskId,
-      )
-      delete state.sessions[currentLegacyKey]
-      delete state.sessionMeta[currentLegacyKey]
+      const legacyMeta = normalizeSessionMeta(state.sessionMeta[legacyKey])
+      state.sessionMeta[key] = ['task', 'conversation'].includes(legacyMeta.sessionScope)
+        ? normalizeSessionMeta({ ...legacyMeta, sessionScope: 'conversation' })
+        : unknownLegacySessionMeta(legacyMeta)
       stored = legacyRef
       migration = 'migrated'
       stateChanged = true
     }
-  }
-  if (!stored && scopedTaskId && globalKey !== key) {
-    // A conversation-scoped legacy Session has no trustworthy task provenance.
-    // Reusing it for a new root can make the Agent continue an unrelated topic.
-    validStoredRef(globalKey)
-    if (Object.hasOwn(state.sessions, globalKey) || Object.hasOwn(state.sessionMeta, globalKey)) {
-      delete state.sessions[globalKey]
-      delete state.sessionMeta[globalKey]
-      sessionReset = true
+    if (Object.hasOwn(state.sessions, legacyKey) || Object.hasOwn(state.sessionMeta, legacyKey)) {
+      delete state.sessions[legacyKey]
+      delete state.sessionMeta[legacyKey]
       stateChanged = true
     }
   }
   if (!stored && kind === 'openclaw') {
-    state.sessions[key] = openClawSessionRef(group, '', scopedTaskId)
+    state.sessions[key] = openClawSessionRef(group)
     state.sessionMeta[key] = completeSessionMeta(
-      state.sessionMeta[key], scopedTaskId ? 'task' : 'conversation', currentTaskId,
+      state.sessionMeta[key], 'conversation', currentTaskId,
     )
     stateChanged = true
     stored = state.sessions[key]
@@ -463,7 +458,7 @@ function resolveSessionState({
   if (stateChanged) save()
   const provenance = created || !stored
     ? {
-        scope: scopedTaskId ? 'task' : 'conversation',
+        scope: 'conversation',
         reuse: false,
         origin: 'created',
         originTaskId: currentTaskId || null,
@@ -487,7 +482,7 @@ function resolveSessionState({
           inheritedTaskIds: [...(meta.inheritedTaskIds || [])],
           completeness: meta.provenanceCompleteness || 'partial',
         }
-  return { key, sessionRef: stored, sessionMeta: meta, provenance, sessionReset }
+  return { key, sessionRef: stored, sessionMeta: meta, provenance, sessionReset: false }
 }
 
 function resolveSessionRef(options) {

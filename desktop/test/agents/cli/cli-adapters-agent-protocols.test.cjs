@@ -1068,7 +1068,7 @@ test('Pi uses the current non-interactive JSON mode and resumes by session id', 
     provider: { id: 'zgci', model: 'glm' },
   })
   assert.deepEqual(readOnly.args, [
-    '--mode', 'json', '--print', '--no-approve', '--session', 'pi-session',
+    '--mode', 'json', '--print', '--no-approve', '--tools', 'read,grep,find,ls', '--session', 'pi-session',
   ])
   assert.equal(readOnly.promptArg, true)
   assert.equal(readOnly.eventTransport, 'json')
@@ -1116,6 +1116,54 @@ test('Pi JSON output returns final text and session id from current CLI events',
     text: 'Pi reply',
     sessionRef: '01a03794-ae3f-72ea-9efd-cd2cd16d88a1',
     outcome: 'completed',
+  })
+})
+
+test('Pi ignores user/tool echoes and tool ids while preserving the assistant answer and native session', () => {
+  const raw = [
+    { type: 'session', id: 'pi-persistent-session' },
+    { type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'Private input' }] } },
+    { type: 'tool_execution_end', id: 'unrelated-tool-id' },
+    { type: 'message_end', message: { role: 'toolResult', content: [{ type: 'text', text: 'Tool noise' }] } },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Actual answer' } },
+    { type: 'turn_end', message: { role: 'assistant', stopReason: 'stop' } },
+    { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] },
+    { type: 'agent_settled' },
+  ].map(event => JSON.stringify(event)).join('\n')
+  assert.deepEqual(parsePiOutput(raw), { text: 'Actual answer', sessionRef: 'pi-persistent-session' })
+  assert.deepEqual(profileOutput('pi', raw), {
+    text: 'Actual answer', sessionRef: 'pi-persistent-session', outcome: 'completed',
+  })
+})
+
+test('Pi agent_end preserves failed, cancelled and incomplete assistant outcomes', () => {
+  for (const [stopReason, outcome] of [['error', 'failed'], ['aborted', 'cancelled'], ['length', 'partial']]) {
+    const raw = [
+      { type: 'session', id: 'pi-terminal-session' },
+      { type: 'message_end', message: { role: 'user', content: [{ type: 'text', text: 'Do not echo me' }] } },
+      { type: 'turn_end', message: { role: 'assistant', stopReason } },
+      { type: 'agent_end', messages: [{ role: 'assistant', stopReason }] },
+      { type: 'agent_settled' },
+    ].map(event => JSON.stringify(event)).join('\n')
+    const result = profileOutput('pi', raw)
+    assert.equal(result.outcome, outcome, stopReason)
+    assert.equal(result.text, '', stopReason)
+    assert.equal(parsePiOutput(raw).text, '', stopReason)
+  }
+})
+
+test('Pi clears a recoverable attempt failure after its internal retry completes', () => {
+  const raw = [
+    { type: 'session', id: 'pi-retry-session' },
+    { type: 'turn_end', message: { role: 'assistant', stopReason: 'error' } },
+    { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'error' }], willRetry: true },
+    { type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'Recovered answer' } },
+    { type: 'turn_end', message: { role: 'assistant', stopReason: 'stop' } },
+    { type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }], willRetry: false },
+    { type: 'agent_settled' },
+  ].map(event => JSON.stringify(event)).join('\n')
+  assert.deepEqual(profileOutput('pi', raw), {
+    text: 'Recovered answer', sessionRef: 'pi-retry-session', outcome: 'completed',
   })
 })
 

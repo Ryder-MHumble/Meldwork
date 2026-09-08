@@ -13,9 +13,10 @@ const props = defineProps({
     type: String,
     default: '',
   },
+  mentionProfiles: { type: Array, default: () => [] },
 })
 
-const html = computed(() => renderMarkdown(props.content))
+const html = computed(() => renderMarkdown(props.content, props.mentionProfiles))
 const root = ref(null)
 const cleanupCallbacks = []
 const copyResetTimers = new Set()
