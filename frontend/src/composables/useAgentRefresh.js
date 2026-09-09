@@ -30,15 +30,16 @@ export function useAgentRefresh({
 
   async function performAgentRefresh() {
     const previousReadyAgentSignature = readyAgentSignature.value
-    const [nextSnapshot, nextCatalog, nextInstaller] = await Promise.all([
-      workspace.value.refreshAgents(),
+    const nextSnapshot = await workspace.value.refreshAgents()
+    invalidateAgentSkillCatalog()
+    snapshot.value = normalizeSnapshot(nextSnapshot)
+    // The installer catalog merges readiness from the refreshed workspace.
+    const [nextCatalog, nextInstaller] = await Promise.all([
       installer.value?.catalog?.() || installCatalog.value,
       installer.value?.state?.() || installerState.value,
     ])
-    snapshot.value = normalizeSnapshot(nextSnapshot)
     applyInstallCatalog(nextCatalog)
     installerState.value = nextInstaller || installerState.value
-    invalidateAgentSkillCatalog()
     if (readyAgentSignature.value && readyAgentSignature.value === previousReadyAgentSignature) {
       await loadAgentSkillStats()
     }
