@@ -16,17 +16,22 @@ export function useAgentCatalog({
   theme,
 }) {
   const mergedCatalog = computed(() => {
-    const extraProfiles = (installCatalog.value.agents || [])
-      .filter(agent => agent?.cloud === true && !AGENTS.some(profile => profile.kind === agent.kind))
+    const registeredProfiles = new Map()
+    for (const agent of [...(installCatalog.value.agents || []), ...snapshot.value.agents]) {
+      if (!agent?.kind) continue
+      registeredProfiles.set(agent.kind, { ...registeredProfiles.get(agent.kind), ...agent })
+    }
+    const extraProfiles = [...registeredProfiles.values()]
+      .filter(agent => !AGENTS.some(profile => profile.kind === agent.kind))
       .map(agent => ({
         kind: agent.kind,
         sourceKind: agent.sourceKind,
-        label: agent.label,
+        label: agent.label || agent.name || agent.kind,
         logo: agent.logo,
-        providerMode: agent.providerMode || 'connector',
+        providerMode: agent.providerMode || (agent.custom ? 'custom' : 'connector'),
         imageLimit: Number(agent.imageAttachmentLimit || 0),
-        custom: false,
-        connector: true,
+        custom: agent.custom === true,
+        connector: agent.connector === true,
         description: agent.description || '',
         cloud: agent.cloud === true,
       }))
@@ -119,7 +124,7 @@ export function useAgentCatalog({
 
   function agentDescription(kind) {
     const profile = mergedCatalog.value.find(agent => agent.kind === kind)
-    if (profile?.cloud && profile.description) return profile.description
+    if (profile?.connector && profile.description) return profile.description
     if (profile?.custom && profile.description) return profile.description
     if (profile?.custom) return t('customAgent.defaultDescription')
     return t(`agent.description.${kind}`)
@@ -127,6 +132,7 @@ export function useAgentCatalog({
 
   function agentSoul(agent) {
     if (agent?.cloud) return agent.description || t('cloudAgents.agentDescription')
+    if (agent?.connector) return agent.description || t('customAgent.detailBody')
     if (agent?.custom) return agent.description || t('customAgent.detailBody')
     return t(`agent.soul.${agent?.kind}`)
   }

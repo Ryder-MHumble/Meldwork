@@ -76,7 +76,7 @@ class LocalWorkspaceAgentCatalog {
   async refreshOnce() {
     const runtimeAtRefreshStart = new Map(Object.entries(this.state().agentRuntime))
     const detected = await this.detectAgents()
-    const nativeStates = await Promise.all(detected.map((agent) => {
+    const nativeStates = await Promise.all(detected.map(async (agent) => {
       const runtime = runtimeAtRefreshStart.get(agent.kind)
       const sharedProviderReady = Boolean(this.sharedProviderReady(agent.kind))
       if (sharedProviderReady && runtime?.credentialState === 'missing'
@@ -86,7 +86,11 @@ class LocalWorkspaceAgentCatalog {
       if (sharedProviderReady) {
         return { state: 'ready', source: 'shared-provider' }
       }
-      return this.credentialState(agent.kind, agent)
+      try {
+        return await this.credentialState(agent.kind, agent)
+      } catch {
+        return { state: 'unknown', source: 'native-probe-failed' }
+      }
     }))
     const state = this.state()
     let recoveredRuntimeCredential = false
@@ -137,6 +141,7 @@ class LocalWorkspaceAgentCatalog {
       const nativeConfigurationUnknown = !runtimeMissing
         && nativeState === 'unknown'
         && native?.source !== 'native-runtime-unavailable'
+        && native?.source !== 'native-probe-failed'
       const configured = sharedProviderReady
         || nativeState === 'ready'
         || native?.source === 'native-auth-status'
@@ -148,6 +153,7 @@ class LocalWorkspaceAgentCatalog {
         sharedProviderReady || nativeState === 'ready' || verifiedReady || nativeConfigurationUnknown
       )
       const runtimePrerequisitesReady = native?.source !== 'native-runtime-unavailable'
+        && (native?.source !== 'native-probe-failed' || recentlyVerified(runtime, this.now()))
       const invocable = installed && versionIdentified && compatible && configured
         && authenticated && runtimePrerequisitesReady
       const verifiedRecently = (authoritativeNativeState && nativeState === 'ready')
@@ -163,6 +169,7 @@ class LocalWorkspaceAgentCatalog {
       else if (runtimeMissing) availabilitySource = 'runtime-auth-failure'
       else if (sharedProviderReady) availabilitySource = nativeReadySource || 'shared-provider'
       else if (nativeState === 'missing') availabilitySource = native.source || 'none'
+      else if (native?.source === 'native-probe-failed') availabilitySource = 'native-probe-failed'
       else if (nativeReadySource) availabilitySource = nativeReadySource
       else if (verifiedReady) availabilitySource = 'verified-run'
       else if (nativeConfigurationUnknown) availabilitySource = 'local-cli'

@@ -26,6 +26,22 @@ function shellLiteral(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`
 }
 
+test('catalog preserves an inconclusive timeout without hiding the installed CLI', async () => {
+  const installer = new AgentInstaller({
+    detectAgents: async () => [{
+      kind: 'codex', compatibilityState: 'unknown',
+      incompatibilityReason: 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT',
+      incompatibilityProbe: 'codex-exec',
+    }],
+    findCommand: async () => '/usr/bin/npm',
+  })
+  const agent = (await installer.catalog()).agents.find(agent => agent.kind === 'codex')
+  assert.equal(agent.installed, true)
+  assert.equal(agent.compatibilityState, 'unknown')
+  assert.equal(agent.incompatibilityReason, 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT')
+  assert.equal(agent.incompatibilityProbe, 'codex-exec')
+})
+
 async function readWhenReady(filename, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

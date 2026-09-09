@@ -60,12 +60,15 @@ function publicCompatibility(agent) {
     ? agent.versionIdentified
     : Boolean(resolvedVersion)
   const compatible = compatibilityState === 'compatible'
-  const incompatibilityReason = compatibilityState === 'incompatible'
+  const incompatibilityReason = compatibilityState === 'unknown'
+      && agent.incompatibilityReason === 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT'
+    ? 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT'
+    : compatibilityState === 'incompatible'
     ? (COMPATIBILITY_REASONS.has(agent.incompatibilityReason)
         ? agent.incompatibilityReason
         : 'LOCAL_AGENT_VERSION_UNSUPPORTED')
     : ''
-  const incompatibilityProbe = compatibilityState === 'incompatible'
+  const incompatibilityProbe = Boolean(incompatibilityReason)
     && /^[a-z0-9-]{1,80}$/.test(String(agent.incompatibilityProbe || ''))
     ? agent.incompatibilityProbe
     : ''

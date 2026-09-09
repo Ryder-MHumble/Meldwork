@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { describe, expect, it } from 'vitest'
-import { agentLogo, setCloudAgentProfiles } from '../../catalog.js'
+import { AGENTS, agentLogo, setCloudAgentProfiles } from '../../catalog.js'
 import { useAgentCatalog } from '../../composables/useAgentCatalog.js'
 import { setLocale, t } from '../../i18n.js'
 
@@ -18,6 +18,25 @@ function catalogFor(agent) {
 }
 
 describe('Agent compatibility state', () => {
+  it('retains custom and local connector registrations without changing built-in order', () => {
+    const custom = { kind: 'custom-0123456789abcdef', label: 'My CLI', custom: true, installed: true }
+    const connector = { kind: 'local-example', label: 'Example', connector: true, installed: true }
+    const catalog = useAgentCatalog({
+      activeGroup: ref(null), directGroupsFor: () => [],
+      installCatalog: ref({ agents: [custom, connector] }),
+      snapshot: ref({ agents: [
+        { ...custom, available: true }, { ...connector, available: true },
+      ] }),
+      t, theme: ref('light'),
+    })
+    expect(catalog.mergedCatalog.value.map(agent => agent.kind)).toEqual([
+      ...AGENTS.map(agent => agent.kind), custom.kind, connector.kind,
+    ])
+    expect(catalog.readyAgents.value.map(agent => agent.kind)).toEqual([custom.kind, connector.kind])
+    expect(catalog.agentCatalogGroups.value.find(group => group.id === 'custom').agents[0].label).toBe('My CLI')
+    expect(catalog.sidebarAgents.value).toHaveLength(2)
+  })
+
   it('keeps cloud Agents out of the local catalog and groups ready Agents by execution location', () => {
     setLocale('en')
     const cloudAgent = {

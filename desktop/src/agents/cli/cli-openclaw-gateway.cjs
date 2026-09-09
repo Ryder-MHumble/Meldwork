@@ -7,7 +7,10 @@ const {
   TERMINATE_GRACE_MS,
   childEnvironment,
 } = require('./cli-process-support.cjs')
-const { configureOpenClawGatewayRuntime } = require('./openclaw-runtime.cjs')
+const {
+  configureOpenClawGatewayRuntime,
+  refreshOpenClawRuntimeAfterStartup,
+} = require('./openclaw-runtime.cjs')
 
 const GATEWAY_READY_MARKER = '[gateway] ready'
 const GATEWAY_READY_TIMEOUT_MS = 15_000
@@ -286,8 +289,11 @@ async function withOpenClawGateway(options, callback) {
         signal: options.signal,
         workdir: options.workdir,
       })
+      runtimeOptions = refreshOpenClawRuntimeAfterStartup(runtimeOptions)
     } catch (error) {
       await terminateGateway(child)
+      // Startup can migrate the config before a port conflict or health failure.
+      runtimeOptions = refreshOpenClawRuntimeAfterStartup(runtimeOptions)
       if (error?.retryable && attempt + 1 < GATEWAY_SETUP_ATTEMPTS) continue
       throw attachRuntimeOptions(error, runtimeOptions)
     }

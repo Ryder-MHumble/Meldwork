@@ -207,7 +207,7 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
-  it('hides Custom Agent setup while the connector surface is not production-ready', async () => {
+  it('shows existing Custom Agents while keeping unavailable setup controls hidden', async () => {
     const customProfile = {
       kind: 'custom-0123456789abcdef',
       label: 'Repository Reviewer',
@@ -251,10 +251,10 @@ describe('Meldwork workbench', () => {
 
     await wrapper.get('.sidebar-settings-entry').trigger('click')
     expect(wrapper.findAll('.agent-catalog-category').map(category => category.get('h2').text()))
-      .toEqual(['Official Agents'])
+      .toEqual(['Official Agents', 'Custom Agents'])
     expect(wrapper.get('.manager-toolbar-actions').text()).not.toContain('Add custom Agent')
     expect(wrapper.find('.custom-agent-form').exists()).toBe(false)
-    expect(wrapper.findAll('.agent-card').some(card => card.text().includes('Repository Reviewer'))).toBe(false)
+    expect(wrapper.findAll('.agent-card').some(card => card.text().includes('Repository Reviewer'))).toBe(true)
     expect(bridge.customAgent.create).not.toHaveBeenCalled()
     expect(bridge.customAgent.delete).not.toHaveBeenCalled()
     wrapper.unmount()

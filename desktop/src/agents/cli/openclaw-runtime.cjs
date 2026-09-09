@@ -1,6 +1,7 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { isDeepStrictEqual } = require('node:util')
 
 const { atomicWritePrivateFile } = require('../../security/private-file.cjs')
 
@@ -42,6 +43,7 @@ const OPENCLAW_RUNTIME_CREDENTIAL_KEYS = new Set([
 ])
 const issuedOpenClawRuntimeGuards = new WeakSet()
 const openClawRuntimeCredentialDigests = new WeakMap()
+const openClawRuntimeConfigs = new WeakMap()
 const OPENCLAW_ENV_SECRET_NAME = /^[A-Z][A-Z0-9_]{0,127}$/
 const OPENCLAW_SECRET_MARKERS = new Set([
   'secretref-managed',
@@ -89,7 +91,7 @@ function directoryIdentity(filename) {
   })
 }
 
-function fileIdentity(filename) {
+function readRuntimeConfigFile(filename) {
   const resolved = path.resolve(filename)
   const entry = fs.lstatSync(resolved)
   if (!entry.isFile() || entry.isSymbolicLink() || fs.realpathSync(resolved) !== resolved) {
@@ -99,14 +101,22 @@ function fileIdentity(filename) {
   const descriptor = fs.openSync(resolved, fs.constants.O_RDONLY | noFollow)
   try {
     const before = fs.fstatSync(descriptor)
-    if (!before.isFile() || !sameFilesystemIdentity(before, {
+    if (!before.isFile() || before.size > 256 * 1024 || !sameFilesystemIdentity(before, {
       dev: identityValue(entry.dev),
       ino: identityValue(entry.ino),
       birthtime: identityValue(entry.birthtimeMs),
     })) {
       throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
     }
-    const contents = fs.readFileSync(descriptor)
+    const buffer = Buffer.alloc(256 * 1024 + 1)
+    let length = 0
+    while (length < buffer.length) {
+      const count = fs.readSync(descriptor, buffer, length, buffer.length - length, null)
+      if (!count) break
+      length += count
+    }
+    if (length === buffer.length) throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+    const contents = buffer.subarray(0, length)
     const after = fs.fstatSync(descriptor)
     const current = fs.lstatSync(resolved)
     if (!sameFilesystemIdentity(after, {
@@ -121,7 +131,7 @@ function fileIdentity(filename) {
         }) || fs.realpathSync(resolved) !== resolved) {
       throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
     }
-    return Object.freeze({
+    const identity = Object.freeze({
       path: resolved,
       dev: identityValue(before.dev),
       ino: identityValue(before.ino),
@@ -130,9 +140,14 @@ function fileIdentity(filename) {
       size: contents.length,
       digest: crypto.createHash('sha256').update(contents).digest('hex'),
     })
+    return { identity, contents: contents.toString('utf8') }
   } finally {
     fs.closeSync(descriptor)
   }
+}
+
+function fileIdentity(filename) {
+  return readRuntimeConfigFile(filename).identity
 }
 
 function validateDirectoryIdentities(identities) {
@@ -268,6 +283,7 @@ function writeRuntimeConfig(runtime, config, credentials, credentialKey) {
     credentialKeys: Object.freeze(credentialEntries.map(([key]) => key)),
   })
   issuedOpenClawRuntimeGuards.add(guard)
+  openClawRuntimeConfigs.set(guard, contents)
   openClawRuntimeCredentialDigests.set(guard, Object.freeze(Object.fromEntries(
     credentialEntries.map(([key, value]) => [
       key,
@@ -277,7 +293,7 @@ function writeRuntimeConfig(runtime, config, credentials, credentialKey) {
   return guard
 }
 
-function validateOpenClawRuntimeGuard(guard, env = {}) {
+function validateRuntimeScope(guard, env = {}) {
   const credentialDigests = guard && typeof guard === 'object'
     ? openClawRuntimeCredentialDigests.get(guard)
     : undefined
@@ -301,8 +317,55 @@ function validateOpenClawRuntimeGuard(guard, env = {}) {
     }
   }
   validateDirectoryIdentities(guard.directories)
+}
+
+function validateOpenClawRuntimeGuard(guard, env = {}) {
+  validateRuntimeScope(guard, env)
   validateFileIdentity(guard.config)
   return true
+}
+
+function comparableMigratedConfig(config) {
+  // OpenClaw materializes the implicit main agent and stamps migrations at startup.
+  const result = JSON.parse(JSON.stringify(config))
+  const meta = result.meta
+  if (meta && typeof meta === 'object' && !Array.isArray(meta)
+      && Object.keys(meta).every(key => ['migrations', 'lastTouchedVersion', 'lastTouchedAt'].includes(key))
+      && (meta.lastTouchedVersion === undefined || /^\d{4}\.\d{1,2}\.\d{1,2}(?:[-+.][\w.-]+)?$/.test(meta.lastTouchedVersion))
+      && (meta.lastTouchedAt === undefined || (typeof meta.lastTouchedAt === 'string' && Number.isFinite(Date.parse(meta.lastTouchedAt))))
+      && (meta.migrations === undefined || isDeepStrictEqual(meta.migrations, { modelPolicyAllowlist: true }))) {
+    delete result.meta
+  }
+  if (isDeepStrictEqual(result.agents?.entries, { main: {} })) delete result.agents.entries
+  if (isDeepStrictEqual(result.discovery?.wideArea, { enabled: false })) {
+    result.discovery.wideArea = {}
+  }
+  return result
+}
+
+function refreshOpenClawRuntimeAfterStartup(options) {
+  const guard = options?.openClawRuntimeGuard
+  const env = options?.env || {}
+  validateRuntimeScope(guard, env)
+  const { identity: config, contents } = readRuntimeConfigFile(guard.config.path)
+  if (process.platform !== 'win32' && (config.mode & 0o777) !== 0o600) {
+    throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  }
+  validateDirectoryIdentities(guard.directories)
+  validateFileIdentity(config)
+  let equivalent = false
+  try {
+    equivalent = isDeepStrictEqual(
+      comparableMigratedConfig(JSON.parse(openClawRuntimeConfigs.get(guard))),
+      comparableMigratedConfig(JSON.parse(contents)),
+    )
+  } catch { /* malformed config is rejected below */ }
+  if (!equivalent) throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
+  const refreshed = Object.freeze({ ...guard, config })
+  issuedOpenClawRuntimeGuards.add(refreshed)
+  openClawRuntimeConfigs.set(refreshed, contents)
+  openClawRuntimeCredentialDigests.set(refreshed, openClawRuntimeCredentialDigests.get(guard))
+  return { ...options, openClawRuntimeGuard: refreshed }
 }
 
 function configureOpenClawGatewayRuntime(options, port) {
@@ -313,7 +376,7 @@ function configureOpenClawGatewayRuntime(options, port) {
   const env = options?.env || {}
   validateOpenClawRuntimeGuard(guard, env)
 
-  const config = JSON.parse(fs.readFileSync(guard.config.path, 'utf8'))
+  const config = JSON.parse(openClawRuntimeConfigs.get(guard))
   const gatewayCredentialKey = 'OPENCLAW_GATEWAY_TOKEN'
   const nextConfig = {
     ...config,
@@ -557,5 +620,6 @@ module.exports = {
   isOpenClawSecretReference,
   managedOpenClawOptions,
   nativeOpenClawOptions,
+  refreshOpenClawRuntimeAfterStartup,
   validateOpenClawRuntimeGuard,
 }

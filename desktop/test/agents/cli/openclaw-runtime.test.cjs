@@ -9,6 +9,7 @@ const {
   configureOpenClawGatewayRuntime,
   managedOpenClawOptions,
   nativeOpenClawOptions,
+  refreshOpenClawRuntimeAfterStartup,
   validateOpenClawRuntimeGuard,
 } = require('../../../src/agents/cli/openclaw-runtime.cjs')
 const {
@@ -129,6 +130,82 @@ test('Gateway setup rewrites the guarded config without persisting credentials',
   assert.equal(configText.includes(runtime.env.OPENCLAW_GATEWAY_TOKEN), false)
 })
 
+test('startup migration refreshes the guard without changing execution policy', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const options = configureOpenClawGatewayRuntime(managedOpenClawOptions({
+    storageRoot: directory, workdir, provider: provider(),
+  }), 43123)
+  const configPath = options.env.OPENCLAW_CONFIG_PATH
+  const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+  config.agents.entries = { main: {} }
+  config.discovery.wideArea = {}
+  config.meta = { migrations: { modelPolicyAllowlist: true }, lastTouchedVersion: '2026.9.1' }
+  fs.writeFileSync(`${configPath}.migrated`, JSON.stringify(config), { mode: 0o600 })
+  fs.renameSync(`${configPath}.migrated`, configPath)
+  assert.throws(() => validateOpenClawRuntimeGuard(options.openClawRuntimeGuard, options.env))
+  const migrated = refreshOpenClawRuntimeAfterStartup(options)
+  assert.equal(validateOpenClawRuntimeGuard(migrated.openClawRuntimeGuard, migrated.env), true)
+  config.tools.allow.push('exec')
+  fs.writeFileSync(configPath, JSON.stringify(config))
+  assert.throws(() => validateOpenClawRuntimeGuard(migrated.openClawRuntimeGuard, migrated.env))
+})
+
+test('startup migration rejects changed policies, credentials, paths and unknown configuration', async (t) => {
+  for (const [name, mutate] of Object.entries({
+    tools: config => { config.tools.allow.push('exec') },
+    workspace: config => { config.agents.defaults.workspace = os.homedir() },
+    agentOverride: config => { config.agents.entries = { main: { tools: { allow: ['exec'] } } } },
+    credentials: config => { config.gateway.auth.token = 'replacement-token' },
+    provider: config => { config.models.providers['meldwork-desktop'].baseUrl = 'https://other.example' },
+    bind: config => { config.gateway.bind = 'lan' },
+    discovery: config => { config.discovery.wideArea.enabled = true },
+    unknown: config => { config.plugins = { enabled: true } },
+    metadata: config => { config.meta = { unrecognized: true } },
+  })) {
+    await t.test(name, () => {
+      const { directory, workdir } = fixture()
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const options = configureOpenClawGatewayRuntime(managedOpenClawOptions({
+        storageRoot: directory, workdir, provider: provider(),
+      }), 43123)
+      const configPath = options.env.OPENCLAW_CONFIG_PATH
+      const config = JSON.parse(fs.readFileSync(configPath, 'utf8'))
+      mutate(config)
+      fs.writeFileSync(configPath, JSON.stringify(config))
+      assert.throws(() => refreshOpenClawRuntimeAfterStartup(options), {
+        message: 'OPENCLAW_RUNTIME_UNSAFE_PATH',
+      })
+    })
+  }
+})
+
+test('startup migration rejects symlinks and broadened file permissions', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const options = managedOpenClawOptions({ storageRoot: directory, workdir, provider: provider() })
+  const configPath = options.env.OPENCLAW_CONFIG_PATH
+  fs.renameSync(configPath, `${configPath}.original`)
+  fs.symlinkSync(`${configPath}.original`, configPath)
+  assert.throws(() => refreshOpenClawRuntimeAfterStartup(options), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+  fs.unlinkSync(configPath)
+  fs.renameSync(`${configPath}.original`, configPath)
+  if (process.platform !== 'win32') {
+    fs.chmodSync(configPath, 0o644)
+    assert.throws(() => refreshOpenClawRuntimeAfterStartup(options), { message: 'OPENCLAW_RUNTIME_UNSAFE_PATH' })
+  }
+})
+
+test('startup migration rejects an oversized config before parsing it', (t) => {
+  const { directory, workdir } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const options = managedOpenClawOptions({ storageRoot: directory, workdir, provider: provider() })
+  fs.appendFileSync(options.env.OPENCLAW_CONFIG_PATH, ' '.repeat(256 * 1024))
+  assert.throws(() => refreshOpenClawRuntimeAfterStartup(options), {
+    message: 'OPENCLAW_RUNTIME_UNSAFE_PATH',
+  })
+})
+
 test('Gateway lifecycle retries setup before callback and closes the isolated process', async (t) => {
   const { withOpenClawGateway } = require('../../../src/agents/cli/cli-openclaw-gateway.cjs')
   const { directory, workdir } = fixture()
@@ -160,6 +237,13 @@ if (command !== 'run') process.exit(2)
 const attemptsFile = ${JSON.stringify(attemptsFile)}
 const attempts = fs.existsSync(attemptsFile) ? Number(fs.readFileSync(attemptsFile, 'utf8')) : 0
 fs.writeFileSync(attemptsFile, String(attempts + 1))
+const migratedConfigPath = process.env.OPENCLAW_CONFIG_PATH
+const migratedConfig = JSON.parse(fs.readFileSync(migratedConfigPath, 'utf8'))
+migratedConfig.agents.entries = { main: {} }
+migratedConfig.discovery.wideArea = {}
+migratedConfig.meta = { migrations: { modelPolicyAllowlist: true }, lastTouchedVersion: '2026.9.1' }
+fs.writeFileSync(migratedConfigPath + '.migrated', JSON.stringify(migratedConfig), { mode: 0o600 })
+fs.renameSync(migratedConfigPath + '.migrated', migratedConfigPath)
 if (attempts === 0) {
   process.stderr.write('listen EADDRINUSE: address already in use\\n')
   process.exit(1)

@@ -46,6 +46,22 @@ test('Agent catalog module exposes only its coordinator', () => {
   assert.deepEqual(Object.keys(catalogApi), ['LocalWorkspaceAgentCatalog'])
 })
 
+test('one credential probe failure retains that installation and does not hide healthy peers', async () => {
+  const { catalog } = fixture({
+    detectAgents: async () => ['codex', 'claude'].map(kind => ({ kind, compatibilityState: 'compatible' })),
+    credentialState: async (kind) => {
+      if (kind === 'codex') throw new Error('probe failed')
+      return { state: 'ready', source: 'native-auth-status' }
+    },
+  })
+  const { agents } = await catalog.refresh()
+  assert.deepEqual(agents.map(agent => agent.kind), ['codex', 'claude'])
+  assert.deepEqual(agents.map(agent => agent.installed), [true, true])
+  assert.deepEqual(agents.map(agent => agent.available), [false, true])
+  assert.equal(agents[0].credentialState, 'unknown')
+  assert.equal(agents[0].availabilitySource, 'native-probe-failed')
+})
+
 test('refresh starts credential checks concurrently and reads current runtime state after them', async () => {
   const codex = deferred()
   const hermes = deferred()
@@ -337,11 +353,10 @@ test('failed refresh preserves the previous Agent list without emitting changes'
   const previous = [{ kind: 'codex', available: true }]
   const { agents, catalog, events } = fixture({
     initialAgents: previous,
-    detectAgents: async () => [{ kind: 'hermes' }],
-    credentialState: async () => { throw new Error('credential probe failed') },
+    detectAgents: async () => { throw new Error('installation discovery failed') },
   })
 
-  await assert.rejects(catalog.refresh(), { message: 'credential probe failed' })
+  await assert.rejects(catalog.refresh(), { message: 'installation discovery failed' })
   assert.equal(agents(), previous)
   assert.deepEqual(events, [])
 })
