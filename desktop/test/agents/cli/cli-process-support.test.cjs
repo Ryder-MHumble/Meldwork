@@ -67,6 +67,9 @@ test('OpenClaw child environment keeps only its guarded runtime and selected cre
       ...runtime,
       env: {
         ...runtime.env,
+        https_proxy: 'http://proxy.example:3128',
+        NO_PROXY: 'localhost,127.0.0.1,::1',
+        NODE_EXTRA_CA_CERTS: '/certs/company.pem',
         MELDWORK_OPENCLAW_NATIVE_API_KEY: 'wrong-openclaw-key',
         GITHUB_TOKEN: 'caller-secret',
         ANTHROPIC_API_KEY: 'caller-anthropic-secret',
@@ -77,6 +80,9 @@ test('OpenClaw child environment keeps only its guarded runtime and selected cre
   )
 
   assert.equal(env.MELDWORK_OPENCLAW_API_KEY, 'selected-openclaw-key')
+  assert.equal(env.https_proxy, 'http://proxy.example:3128')
+  assert.equal(env.NO_PROXY, 'localhost,127.0.0.1,::1')
+  assert.equal(env.NODE_EXTRA_CA_CERTS, '/certs/company.pem')
   assert.equal(env.OPENCLAW_GATEWAY_TOKEN, runtime.env.OPENCLAW_GATEWAY_TOKEN)
   assert.equal(env.OPENCLAW_DISABLE_BONJOUR, '1')
   assert.equal(Object.hasOwn(env, 'MELDWORK_OPENCLAW_NATIVE_API_KEY'), false)

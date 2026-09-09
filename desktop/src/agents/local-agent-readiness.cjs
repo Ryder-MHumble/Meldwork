@@ -5,6 +5,7 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 const { prepareCommand, searchPath } = require('./cli/cli-adapters.cjs')
 const { isOpenClawSecretReference } = require('./cli/openclaw-runtime.cjs')
+const { NETWORK_ENV_KEYS, networkEnvironment } = require('./cli/cli-network-environment.cjs')
 
 const execFileAsync = promisify(execFile)
 
@@ -78,6 +79,7 @@ const RUNTIME_ENV_KEYS = Object.freeze({
 })
 const SHELL_ENV_KEYS = Object.freeze([...new Set([
   'PATH',
+  ...NETWORK_ENV_KEYS,
   ...Object.values(RUNTIME_ENV_KEYS).flat(),
 ])])
 let shellEnvironmentCache = null
@@ -150,11 +152,13 @@ function nativeCredentialKeyEnvironment(kind, env = process.env) {
   return result
 }
 
-function allowedShellEnvironment(env = process.env) {
+function allowedShellEnvironment(env = process.env, platform = process.platform) {
+  const source = { ...env, ...networkEnvironment(env, platform) }
   const result = {}
   for (const key of SHELL_ENV_KEYS) {
-    const value = env[key]
-    if (typeof value !== 'string' || !value || value.length > MAX_SHELL_ENV_BYTES) continue
+    const value = source[key]
+    if (typeof value !== 'string' || (!value && !NETWORK_ENV_KEYS.includes(key))
+        || value.length > MAX_SHELL_ENV_BYTES) continue
     result[key] = value
   }
   return result
@@ -166,7 +170,8 @@ function nativeShellCommand() {
     `printf '${SHELL_ENV_MARKER}\\0'`,
     `for __meldwork_key in ${keys}; do`,
     '  eval "__meldwork_value=\\${$__meldwork_key-}"',
-    '  if [ -n "$__meldwork_value" ]; then',
+    '  eval "__meldwork_set=\\${$__meldwork_key+x}"',
+    '  if [ -n "$__meldwork_set" ]; then',
     "    printf '%s=%s\\0' \"$__meldwork_key\" \"$__meldwork_value\"",
     '  fi',
     'done',
@@ -185,7 +190,8 @@ function parseNativeShellEnvironment(output) {
     if (separator <= 0) continue
     const key = entry.slice(0, separator)
     const value = entry.slice(separator + 1)
-    if (!allowed.has(key) || !value || value.length > MAX_SHELL_ENV_BYTES) continue
+    if (!allowed.has(key) || (!value && !NETWORK_ENV_KEYS.includes(key))
+        || value.length > MAX_SHELL_ENV_BYTES) continue
     result[key] = value
   }
   return result
@@ -195,7 +201,7 @@ async function queryNativeShellEnvironment(options = {}) {
   const source = options.env || process.env
   const platform = options.platform || process.platform
   const home = options.home || os.homedir()
-  const fallback = allowedShellEnvironment(source)
+  const fallback = allowedShellEnvironment(source, platform)
   if (platform === 'win32') return { env: fallback, source: 'process' }
   const shell = String(options.shell || source.SHELL || (platform === 'darwin' ? '/bin/zsh' : '/bin/sh'))
   const shellName = path.basename(shell)
@@ -330,7 +336,7 @@ function probeEnvironment(kind, options = {}) {
   const source = options.env || process.env
   const platform = options.platform || process.platform
   const home = options.home || os.homedir()
-  const env = {}
+  const env = networkEnvironment(source, platform)
   for (const key of [
     'USER', 'LOGNAME', 'TMPDIR', 'TMP', 'TEMP',
     'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE',
@@ -338,7 +344,6 @@ function probeEnvironment(kind, options = {}) {
     'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
     'APPDATA', 'LOCALAPPDATA',
     'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',
-    'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
   ]) {
     if (typeof source[key] === 'string' && source[key]) env[key] = source[key]
   }

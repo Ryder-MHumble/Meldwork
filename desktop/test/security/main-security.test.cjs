@@ -1996,7 +1996,7 @@ test('configured Provider is injected only through local Agent execution options
   const { harness } = loadMain(directory, {
     providerConfigured: true,
     nativeShellEnvironment: () => ({
-      env: { PATH: '/opt/native-agent/bin:/usr/bin' },
+      env: { PATH: '/opt/native-agent/bin:/usr/bin', https_proxy: 'http://proxy.example:3128', NO_PROXY: 'localhost,127.0.0.1' },
       source: 'native-shell',
     }),
     nativeEnvironment: kind => kind === 'hermes'
@@ -2020,6 +2020,8 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.ANTHROPIC_API_KEY, 'native-hermes-key')
   assert.equal(options.env.CURRENT_RUN, '1')
   assert.equal(options.env.PATH, '/opt/native-agent/bin:/usr/bin')
+  assert.equal(options.env.https_proxy, 'http://proxy.example:3128')
+  assert.equal(options.env.NO_PROXY, 'localhost,127.0.0.1')
 })
 
 test('unreadable saved Provider credentials never silently fall back to native execution', async (t) => {
@@ -2073,7 +2075,7 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
           },
         }),
         resolveNativeShellEnvironment: async () => ({
-          env: { PATH: '/opt/native-agent/bin:/usr/bin' },
+          env: { PATH: '/opt/native-agent/bin:/usr/bin', https_proxy: 'http://proxy.example:3128' },
           source: 'native-shell',
         }),
         resolveNativeCredentialState: async (kind, input) => {
@@ -2108,6 +2110,7 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
     },
   )
   const options = harness.runAgentCalls[0][3]
+  assert.equal(options.env.https_proxy, 'http://proxy.example:3128')
   assert.equal(Object.hasOwn(options.env, 'OPENCLAW_NATIVE_CONFIG'), false)
   assert.equal(Object.hasOwn(options.env, 'OPENAI_API_KEY'), false)
   assert.equal(Object.hasOwn(options.env, 'OPENROUTER_API_KEY'), false)

@@ -28,21 +28,38 @@ function utf8ByteLength(value) {
 
 function redactChildSecrets(value, env) {
   let result = String(value || '')
-  for (const [name, secret] of Object.entries(env)) {
-    if (!/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
-        || typeof secret !== 'string' || utf8ByteLength(secret) < 8) continue
+  for (const secret of childSecrets(env)) {
     result = result.split(secret).join('[redacted]')
   }
   return result
 }
 
 function childSecrets(env) {
-  return Object.entries(env || {})
-    .filter(([name, secret]) => (
-      /(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
-      && typeof secret === 'string' && utf8ByteLength(secret) >= 8
-    ))
-    .map(([, secret]) => secret)
+  const secrets = new Set()
+  for (const [name, value] of Object.entries(env || {})) {
+    if (typeof value !== 'string' || !value) continue
+    if (/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
+        && utf8ByteLength(value) >= 8) secrets.add(value)
+    if (!/^(?:https?|all)_proxy$/i.test(name)) continue
+    if (value.includes('@')) secrets.add(value)
+    try {
+      const url = new URL(value)
+      if (!url.username && !url.password) continue
+      secrets.add(value)
+      secrets.add(url.href)
+      const userinfo = `${url.username}:${url.password}`
+      secrets.add(userinfo)
+      const decoded = decodeURIComponent(userinfo)
+      secrets.add(decoded)
+      secrets.add(Buffer.from(decoded).toString('base64'))
+      for (const part of [url.username, url.password]) {
+        if (utf8ByteLength(part) >= 8) secrets.add(part)
+        const literal = decodeURIComponent(part)
+        if (utf8ByteLength(literal) >= 8) secrets.add(literal)
+      }
+    } catch { /* malformed proxy URLs are diagnosed by the native runtime */ }
+  }
+  return [...secrets].sort((left, right) => right.length - left.length)
 }
 
 function assignmentNameVariants(parts) {

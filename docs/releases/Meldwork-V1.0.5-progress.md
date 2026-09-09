@@ -73,3 +73,18 @@
 - `/tmp/meldwork-105-auto-writer.cjs`：真实 Electron + 原生 Codex/OpenClaw，在独立配置 `/tmp/meldwork-105-auto-writer-bVlg60` 完成自动群聊。运行 `7e52bda4-4eba-42d4-95b8-10424757876d` 为 completed；Codex 写入 `task/result.txt`，OpenClaw 在只读调用中回读核验，最终字节精确为 `MELDWORK_AUTO_105_OK\n`。四次调用均完成，交付负责人由 Codex 显式交接给 OpenClaw。已查看 `/tmp/meldwork-105-auto-writer.png`，脚本退出码 0，Electron 正常关闭。
 
 上述验证不代表任意 Agent 组合均兼容；可恢复 `needs-human`、上下文回放、CLI 环境与启动延迟、剩余通用性问题及最终版本验收仍待完成。
+
+## CLI 网络环境检查点
+
+2026-09-09：登录 shell、版本/能力探测、认证探测及实际子进程使用同一网络配置白名单，保留 HTTP/HTTPS/ALL/NO_PROXY、大小写区别、显式空值和常用 CA 文件配置。OpenClaw 仅额外接收网络配置，原隔离 HOME、运行目录与选定凭据约束继续有效；不继承 `NODE_OPTIONS`、关闭 TLS 验证的变量或无关 Provider 凭据。
+
+代理 URL 中的凭据在诊断、完整答案和分片流中脱敏，覆盖编码/解码形式与 Basic 凭据；错误格式且带用户信息的原始代理值也不直接暴露。此改动处理网络环境被外层丢弃的路径，AWS/Azure/Vertex 等原生 Provider 选择与认证环境仍需继续核查。
+
+验证：
+
+- 网络环境、CLI 探测、子进程、原生 readiness、流式事件与 Main 安全测试 158/158。实际 `/bin/sh` 执行环境采集命令，验证空值覆盖及探测/执行一致性；Windows 变量大小写行为由单元测试覆盖，未进行 Windows 运行验收。
+- `npm --prefix desktop run test:agents`：447/447；补充错误格式代理值脱敏后，网络环境与流式协议文件重跑 34/34。`git diff --check` 通过。
+- `/tmp/meldwork-105-network-check.cjs`：使用真实 shell 采集、共享子进程环境及系统 curl，通过本机临时 HTTP 代理访问测试域名，代理收到 1 次请求，返回 `MELDWORK_NETWORK_OK`；没有连接外部模型或外部测试站点。
+- 独立 Electron 配置 `/tmp/meldwork-105-startup-iYvjcd` 连续两次扫描均保留 12 项安装记录，OpenClaw 可调用；耗时约 12.8 秒、6.7 秒，仅代表该机器本次观察。已查看 `/tmp/meldwork-105-startup.png`，Electron 正常退出。Pi 本机包装脚本损坏与 MiMo 未登录仍显示不可用，未改动用户 CLI 安装或凭据。
+
+尚未重新执行完整桌面测试、打包或更新版本号，V1.0.5 继续处于开发状态。

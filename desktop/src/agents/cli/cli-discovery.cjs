@@ -3,6 +3,7 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 const { promisify } = require('node:util')
+const { networkEnvironment } = require('./cli-network-environment.cjs')
 const {
   assessAgentVersion,
   capabilityProbes,
@@ -40,7 +41,6 @@ const SYSTEM_CHILD_ENV_KEYS = Object.freeze([
   'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
   'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432',
   'OS', 'PROCESSOR_ARCHITECTURE', 'PROCESSOR_IDENTIFIER', 'NUMBER_OF_PROCESSORS',
-  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
   'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR',
 ])
 
@@ -50,7 +50,7 @@ function envValue(env, name) {
 }
 
 function systemChildEnvironment(sourceEnv = process.env, platform = process.platform) {
-  const env = {}
+  const env = networkEnvironment(sourceEnv, platform)
   for (const name of SYSTEM_CHILD_ENV_KEYS) {
     const value = envValue(sourceEnv, name)
     if (typeof value === 'string' && value) env[name] = value

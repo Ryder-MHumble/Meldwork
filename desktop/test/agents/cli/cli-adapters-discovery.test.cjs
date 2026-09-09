@@ -956,6 +956,9 @@ test('Agent detection passes only allowlisted system environment to version comm
       PATH: '/custom/bin',
       MELDWORK_PRIVATE_VALUE: 'desktop-private-value',
       OPENAI_API_KEY: 'provider-secret',
+      https_proxy: 'http://proxy.example:3128',
+      NO_PROXY: 'localhost,127.0.0.1',
+      REQUESTS_CA_BUNDLE: '/certs/company.pem',
     },
     resolveExecutableFn: async kind => kind === 'kimi' ? '/tmp/kimi' : null,
     execFileFn: async (_command, args, options) => {
@@ -979,6 +982,9 @@ test('Agent detection passes only allowlisted system environment to version comm
     assert.match(env.PATH, /\/custom\/bin/)
     assert.equal(env.MELDWORK_PRIVATE_VALUE, undefined)
     assert.equal(env.OPENAI_API_KEY, undefined)
+    assert.equal(env.https_proxy, 'http://proxy.example:3128')
+    assert.equal(env.NO_PROXY, 'localhost,127.0.0.1')
+    assert.equal(env.REQUESTS_CA_BUNDLE, '/certs/company.pem')
   }
 })
 

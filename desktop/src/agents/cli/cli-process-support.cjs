@@ -1,5 +1,6 @@
 const path = require('node:path')
 const { searchPath, systemChildEnvironment } = require('./cli-discovery.cjs')
+const { networkEnvironment } = require('./cli-network-environment.cjs')
 const { redactChildSecrets } = require('./cli-runtime-events.cjs')
 const { agentRuntimeError, terminalAuthenticationDiagnostic } = require('../agent-runtime-contract.cjs')
 const { validateOpenClawRuntimeGuard } = require('./openclaw-runtime.cjs')
@@ -64,7 +65,10 @@ function openClawChildEnvironment(workdir, options, platform) {
     throw new Error('OPENCLAW_RUNTIME_UNSAFE_PATH')
   }
 
-  const env = systemChildEnvironment(process.env, platform)
+  const env = {
+    ...systemChildEnvironment(process.env, platform),
+    ...networkEnvironment(source, platform),
+  }
   for (const key of [
     'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH',
     'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME',

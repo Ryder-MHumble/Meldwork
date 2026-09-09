@@ -25,6 +25,7 @@ const {
   shutdownAcpSessionRuntime,
 } = require('./agents/cli/cli-adapters.cjs')
 const { AgentInstaller } = require('./agents/installer/agent-installer.cjs')
+const { networkEnvironment } = require('./agents/cli/cli-network-environment.cjs')
 const { AgentConnectorInstanceStore } = require('./agents/connectors/agent-connector-instance-store.cjs')
 const { LocalAgentConnectors } = require('./agents/connectors/agent-connector-local.cjs')
 const { AgentConnectorPackageStore } = require('./agents/connectors/agent-connector-package-store.cjs')
@@ -406,7 +407,10 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
   return runAgent(agent, prompt, workdir, {
     ...runOptions,
     ...injected,
-    env: { ...nativeEnv, ...callerEnv, ...injected.env },
+    env: {
+      ...networkEnvironment(shellEnvironment?.env),
+      ...nativeEnv, ...callerEnv, ...injected.env,
+    },
   })
 }
 
