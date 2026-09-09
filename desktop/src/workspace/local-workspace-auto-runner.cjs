@@ -15,7 +15,6 @@ const {
   normalizeFailureOutcome,
   retryDecision,
 } = require('../runs/failure-policy.cjs')
-const { mediaGenerationRequest } = require('../media/media-generation-request.cjs')
 const {
   appendBlackboardEntry,
   collaborationPackageIndexText,
@@ -1208,12 +1207,10 @@ class LocalWorkspaceAutoRunner {
     let rootAttachments = preparedContext?.attachments
     let rootSkillsByKind = preparedContext?.skillHintsByKind
     let rootKnowledgeBasesByKind = preparedContext?.knowledgeBaseHintsByKind
-    let rootMediaRequest = preparedContext?.mediaRequest || null
     if (!rootAttachments || !rootSkillsByKind || !rootKnowledgeBasesByKind) {
       const rootMessage = this.state().messages.find(message => (
         message.id === threadRootId && message.groupId === group.id && message.role === 'user'
       ))
-      rootMediaRequest = mediaGenerationRequest(rootMessage?.content || '')
       rootAttachments = await this.resolveAttachments(rootMessage?.attachments || [])
       rootSkillsByKind = new Map()
       for (const kind of controller.targetKinds) {
@@ -1253,7 +1250,6 @@ class LocalWorkspaceAutoRunner {
       rootAttachments,
       rootSkillsByKind,
       rootKnowledgeBasesByKind,
-      rootMediaRequest,
     }
   }
 
@@ -4872,7 +4868,6 @@ class LocalWorkspaceAutoRunner {
           ? await this.v4RestoreSnapshotSkills(snapshot, snapshotTargetKinds, persistedSkills)
           : persistedSkills,
         rootKnowledgeBasesByKind: new Map(snapshotTargetKinds.map(kind => [kind, []])),
-        rootMediaRequest: null,
       }
     }
     const builtSnapshot = existing
@@ -5722,9 +5717,7 @@ class LocalWorkspaceAutoRunner {
       rootAttachments,
       rootSkillsByKind,
       rootKnowledgeBasesByKind,
-      rootMediaRequest,
     } = context
-    const mediaOwnerKind = rootMediaRequest ? controller.targetKinds[0] : ''
     const cursor = resume ? controller.orchestration : null
     const attachmentRecipients = new Set(cursor?.attachmentRecipients || [])
     let terminalFailureOccurred = cursor?.terminalFailureOccurred === true
@@ -5810,9 +5803,6 @@ class LocalWorkspaceAutoRunner {
               skillHints: rootSkillsByKind.get(executionKind) || [],
               knowledgeBaseHints: rootKnowledgeBasesByKind.get(executionKind) || [],
               runtimeInstruction: replacementInstructions.get(executionKind) || '',
-              mediaRequest: executionKind === mediaOwnerKind && round === 0
-                ? rootMediaRequest
-                : null,
               collaborationPackage,
               contextOptions: {
                 focusUserMessageId: threadRootId,
@@ -6086,7 +6076,6 @@ class LocalWorkspaceAutoRunner {
         rootAttachments: [],
         rootSkillsByKind: new Map(controller.targetKinds.map(kind => [kind, []])),
         rootKnowledgeBasesByKind: new Map(controller.targetKinds.map(kind => [kind, []])),
-        rootMediaRequest: null,
       }
       return this.runV4Discussion(
         group, controller, durable.threadRootId, context, true, resumedGate,

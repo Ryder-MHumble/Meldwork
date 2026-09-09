@@ -1448,7 +1448,7 @@ test('writable conversations persist validated Agent media outputs and enforce t
   assert.deepEqual(restoredReply.attachments, generated)
 })
 
-test('every writable built-in conversational Agent can use the shared main-process media generator', async (t) => {
+test('every writable built-in conversational Agent owns media execution and retains imported outputs', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kinds = [
@@ -1468,22 +1468,19 @@ test('every writable built-in conversational Agent can use the shared main-proce
   ]
   const generationCalls = []
   let generated = null
-  options.generateMedia = async (input) => {
-    generationCalls.push(input)
-    const request = requests.find(item => item.type === input.request.type)
+  let activeRequest
+  options.generateMedia = async input => { generationCalls.push(input); throw new Error('UNEXPECTED_MEDIA_DISPATCH') }
+  options.runAgent = async (agent, prompt, workdir, runOptions) => {
+    calls.push({ agent, prompt, workdir, runOptions })
+    const request = activeRequest
+    assert.ok(prompt.includes(request.prompt))
     generated = {
-      id: `generated-${input.kind}-${request.type}`,
-      name: `generated-${request.type}-${input.kind}.${request.extension}`,
+      id: `generated-${agent.kind}-${request.type}`,
+      name: `generated-${request.type}-${agent.kind}.${request.extension}`,
       mimeType: request.mimeType,
       size: 128,
     }
-    input.onEvent({
-      id: 'media-test', type: 'tool_start', status: 'running', title: `${request.type}_generation`,
-    })
-    input.onEvent({
-      id: 'media-test', type: 'tool_result_summary', status: 'completed', title: `${request.type}_generation`,
-    })
-    return { type: request.type, filename: generated.name }
+    return { outcome: 'completed', text: `Created ${generated.name}.` }
   }
   options.captureAgentOutputs = async () => ({ marker: 'before-media' })
   options.importAgentOutputs = async () => generated ? [{ ...generated }] : []
@@ -1495,22 +1492,14 @@ test('every writable built-in conversational Agent can use the shared main-proce
       conversationType: 'direct', directAgentKind: kind, agentKinds: [kind],
     })
     for (const request of requests) {
+      activeRequest = request
       await workspace.sendMessage({ groupId: direct.id, text: request.prompt })
     }
   }
 
-  assert.deepEqual(generationCalls.map(call => call.kind), kinds.flatMap(kind => (
-    requests.map(() => kind)
-  )))
-  assert.deepEqual(generationCalls.map(call => call.request.type), kinds.flatMap(() => (
-    requests.map(request => request.type)
-  )))
-  assert.equal(generationCalls.every(call => (
-    requests.some(request => (
-      request.type === call.request.type && request.prompt === call.request.prompt
-    ))
-  )), true)
-  assert.equal(calls.every(call => /generated-(?:image|audio|video)-/.test(call.prompt)), true)
+  assert.equal(generationCalls.length, 0)
+  assert.equal(calls.length, kinds.length * requests.length)
+  assert.equal(calls.some(call => /Meldwork generated and will attach/.test(call.prompt)), false)
   const replies = workspace.snapshot().messages.filter(message => message.role === 'agent')
   assert.equal(replies.length, kinds.length * requests.length)
   assert.deepEqual(replies.map(reply => reply.attachments?.[0]?.mimeType), kinds.flatMap(() => (
@@ -1518,7 +1507,7 @@ test('every writable built-in conversational Agent can use the shared main-proce
   )))
 })
 
-test('every built-in conversational Agent can generate each media type when targeted in a group', async (t) => {
+test('targeted group Agents retain native media outputs without shared Provider dispatch', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const kinds = [
@@ -1540,16 +1529,18 @@ test('every built-in conversational Agent can generate each media type when targ
   options.captureAgentOutputs = async () => ({ marker: 'before-group-run' })
   options.importAgentOutputs = async () => generated ? [{ ...generated }] : []
   const generationCalls = []
-  options.generateMedia = async (input) => {
-    generationCalls.push(input)
-    const request = requests.find(item => item.type === input.request.type)
+  options.generateMedia = async input => { generationCalls.push(input); throw new Error('UNEXPECTED_MEDIA_DISPATCH') }
+  let activeRequest
+  options.runAgent = async (agent, prompt) => {
+    const request = activeRequest
+    assert.ok(prompt.includes(request.prompt))
     generated = {
-      id: `group-${input.kind}-${request.type}`,
-      name: `group-${request.type}-${input.kind}.${request.extension}`,
+      id: `group-${agent.kind}-${request.type}`,
+      name: `group-${request.type}-${agent.kind}.${request.extension}`,
       mimeType: request.mimeType,
       size: 128,
     }
-    return { type: request.type, filename: generated.name }
+    return { outcome: 'completed', text: `Created ${generated.name}.` }
   }
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
@@ -1560,6 +1551,7 @@ test('every built-in conversational Agent can generate each media type when targ
 
   for (const kind of kinds) {
     for (const request of requests) {
+      activeRequest = request
       await workspace.sendMessage({
         groupId: group.id,
         text: request.prompt,
@@ -1569,12 +1561,7 @@ test('every built-in conversational Agent can generate each media type when targ
     }
   }
 
-  assert.deepEqual(generationCalls.map(call => call.kind), kinds.flatMap(kind => (
-    requests.map(() => kind)
-  )))
-  assert.deepEqual(generationCalls.map(call => call.request.type), kinds.flatMap(() => (
-    requests.map(request => request.type)
-  )))
+  assert.equal(generationCalls.length, 0)
   const replies = workspace.snapshot().messages.filter(message => message.role === 'agent')
   assert.equal(replies.length, kinds.length * requests.length)
   assert.deepEqual(replies.map(reply => reply.agentKind), kinds.flatMap(kind => (
@@ -1586,7 +1573,7 @@ test('every built-in conversational Agent can generate each media type when targ
   assert.equal(JSON.stringify(replies).includes(directory), false)
 })
 
-test('group media requests fall back to the target Agent when the shared Provider lacks a media model', async (t) => {
+test('unavailable shared media Providers do not interfere with targeted Agent execution', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const generated = {
@@ -1611,8 +1598,7 @@ test('group media requests fall back to the target Agent when the shared Provide
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0].agent.kind, 'codex')
-  assert.match(calls[0].prompt, /shared media generator was unavailable/i)
-  assert.match(calls[0].prompt, /native media-generation tools or installed local skills/i)
+  assert.doesNotMatch(calls[0].prompt, /shared media generator was unavailable/i)
   assert.match(calls[0].prompt, /\.meldwork-output\//)
   const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
   assert.deepEqual(reply.attachments, [generated])
@@ -1621,7 +1607,7 @@ test('group media requests fall back to the target Agent when the shared Provide
   )), false)
 })
 
-test('group media requests recover when native Agent media fallback reports provider model failure', async (t) => {
+test('Agent media failure prose remains unchanged and cannot trigger a second Provider call', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const generated = {
@@ -1667,14 +1653,14 @@ test('group media requests recover when native Agent media fallback reports prov
     mode: 'manual',
   })
 
-  assert.equal(generationCount, 2)
+  assert.equal(generationCount, 0)
   assert.equal(calls.length, 1)
   const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
-  assert.equal(reply.content, `Meldwork generated and attached ${generated.name}.`)
-  assert.deepEqual(reply.attachments, [generated])
+  assert.equal(reply.content, 'Codex failed: The configured Providers do not offer the required media model. Use a Provider credential with access to that image, audio, or video model.')
+  assert.equal(reply.attachments?.length || 0, 0)
 })
 
-test('direct media requests fall back to the chat Agent when the shared Provider lacks a media model', async (t) => {
+test('direct media requests go to the native Agent without a shared Provider prerequisite', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const generated = {
@@ -1698,8 +1684,7 @@ test('direct media requests fall back to the chat Agent when the shared Provider
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0].agent.kind, 'hermes')
-  assert.match(calls[0].prompt, /shared media generator was unavailable/i)
-  assert.match(calls[0].prompt, /native media-generation tools or installed local skills/i)
+  assert.doesNotMatch(calls[0].prompt, /shared media generator was unavailable/i)
   assert.match(calls[0].prompt, /\.meldwork-output\//)
   const reply = workspace.snapshot().messages.find(message => message.role === 'agent')
   assert.deepEqual(reply.attachments, [generated])
@@ -1835,7 +1820,7 @@ test('a new targeted group task reuses its conversation Session and stays author
   assert.equal(Object.hasOwn(workspace.state.sessions, globalKey), true)
 })
 
-test('a targeted non-Codex group image task replaces legacy research context and returns media', async (t) => {
+test('a targeted group image task preserves task authority and native output import', async (t) => {
   const { directory, calls, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   const generationCalls = []
@@ -1867,13 +1852,12 @@ test('a targeted non-Codex group image task replaces legacy research context and
     mode: 'manual',
   })
 
-  assert.deepEqual(generationCalls.map(call => call.kind), ['hermes'])
-  assert.equal(generationCalls[0].request.type, 'image')
+  assert.equal(generationCalls.length, 0)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].agent.kind, 'hermes')
   assert.equal(calls[0].runOptions.sessionRef, 'legacy-hermes-research-session')
   assert.match(calls[0].prompt, /Current user task \(authoritative\):\nNEW_IMAGE_TASK/)
-  assert.match(calls[0].prompt, /new-city-poster\.png/)
+  assert.doesNotMatch(calls[0].prompt, /Meldwork generated and will attach/)
   assert.match(calls[0].prompt, /Final response scope:[\s\S]*Do not append an answer to an older task/)
   assert.ok(calls[0].prompt.lastIndexOf('Final response scope:') > calls[0].prompt.lastIndexOf('OLD_RESEARCH_TASK'))
   assert.doesNotMatch(calls[0].prompt, /Continue this group Session/)

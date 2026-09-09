@@ -48,8 +48,6 @@ const {
   resolveNativeShellEnvironment,
 } = require('./agents/local-agent-readiness.cjs')
 const { LocalWorkspace } = require('./workspace/local-workspace.cjs')
-const { MediaGenerationRuntime } = require('./media/media-generation-runtime.cjs')
-const { resolveMediaProvider } = require('./media/media-provider-resolution.cjs')
 const { registerDesktopIpc } = require('./shell/main-ipc.cjs')
 const {
   isAllowedExternalUrl,
@@ -252,37 +250,6 @@ async function nativeShellEnvironment(options = {}) {
 async function detectLocalAgents() {
   const shellEnvironment = await nativeShellEnvironment()
   return detectAgents({ env: shellEnvironment.env, home: shellEnvironment.home })
-}
-
-function mediaFallbackProviders(env = process.env) {
-  const apiKey = String(
-    env.ZGCI_MEDIA_API_KEY
-      || env.ZGCI_API_KEY
-      || env.ZCGI_API_KEY
-      || env.ZGCI_LLM_API_KEY
-      || '',
-  ).trim()
-  if (!apiKey) return []
-  const baseUrl = String(env.ZGCI_MEDIA_BASE_URL || 'https://hub.zgci.org/v1')
-    .trim()
-    .replace(/\/+$/, '')
-    .replace(/\/chat\/completions$/i, '')
-  let parsed
-  try { parsed = new URL(baseUrl) } catch { return [] }
-  if (parsed.protocol !== 'https:' || parsed.username || parsed.password
-      || parsed.search || parsed.hash) {
-    return []
-  }
-  return [{
-    kind: 'zgci-media',
-    status: {
-      configured: true,
-      provider: 'ZGCI Media',
-      baseUrl,
-      model: 'glm',
-    },
-    credentials: { OPENAI_API_KEY: apiKey },
-  }]
 }
 
 function workspaceStoragePath(userData = app.getPath('userData')) {
@@ -542,17 +509,6 @@ function createWorkspace() {
     }),
     connectors: [],
   })
-  const mediaGeneration = new MediaGenerationRuntime({
-    getProvider: (kind, type, excludedKinds) => resolveMediaProvider({
-      requestedKind: kind,
-      type,
-      kinds: EXTERNAL_PROVIDER_KINDS,
-      excludedKinds,
-      statusFor: candidateKind => providerStore.status(candidateKind),
-      credentialsFor: candidateKind => providerStore.envForAgent(candidateKind),
-      fallbackProviders: mediaFallbackProviders(),
-    }),
-  })
   const localWorkspace = new LocalWorkspace({
     storagePath: workspaceStoragePath(),
     contentBlobStore,
@@ -601,7 +557,6 @@ function createWorkspace() {
     sharedProviderReady: kind => EXTERNAL_PROVIDER_KINDS.has(kind) && providerStore.status(kind).configured,
     connectorRuntime: agentConnectors,
     naturalAgentResponses: true,
-    generateMedia: input => mediaGeneration.generate(input),
     runAgent: async (agent, prompt, workdir, options = {}) => {
       if (customAgentStore.has(agent.kind)) {
         return customAgentStore.run(agent.kind, prompt, workdir, {
