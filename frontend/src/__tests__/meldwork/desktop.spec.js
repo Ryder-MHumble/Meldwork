@@ -15,6 +15,22 @@ afterEach(() => {
   delete window.meldworkDesktop
 })
 
+it('validates minimal run outcomes against their visible group and task', () => {
+  const outcome = { groupId: 'group-1', runId: 'run-1', threadRootId: 'root-1',
+    status: 'completed', targetKinds: ['codex'], startedAt: 10, finishedAt: 20 }
+  const normalize = entry => normalizeSnapshot({
+    groups: [{ id: 'group-1' }],
+    messages: [{ id: 'root-1', groupId: 'group-1', role: 'user', content: 'Task' }],
+    runOutcomes: [entry],
+  }).runOutcomes
+  expect(normalize(outcome)).toEqual([outcome])
+  for (const patch of [
+    { groupId: 'other' }, { threadRootId: 'missing' }, { runId: '' },
+    { status: 'success-ish' }, { targetKinds: ['codex', 'codex'] },
+    { startedAt: NaN }, { finishedAt: 9 }, { reason: '/private/path' },
+  ]) expect(normalize({ ...outcome, ...patch })).toEqual([])
+})
+
 describe('desktop bridge access', () => {
   it('keeps the public desktop facade stable', () => {
     expect(Object.keys(desktop).sort()).toEqual([

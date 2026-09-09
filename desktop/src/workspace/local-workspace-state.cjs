@@ -1,5 +1,6 @@
 const fs = require('node:fs')
 const path = require('node:path')
+const { RUN_STATUSES } = require('../runs/run-ledger-records.cjs')
 const { normalizeSessionMeta } = require('../runs/run-harness.cjs')
 const {
   SESSION_KEY,
@@ -244,9 +245,7 @@ function saveWorkspaceState(storagePath, state) {
   fs.renameSync(tempPath, storagePath)
 }
 
-function durableWaitingRunSnapshots({ state, runLedger, pendingGates, liveRunIds, liveGroupIds }) {
-  let records = []
-  try { records = runLedger?.list?.() || [] } catch { return [] }
+function durableWaitingRunSnapshots({ state, records, pendingGates, liveRunIds, liveGroupIds }) {
   const groupIds = new Set(state.groups.map(group => group.id))
   const pendingById = new Map(pendingGates.map(gate => [gate.gateId, gate]))
   const projectedGroupIds = new Set()
@@ -319,6 +318,23 @@ function workspaceSnapshot({
   detectedAgents, state, preparingRuns, activeRuns, humanGateCoordinator, runLedger,
   workspaceRecovery,
 }) {
+  let records = []
+  try { records = runLedger?.list?.() || [] } catch { /* retain the visible workspace on ledger read failure */ }
+  const groupIds = new Set(state.groups.map(group => group.id))
+  const roots = new Map(state.messages.filter(message => message.role === 'user' && !message.threadRootId)
+    .map(message => [message.id, message.groupId]))
+  const latestOutcomes = new Map()
+  for (const record of records) {
+    if (!groupIds.has(record.groupId) || roots.get(record.threadRootId) !== record.groupId
+        || !RUN_STATUSES.has(record.status)) continue
+    const previous = latestOutcomes.get(record.threadRootId)
+    if (previous && previous.startedAt >= record.startedAt) continue
+    latestOutcomes.set(record.threadRootId, {
+      groupId: record.groupId, runId: record.runId, threadRootId: record.threadRootId,
+      status: record.status, targetKinds: [...record.targetKinds],
+      startedAt: record.startedAt, finishedAt: record.finishedAt || 0,
+    })
+  }
   const busyEntries = [
     ...[...preparingRuns.entries()].map(entry => [...entry, 'preparing']),
     ...[...activeRuns.entries()].map(entry => [...entry, 'running']),
@@ -330,7 +346,7 @@ function workspaceSnapshot({
   const liveRunIds = new Set(runEntries.map(([, run]) => run.runId).filter(Boolean))
   const liveGroupIds = new Set(busyEntries.map(([groupId]) => groupId))
   const durableRunEntries = durableWaitingRunSnapshots({
-    state, runLedger, pendingGates, liveRunIds, liveGroupIds,
+    state, records, pendingGates, liveRunIds, liveGroupIds,
   })
   const liveRunEntries = runEntries.map(([groupId, run, phase]) => {
     const mode = run.mode === 'auto' ? 'auto' : 'manual'
@@ -404,6 +420,7 @@ function workspaceSnapshot({
     ])],
     humanGates: publicGates,
     runs: publicRuns,
+    runOutcomes: [...latestOutcomes.values()],
   }
 }
 

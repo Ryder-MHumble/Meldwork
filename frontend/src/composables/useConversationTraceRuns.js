@@ -25,6 +25,7 @@ export function useConversationTraceRuns({
   activeMessages,
   activeRun,
   activeRunAgentRuns,
+  runOutcomes,
   messageThreadRootId,
   scopedTargetKinds,
   t,
@@ -128,6 +129,9 @@ export function useConversationTraceRuns({
     const group = activeGroup.value
     if (!group || group.conversationType === 'direct' || activeRun.value) return null
     const rootOrder = new Map(topLevelUserMessages.value.map((message, index) => [message.id, index]))
+    const outcome = runOutcomes?.value?.find(item => item.groupId === group.id
+      && item.threadRootId === topLevelUserMessages.value.at(-1)?.id)
+    if (outcome && ['preparing', 'queued', 'running', 'waiting', 'reconciling'].includes(outcome.status)) return null
     const runs = new Map()
     for (const item of allTracePanelItems.value) {
       if (!item.runId || !item.threadRootId) continue
@@ -144,7 +148,9 @@ export function useConversationTraceRuns({
       current.createdAt = Math.max(current.createdAt, Date.parse(item.createdAt || item.startedAt || '') || 0)
       runs.set(item.runId, current)
     }
-    const latest = [...runs.values()].sort((left, right) => (
+    const latest = outcome ? (runs.get(outcome.runId) || {
+      runId: outcome.runId, threadRootId: outcome.threadRootId, agentRuns: [], orchestration: null,
+    }) : [...runs.values()].sort((left, right) => (
       left.rootIndex - right.rootIndex || left.createdAt - right.createdAt
     )).at(-1)
     if (!latest || latest.threadRootId !== topLevelUserMessages.value.at(-1)?.id) return null
@@ -153,13 +159,13 @@ export function useConversationTraceRuns({
       message.id === latest.threadRootId || messageThreadRootId(message) === latest.threadRootId
     ))
     const rootMessage = topicMessages.find(message => message.id === latest.threadRootId)
-    const targetKinds = scopedTargetKinds(rootMessage, group)
+    const targetKinds = outcome?.targetKinds || scopedTargetKinds(rootMessage, group)
     const systemKeys = new Set(topicMessages.map(message => message?.system?.key).filter(Boolean))
-    if (!targetKinds.length || [...CONTROLLER_TERMINAL_KEYS].some(key => systemKeys.has(key))) return null
+    if (!targetKinds.length || (!outcome && [...CONTROLLER_TERMINAL_KEYS].some(key => systemKeys.has(key)))) return null
     const visibleTerminalKinds = new Set(topicMessages
       .filter(message => ['agent', 'system'].includes(message.role) && message.agentKind)
       .map(message => message.agentKind))
-    if (targetKinds.some(kind => !visibleTerminalKinds.has(kind))) return null
+    if (!outcome && targetKinds.some(kind => !visibleTerminalKinds.has(kind))) return null
     const latestByKind = new Map()
     for (const item of latest.agentRuns) {
       const previous = latestByKind.get(item.agentKind)
@@ -174,7 +180,8 @@ export function useConversationTraceRuns({
       ...latest,
       targetKinds,
       agentRuns,
-      status,
+      status: outcome?.status || status,
+      authoritative: Boolean(outcome),
       eventCount: latest.agentRuns.reduce(
         (count, item) => count + retainedTraceEvents(item.events).length,
         0,

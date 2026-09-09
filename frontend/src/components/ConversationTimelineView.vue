@@ -711,7 +711,7 @@
             <div class="run-status-copy">
               <strong>{{ displayedRunLabel }}</strong>
               <span
-                v-if="!isDisplayedCoordinatedRun"
+                v-if="!isDisplayedCoordinatedRun && (activeRun || !displayedRun.authoritative)"
                 class="solo-run-status"
                 :data-status="displayedRunAgentTone"
               >

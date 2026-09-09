@@ -3,7 +3,26 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { loadWorkspaceState } = require('../../src/workspace/local-workspace-state.cjs')
+const { loadWorkspaceState, workspaceSnapshot } = require('../../src/workspace/local-workspace-state.cjs')
+
+test('snapshot exposes only the newest bound run outcome without private ledger fields', () => {
+  const record = { runId: 'run-new', groupId: 'group', threadRootId: 'root', status: 'completed',
+    targetKinds: ['codex'], startedAt: 20, finishedAt: 30,
+    sessionRef: '/private/native-session', reason: 'secret', agentRuns: [{ output: 'private' }] }
+  const snapshot = workspaceSnapshot({
+    detectedAgents: [], preparingRuns: new Map(), activeRuns: new Map(),
+    state: { groups: [{ id: 'group' }], messages: [{ id: 'root', groupId: 'group', role: 'user' }] },
+    runLedger: { list: () => [record,
+      { ...record, runId: 'run-old', startedAt: 10, finishedAt: 40, status: 'failed' },
+      { ...record, groupId: 'other' }, { ...record, threadRootId: 'missing' },
+    ] },
+  })
+  assert.deepEqual(snapshot.runOutcomes, [{ runId: 'run-new', groupId: 'group', threadRootId: 'root',
+    status: 'completed', targetKinds: ['codex'], startedAt: 20, finishedAt: 30 }])
+  assert.deepEqual(snapshot.runs, [])
+  snapshot.runOutcomes[0].targetKinds.push('hermes')
+  assert.deepEqual(record.targetKinds, ['codex'])
+})
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-workspace-state-'))

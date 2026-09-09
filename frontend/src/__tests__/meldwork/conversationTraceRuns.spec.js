@@ -3,6 +3,37 @@ import { describe, expect, it } from 'vitest'
 import { useConversationTraceRuns } from '../../composables/useConversationTraceRuns.js'
 
 describe('conversation trace runs', () => {
+  it('uses persisted task outcomes after recovery and keeps Agent call status separate', () => {
+    const root = { id: 'root', groupId: 'group', role: 'user' }
+    const runOutcomes = ref([{ runId: 'run', groupId: 'group', threadRootId: 'root',
+      targetKinds: ['codex'], status: 'completed' }])
+    const activeRun = ref(null)
+    const runs = useConversationTraceRuns({
+      activeGroup: ref({ id: 'group', conversationType: 'group' }), activeRun,
+      activeRunAgentRuns: ref([]), runOutcomes,
+      activeMessages: ref([root, { id: 'reply', groupId: 'group', role: 'agent', agentKind: 'codex',
+        threadRootId: 'root', trace: { runId: 'run', agentRunId: 'attempt', status: 'completed', round: 1 } },
+      { id: 'error', groupId: 'group', role: 'system', threadRootId: 'root', system: { key: 'system.autoStopped' } }]),
+      messageThreadRootId: message => message.threadRootId || '', scopedTargetKinds: () => ['codex'],
+      t: key => key, topLevelUserMessages: ref([root]), translateSystemMessage: message => message.content,
+    })
+    expect(runs.historicalGroupRun.value).toMatchObject({ status: 'completed', authoritative: true })
+    for (const status of ['partial', 'round-limit', 'stopped', 'failed']) {
+      runOutcomes.value[0].status = status
+      expect(runs.historicalGroupRun.value.status).toBe(status)
+      expect(runs.historicalGroupRun.value.agentRuns[0].status).toBe('completed')
+    }
+    runOutcomes.value[0].status = 'running'
+    expect(runs.historicalGroupRun.value).toBeNull()
+    runOutcomes.value[0].status = 'completed'
+    activeRun.value = { runId: 'new-run' }
+    expect(runs.historicalGroupRun.value).toBeNull()
+    activeRun.value = null
+    runOutcomes.value[0] = { ...runOutcomes.value[0], runId: 'new-run', status: 'failed' }
+    expect(runs.historicalGroupRun.value).toMatchObject({ runId: 'new-run', status: 'failed', agentRuns: [] })
+    runOutcomes.value[0].groupId = 'other'
+    expect(runs.historicalGroupRun.value).toBeNull()
+  })
   it('merges live and durable traces before rebuilding the latest completed group run', () => {
     const activeGroup = ref({ id: 'group-1', conversationType: 'group' })
     const activeRun = ref({ runId: 'run-1', threadRootId: 'root-1' })

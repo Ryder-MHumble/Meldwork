@@ -60,6 +60,8 @@ export function useConversationTimeline({
   const activeMessages = computed(() => (
     snapshot.value.messages.filter(message => message.groupId === selectedGroupId.value)
   ))
+  const runOutcomes = computed(() => (snapshot.value.runOutcomes || [])
+    .filter(outcome => outcome.groupId === selectedGroupId.value))
   const {
     activeTurnId,
     clearActiveTurn,
@@ -234,6 +236,7 @@ export function useConversationTimeline({
     activeMessages,
     activeRun,
     activeRunAgentRuns,
+    runOutcomes,
     messageThreadRootId,
     scopedTargetKinds,
     t,
@@ -314,7 +317,9 @@ export function useConversationTimeline({
   ))
   const displayedRunLabel = computed(() => {
     if (!displayedRun.value || !activeGroup.value) return ''
-    if (!activeRun.value) return t('conversation.groupRunHistory')
+    if (!activeRun.value) return historicalGroupRun.value?.authoritative
+      ? `${t('conversation.groupRunHistory')} · ${runStatusLabel(historicalGroupRun.value.status)}`
+      : t('conversation.groupRunHistory')
     return activeRunLabel.value
   })
   const {
@@ -358,6 +363,7 @@ export function useConversationTimeline({
     const replyCount = topicReplyCount(message.id)
     const finishedStatus = runFinishedTurnStatus(message.id)
     const durableStatus = durableTopicStatuses.value.get(message.id) || ''
+    const outcome = runOutcomes.value.find(item => item.threadRootId === message.id)
     return {
       id: message.id,
       query: String(message.content || '').trim().replace(/\s+/g, ' ').slice(0, 56) || t('conversation.attachmentTurn'),
@@ -365,7 +371,7 @@ export function useConversationTimeline({
       replyCount,
       status: activeRunTopicRootId.value === message.id
         ? 'running'
-        : finishedStatus || durableStatus || (replyCount > 0
+        : outcome?.status || finishedStatus || durableStatus || (replyCount > 0
           ? 'completed'
           : failedTopicIds.value.has(message.id) ? 'failed' : 'pending'),
     }

@@ -42,10 +42,18 @@ const V4_RUN_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/
 const MAX_V4_CURRENT_ROUND = 100000
 const MAX_V4_CONFIGURED_ROUNDS = 10
 const MAX_DATE_TIMESTAMP = 8640000000000000
+const RUN_OUTCOME_STATUSES = new Set([
+  'preparing', 'queued', 'running', 'waiting', 'reconciling',
+  'completed', 'partial', 'failed', 'stopped', 'timeout', 'round-limit', 'interrupted',
+  'budget-exhausted', 'circuit-breaker',
+])
+const RUN_OUTCOME_FIELDS = new Set([
+  'groupId', 'runId', 'threadRootId', 'status', 'targetKinds', 'startedAt', 'finishedAt',
+])
 
 export function emptySnapshot() {
   return {
-    agents: [], groups: [], messages: [], runningGroupIds: [], runs: [], humanGates: [],
+    agents: [], groups: [], messages: [], runningGroupIds: [], runs: [], humanGates: [], runOutcomes: [],
   }
 }
 
@@ -287,6 +295,27 @@ function normalizeMessage(value) {
 export function normalizeSnapshot(value) {
   const messages = Array.isArray(value?.messages) ? value.messages.map(normalizeMessage).filter(Boolean) : []
   const messagesById = new Map(messages.map(message => [message.id, message]))
+  const groupIds = new Set((Array.isArray(value?.groups) ? value.groups : []).map(group => group.id))
+  const runOutcomes = []
+  const outcomeRoots = new Set()
+  for (const valueOutcome of Array.isArray(value?.runOutcomes) ? value.runOutcomes : []) {
+    const outcome = exactRecord(valueOutcome, RUN_OUTCOME_FIELDS)
+    if (!outcome) continue
+    const root = messagesById.get(outcome.threadRootId)
+    const kinds = normalizedAgentKinds(outcome.targetKinds)
+    if (!groupIds.has(outcome.groupId) || groupIdentifier(outcome.groupId) !== outcome.groupId
+        || !outcome.runId || identifier(outcome.runId) !== outcome.runId
+        || root?.role !== 'user' || root.threadRootId || root.groupId !== outcome.groupId
+        || !RUN_OUTCOME_STATUSES.has(outcome.status) || !kinds.length
+        || !Array.isArray(outcome.targetKinds) || kinds.length !== outcome.targetKinds.length
+        || kinds.some((kind, index) => kind !== outcome.targetKinds[index])
+        || !Number.isSafeInteger(outcome.startedAt) || outcome.startedAt < 0 || outcome.startedAt > MAX_DATE_TIMESTAMP
+        || !Number.isSafeInteger(outcome.finishedAt) || outcome.finishedAt < 0 || outcome.finishedAt > MAX_DATE_TIMESTAMP
+        || (outcome.finishedAt && outcome.finishedAt < outcome.startedAt)
+        || outcomeRoots.has(outcome.threadRootId)) continue
+    outcomeRoots.add(outcome.threadRootId)
+    runOutcomes.push({ ...outcome, targetKinds: kinds })
+  }
   const runs = (Array.isArray(value?.runs) ? value.runs : [])
     .map(normalizeRun)
     .filter(Boolean)
@@ -320,6 +349,7 @@ export function normalizeSnapshot(value) {
     messages,
     runningGroupIds: Array.isArray(value?.runningGroupIds) ? value.runningGroupIds : [],
     runs,
+    runOutcomes,
     humanGates: activeGates.filter(gate => waitingGateIds.has(gate.gateId)),
   }
 }

@@ -47,6 +47,33 @@ afterEach(() => {
 })
 
 describe('Meldwork workbench', () => {
+  it.each(['completed', 'partial'])('shows persisted %s task status despite a historical stop', async (status) => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({ id: 'group-outcome', conversationType: 'group', name: 'Recovered task',
+        agentKinds: ['codex'], workdir: '', allowWrite: false })
+      state.messages.push(
+        { id: 'root-outcome', groupId: 'group-outcome', role: 'user', content: 'Finish task', targetKinds: ['codex'] },
+        { id: 'reply-outcome', groupId: 'group-outcome', role: 'agent', agentKind: 'codex',
+          threadRootId: 'root-outcome', content: 'Agent finished its turn.',
+          trace: { runId: 'run-outcome', agentRunId: 'attempt-outcome', status: 'completed', round: 1 } },
+        { id: 'stop-outcome', groupId: 'group-outcome', role: 'system', threadRootId: 'root-outcome',
+          content: 'Previous persistence failure', system: { key: 'system.autoStopped', params: { reason: 'LOCAL_RUN_PERSIST_FAILED' } } },
+      )
+      state.runOutcomes = [{ groupId: 'group-outcome', runId: 'run-outcome', threadRootId: 'root-outcome',
+        targetKinds: ['codex'], status, startedAt: 10, finishedAt: 20 }]
+    })
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+    const panel = wrapper.get('.run-status-panel.history')
+    expect(panel.text()).toContain(status === 'completed' ? '· Completed' : '· Partially completed')
+    expect(panel.find('.solo-run-status').exists()).toBe(false)
+    expect(wrapper.get('.turn-rail button').attributes('data-status')).toBe(status)
+    expect(wrapper.text()).toContain('LOCAL_RUN_PERSIST_FAILED')
+    setLocale('zh')
+    await flushPromises()
+    expect(panel.text()).toContain(status === 'completed' ? '已完成' : '部分完成')
+    wrapper.unmount()
+  })
   it.each(['autoTaskDecisionMissing', 'autoTaskBlocked', 'autoTaskNeedsHuman'])('does not infer task success from completed calls after %s', async (key) => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({
