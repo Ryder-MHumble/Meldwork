@@ -47,6 +47,32 @@ afterEach(() => {
 })
 
 describe('Meldwork workbench', () => {
+  it.each(['autoTaskDecisionMissing', 'autoTaskBlocked', 'autoTaskNeedsHuman'])('does not infer task success from completed calls after %s', async (key) => {
+    const { wrapper } = await mountApp(({ state }) => {
+      state.groups.push({
+        id: 'group-task-judgment', conversationType: 'group', name: 'Task judgment',
+        agentKinds: ['codex'], workdir: '', allowWrite: false,
+      })
+      state.messages.push(
+        { id: 'root-judgment', groupId: 'group-task-judgment', role: 'user', content: 'Complete the task.', targetKinds: ['codex'], createdAt: '2026-09-09T08:00:00Z' },
+        {
+          id: 'reply-judgment', groupId: 'group-task-judgment', role: 'agent', agentKind: 'codex',
+          threadRootId: 'root-judgment', content: 'Input is missing.', createdAt: '2026-09-09T08:01:00Z',
+          trace: { runId: 'run-judgment', agentRunId: 'attempt-judgment', status: 'completed', events: [], sourceMessageIds: ['root-judgment'] },
+        },
+        {
+          id: 'notice-judgment', groupId: 'group-task-judgment', role: 'system', threadRootId: 'root-judgment',
+          content: 'Input is missing.', system: { key: `system.${key}`, params: { reason: 'Input is missing.' } }, createdAt: '2026-09-09T08:02:00Z',
+        },
+      )
+    })
+    await wrapper.get('.conversation-link').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.run-status-panel.history').exists()).toBe(false)
+    expect(wrapper.find('#message-notice-judgment').exists()).toBe(true)
+    wrapper.unmount()
+  })
+
   it('keeps each group topic reply block attached to its query', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({

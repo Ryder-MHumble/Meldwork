@@ -1,4 +1,5 @@
 const MAX_CAPSULE_EVENTS = 12
+const { parseTaskDecision } = require('../collaboration/task-decision.cjs')
 
 const { redactSecrets } = require('../security/secret-redaction.cjs')
 const { normalizeContentBlobRef } = require('../attachments/content-blob-store.cjs')
@@ -272,6 +273,10 @@ function normalizeContextStats(input) {
   if (externalRunRef) context.externalRunRef = externalRunRef
   const outcomeRefs = normalizeOutcomeRefs(input.outcomeRefs)
   if (Object.keys(outcomeRefs).length) context.outcomeRefs = outcomeRefs
+  if (input.taskDecision != null) {
+    try { context.taskDecision = parseTaskDecision(input.taskDecision) }
+    catch { /* malformed task judgments cannot authorize completion */ }
+  }
   const connectorContext = normalizeConnectorContext(input)
   if (connectorContext) Object.assign(context, connectorContext)
   return context

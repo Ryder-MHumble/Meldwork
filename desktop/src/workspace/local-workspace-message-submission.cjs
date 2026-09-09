@@ -282,7 +282,7 @@ class LocalWorkspaceMessageSubmission {
       minContextChars: Math.max(1, cleanText(input.text).length),
     })
     const targetKinds = routingDecision.selectedKinds
-    if (mode === 'auto' && targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    if (mode === 'auto' && !targetKinds.length) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     if (input.mentionedAgentKinds != null && !Array.isArray(input.mentionedAgentKinds)) {
       throw new Error('LOCAL_MESSAGE_TARGET_REQUIRED')
     }
@@ -341,7 +341,7 @@ class LocalWorkspaceMessageSubmission {
     }
     const v4 = (mode === 'manual' || mode === 'auto')
       && group.conversationType !== 'direct'
-      && targetKinds.length > 1
+      && (targetKinds.length > 1 || (mode === 'auto' && targetKinds.length === 1))
       && !regenerateMessageId
       && input.protocol !== 'legacy'
       && this.v4Requested(input)
@@ -1781,7 +1781,7 @@ class LocalWorkspaceMessageSubmission {
       ? normalizeTargetKinds(input.targetKinds)
       : group.agentKinds
     const targetKinds = [...new Set(requested.filter(kind => group.agentKinds.includes(kind)))]
-    if (targetKinds.length < 2) throw new Error('LOCAL_AUTO_AGENT_COUNT')
+    if (!targetKinds.length) throw new Error('LOCAL_AUTO_AGENT_COUNT')
     const unlimitedRounds = input.unlimitedRounds === true
     const maxRounds = unlimitedRounds
       ? 0

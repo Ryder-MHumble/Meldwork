@@ -1,4 +1,5 @@
 const { redactSecrets } = require('../security/secret-redaction.cjs')
+const { parseTaskDecision } = require('../collaboration/task-decision.cjs')
 const { normalizeExternalRunRef } = require('../agents/agent-runtime-contract.cjs')
 const { parseConnectorRunSnapshot } = require('../agents/connectors/agent-connector-registry.cjs')
 const { parseRunEventState } = require('./run-event-protocol.cjs')
@@ -43,7 +44,7 @@ const CONTEXT_FIELDS = new Set([
   'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
   'sessionProvenance', 'outcomeRefs', 'sourceCount', 'sourceHash', 'promptBytes',
   'promptHash', 'wirePayloadBytes', 'wirePayloadHash', 'operationId', 'snapshotHash',
-  'connector', 'connectorEventState',
+  'connector', 'connectorEventState', 'taskDecision',
 ])
 const CONTEXT_PACK_STATES = new Set(['captured', 'legacy-unavailable'])
 const REQUIRED_BUDGET_FIELDS = new Set(['limits', 'used', 'source', 'enforcement', 'startedAt'])
@@ -240,7 +241,7 @@ function normalizeAgentRun(input, parent, fallbackTimestamp) {
     'includedCount', 'omittedCount', 'charCount', 'sessionRotated', 'externalRunRef',
     'contextMode', 'promptChars', 'contextPackId', 'deliveryRecordIds', 'sessionProvenance', 'outcomeRefs',
     'sourceCount', 'sourceHash', 'promptBytes', 'promptHash', 'wirePayloadBytes', 'wirePayloadHash',
-    'operationId', 'snapshotHash', 'connector', 'connectorEventState',
+    'operationId', 'snapshotHash', 'connector', 'connectorEventState', 'taskDecision',
   ].some(key => hasOwn(input.context, key))
   const rawEvents = Array.isArray(input.events) ? input.events : []
   const rawSourceIds = Array.isArray(input.sourceMessageIds) ? input.sourceMessageIds : []
@@ -732,6 +733,12 @@ function hasValidStoredRecordShape(input) {
         if (!normalizedProvenance
             || canonicalJson(normalizedProvenance)
               !== canonicalJson(agentRun.context.sessionProvenance)) return false
+      }
+      if (hasOwn(agentRun.context, 'taskDecision')) {
+        try {
+          if (canonicalJson(parseTaskDecision(agentRun.context.taskDecision))
+              !== canonicalJson(agentRun.context.taskDecision)) return false
+        } catch { return false }
       }
       if (hasOwn(agentRun.context, 'outcomeRefs')) {
         if (!isRecord(agentRun.context.outcomeRefs)) return false

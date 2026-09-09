@@ -12,7 +12,7 @@
 - 写入调度按真实目录路径协调跨群任务，符号链接别名使用同一资源键。同一目录最多一个运行中的写入者；只读任务仍可并行。审批挂起后重新获取原权限绑定，未知调度权限拒绝。
 - Pi 能力检测要求实际调用使用的模式、会话、工具与审批参数，拒绝同名无关程序和缺少权限控制的 CLI；不改变用户本机损坏的 Pi 安装。
 - 自然讨论中的有效 @ 不再被同一回复里的未知 @ 一并丢弃；移除第四轮后强制加入未发言成员的逻辑，保留 Agent 选择的参与者。
-- 顺序讨论到达轮数上限、自动讨论耗尽单轮预算，以及对应恢复分支，均记录 `round-limit` 并发出上限提示，不再直接报告 `completed`。这只修复预算退出误报，尚未替代无 @ 推断完成的旧规则。
+- 顺序讨论到达轮数上限、自动讨论耗尽单轮预算，以及对应恢复分支，均记录 `round-limit` 并发出上限提示，不再直接报告 `completed`。
 - 历史运行卡片使用现有双语“最近一次话题运行”文案；活动话题保持运行中文案，避免已完成任务看起来仍在执行。
 - 已选择的 Provider 凭证不可读时，检测不再根据原生登录或历史成功标成可用，保留安装/配置事实与未知凭证状态，界面显示双语“Provider 凭证不可用”。旧任务随后成功也不能覆盖这一阻塞；解除后刷新重新判断。执行仍拒绝静默切换 Provider。上述写入调度、路由、预算退出及历史卡片修复已提交为 `d0115c2`。
 
@@ -33,10 +33,29 @@
 ## 待完成
 
 1. 群聊写权限：自然流程不进入 synthesis，现有授权却只在该阶段生效。需要同步修复实际调用、槽位权限、持久化记录、调度隔离和未知写入结果恢复，不能只改变一处 permissionMode。
-2. 群聊收尾：无待处理 @ 表示讨论暂停；由交付负责人基于目标与产物判断完成、阻塞或继续，用户采用独立记录。替代当前通过两轮无 @ 推断成功的规则。
+2. 群聊收尾：自然讨论已替代无 @ 推断成功的规则，详见下节。`needs-human` 当前记录为 partial 并提示原因，尚未连接可恢复的 Human Gate；人类采用记录与更多真实多 Agent 场景仍需验证。
 3. 群聊路由及上下文：检查正文引用、未知 @、强制公平轮转与重复全文回放，保留 Agent 的自主协作选择。
 4. 启动检测：继续检查环境恢复、探测超时、Keychain 状态与执行事实一致性；首次扫描等待仍长。
 5. 通用性：继续落实 review 中与当前范围有关的品牌/Skill/媒体词路由问题，业务核心不依赖指定 Agent；Pi 空能力探测已收紧。
 6. 完成真实 Electron 群聊写文件、完成/阻塞、失败隔离、取消和重启恢复验收，再更新版本、复测和生成最终版本说明。
 
 研究与本地协议验证不等于 V1.0.5 已发布。尚未推送、合并或替换用户日常客户端。
+
+## 自然任务判断与单 Agent 检查点
+
+2026-09-09：自然讨论由首个选定参与者作为初始交付负责人，负责人可显式交接给选定参与者。完成、继续、阻塞与需要人类决定通过有界 `taskDecision` 回执记录；完成必须附理由和交付依据。它是 AI 的判断，不是系统独立验证或用户采用。待处理有效 @ 优先继续，缺少有效判断不再由沉默推断成功，也不再强制另一成员复核。
+
+判断贯穿回执、Harness、账本和 journal。回归发现 journal 字段白名单遗漏导致落盘失败，已同步严格校验。恢复复用绑定有效的已完成结果；过期消息不能冒用旧操作判断。无结构化回执的 challenge 不再被外层编造成支持意见与职责图。
+
+前端发送及主进程允许单个可用 Agent 启动自动任务，继续拦截无目标和不可用成员。历史卡片不再因 Agent 调用正常结束，将任务受阻、待人类决定或缺少完成判断显示为整项成功。
+
+验证：
+
+- `node --test desktop/test/collaboration/task-decision.test.cjs desktop/test/workspace/local-workspace-v4-natural-discussion.test.cjs desktop/test/workspace/local-workspace-v4-receipt.test.cjs`：52/52，通过完成/阻塞/需要人类决定、主动继续、有效/无效交接、部分结果恢复和旧消息绑定测试。
+- `node --test desktop/test/runs/run-ledger.test.cjs desktop/test/runs/run-harness.test.cjs desktop/test/collaboration/orchestration-v4-records.test.cjs`：136/136，包括从损坏快照经 journal 恢复判断，以及拒绝无交付依据的完成记录。
+- `node --test desktop/test/workspace/local-workspace-auto.test.cjs`：91/91。
+- `npm --prefix frontend test`：36 文件、332/332；`npm --prefix frontend run build:desktop` 和 `git diff --check` 通过。构建仍有既有大 chunk 提示；本检查点未重跑全量桌面或打包。
+- `/tmp/meldwork-105-task-decisions.cjs`：真实 Electron + 原生 Codex，独立配置 `/tmp/meldwork-105-decisions-Mh7mIS`。算术交付运行 `ed60537a-343e-49eb-960e-ad5fff33f586` 持久化为 completed，负责人给出答案和依据；缺失 `required-input.txt` 的运行 `7d242ebe-1cc9-4edd-a4ea-bfd704d29f42` 给出 blocked 判断，整项记录 partial，未生成替代文件。测试脚本最初错误地以空运行列表提前结束，修订为等待账本终态后才作断言；该首次中断不计通过。
+- `/tmp/meldwork-105-decision-history.cjs` 重开上述真实记录，不新增模型调用；阻塞提示可见且无整项成功卡片，完成案例保留历史卡片。已查看 `/tmp/meldwork-105-decision-completed.png` 与 `/tmp/meldwork-105-decision-blocked-fixed.png`，Electron 正常退出。
+
+此检查点尚未解决自然自动任务的实际写入与未知写入恢复，也不代表所有 CLI 的完成回执已实测兼容。后续继续按上述待完成项推进。

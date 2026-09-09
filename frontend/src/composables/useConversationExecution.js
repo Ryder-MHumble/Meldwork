@@ -34,7 +34,7 @@ export function useConversationExecution({
 }) {
   const canSendMessage = computed(() => (
     composerTargetsReady.value
-    && (composerMode.value !== 'auto' || composerTargetKinds.value.length >= 2)
+    && composerTargetKinds.value.length > 0
     && !importingAttachment.value
     && composerAttachmentSupported.value
     && Boolean(draft.value.trim() || composerAttachments.value.length)
@@ -72,10 +72,6 @@ export function useConversationExecution({
       notify(t('composer.selectTarget'))
       return
     }
-    if (backendMode === 'auto' && targets.length < 2) {
-      notify(t('error.autoAgentCount'))
-      return
-    }
     if (targets.some(kind => !readyAgentKinds.value.has(kind))) {
       notify(t('error.agentUnavailable'))
       return
@@ -89,7 +85,7 @@ export function useConversationExecution({
     const previousAttachments = composerAttachments.value.map(attachment => ({ ...attachment }))
     const v4GroupRun = group.conversationType !== 'direct'
       && (backendMode === 'manual' || backendMode === 'auto')
-      && (targets.length > 1 || automaticTeamFormation.value)
+      && (targets.length > 1 || backendMode === 'auto' || automaticTeamFormation.value)
     clearComposerContext()
     composerAttachments.value = []
     roundSettingsOpen.value = false

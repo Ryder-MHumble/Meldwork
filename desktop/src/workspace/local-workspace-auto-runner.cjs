@@ -2572,7 +2572,9 @@ class LocalWorkspaceAutoRunner {
         system: null,
         metadata,
       },
-      collaboration: null,
+      collaboration: trace.context?.taskDecision
+        ? { summary: trace.context.taskDecision.reason, taskDecision: trace.context.taskDecision }
+        : null,
       outcomeRefs: trace.context?.outcomeRefs || {},
       operationId: slot.operationId,
       consensus: false,
@@ -2594,13 +2596,25 @@ class LocalWorkspaceAutoRunner {
         skillHints: options.skillHints, naturalResponse: true,
       }),
       transcript ? `Completed peer turns:\n${transcript}` : '',
+      phase === 'discussion' && options.ownerKind
+        ? [
+            `The current delivery owner is @${options.ownerKind}. Ownership starts with the first selected participant and can be handed off explicitly by that owner.`,
+            kind === options.ownerKind
+              ? [
+                  'You are responsible for judging progress against the original user task and the actual available deliverables. Decide whether to continue work, report a blocker, request a human decision, or declare completion. Silence from peers is not evidence of completion. You may continue working yourself; another reviewer is optional.',
+                  'After your natural answer append exactly one receipt: [[MELDWORK_COLLABORATION:{"summary":"concise result","taskDecision":{"status":"completed|continue|blocked|needs-human","reason":"basis for the decision, remaining work or blocker","deliverables":["actual delivered result and its supporting observation"]}}]]. Use an empty deliverables array when no deliverable exists. A completed judgment requires actual deliverables. This is your task judgment, not human adoption or independent system verification.',
+                  'To hand off responsibility, use status continue and add handoffTo with one exact selected Agent kind inside taskDecision. Do not hand off to an absent participant. Append nothing after the receipt.',
+                ].join('\n')
+              : 'Contribute freely and request peers when useful. Only the current delivery owner can decide task completion or hand off that responsibility.',
+          ].join('\n')
+        : '',
       phase === 'discussion' && options.allowRouting === true
         ? [
             'Read the completed peer turns across recent rounds. Decide who should contribute next from their earlier evidence, unresolved questions, and work still needed; do not automatically reply only to whoever last mentioned you.',
             `Address peers naturally inside your explanation using exact mentions: ${agentList}. Put each mention beside its concrete question or requested contribution; no separate final-line mention list is needed.`,
             'Use one mention for a single next Agent or multiple mentions for a concurrent batch. Do not mention yourself. Quote historical mentions in blockquotes or code so they are not interpreted as new requests.',
             'Avoid repeating the same handoff or conclusions. Invite a peer who has not recently contributed when their earlier proposal can resolve the issue, and state what new evidence or decision you need.',
-            'End without any Agent mention only when you accept the current result and made no substantive change. If you made a substantive change, mention at least one different Agent for review.',
+            'Mention a peer only when you need their contribution. You may finish your own contribution without mentioning another Agent; the delivery owner will judge overall task completion.',
           ].join('\n')
         : '',
     ].filter(Boolean).join('\n\n')
@@ -2627,41 +2641,49 @@ class LocalWorkspaceAutoRunner {
     ))
   }
 
-  v4NaturalRoundHasPeerConfirmation(
-    group, controller, threadRootId, round, activeKinds,
-  ) {
-    if (round <= 2) return false
-    const currentMessages = this.v4NaturalDiscussionRoundMessages(
-      group, controller, threadRootId, round,
-    )
-    if (!currentMessages.length) return false
-    const currentDecisions = currentMessages.map(message => (
-      this.v4NaturalRouteDecision(message.content, activeKinds)
-    ))
-    if (currentDecisions.some(decision => decision.status !== 'none')) return false
-    const previousMessages = this.v4NaturalDiscussionRoundMessages(
-      group, controller, threadRootId, round - 1,
-    )
-    if (!previousMessages.length) return false
-    const previousDecisions = previousMessages.map(message => ({
-      agentKind: message.agentKind,
-      decision: this.v4NaturalRouteDecision(message.content, activeKinds),
-    }))
-    const peerSelected = currentMessages.some(message => previousDecisions.some(previous => (
-      previous.agentKind !== message.agentKind
-      && previous.decision.status === 'valid'
-      && previous.decision.kinds.includes(message.agentKind)
-    )))
-    if (peerSelected) return true
-    return previousDecisions.every(previous => previous.decision.status === 'none')
-      && currentMessages.some(message => (
-        previousMessages.every(previous => previous.agentKind !== message.agentKind)
-      ))
+  v4NaturalOwner(group, controller, threadRootId) {
+    let owner = controller.targetKinds[0] || ''
+    for (const message of this.state().messages) {
+      if (message.groupId !== group.id || message.threadRootId !== threadRootId
+          || message.role !== 'agent' || message.agentKind !== owner
+          || message.trace?.phase !== 'discussion'
+          || !this.v4NaturalMessageMatchesBinding(message, controller)) continue
+      const decision = message.trace?.context?.taskDecision
+      if (decision?.status === 'continue' && decision.handoffTo
+          && controller.targetKinds.includes(decision.handoffTo)) owner = decision.handoffTo
+    }
+    return owner
   }
 
-  v4NaturalConfirmationKind(activeKinds, currentKinds) {
-    const current = new Set(currentKinds)
-    return activeKinds.find(kind => !current.has(kind)) || ''
+  v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds) {
+    const messages = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
+    const owner = this.v4NaturalOwner(group, controller, threadRootId)
+    const routes = messages.map(message => this.v4NaturalRouteDecision(message.content, activeKinds))
+    const nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
+    if (nextKinds.length) return { nextKinds, ownerReview: false }
+    if (!activeKinds.includes(owner)) return { status: 'partial' }
+    const ownerMessage = messages.find(message => message.agentKind === owner)
+    const decision = ownerMessage?.trace?.context?.taskDecision
+    if (decision?.handoffTo && !activeKinds.includes(decision.handoffTo)) {
+      return { status: 'partial' }
+    }
+    if (decision?.status === 'continue') return { nextKinds: [owner], ownerReview: false }
+    const sawAllContributions = messages.length === 1
+      || (controller.discussionStyle === 'sequential' && messages.at(-1)?.agentKind === owner)
+    if (!ownerMessage || !sawAllContributions) return { nextKinds: [owner], ownerReview: true }
+    if (routes.some(route => route.status === 'invalid') || !decision) {
+      this.addMessage(group.id, 'system', 'Discussion stopped without a valid task completion decision.',
+        '', threadRootId, { key: 'system.autoTaskDecisionMissing' })
+      return { status: 'partial' }
+    }
+    if (decision.status === 'completed') {
+      return { status: controller.failedKinds.length ? 'partial' : 'completed' }
+    }
+    this.addMessage(group.id, 'system', decision.reason, '', threadRootId, {
+      key: decision.status === 'needs-human' ? 'system.autoTaskNeedsHuman' : 'system.autoTaskBlocked',
+      params: { reason: decision.reason },
+    })
+    return { status: 'partial' }
   }
 
   v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds) {
@@ -2733,12 +2755,14 @@ class LocalWorkspaceAutoRunner {
       ? (controller.orchestration.pendingKinds || []).filter(kind => activeKinds.includes(kind))
       : [...activeKinds]
     if (!pendingKinds.length && controller.orchestration?.phase === 'discussion') {
+      const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+      if (outcome.status) return outcome.status
       if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
         addRoundLimitNotice()
         return 'round-limit'
       }
       round += 1
-      pendingKinds = [...activeKinds]
+      pendingKinds = outcome.ownerReview ? outcome.nextKinds : [...activeKinds]
     }
     while (!controller.signal.aborted) {
       controller.currentRound = round
@@ -2773,6 +2797,8 @@ class LocalWorkspaceAutoRunner {
                 group, threadRootId, { controller },
               ),
               skillHints: context.rootSkillsByKind.get(promptKind) || [],
+              ownerKind: this.v4NaturalOwner(group, controller, threadRootId),
+              allowRouting: true,
             },
           ),
         })
@@ -2787,13 +2813,15 @@ class LocalWorkspaceAutoRunner {
         }
         pendingKinds = remainingKinds.filter(agentKind => activeKinds.includes(agentKind))
       }
+      const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+      if (outcome.status) return outcome.status
       if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
         addRoundLimitNotice()
         return 'round-limit'
       }
       round += 1
       controller.currentRound = round
-      pendingKinds = [...activeKinds]
+      pendingKinds = outcome.ownerReview ? outcome.nextKinds : [...activeKinds]
     }
     return terminalRunStatusForReason(controller.stopReason)
   }
@@ -2834,23 +2862,12 @@ class LocalWorkspaceAutoRunner {
       nextKinds = (controller.orchestration.pendingKinds || [])
         .filter(kind => activeKinds.includes(kind))
       if (!nextKinds.length) {
-        const roundMessages = this.v4NaturalDiscussionRoundMessages(
-          group, controller, threadRootId, round,
-        )
-        nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
         if (this.v4NaturalStopRepeatingDiscussion(
           group, controller, threadRootId, round, activeKinds,
         )) return 'partial'
-        if (!nextKinds.length) {
-          if (this.v4NaturalRoundHasPeerConfirmation(
-            group, controller, threadRootId, round, activeKinds,
-          )) return 'completed'
-          const confirmationKind = this.v4NaturalConfirmationKind(
-            activeKinds, roundMessages.map(message => message.agentKind),
-          )
-          if (!confirmationKind) return roundMessages.length ? 'partial' : 'failed'
-          nextKinds = [confirmationKind]
-        }
+        const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+        if (outcome.status) return outcome.status
+        nextKinds = outcome.nextKinds
         if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
           addRoundLimitNotice()
           return 'round-limit'
@@ -2859,7 +2876,8 @@ class LocalWorkspaceAutoRunner {
       }
     } else {
       round = 2
-      nextKinds = activeKinds.slice(0, 1)
+      nextKinds = [this.v4NaturalOwner(group, controller, threadRootId)]
+      if (!activeKinds.includes(nextKinds[0])) return 'partial'
     }
 
     while (!controller.signal.aborted) {
@@ -2891,6 +2909,7 @@ class LocalWorkspaceAutoRunner {
             transcript: this.v4NaturalThreadTranscript(group, threadRootId, { controller }),
             skillHints: context.rootSkillsByKind.get(kind) || [],
             allowRouting: true,
+            ownerKind: this.v4NaturalOwner(group, controller, threadRootId),
           },
         ),
       })
@@ -2901,23 +2920,12 @@ class LocalWorkspaceAutoRunner {
         activeKinds = activeKinds.filter(kind => !failedKinds.includes(kind))
         if (!activeKinds.length) return dispatch.phasePendingMessages?.length ? 'partial' : 'failed'
       }
-      const roundMessages = this.v4NaturalDiscussionRoundMessages(
-        group, controller, threadRootId, round,
-      )
-      nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
       if (this.v4NaturalStopRepeatingDiscussion(
         group, controller, threadRootId, round, activeKinds,
       )) return 'partial'
-      if (!nextKinds.length) {
-        if (this.v4NaturalRoundHasPeerConfirmation(
-          group, controller, threadRootId, round, activeKinds,
-        )) return 'completed'
-        const confirmationKind = this.v4NaturalConfirmationKind(
-          activeKinds, roundMessages.map(message => message.agentKind),
-        )
-        if (!confirmationKind) return roundMessages.length ? 'partial' : 'failed'
-        nextKinds = [confirmationKind]
-      }
+      const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+      if (outcome.status) return outcome.status
+      nextKinds = outcome.nextKinds
       if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
         addRoundLimitNotice()
         return 'round-limit'
@@ -2980,52 +2988,16 @@ class LocalWorkspaceAutoRunner {
   v4ReceiptForResult(result, phase, kind, slot, snapshotHash, options = {}) {
     let raw = result?.collaboration
     if ((!raw || typeof raw !== 'object' || Array.isArray(raw))
-        && this.naturalAgentResponses) {
+        && this.naturalAgentResponses && ['proposal', 'discussion'].includes(phase)) {
       const visibleSummary = (publicCollaborationText(
         result?.text || result?.message?.content || '', 800,
       ) || `Completed the ${phase} phase.`).replace(/\s+/gu, ' ').trim()
-      const controller = options.controller || {}
-      const targetKinds = [...new Set(
-        (Array.isArray(controller.targetKinds) && controller.targetKinds.length
-          ? controller.targetKinds
-          : controller.orchestration?.targetKinds || [kind])
-          .filter(value => typeof value === 'string' && value),
-      )].sort()
-      const phaseSlots = Array.isArray(controller.orchestration?.slots)
-        ? controller.orchestration.slots
-        : []
-      const taskIdFor = agentKind => `natural-${hashValue({ snapshotHash, agentKind }).slice(0, 24)}`
-      const finalizerKind = targetKinds[0] || kind
-      const verifierKinds = targetKinds.filter(agentKind => agentKind !== finalizerKind)
-      const proposedAssignments = targetKinds.map(agentKind => ({
-        taskId: taskIdFor(agentKind),
-        ownerKind: agentKind,
-        role: agentKind === finalizerKind ? 'integrator' : 'verifier',
-        objective: `Address the current user task as ${agentKind}.`,
-        expectedOutput: 'Return the result in natural Markdown.',
-        inputRefs: [],
-        artifactIds: [],
-        dependsOn: [],
-      }))
       raw = {
         summary: visibleSummary,
         capabilities: ['Delivered a natural-language response'],
         intendedWork: ['Addressed the current user task'],
         deliverables: ['Natural-language Markdown response'],
         dependencies: [],
-        ...(phase === 'challenge' ? {
-          verdict: 'support',
-          proposedAssignments,
-          finalizerKind,
-          verifierKinds,
-          agreeToPlan: true,
-        } : {}),
-        ...(phase === 'work' ? {
-          workItemId: options.workItemId || taskIdFor(kind),
-          deliverables: ['Natural-language Markdown response'],
-        } : {}),
-        ...(phase === 'synthesis' ? { resolvedIssueIds: [] } : {}),
-        ...(phase === 'verification' ? { verdict: 'support' } : {}),
       }
     }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
@@ -3139,6 +3111,7 @@ class LocalWorkspaceAutoRunner {
       status,
       summary,
       conclusion: '',
+      ...(raw.taskDecision ? { taskDecision: raw.taskDecision } : {}),
       artifactIds,
       evidenceIds,
       findingIds,

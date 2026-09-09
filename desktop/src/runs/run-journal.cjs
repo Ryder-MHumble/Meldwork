@@ -29,7 +29,7 @@ const CONTEXT_FIELDS = new Set([
   'contextMode', 'promptChars', 'contextPackId', 'contextPackState', 'deliveryRecordIds',
   'sessionProvenance', 'outcomeRefs', 'sourceCount', 'sourceHash', 'promptBytes',
   'promptHash', 'wirePayloadBytes', 'wirePayloadHash', 'operationId', 'snapshotHash',
-  'connector', 'connectorEventState',
+  'connector', 'connectorEventState', 'taskDecision',
 ])
 
 function clone(value) {

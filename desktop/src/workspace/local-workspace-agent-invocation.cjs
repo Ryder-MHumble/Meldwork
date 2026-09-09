@@ -1,6 +1,7 @@
 const { createHash, randomUUID } = require('node:crypto')
 const fs = require('node:fs')
 const path = require('node:path')
+const { parseTaskDecision } = require('../collaboration/task-decision.cjs')
 const {
   agentRuntimeCapabilities,
   isCodeReviewAgentKind,
@@ -192,6 +193,7 @@ function parseV4CollaborationReceiptStrict(result, required = false, expectedPha
   const summary = boundedReceiptText(receipt.summary)
   const allowed = new Set([
     'version', 'phase', 'summary',
+    ...(phase === 'discussion' ? ['taskDecision'] : []),
     ...(['challenge', 'verification'].includes(phase) ? ['verdict'] : []),
     ...(phase === 'proposal'
       ? ['capabilities', 'intendedWork', 'deliverables', 'dependencies'] : []),
@@ -246,6 +248,8 @@ function parseV4CollaborationReceiptStrict(result, required = false, expectedPha
     version: 1,
     phase,
     summary,
+    ...(phase === 'discussion' && receipt.taskDecision != null
+      ? { taskDecision: parseTaskDecision(receipt.taskDecision) } : {}),
     ...(['challenge', 'verification'].includes(phase) ? { verdict: receipt.verdict } : {}),
     ...(phase === 'proposal' ? {
       capabilities: proposalList('capabilities', true),
@@ -1899,6 +1903,8 @@ class LocalWorkspaceAgentInvocation {
         promptHash: sha256(prompt),
         externalRunRef: result.externalRunRef,
         outcomeRefs: auditOutcomeRefs,
+        ...(collaborationReply.collaboration?.taskDecision
+          ? { taskDecision: collaborationReply.collaboration.taskDecision } : {}),
       })
       const messageMetadata = {
         elapsedMs: Date.now() - startedAt,

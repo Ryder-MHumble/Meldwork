@@ -4108,14 +4108,6 @@ test('automatic dialogue queues only the explicitly targeted group members', asy
     workdir: directory,
   })
 
-  await assert.rejects(workspace.sendMessage({
-    groupId: group.id,
-    text: 'Only Codex',
-    mode: 'auto',
-    targetKinds: ['codex'],
-    maxRounds: 1,
-  }), { message: 'LOCAL_AUTO_AGENT_COUNT' })
-
   await workspace.sendMessage({
     groupId: group.id,
     text: 'Codex、Hermes 和 Kimi 讨论',

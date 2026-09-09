@@ -11,6 +11,9 @@ const CONTROLLER_TERMINAL_KEYS = new Set([
   'system.autoTimeout',
   'system.autoRoundLimit',
   'system.autoStopped',
+  'system.autoTaskDecisionMissing',
+  'system.autoTaskBlocked',
+  'system.autoTaskNeedsHuman',
 ])
 
 function orchestrationFor(run, agent) {

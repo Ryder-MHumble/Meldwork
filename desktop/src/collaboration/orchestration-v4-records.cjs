@@ -1,4 +1,5 @@
 const crypto = require('node:crypto')
+const { parseTaskDecision } = require('./task-decision.cjs')
 
 const { normalizeContentBlobRef } = require('../attachments/content-blob-store.cjs')
 const { canonicalJson } = require('./context-pack-records.cjs')
@@ -2170,7 +2171,7 @@ function parseCollaborationControlBlock(input, options = {}) {
     'claims', 'findings', 'refs', 'writer', 'writerKind', 'batchId', 'entryIds',
     'capabilities', 'intendedWork', 'deliverables', 'dependencies',
     'proposedAssignments', 'finalizerKind', 'verifierKinds', 'supportedPlanHash',
-    'agreeToPlan', 'workItemId',
+    'agreeToPlan', 'workItemId', 'taskDecision',
   ]) || input.version !== 1) {
     fail('COLLABORATION_CONTROL_BLOCK_INVALID')
   }
@@ -2180,6 +2181,8 @@ function parseCollaborationControlBlock(input, options = {}) {
     fail('COLLABORATION_CONTROL_BLOCK_INVALID')
   }
   const summary = safeText(input.summary, MAX_V4_SUMMARY_CHARS, true)
+  const taskDecision = input.taskDecision == null ? null : parseTaskDecision(input.taskDecision)
+  if (taskDecision && phase !== 'discussion') fail('COLLABORATION_CONTROL_BLOCK_INVALID')
   const boundedList = (value, limit = MAX_V4_REFS, textLimit = MAX_V4_TEXT_CHARS) => {
     if (value == null) return []
     if (!Array.isArray(value) || value.length > limit) fail('COLLABORATION_CONTROL_BLOCK_INVALID')
@@ -2310,6 +2313,7 @@ function parseCollaborationControlBlock(input, options = {}) {
     status,
     summary,
     conclusion,
+    ...(taskDecision ? { taskDecision } : {}),
     artifactIds,
     evidenceIds,
     findingIds,
@@ -2348,6 +2352,7 @@ function collaborationChars(block) {
     ...(Array.isArray(block.intendedWork) ? block.intendedWork : []),
     ...(Array.isArray(block.deliverables) ? block.deliverables : []),
     ...(Array.isArray(block.dependencies) ? block.dependencies : []),
+    ...(block.taskDecision ? [block.taskDecision.reason, ...block.taskDecision.deliverables] : []),
     ...(Array.isArray(block.proposedAssignments)
       ? block.proposedAssignments.flatMap(item => [item.objective, item.expectedOutput])
       : []),
@@ -2556,6 +2561,7 @@ function createCollaborationReceipt(input, options = {}) {
     ...(input.supportedPlanHash ? { supportedPlanHash: input.supportedPlanHash } : {}),
     ...(typeof input.agreeToPlan === 'boolean' ? { agreeToPlan: input.agreeToPlan } : {}),
     ...(input.workItemId ? { workItemId: input.workItemId } : {}),
+    ...(input.taskDecision ? { taskDecision: input.taskDecision } : {}),
     deliveryWatermark: input.deliveryWatermark || 0,
     snapshotHash: input.snapshotHash,
     ...(typeof input.writer === 'boolean' ? { writer: input.writer } : {}),

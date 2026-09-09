@@ -196,14 +196,14 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
-  it('sends the Auto discussion Beta mode as an Agent-led V4 discussion', async () => {
+  it.each([['codex'], ['codex', 'hermes']].map(agentKinds => ({ agentKinds })))('sends Auto discussion Beta as V4 with $agentKinds', async ({ agentKinds }) => {
     const { wrapper, bridge } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'group-auto-beta',
         conversationType: 'group',
         name: 'Beta group',
         topic: '',
-        agentKinds: ['codex', 'hermes'],
+        agentKinds,
         workdir: '/tmp/meldwork-workspace',
         allowWrite: false,
         createdAt: '2026-07-29T08:00:00Z',
@@ -231,7 +231,7 @@ describe('Meldwork workbench', () => {
     expect(bridge.localWorkspace.send).toHaveBeenCalledWith({
       groupId: 'group-auto-beta',
       text: 'Plan a launch',
-      targetKinds: ['codex', 'hermes'],
+      targetKinds: agentKinds,
       skillHints: [],
       knowledgeBaseHints: [],
       attachments: [],

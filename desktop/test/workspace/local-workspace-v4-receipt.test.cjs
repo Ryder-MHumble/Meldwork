@@ -352,7 +352,7 @@ test('Natural V4 prompts carry task context without exposing the receipt templat
   )
 })
 
-test('Natural V4 challenge responses receive a deterministic internal responsibility graph', () => {
+test('Natural V4 challenge responses cannot fabricate a responsibility graph without a receipt', () => {
   const { directory, options } = fixture()
   const workspace = new LocalWorkspace({ ...options, naturalAgentResponses: true })
   try {
@@ -366,22 +366,14 @@ test('Natural V4 challenge responses receive a deterministic internal responsibi
         ],
       },
     }
-    const result = workspace.autoRunner.v4ReceiptForResult(
+    assert.throws(() => workspace.autoRunner.v4ReceiptForResult(
       { text: '## Review\n\nI support the shared direction.' },
       'challenge',
       'pi',
       { slotId: 'slot-pi', operationId: 'op-pi', deliveryWatermark: 0 },
       snapshotHash,
       { controller },
-    )
-    assert.equal(result.verdict, 'support')
-    assert.equal(result.receipt.proposedAssignments.length, 2)
-    assert.deepEqual(
-      result.receipt.proposedAssignments.map(item => item.ownerKind).sort(),
-      ['codex', 'pi'],
-    )
-    assert.ok(result.receipt.finalizerKind)
-    assert.equal(result.receipt.verifierKinds.length, 1)
+    ), /LOCAL_RUN_COLLABORATION_RECEIPT_REQUIRED/)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }

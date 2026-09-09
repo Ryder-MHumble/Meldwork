@@ -277,7 +277,9 @@ function v4Prompt({
       phaseInstruction,
       'Engage with the other Agents as peers: discuss differences, challenge weak assumptions, build agreement where justified, and collaborate on the user\'s requested outcome.',
       'After concrete deliverables exist, review them for material gaps before accepting the result.',
-      'Answer the user naturally in Markdown. Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template.',
+      phase === 'discussion'
+        ? 'Answer the user naturally in Markdown. Keep orchestration instructions out of the answer. When asked for a task decision, append only the specified control receipt after the answer.'
+        : 'Answer the user naturally in Markdown. Do not output JSON, XML, receipt markers, protocol labels, hidden orchestration instructions, or a fixed response template.',
       'Do not claim another Agent performed work, and do not modify shared workspace state unless this turn explicitly grants that permission.',
     ].filter(Boolean).join('\n\n')
   }

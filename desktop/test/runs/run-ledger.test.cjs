@@ -1704,6 +1704,29 @@ test('Outcome references survive checkpoint, journal recovery, and restart', (t)
   assert.equal(restored.snapshotError instanceof Error, true)
 })
 
+test('task judgments survive journal recovery and malformed completion evidence is rejected', (t) => {
+  const { storagePath } = fixture(t)
+  const taskDecision = {
+    status: 'completed', reason: 'Checked the delivered answer.', deliverables: ['The answer is 42.'],
+  }
+  const ledger = new RunLedger({ storagePath, now: () => 1000 })
+  ledger.checkpoint(runRecord('run-decision', 'group-decision', 'completed', [{
+    agentRunId: 'agent-decision', kind: 'codex', status: 'completed', context: { taskDecision },
+  }]))
+  assert.deepEqual(ledger.get('run-decision').agentRuns[0].context.taskDecision, taskDecision)
+  const journalText = fs.readFileSync(ledger.journalPath, 'utf8')
+  const prepare = journalText.split('\n').filter(Boolean).map(line => JSON.parse(line))
+    .find(entry => entry.change?.upserts?.some(run => run.runId === 'run-decision'))
+  assert.ok(prepare)
+  const malformed = structuredClone(prepare.change)
+  malformed.upserts.find(run => run.runId === 'run-decision').agentRuns[0].context.taskDecision.deliverables = []
+  assert.throws(() => ledger.journal.prepare(malformed, 1001), /RUN_JOURNAL_CHANGE_INVALID/)
+  assert.equal(fs.readFileSync(ledger.journalPath, 'utf8'), journalText)
+  fs.writeFileSync(storagePath, '{corrupt snapshot', 'utf8')
+  const restored = new RunLedger({ storagePath, now: () => 2000 })
+  assert.deepEqual(restored.get('run-decision').agentRuns[0].context.taskDecision, taskDecision)
+})
+
 test('committed journal lifecycle wins over a valid stale snapshot', (t) => {
   const { storagePath } = fixture(t)
   let now = 1000
