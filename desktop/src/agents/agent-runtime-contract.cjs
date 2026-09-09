@@ -213,7 +213,7 @@ function normalizeExternalRunRef(value) {
 function terminalAuthenticationDiagnostic(value) {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
   if (!text || text.length > 2000) return ''
-  return /^HTTP\s+(?:401|403)\s*:\s*(?:(?:unauthorized|forbidden)\b|(?:invalid|expired|missing)\b[\s\S]*(?:token|credential|api[ _-]?key|auth))/i
+  return /^HTTP\s+(?:401|403)\s*:\s*(?:unauthorized|forbidden|(?:invalid|expired|missing)\s+(?:access\s+token|token|credentials?|api[ _-]?key|authentication))(?:\s*\(request[ _-]?id:\s*[^()]{1,160}\))?\.?$/i
     .test(text)
     ? text
     : ''

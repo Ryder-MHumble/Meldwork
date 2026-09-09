@@ -4,8 +4,29 @@ const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
 
-const { childEnvironment } = require('../../../src/agents/cli/cli-process-support.cjs')
+const { childEnvironment, failedAgentProcessError } = require('../../../src/agents/cli/cli-process-support.cjs')
 const { managedOpenClawOptions } = require('../../../src/agents/cli/openclaw-runtime.cjs')
+
+test('process diagnostics require explicit authentication failure evidence', () => {
+  for (const diagnostic of [
+    'EACCES: permission denied opening auth-service.ts',
+    'Cannot find module credential-parser',
+    'Model configuration failed: connection timed out',
+    'Failed to download documentation: HTTP 403 Forbidden',
+  ]) {
+    assert.equal(failedAgentProcessError(diagnostic).code, 'LOCAL_AGENT_PROCESS_FAILED')
+  }
+  for (const diagnostic of [
+    'Invalid API key',
+    'Authentication failed',
+    'Please log in before continuing',
+    'Select an auth type first.',
+    'HTTP 401: Unauthorized',
+    '认证失败，请重新登录',
+  ]) {
+    assert.equal(failedAgentProcessError(diagnostic).code, 'LOCAL_AGENT_AUTH_REQUIRED')
+  }
+})
 
 test('OpenClaw child environment keeps only its guarded runtime and selected credential', (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-openclaw-child-env-'))

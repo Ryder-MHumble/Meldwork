@@ -117,3 +117,13 @@ test('short terminal HTTP credential diagnostics cannot become successful result
     'When an API returns HTTP 401: Invalid token, refresh the configured credential.',
   ), '')
 })
+
+test('successful explanations of authentication errors remain successful', () => {
+  for (const text of [
+    'HTTP 401: Unauthorized means the request needs valid credentials.',
+    'HTTP 403: Forbidden is the expected response in this test.',
+    'HTTP 401: Invalid token can be reproduced with the following test.',
+  ]) {
+    assert.equal(requireTerminalAgentResult({ outcome: 'completed', text }).text, text)
+  }
+})
