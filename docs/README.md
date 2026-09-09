@@ -8,7 +8,7 @@ Meldwork 的候选定位是 **本地优先、跨 Agent 的任务与交付工作�
 
 | 文档 | 作用 |
 | --- | --- |
-| [产品战略](product-strategy.md) | 2026-09-08 修订：目标客户、跨 Agent 价值、商业实验与候选竞争优势 |
+| [产品战略](product-strategy.md) | 2026-09-09 决策摘要：市场证据、跨 Agent 价值、首单建议与继续投入条件；来源快照为 09-08 |
 | [Harness 与 Agent 组织层](harness-engine-strategy.md) | 协议对象、屏障、权限、责任、OutcomeReceipt、Fit 和架构演进 |
 | [产品迭代规划](product-iteration-plan.md) | 90 天验证、阶段门槛、指标、停止条件和路线图 |
 | [2026-09-08 商业化深度调研](research/meldwork-commercial-research-2026-09-08.md) | 七组竞品、实际价格、公开用户反馈、研究反证、中国/海外商业路径与迭代判断 |
