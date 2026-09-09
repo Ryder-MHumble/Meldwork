@@ -33,7 +33,7 @@
 ## 待完成
 
 1. 群聊写权限：自然讨论的实际写入与未知结果恢复已完成本轮检查点，见末节；仍需纳入最终全量测试与打包验收。
-2. 群聊收尾：自然讨论已使用 AI 完成判断，`needs-human` 已接入可恢复输入 Gate，详见末节。严格限定只输出一行时，真实 Codex 曾漏回执而成为 partial；完成契约的可用性和更多真实多 Agent 场景仍需验证。人类采用与 AI 完成继续分开。
+2. 群聊收尾：自然讨论已使用 AI 完成判断，`needs-human` 已接入可恢复输入 Gate。严格一行输出曾导致真实 Codex 漏回执；澄清回执与可见答案的边界后，Codex/OpenClaw 原要求复测均通过，见末节。仍需最终综合验收；人类采用与 AI 完成继续分开。
 3. 群聊路由及上下文：已限制历史预算、恢复长回复末尾、按原生会话确认状态增量发送，并使用明确 nextKinds 派发替代正文 @ 正则；详见相应检查点，最终版本仍需综合验收。
 4. 启动检测：继续检查环境恢复、探测超时、Keychain 状态与执行事实一致性；首次扫描等待仍长。
 5. 通用性：继续落实 review 中与当前范围有关的品牌/Skill/媒体词路由问题，业务核心不依赖指定 Agent；Pi 空能力探测已收紧。
@@ -244,3 +244,25 @@ nextKinds 使用最多 32 个唯一标识，与现有 V4 成员上限一致；�
 - 最终 `MELDWORK_TEST_CLAUDE_EXECUTABLE=/Users/rydersun/.local/opt/npm-global/bin/claude npm --prefix desktop test` 全量 1554/1554，失败和跳过均为 0，退出 0，约 321 秒；日志 `/tmp/meldwork-105-native-media-desktop.log`。测试启动后没有修改产品代码。`git diff --check` 通过，main/workspace 中已无媒体关键词解析与共享生成接线。
 
 本检查点未更新包版本、重建前端或打包，也未替换日常应用。CLI 环境覆盖、完成回执缺失的恢复体验及最终发布验收仍待完成。
+
+## 精确可见答案与完成回执
+
+2026-09-09：自然讨论的通用提示明确回执是传输元数据，展示前会剥离；用户的一行、精确文本、JSON-only 等格式约束适用于回执前的可见答案。没有降低完成判断要求、强制判成功或增加固定复核 Agent，也没有重放已有写入。
+
+- 自然讨论与回执测试 56/56，新增 agent-led/sequential 的精确文本和 JSON 持久化验证：可见正文不混入回执，重新加载保持原答案，账本仍保存 AI 判断。
+- 将真实验证任务恢复为此前失败的原始“answer exactly NATIVE_MEDIA_ROUTING_105_OK”要求，不向用户任务添加完成协议提示。Codex 配置 `/tmp/meldwork-105-native-media-jmhpam`、OpenClaw 配置 `/tmp/meldwork-105-native-media-L8HULT` 均在两次调用后 completed；可见答案精确，共享媒体调用 0，无生成附件，脚本退出 0，Electron 正常关闭。
+- 已查看 `/tmp/meldwork-105-exact-answer-completed.png` 和 `/tmp/meldwork-105-exact-answer-openclaw.png`。该结果证明上述真实样本通过，不承诺任何模型都不会漏回执；缺失判断仍不被系统伪造为成功。
+
+## 动态模型区域配置
+
+2026-09-09：原生环境采集、缓存身份与 Claude 协议适配允许格式受限的 VERTEX_REGION_<MODEL>，不再依赖固定模型名称枚举。值保持原样，显式空值覆盖旧值；显式 Meldwork Provider 不继承这些原生区域，其他 Agent 也不接收。未知凭据证据仍为未知，不因区域配置存在就判断登录成功。
+
+动态名称由 shell 内建能力枚举，再经格式和长度校验读取值；不导出无关环境，不新增 Node 依赖。zsh 使用参数名枚举，bash 使用 compgen，其他受支持 sh 在可用时借助系统 /bin/bash 枚举继承的导出名称。缺少这些 shell 能力时仍保留固定白名单和进程环境回退，不宣称所有 POSIX 环境均支持新增动态名称。
+
+验证：
+
+- 最终 readiness/Main 安全 91/91，覆盖缓存变更/移除/清空、Agent/Provider 隔离、非法名称，以及真实 sh/bash/zsh 采集。包含带命令替换形式的字面值和不相关敏感值，验证没有命令执行或额外值输出。
+- 中间实现曾使用当前 Electron 执行路径采集动态键；开发态通过，但检查 after-pack 发现正式包禁用 RunAsNode，因此在提交前替换为纯 shell。未放开打包安全 fuse。中间 Agent 全量 464/464 对应该被替换实现，不能作为最终采集实现的全量证明。
+- 最终 `/tmp/meldwork-105-region-electron.cjs` 使用真实 Electron 与隔离合成配置 `/tmp/meldwork-105-region-wJecRY` 验证动态键、空值、无 NODE_OPTIONS 透传及 Provider 隔离，采集约 15ms，退出 0；未调用外部模型。这是该次采集耗时，不是启动提速结论，也不是 AWS/Azure/Vertex 账户认证验收。
+
+上述两项尚未纳入新的全量桌面/前端构建与打包，包版本仍为 0.1.4，整体版本目标继续开发。

@@ -869,6 +869,59 @@ test('real shell extraction preserves explicit empty cloud and credential overri
   assert.equal(fallback.env.ANTHROPIC_API_KEY, '')
 })
 
+test('model-specific Vertex regions participate in cache identity and stay scoped to the native Agent', async () => {
+  const key = 'VERTEX_REGION_CLAUDE_FUTURE_MODEL'
+  const base = { platform: 'win32', home: 'C:\\vertex-region-test', env: { PATH: 'C:\\bin', [key]: 'us-east5' } }
+  const before = await resolveNativeShellEnvironment(base)
+  const after = await resolveNativeShellEnvironment({ ...base, env: { ...base.env, [key]: '' } })
+  assert.equal(before.env[key], 'us-east5')
+  assert.equal(after.env[key], '')
+  assert.deepEqual(nativeCredentialEnvironment('claude', after.env), { [key]: '' })
+  assert.deepEqual(nativeCredentialEnvironment('claude', before.env, { providerConfigured: true }), {})
+  assert.deepEqual(nativeCredentialEnvironment('gemini', before.env), {})
+  assert.deepEqual(nativeCredentialEnvironment('codex', before.env), {})
+  const removed = await resolveNativeShellEnvironment({ ...base, env: { PATH: base.env.PATH } })
+  assert.equal(removed.env[key], undefined)
+  assert.deepEqual(nativeCredentialEnvironment('claude', {
+    VERTEX_REGION_: 'empty-model', VERTEX_REGION_lowercase: 'invalid',
+    'VERTEX_REGION_MODEL;bad': 'invalid', NODE_OPTIONS: '--require untrusted',
+  }), {})
+})
+
+for (const shell of ['/bin/sh', '/bin/bash', '/bin/zsh']) {
+  test(`native shell ${shell} extracts exported dynamic regions without unrelated values or value evaluation`, {
+    skip: process.platform === 'win32' || !fs.existsSync(shell),
+  }, async t => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-region-'))
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+    const execFile = require('node:util').promisify(require('node:child_process').execFile)
+    let output = ''
+    const resolved = await resolveNativeShellEnvironment({
+      cache: false, home, shell, env: { PATH: '/usr/bin:/bin' },
+      execFileFn: async (command, args, options) => {
+        const result = await execFile(command, ['-c', [
+          "export VERTEX_REGION_CLAUDE_FUTURE_MODEL=us-east5",
+          "export VERTEX_REGION_CLAUDE_EMPTY=''",
+          "export VERTEX_REGION_LITERAL='$(touch should-not-exist)'",
+          "export MELDWORK_UNRELATED='synthetic-unrelated-secret'",
+          "export NODE_OPTIONS='--require /nonexistent/untrusted-module.cjs'",
+          args[1],
+        ].join('\n')], { ...options, cwd: home })
+        output = result.stdout
+        return result
+      },
+    })
+    assert.equal(resolved.source, 'native-shell')
+    assert.equal(resolved.env.VERTEX_REGION_CLAUDE_FUTURE_MODEL, 'us-east5')
+    assert.equal(resolved.env.VERTEX_REGION_CLAUDE_EMPTY, '')
+    assert.equal(resolved.env.VERTEX_REGION_LITERAL, '$(touch should-not-exist)')
+    assert.equal(resolved.env.MELDWORK_UNRELATED, undefined)
+    assert.equal(resolved.env.NODE_OPTIONS, undefined)
+    assert.equal(output.includes('synthetic-unrelated-secret'), false)
+    assert.equal(fs.existsSync(path.join(home, 'should-not-exist')), false)
+  })
+}
+
 test('native cloud configuration is forwarded only to compatible Agents', () => {
   const cloud = {
     CLAUDE_CODE_USE_VERTEX: '1', AWS_PROFILE: 'native', AWS_ACCESS_KEY_ID: 'access-key',

@@ -138,6 +138,33 @@ test('Natural routing retains a request beyond the stored message excerpt', asyn
   assert.deepEqual(turns, ['codex', 'hermes', 'codex'])
 })
 
+for (const discussionStyle of ['agent-led', 'sequential']) {
+  for (const answer of ['EXACT_ANSWER_OK', '{"ok":true}']) {
+    test(`Natural ${discussionStyle} preserves exact visible ${answer.startsWith('{') ? 'JSON' : 'text'} separately from completion`, async t => {
+      const { directory, options } = fixture()
+      t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+      const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+      const workspace = new LocalWorkspace({
+        ...options, runLedger: ledger, naturalAgentResponses: true,
+        runAgent: async (_agent, prompt) => ({ outcome: 'completed',
+          text: naturalPhase(prompt) === 'proposal' ? answer : decisionReply(answer) }),
+      })
+      await workspace.refreshAgents()
+      const group = workspace.createGroup({ name: 'Exact answer', agentKinds: ['codex'], workdir: directory, allowWrite: false })
+      const controller = await runDiscussion(workspace, group, {
+        text: `Reply with exactly ${answer} and no other visible text.`, discussionStyle, maxRounds: 4,
+      })
+      assert.equal(ledger.get(controller.runId).status, 'completed')
+      const replies = workspace.snapshot().messages.filter(message => message.role === 'agent')
+      assert.ok(replies.length > 0)
+      assert.ok(replies.every(message => message.content === answer))
+      const restarted = new LocalWorkspace({ ...options, runLedger: new RunLedger({ storagePath: ledger.storagePath }) })
+      assert.deepEqual(restarted.snapshot().messages.filter(message => message.role === 'agent').map(message => message.content), replies.map(message => message.content))
+      assert.equal(ledger.get(controller.runId).agentRuns.at(-1).context.taskDecision.status, 'completed')
+    })
+  }
+}
+
 for (const status of ['completed', 'blocked']) {
   test(`Natural single-Agent task persists the owner's ${status} judgment`, async (t) => {
     const { directory, options } = fixture()

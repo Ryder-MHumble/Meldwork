@@ -2704,7 +2704,7 @@ class LocalWorkspaceAutoRunner {
           ].join('\n')
         : '',
       phase === 'discussion'
-        ? 'After your natural answer append exactly one receipt: [[MELDWORK_COLLABORATION:{"summary":"concise result","taskDecision":{"status":"continue","reason":"what you accomplished and what remains","deliverables":[],"nextKinds":[]}}]]. List actual deliverables when available. Only the current delivery owner judges the whole task; other participants report their contribution and may request peers with nextKinds. Merge any owner judgment or handoffTo into this same receipt. Append nothing after it.'
+        ? 'After your natural answer append exactly one receipt: [[MELDWORK_COLLABORATION:{"summary":"concise result","taskDecision":{"status":"continue","reason":"what you accomplished and what remains","deliverables":[],"nextKinds":[]}}]]. This receipt is transport metadata: Meldwork removes it before displaying your answer. User requirements such as exact text, one line, JSON only, or no explanation apply to the visible answer before the receipt; preserve that requested answer exactly and still append the receipt separately. Do not explain the receipt in the visible answer. List actual deliverables when available. Only the current delivery owner judges the whole task; other participants report their contribution and may request peers with nextKinds. Merge any owner judgment or handoffTo into this same receipt. Append nothing after it.'
         : '',
     ].filter(Boolean).join('\n\n')
   }

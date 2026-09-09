@@ -30,6 +30,7 @@ const MAX_CREDENTIAL_FILE_BYTES = 2 * 1024 * 1024
 const MAX_SHELL_ENV_BYTES = 256 * 1024
 const SHELL_ENV_CACHE_TTL_MS = 30000
 const SHELL_ENV_MARKER = '__MELDWORK_NATIVE_ENV_V1__'
+const VERTEX_MODEL_REGION_KEY = /^VERTEX_REGION_[A-Z0-9_]{1,120}$/
 const CREDENTIAL_ENV_KEYS = Object.freeze({
   codex: ['OPENAI_API_KEY'],
   hermes: ['OPENAI_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'],
@@ -160,7 +161,9 @@ function textContainsCredential(filename) {
 
 function nativeCredentialEnvironment(kind, env = process.env, options = {}) {
   const result = {}
-  for (const key of RUNTIME_ENV_KEYS[kind] || []) {
+  const keys = [...(RUNTIME_ENV_KEYS[kind] || []), ...(kind === 'claude'
+    ? Object.keys(env).filter(key => VERTEX_MODEL_REGION_KEY.test(key)) : [])]
+  for (const key of keys) {
     if (options.providerConfigured && !NATIVE_CONFIG_ROOT_KEYS.has(key)) continue
     if (typeof env[key] === 'string') result[key] = env[key]
   }
@@ -178,7 +181,7 @@ function nativeCredentialKeyEnvironment(kind, env = process.env) {
 function allowedShellEnvironment(env = process.env, platform = process.platform) {
   const source = { ...env, ...networkEnvironment(env, platform) }
   const result = {}
-  for (const key of SHELL_ENV_KEYS) {
+  for (const key of [...SHELL_ENV_KEYS, ...Object.keys(source).filter(key => VERTEX_MODEL_REGION_KEY.test(key))]) {
     const value = source[key]
     if (typeof value !== 'string' || value.length > MAX_SHELL_ENV_BYTES) continue
     result[key] = value
@@ -186,11 +189,27 @@ function allowedShellEnvironment(env = process.env, platform = process.platform)
   return result
 }
 
-function nativeShellCommand() {
+function nativeShellCommand(shellName) {
   const keys = SHELL_ENV_KEYS.join(' ')
+  // Enumerate names only; do not dump unrelated values or depend on Electron RunAsNode.
+  const regionNames = shellName === 'zsh'
+    ? 'builtin print -rl -- ${(k)parameters[(I)VERTEX_REGION_*]}'
+    : [
+        'if [ -n "${BASH_VERSION-}" ]; then',
+        '  builtin compgen -e VERTEX_REGION_',
+        'elif [ -x /bin/bash ]; then',
+        "  BASH_ENV= ENV= /bin/bash --noprofile --norc -c 'builtin compgen -e VERTEX_REGION_'",
+        'fi',
+      ].join('\n')
   return [
     `printf '${SHELL_ENV_MARKER}\\0'`,
-    `for __meldwork_key in ${keys}; do`,
+    `for __meldwork_key in ${keys} $(${regionNames}); do`,
+    '  case "$__meldwork_key" in ""|*[!A-Za-z0-9_]*) continue ;; esac',
+    '  case "$__meldwork_key" in VERTEX_REGION_*)',
+    '    __meldwork_model=${__meldwork_key#VERTEX_REGION_}',
+    '    case "$__meldwork_model" in ""|*[!A-Z0-9_]*) continue ;; esac',
+    '    [ ${#__meldwork_model} -le 120 ] || continue ;;',
+    '  esac',
     '  eval "__meldwork_value=\\${$__meldwork_key-}"',
     '  eval "__meldwork_set=\\${$__meldwork_key+x}"',
     '  if [ -n "$__meldwork_set" ]; then',
@@ -212,7 +231,8 @@ function parseNativeShellEnvironment(output) {
     if (separator <= 0) continue
     const key = entry.slice(0, separator)
     const value = entry.slice(separator + 1)
-    if (!allowed.has(key) || value.length > MAX_SHELL_ENV_BYTES) continue
+    if ((!allowed.has(key) && !VERTEX_MODEL_REGION_KEY.test(key))
+        || value.length > MAX_SHELL_ENV_BYTES) continue
     result[key] = value
   }
   return result
@@ -237,7 +257,7 @@ async function queryNativeShellEnvironment(options = {}) {
   try {
     const result = await execFileFn(
       shell,
-      [shellName === 'sh' ? '-lc' : '-lic', nativeShellCommand()],
+      [shellName === 'sh' ? '-lc' : '-lic', nativeShellCommand(shellName)],
       {
         timeout: 5000,
         maxBuffer: MAX_SHELL_ENV_BYTES,
