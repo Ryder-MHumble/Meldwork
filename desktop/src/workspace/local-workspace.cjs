@@ -2,6 +2,7 @@ const { EventEmitter } = require('node:events')
 const { createHash, randomUUID } = require('node:crypto')
 const path = require('node:path')
 const { ContentBlobStore } = require('../attachments/content-blob-store.cjs')
+const { agentRuntimeCapabilities } = require('../agents/agent-runtime-contract.cjs')
 const { ContextPackStore } = require('../collaboration/context-pack-store.cjs')
 const { HumanGateCoordinator } = require('../gates/human-gate-coordinator.cjs')
 const { HumanGateStore } = require('../gates/human-gate-store.cjs')
@@ -314,6 +315,9 @@ class LocalWorkspace extends EventEmitter {
     })
     this.autoRunner = new LocalWorkspaceAutoRunner({
       state: () => this.state,
+      canWriteWorkspace: kind => agentRuntimeCapabilities(kind, {
+        agent: this.detectedAgents.find(agent => agent.kind === kind),
+      }).permissionModes.includes('workspace-write'),
       beginRun: (...args) => this.beginRun(...args),
       resolveAttachments: (...args) => this.resolveAttachments(...args),
       validateSkillSelections: (...args) => this.validateSkillSelectionsFn(...args),
@@ -659,6 +663,10 @@ class LocalWorkspace extends EventEmitter {
       const finalStatus = await this.autoRunner.resume(group, durable, controller)
       await this.finishRun(group.id, controller, finalStatus)
     } catch (error) {
+      if (controller.signal.aborted) {
+        await this.finishRun(group.id, controller, terminalRunStatusForReason(controller.stopReason))
+        return
+      }
       controller.stopReason = String(error?.message || 'LOCAL_RUN_CONTINUATION_INVALID')
       await this.finishRun(group.id, controller, 'failed')
     }
@@ -1460,7 +1468,7 @@ class LocalWorkspace extends EventEmitter {
     if (durable?.mode !== 'auto' || continuation?.resumeKind !== 'agent_slot'
         || cursor?.version !== 4 || cursor.workflow !== 'auto'
         || cursor.template !== 'discussion'
-        || !['proposal', 'challenge', 'work', 'synthesis', 'verification'].includes(phase)
+        || !['proposal', 'discussion', 'challenge', 'work', 'synthesis', 'verification'].includes(phase)
         || !['budget', 'permission', 'retry', 'input'].includes(gate?.type)
         || gate.runId !== durable.runId || gate.agentRunId !== continuation.agentRunId
         || gate.agentKind !== continuation.agentKind
@@ -1495,7 +1503,7 @@ class LocalWorkspace extends EventEmitter {
         || (slot.resultRefs?.workflowOutcomeRefs || []).some(item => (
           item?.receipt?.phase === phase && item.receipt.operationId === slot.operationId
         ))) return false
-    let operationPhase = phase
+    let operationPhase = phase === 'discussion' ? `discussion:${cursor.round}` : phase
     if (phase === 'work') {
       const matchingAssignments = cursor.coordinationPlan?.assignments?.filter(item => (
         item.ownerKind === slot.agentKind && item.taskId
@@ -1533,6 +1541,7 @@ class LocalWorkspace extends EventEmitter {
     }
     return slot.operationId === this.autoRunner.v4OperationId(
       controller, slot.agentKind, operationPhase, slot.slotId,
+      ...(phase === 'discussion' ? [cursor.round] : []),
     )
   }
 

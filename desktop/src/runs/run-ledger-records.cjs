@@ -78,7 +78,7 @@ const ORCHESTRATION_FIELDS = new Set([
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
   'totalSuccesses', 'terminalFailureOccurred', 'executionSequence',
   'collaboration', 'template', 'taskGraph',
-  'phase', 'discussionStyle', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
+  'phase', 'discussionStyle', 'discussionWriterKind', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
   'slots', 'deliveryWatermarks', 'deliveryState', 'commitState', 'challengeBindings', 'synthesisBinding',
   'synthesisRecovery', 'convergence', 'coordinationPlan', 'workReceipts', 'candidateCommit',
 ])
@@ -493,7 +493,7 @@ function normalizeOrchestration(input) {
   const totalSuccesses = boundedNumber(input.totalSuccesses, 0, 1000000)
   const executionSequence = boundedNumber(input.executionSequence, 0, 1000000)
   const v4OnlyFields = [
-    'phase', 'discussionStyle', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
+    'phase', 'discussionStyle', 'discussionWriterKind', 'batchId', 'round', 'currentKinds', 'snapshotHash', 'snapshot', 'plan',
     'slots', 'deliveryWatermarks', 'deliveryState', 'commitState', 'challengeBindings',
     'synthesisBinding', 'synthesisRecovery', 'convergence', 'candidateCommit',
   ]

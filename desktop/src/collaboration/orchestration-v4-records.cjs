@@ -61,7 +61,7 @@ const MESSAGE_ID = /^message-[a-f0-9]{64}$/u
 const EVIDENCE_ID = /^evidence-[a-f0-9]{64}$/u
 
 const ORCHESTRATION_FIELDS = new Set([
-  'version', 'workflow', 'template', 'phase', 'discussionStyle', 'batchId', 'round',
+  'version', 'workflow', 'template', 'phase', 'discussionStyle', 'discussionWriterKind', 'batchId', 'round',
   'currentKind', 'currentKinds', 'pendingKinds', 'activeKinds',
   'successfulKinds', 'agreementKinds', 'attachmentRecipients',
   'totalSuccesses', 'terminalFailureOccurred', 'collaboration', 'taskGraph',
@@ -1602,10 +1602,18 @@ function validateV4Relations(orchestration, targetKinds) {
       || orchestration.synthesisBinding?.writerKind
       || orchestration.coordinationPlan?.finalizerKind
       || orchestration.commitState.writerKind
+      || orchestration.discussionWriterKind
     if (writableSlots.length > 1 || writableSlots.some(slot => (
       slot.agentKind !== effectiveWriterKind
-        || !['synthesis', 'human-gate'].includes(orchestration.phase)
+        || !['discussion', 'synthesis', 'human-gate'].includes(orchestration.phase)
+        || (orchestration.phase === 'discussion' && !orchestration.discussionWriterKind)
     ))) fail('ORCHESTRATION_V4_PERMISSION_INVALID')
+    for (const assignment of orchestration.phase === 'discussion' ? orchestration.plan.assignments : []) {
+      const slot = orchestration.slots.find(item => item.slotId === assignment.slotId)
+      if (slot && assignment.readOnly !== (slot.permission !== 'workspace-write')) {
+        fail('ORCHESTRATION_V4_PERMISSION_INVALID')
+      }
+    }
   }
   const watermarkKeys = orchestration.deliveryWatermarks.map(item => `${item.agentKind}\u0000${item.phase}`)
   if (new Set(watermarkKeys).size !== watermarkKeys.length) {
@@ -1900,6 +1908,15 @@ function parseOrchestrationV4(input, options = {}) {
   if (coordinationPlan && (workflow !== 'auto' || template !== 'discussion')) {
     fail('ORCHESTRATION_V4_COORDINATION_PLAN_INVALID')
   }
+  const discussionWriterKind = hasOwn(input, 'discussionWriterKind') ? cleanId(input.discussionWriterKind) : ''
+  if (hasOwn(input, 'discussionWriterKind') && (!discussionWriterKind
+      || input.discussionWriterKind !== discussionWriterKind
+      || !effectiveKinds.includes(discussionWriterKind)
+      || workflow !== 'auto' || template !== 'discussion'
+      || !['proposal', 'discussion', 'stopped', 'failed'].includes(phase)
+      || synthesisBinding || coordinationPlan || commitState.writerKind)) {
+    fail('ORCHESTRATION_V4_PERMISSION_INVALID')
+  }
   if (coordinationPlan) {
     validateCoordinationAgreement(
       coordinationPlan, slots, challengeBindings, participantKinds, snapshotHash,
@@ -2027,6 +2044,7 @@ function parseOrchestrationV4(input, options = {}) {
     template,
     phase,
     ...(discussionStyle ? { discussionStyle } : {}),
+    ...(discussionWriterKind ? { discussionWriterKind } : {}),
     batchId,
     currentKinds,
     activeKinds,

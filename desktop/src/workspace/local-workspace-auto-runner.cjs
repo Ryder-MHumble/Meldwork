@@ -76,6 +76,7 @@ const { v4OutcomeMethods } = require('./local-workspace-auto-runner-v4-outcomes.
 class LocalWorkspaceAutoRunner {
   constructor(options) {
     this.state = options.state
+    this.canWriteWorkspace = options.canWriteWorkspace || (() => false)
     this.beginRun = options.beginRun
     this.resolveAttachments = options.resolveAttachments
     this.validateSkillSelections = options.validateSkillSelections
@@ -2596,6 +2597,11 @@ class LocalWorkspaceAutoRunner {
         skillHints: options.skillHints, naturalResponse: true,
       }),
       transcript ? `Completed peer turns:\n${transcript}` : '',
+      phase === 'discussion' && options.writerKind
+        ? (kind === options.writerKind
+          ? 'You are the designated workspace writer for this task. Perform only writes required by the user task within the authorized workspace, and verify the resulting deliverables. Other participants are read-only.'
+          : `Workspace writes are assigned to @${options.writerKind}. Your invocation is read-only; request their contribution when a change is needed.`)
+        : '',
       phase === 'discussion' && options.ownerKind
         ? [
             `The current delivery owner is @${options.ownerKind}. Ownership starts with the first selected participant and can be handed off explicitly by that owner.`,
@@ -2790,6 +2796,7 @@ class LocalWorkspaceAutoRunner {
           pendingKinds,
           remainingKinds,
           sessionPolicy: null,
+          resumedGate: input.resumedGate,
           disableDeliveryPrompt: true,
           promptBuilder: ({ kind: promptKind }) => this.v4NaturalPhasePrompt(
             group, promptKind, 'discussion', snapshot, receiptRecords, activeKinds, {
@@ -2798,6 +2805,7 @@ class LocalWorkspaceAutoRunner {
               ),
               skillHints: context.rootSkillsByKind.get(promptKind) || [],
               ownerKind: this.v4NaturalOwner(group, controller, threadRootId),
+              writerKind,
               allowRouting: true,
             },
           ),
@@ -2903,6 +2911,7 @@ class LocalWorkspaceAutoRunner {
         pendingKinds: nextKinds,
         remainingKinds: [],
         sessionPolicy: null,
+        resumedGate: input.resumedGate,
         disableDeliveryPrompt: true,
         promptBuilder: ({ kind }) => this.v4NaturalPhasePrompt(
           group, kind, 'discussion', snapshot, receiptRecords, activeKinds, {
@@ -2910,6 +2919,7 @@ class LocalWorkspaceAutoRunner {
             skillHints: context.rootSkillsByKind.get(kind) || [],
             allowRouting: true,
             ownerKind: this.v4NaturalOwner(group, controller, threadRootId),
+            writerKind,
           },
         ),
       })
@@ -2937,6 +2947,63 @@ class LocalWorkspaceAutoRunner {
   }
 
   async runV4NaturalDiscussion(group, controller, threadRootId, context, input) {
+    if (input.resume && controller.orchestration?.phase === 'discussion') {
+      for (const slot of input.slots) {
+        if (slot.permission !== 'workspace-write' || !slot.agentRunId
+            || slot.commitStatus === 'committed'
+            || !['running', 'waiting', 'stopped', 'failed'].includes(slot.status)) continue
+        if (this.v4NaturalRecoveredDiscussionResult(group, controller, threadRootId, slot.agentKind, slot)) continue
+        if (input.resumedGate?.operationId === slot.operationId
+            && input.resumedGate.agentKind === slot.agentKind
+            && input.resumedGate.status === 'approved') continue
+        if (!this.requestHumanGate) throw new Error('LOCAL_RUN_RETRY_GATE_INVALID')
+        const binding = {
+          agentRunId: slot.agentRunId, agentKind: slot.agentKind,
+          round: controller.currentRound, phase: 'discussion', slotId: slot.slotId,
+          operationId: slot.operationId, snapshotHash: input.snapshotHash,
+        }
+        const request = {
+          phase: 'discussion-writer-recovery', batchId: input.batchId,
+          slotId: slot.slotId, operationId: slot.operationId, attempt: slot.attempt,
+          outcomeCertainty: 'unknown_outcome', sideEffectsPossible: true,
+        }
+        const gate = await this.requestHumanGate({
+          type: 'retry', runId: controller.runId, agentRunId: slot.agentRunId,
+          agentKind: slot.agentKind,
+          summary: 'The interrupted discussion writer may already have changed the workspace.',
+          options: [
+            { optionId: 'retry-once', name: 'Retry once', kind: 'allow_once' },
+            { optionId: 'cancel-retry', name: 'Do not retry', kind: 'reject_once' },
+          ],
+          request,
+        }, {
+          signal: controller.signal,
+          preserveOnAbort: () => controller.stopReason === 'shutdown',
+          continuation: { resumeKind: 'agent_slot', ...binding },
+        })
+        if (gate.status !== 'approved') {
+          if (this.completeHumanGateContinuation?.(controller.runId, gate.gateId, 'cancelled') !== true
+              && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+          controller.stopReason = 'human_gate_rejected'
+          return 'stopped'
+        }
+        if (gate.optionId !== 'retry-once') throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+        input.resumedGate = { ...binding, gateId: gate.gateId, type: 'retry',
+          status: gate.status, optionId: gate.optionId, request, used: false }
+      }
+    }
+    if (input.resumedGate?.type === 'retry'
+        && input.resumedGate.request?.phase === 'discussion-writer-recovery') {
+      const gate = input.resumedGate
+      const slot = input.slots.find(item => item.slotId === gate.slotId)
+      if (gate.status !== 'approved' || gate.optionId !== 'retry-once'
+          || !slot || slot.agentKind !== gate.agentKind
+          || slot.operationId !== gate.operationId
+          || slot.snapshotHash !== gate.snapshotHash
+          || slot.attempt !== gate.request.attempt) throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+      if (this.completeHumanGateContinuation?.(controller.runId, gate.gateId, 'completed') !== true
+          && this.hasRunLedger()) throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    }
     const style = controller.orchestration?.discussionStyle
       || controller.discussionStyle
       || 'sequential'
@@ -3192,7 +3259,8 @@ class LocalWorkspaceAutoRunner {
         finishedAt: running ? null : (slot.finishedAt || now),
         commitStatus: running ? 'pending' : (slot.commitStatus || 'committed'),
         attempt: (Number.isSafeInteger(slot.attempt) ? slot.attempt : 0) + (running ? 1 : 0),
-        permission: allowWrite && slot.agentKind === writerKind && phase === 'synthesis'
+        permission: allowWrite && slot.agentKind === writerKind
+          && (phase === 'synthesis' || (this.naturalAgentResponses && phase === 'discussion'))
           ? 'workspace-write'
           : 'read-only',
         resultRefs: {
@@ -3224,6 +3292,8 @@ class LocalWorkspaceAutoRunner {
     workAssignments = [],
   }) {
     const current = controller.orchestration
+    const naturalWriterKind = this.naturalAgentResponses && ['proposal', 'discussion'].includes(phase)
+      && !coordinationPlan && !synthesisBinding ? writerKind : ''
     if (current?.version === 4
         && (current.phase !== phase || current.round !== controller.currentRound)) {
       this.assertV4PhaseCanAdvance(controller)
@@ -3247,8 +3317,7 @@ class LocalWorkspaceAutoRunner {
         ? workAssignmentsByKind.get(slot.agentKind).expectedOutput
         : 'Return a concise structured collaboration result.',
       inputRefs: receipts.map(item => item.receipt?.receiptId).filter(Boolean).slice(-64),
-      readOnly: !(group.allowWrite === true
-        && slot.agentKind === writerKind && phase === 'synthesis'),
+      readOnly: slot.permission !== 'workspace-write',
       index,
     }))
     const plan = {
@@ -3263,7 +3332,7 @@ class LocalWorkspaceAutoRunner {
       : []
     const commit = commitState || {
       status: 'pending',
-      writerKind: writerKind || null,
+      writerKind: naturalWriterKind ? null : writerKind || null,
       committedKinds: [],
       pendingKinds: [...participantKinds],
       operationId: '',
@@ -3281,6 +3350,7 @@ class LocalWorkspaceAutoRunner {
       discussionStyle: controller.discussionStyle
         || controller.orchestration?.discussionStyle
         || 'sequential',
+      ...(naturalWriterKind ? { discussionWriterKind: naturalWriterKind } : {}),
       batchId,
       round: Math.max(0, Number(controller.currentRound) || 0),
       currentKind: '',
@@ -3990,7 +4060,8 @@ class LocalWorkspaceAutoRunner {
             snapshotSourceMessageIds,
             snapshotSourceEntries: snapshot.history,
             permissionMode: group.allowWrite === true
-              && phase === 'synthesis' && kind === writerKind
+              && (phase === 'synthesis' || (this.naturalAgentResponses && phase === 'discussion'))
+              && kind === writerKind
               ? 'workspace-write'
               : 'read-only',
             singleWriterKind: writerKind,
@@ -4636,7 +4707,10 @@ class LocalWorkspaceAutoRunner {
       throw new Error('LOCAL_RUN_V4_SYNTHESIS_BINDING_REQUIRED')
     }
     let writerKind = synthesisRecovery?.activeWriterKind
-      || coordinationPlan?.finalizerKind || synthesisBinding?.writerKind || ''
+      || coordinationPlan?.finalizerKind || synthesisBinding?.writerKind
+      || existing?.discussionWriterKind
+      || (!existing && this.naturalAgentResponses && group.allowWrite === true
+        ? targetKinds.find(kind => this.canWriteWorkspace(kind)) : '') || ''
     controller.currentRound = Math.max(1, controller.currentRound || existing?.round || 0)
     const rootMessage = existing ? null : this.state().messages.find(message => (
       message.id === threadRootId && message.groupId === group.id && message.role === 'user'
@@ -4658,6 +4732,10 @@ class LocalWorkspaceAutoRunner {
           phase: 'proposal',
           writerKind,
         })
+    if (existing && this.naturalAgentResponses && !coordinationPlan && !synthesisBinding
+        && (snapshot.writerKind || '') !== writerKind) {
+      throw new Error('LOCAL_RUN_COLLABORATION_SCOPE_INVALID')
+    }
     if (existing) {
       const persistedSkills = this.v4SnapshotSkillHints(snapshot, snapshotTargetKinds)
       const hasPersistedSkills = snapshotTargetKinds.some(kind => (
@@ -5132,6 +5210,8 @@ class LocalWorkspaceAutoRunner {
     }
     if (this.naturalAgentResponses && !coordinationPlan && !synthesisBinding && !synthesisRecovery) {
       return this.runV4NaturalDiscussion(group, controller, threadRootId, context, {
+        resume,
+        resumedGate,
         targetKinds,
         activeKinds,
         writerKind,
