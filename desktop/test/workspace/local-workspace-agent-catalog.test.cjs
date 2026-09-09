@@ -186,14 +186,15 @@ test('incompatible Agents remain installed but unavailable with ready credential
   assert.equal(agents()[0].invocable, false)
   assert.equal(agents()[0].credentialState, 'ready')
   assert.equal(agents()[0].available, false)
-  assert.equal(agents()[0].showInSidebar, false)
+  assert.equal(agents()[0].showInSidebar, true)
   assert.equal(agents()[0].availabilitySource, 'incompatible')
   assert.equal(agents()[0].incompatibilityReason, 'LOCAL_AGENT_VERSION_UNSUPPORTED')
-  assert.throws(
-    () => catalog.setSidebarVisibility('codex', true),
-    { message: 'LOCAL_AGENT_UNAVAILABLE' },
-  )
   assert.deepEqual(events, ['emit', 'snapshot'])
+  catalog.setSidebarVisibility('codex', false)
+  assert.equal(agents()[0].showInSidebar, false)
+  catalog.setSidebarVisibility('codex', true)
+  assert.equal(agents()[0].showInSidebar, true)
+  assert.equal(agents()[0].available, false)
 })
 
 test('locally detected compatible Agents remain invocable when native configuration cannot be inspected', async () => {
@@ -438,6 +439,25 @@ test('OpenCodeReview can be enabled in the conversation sidebar', () => {
   assert.deepEqual(events, ['save', 'emit', 'snapshot'])
   assert.equal(state.agentPreferences.opencodereview.showInSidebar, true)
   assert.equal(agents()[0].showInSidebar, true)
+})
+
+test('runtime failure and recovery preserve sidebar preference independently of availability', async () => {
+  const { catalog, agents } = fixture({
+    detectAgents: async () => [{ kind: 'codex', compatibilityState: 'compatible' }],
+    credentialState: async () => ({ state: 'ready', source: 'native-credential' }),
+  })
+  await catalog.refresh()
+  catalog.markRuntimeCredential('codex', 'missing')
+  assert.equal(agents()[0].available, false)
+  assert.equal(agents()[0].showInSidebar, true)
+  await catalog.refresh()
+  assert.equal(agents()[0].showInSidebar, true)
+  catalog.setSidebarVisibility('codex', false)
+  catalog.markRuntimeCredential('codex', 'ready')
+  assert.equal(agents()[0].available, true)
+  assert.equal(agents()[0].showInSidebar, false)
+  await catalog.refresh()
+  assert.equal(agents()[0].showInSidebar, false)
 })
 
 test('runtime credential cleanup removes only missing entries and never emits', () => {

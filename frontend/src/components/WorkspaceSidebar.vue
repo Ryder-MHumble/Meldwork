@@ -59,7 +59,7 @@
               <button
                 class="sidebar-agent-main"
                 type="button"
-                :title="agent.label"
+                :title="agent.ready ? agent.label : `${agent.label}: ${agentState(agent).label}`"
                 :disabled="isDirectCreationPending(agent.kind)"
                 :aria-expanded="directGroupsFor(agent.kind).length ? String(isSidebarAgentExpanded(agent.kind)) : undefined"
                 :aria-controls="directGroupsFor(agent.kind).length ? sidebarAgentSessionListId(agent.kind) : undefined"
@@ -72,7 +72,7 @@
                 <span>
                   <strong>{{ agent.label }}</strong>
                   <small>
-                    {{ directGroupsFor(agent.kind).length
+                    {{ !agent.ready ? agentState(agent).label : directGroupsFor(agent.kind).length
                       ? t('nav.agentSessions', { count: directGroupsFor(agent.kind).length })
                       : t('nav.noAgentSessions') }}
                   </small>
@@ -424,6 +424,7 @@ const props = defineProps({
 
 const {
   activeView,
+  agentState,
   collapsedGroupMenu,
   collapsedGroupMenuButton,
   collapsedGroupMenuOpen,

@@ -35,7 +35,7 @@ test('installed Agents distinguish ready, local CLI, and missing credential stat
   assert.equal(hermes.installed, true)
   assert.equal(hermes.available, false)
   assert.equal(hermes.credentialState, 'missing')
-  assert.equal(hermes.showInSidebar, false)
+  assert.equal(hermes.showInSidebar, true)
   assert.equal(kimi.available, true)
   assert.equal(kimi.credentialState, 'unknown')
   assert.equal(kimi.availabilitySource, 'local-cli')
@@ -414,7 +414,7 @@ test('a slow readiness refresh cannot overwrite a concurrent runtime authenticat
   assert.equal(kimi.availabilitySource, 'runtime-auth-failure')
 })
 
-test('sidebar visibility can be disabled, persists, and cannot be enabled for unavailable Agents', async (t) => {
+test('sidebar visibility persists independently of Agent availability', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.credentialState = async kind => kind === 'hermes'
@@ -425,13 +425,14 @@ test('sidebar visibility can be disabled, persists, and cannot be enabled for un
 
   workspace.setSidebarVisibility('codex', false)
   assert.equal(workspace.snapshot().agents.find(agent => agent.kind === 'codex').showInSidebar, false)
-  assert.throws(() => workspace.setSidebarVisibility('hermes', true), {
-    message: 'LOCAL_AGENT_UNAVAILABLE',
-  })
+  workspace.setSidebarVisibility('hermes', true)
+  assert.equal(workspace.snapshot().agents.find(agent => agent.kind === 'hermes').showInSidebar, true)
+  assert.equal(workspace.snapshot().agents.find(agent => agent.kind === 'hermes').available, false)
 
   const restored = new LocalWorkspace(options)
   await restored.refreshAgents()
   assert.equal(restored.snapshot().agents.find(agent => agent.kind === 'codex').showInSidebar, false)
+  assert.equal(restored.snapshot().agents.find(agent => agent.kind === 'hermes').showInSidebar, true)
 })
 
 test('groups and messages persist without exposing executable paths', async (t) => {

@@ -18,6 +18,22 @@ function catalogFor(agent) {
 }
 
 describe('Agent compatibility state', () => {
+  it('keeps installed unavailable Agents visible while respecting hidden preferences and runnable choices', () => {
+    const snapshot = ref({ agents: [
+      { kind: 'codex', installed: true, available: false, credentialState: 'missing', showInSidebar: true },
+      { kind: 'hermes', installed: true, available: false, showInSidebar: false },
+    ] })
+    const catalog = useAgentCatalog({
+      activeGroup: ref(null), directGroupsFor: () => [], installCatalog: ref({ agents: [] }),
+      snapshot, t, theme: ref('light'),
+    })
+    expect(catalog.sidebarAgents.value.map(agent => agent.kind)).toEqual(['codex'])
+    expect(catalog.readyAgents.value).toHaveLength(0)
+    snapshot.value.agents[0].available = true
+    expect(catalog.sidebarAgents.value.map(agent => agent.kind)).toEqual(['codex'])
+    expect(catalog.readyAgentKinds.value.has('codex')).toBe(true)
+  })
+
   it('distinguishes unreadable Provider credentials from missing native login in both languages', () => {
     const agent = {
       kind: 'hermes', available: false, credentialState: 'unknown',

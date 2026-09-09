@@ -481,7 +481,7 @@ describe('Meldwork workbench', () => {
     expect(wrapper.findAll('.sidebar-footer-actions button')).toHaveLength(2)
     expect(wrapper.findAll('.sidebar-footer-actions .preference-icon-frame')).toHaveLength(2)
     expect(wrapper.findAll('.nav-heading svg')).toHaveLength(0)
-    expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(2)
+    expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(AGENTS.length)
     const [agentsToggle, groupsToggle] = wrapper.findAll('.nav-heading')
     expect(agentsToggle.attributes('aria-expanded')).toBe('true')
     await agentsToggle.trigger('click')
@@ -493,12 +493,12 @@ describe('Meldwork workbench', () => {
     await groupsToggle.trigger('click')
     expect(wrapper.get('#sidebar-group-list').exists()).toBe(true)
     await agentsToggle.trigger('click')
-    expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(2)
+    expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(AGENTS.length)
 
     await wrapper.get('.sidebar-toggle').trigger('click')
     expect(wrapper.get('.app-shell').classes()).toContain('sidebar-collapsed')
     expect(wrapper.get('.sidebar').classes()).toContain('collapsed')
-    expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(2)
+    expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(AGENTS.length)
 
     await wrapper.get('.sidebar-toggle').trigger('click')
     expect(wrapper.get('.app-shell').classes()).not.toContain('sidebar-collapsed')
@@ -1991,6 +1991,25 @@ describe('Meldwork workbench', () => {
 
     expect(bridge.localWorkspace.send).not.toHaveBeenCalled()
     expect(wrapper.get('.toast-message').text()).toContain('This local Agent is unavailable.')
+    wrapper.unmount()
+  })
+
+  it('keeps an unavailable installed Agent without history visible and opens its settings', async () => {
+    const { wrapper, bridge } = await mountApp(({ state }) => {
+      Object.assign(state.agents.find(agent => agent.kind === 'hermes'), {
+        available: false, credentialState: 'missing', showInSidebar: true,
+      })
+    })
+    const agent = wrapper.findAll('.sidebar-agent').find(row => row.text().includes('Hermes'))
+    expect(agent.get('small').text()).toBe('Needs sign-in or Provider')
+    expect(agent.get('.sidebar-agent-main').attributes('title')).toContain('Needs sign-in or Provider')
+    expect(agent.get('.sidebar-agent-new').attributes()).toHaveProperty('disabled')
+    await agent.get('.sidebar-agent-main').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('.system-settings-page').exists()).toBe(true)
+    expect(wrapper.find('.conversation-header').exists()).toBe(false)
+    expect(bridge.localWorkspace.createGroup).not.toHaveBeenCalled()
+    expect(bridge.localWorkspace.send).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

@@ -193,8 +193,7 @@ class LocalWorkspaceAgentCatalog {
         task: capabilities.task,
         resumable: capabilities.resumable,
         capabilities,
-        showInSidebar: available
-          && (typeof preferred === 'boolean' ? preferred : true),
+        showInSidebar: typeof preferred === 'boolean' ? preferred : true,
       }
     })
     this.setDetectedAgents(agents)
@@ -206,10 +205,9 @@ class LocalWorkspaceAgentCatalog {
   setSidebarVisibility(kind, visible) {
     const agent = this.detectedAgents().find(item => item.kind === kind)
     if (!agent) throw new Error('LOCAL_AGENT_NOT_INSTALLED')
-    if (visible && !agent.available) throw new Error('LOCAL_AGENT_UNAVAILABLE')
     const state = this.state()
     state.agentPreferences[kind] = { showInSidebar: Boolean(visible) }
-    agent.showInSidebar = agent.available && Boolean(visible)
+    agent.showInSidebar = Boolean(visible)
     this.save()
     this.emitChanged()
     return this.snapshot()
@@ -240,8 +238,7 @@ class LocalWorkspaceAgentCatalog {
             ? 'runtime-auth-failure'
             : 'unverified'
       const preferred = state.agentPreferences[kind]?.showInSidebar
-      agent.showInSidebar = agent.available
-        && (typeof preferred === 'boolean' ? preferred : true)
+      agent.showInSidebar = typeof preferred === 'boolean' ? preferred : true
     }
     this.save()
     this.emitChanged()

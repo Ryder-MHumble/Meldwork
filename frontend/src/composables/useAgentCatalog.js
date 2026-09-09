@@ -98,8 +98,8 @@ export function useAgentCatalog({
   const readyCount = computed(() => readyAgents.value.length)
   const installedCount = computed(() => mergedCatalog.value.filter(agent => agent.installed).length)
   const sidebarAgents = computed(() => mergedCatalog.value.filter((agent) => {
-    if (agent.ready) return agent.showInSidebar !== false
-    return directGroupsFor(agent.kind).length > 0
+    if ((agent.ready || agent.installed) && agent.showInSidebar !== false) return true
+    return !agent.ready && directGroupsFor(agent.kind).length > 0
   }))
   const sidebarAgentGroups = computed(() => [
     {

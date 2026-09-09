@@ -13,6 +13,7 @@ export function createWorkspaceControllers({
 }) {
   const workspaceSidebarController = {
     activeView: app.activeView,
+    agentState: agentCatalog.agentState,
     collapsedGroupMenu: collapsedGroupMenu.collapsedGroupMenu,
     collapsedGroupMenuButton: collapsedGroupMenu.collapsedGroupMenuButton,
     collapsedGroupMenuOpen: collapsedGroupMenu.collapsedGroupMenuOpen,

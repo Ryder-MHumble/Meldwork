@@ -88,3 +88,11 @@
 - 独立 Electron 配置 `/tmp/meldwork-105-startup-iYvjcd` 连续两次扫描均保留 12 项安装记录，OpenClaw 可调用；耗时约 12.8 秒、6.7 秒，仅代表该机器本次观察。已查看 `/tmp/meldwork-105-startup.png`，Electron 正常退出。Pi 本机包装脚本损坏与 MiMo 未登录仍显示不可用，未改动用户 CLI 安装或凭据。
 
 尚未重新执行完整桌面测试、打包或更新版本号，V1.0.5 继续处于开发状态。
+
+## 不可用 Agent 的侧栏可见性
+
+2026-09-09：`showInSidebar` 改为独立的用户偏好，不再由 `available` 强制覆盖。已安装但暂时不可用的 Agent 默认保留侧栏入口，显示现有双语不可用原因；新建会话按钮继续禁用，没有历史时点击进入设置，有历史时仍能查看原会话。用户主动隐藏的选择跨刷新、认证失败/恢复及重启保留。
+
+验证：全量前端 36 文件、334/334；workspace、Agent catalog 和 Main 安全测试 146/146；桌面前端构建与 `git diff --check` 通过。旧测试将所有 Agent 标为已安装却只预期可用者可见，已按新的可见性要求调整，未放开新任务可用性校验。
+
+`/tmp/meldwork-105-sidebar-check.cjs` 在独立 Electron 配置 `/tmp/meldwork-105-sidebar-CCOfwl` 验证真实 Pi 不可用时入口可见、原因显示为 `Required capability missing`、新建禁用、点击进入 Pi 设置且不创建会话。通过 preload 主动隐藏 Pi，关闭并重开 Electron 后安装事实和不可用状态仍在、隐藏偏好保留。已查看 `/tmp/meldwork-105-sidebar-status.png`，脚本退出码 0。没有修改日常用户配置或安装。

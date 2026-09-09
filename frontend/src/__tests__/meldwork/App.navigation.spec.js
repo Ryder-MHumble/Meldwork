@@ -66,6 +66,7 @@ describe('Meldwork workbench', () => {
     }
     const { wrapper, bridge } = await mountApp(({ state, bridge: desktopBridge }) => {
       state.agents[1].showInSidebar = false
+      desktopBridge.agentInstaller.catalog.mockResolvedValue({ platform: 'darwin', agents: state.agents })
       state.groups.push(existing, latest)
       desktopBridge.agentInstaller.skills.mockImplementation(async kind => ({
         supported: true,
