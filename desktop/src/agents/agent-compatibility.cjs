@@ -57,7 +57,9 @@ const AGENT_COMPATIBILITY = Object.freeze({
     ]),
   ]),
   pi: exactProfile('0.84.2', [
-    probe('pi-cli', ['--help'], []),
+    probe('pi-cli', ['--help'], [
+      '--mode', '--print', '--session', '--tools', '--approve', '--no-approve', 'json',
+    ]),
   ]),
   kimi: profile('0.19.2', '0.32.0', [
     probe('kimi-stream', ['--help'], [

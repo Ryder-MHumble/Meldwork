@@ -719,7 +719,9 @@
               </span>
               <div class="run-status-meta">
                 <span v-if="displayedRunTopicRootId">
-                  {{ t(activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic') }}
+                  {{ t(activeRun
+                    ? (activeGroup.conversationType === 'direct' ? 'conversation.activeTask' : 'conversation.activeTopic')
+                    : 'conversation.retainedTopic') }}
                 </span>
                 <span v-if="runRoundProgress" class="run-round-progress">
                   {{ t(runRoundProgress.unlimited ? 'run.roundProgressUnlimited' : 'run.roundProgress', runRoundProgress) }}

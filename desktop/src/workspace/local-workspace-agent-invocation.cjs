@@ -1,4 +1,6 @@
 const { createHash, randomUUID } = require('node:crypto')
+const fs = require('node:fs')
+const path = require('node:path')
 const {
   agentRuntimeCapabilities,
   isCodeReviewAgentKind,
@@ -552,9 +554,19 @@ class LocalWorkspaceAgentInvocation {
     const activeRun = this.activeRuns.get(group.id)
     const taskId = cleanText(activeRun?.taskId || context.taskId || threadRootId, 120)
     if (!taskId) throw new Error('LOCAL_RUN_TASK_INVALID')
+    let workspacePath = group.workdir ? path.resolve(group.workdir) : group.id
+    try { workspacePath = fs.realpathSync(workspacePath) } catch { /* runtime validates unavailable directories */ }
     const workspaceKey = createHash('sha256')
-      .update(String(group.workdir || group.id))
+      .update(String(workspacePath))
       .digest('hex')
+    const writerKind = cleanText(context.singleWriterKind || context.writerKind, 80)
+    const permissionMode = group.allowWrite === true
+      && (context.permissionMode == null || context.permissionMode === 'workspace-write')
+      && (!writerKind || writerKind === kind)
+      && isolatedInvocationContext(context)?.policy !== 'isolated'
+      && !isCodeReviewAgentKind(kind)
+      ? 'workspace-write' : 'read-only'
+    context = { ...context, permissionMode }
     const agentController = new AbortController()
     const registration = { agentRunId: '' }
     let queuedAbortHandler = null
@@ -568,6 +580,7 @@ class LocalWorkspaceAgentInvocation {
       return await this.runScheduler.withLease({
         taskId,
         workspaceKey,
+        permissionMode,
         signal: agentController.signal,
       }, (lease) => {
         if (signal && queuedAbortHandler) {

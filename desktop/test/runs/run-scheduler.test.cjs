@@ -107,6 +107,83 @@ test('enforces Task and Workspace limits independently', async () => {
   ;(await workspaceQueued).release()
 })
 
+test('workspace writers serialize across tasks while readers and other directories remain concurrent', async () => {
+  const scheduler = new RunScheduler()
+  const lease = await scheduler.acquire({
+    taskId: 'writer', workspaceKey: 'shared', permissionMode: 'workspace-write',
+  })
+  const reader = await scheduler.acquire({ taskId: 'reader', workspaceKey: 'shared' })
+  const nextWriter = scheduler.acquire({
+    taskId: 'writer2', workspaceKey: 'shared', permissionMode: 'workspace-write',
+  })
+  const nextState = deferredState(nextWriter)
+  const other = await scheduler.acquire({
+    taskId: 'other', workspaceKey: 'other', permissionMode: 'workspace-write',
+  })
+  const laterReader = await scheduler.acquire({ taskId: 'later', workspaceKey: 'shared' })
+  assert.equal(lease.permissionMode, 'workspace-write')
+  assert.equal(nextState.settled, false)
+  lease.release()
+  ;(await nextWriter).release()
+  reader.release()
+  laterReader.release()
+  other.release()
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('cancelling a queued writer does not block the next writer', async () => {
+  const scheduler = new RunScheduler()
+  const first = await scheduler.acquire({
+    taskId: 'first', workspaceKey: 'shared', permissionMode: 'workspace-write',
+  })
+  const controller = new AbortController()
+  const writer = scheduler.acquire({
+    taskId: 'writer', workspaceKey: 'shared', permissionMode: 'workspace-write', signal: controller.signal,
+  })
+  const later = scheduler.acquire({ taskId: 'later', workspaceKey: 'shared', permissionMode: 'workspace-write' })
+  controller.abort()
+  await assert.rejects(writer, { message: 'RUN_SCHEDULER_ABORTED' })
+  first.release()
+  ;(await later).release()
+})
+
+test('a suspended writer reacquires exclusive access using its original permission', async () => {
+  const scheduler = new RunScheduler()
+  const gate = deferred()
+  const paused = deferred()
+  const input = { taskId: 'writer', workspaceKey: 'shared', permissionMode: 'workspace-write' }
+  const writer = scheduler.withLease(input, async lease => {
+    await lease.suspend(async () => {
+      paused.resolve()
+      await gate.promise
+    }, { pauseTask: true })
+    assert.equal(lease.permissionMode, 'workspace-write')
+  })
+  await paused.promise
+  input.permissionMode = 'read-only'
+  const otherWriter = await scheduler.acquire({
+    taskId: 'other', workspaceKey: 'shared', permissionMode: 'workspace-write',
+  })
+  const sibling = scheduler.acquire({
+    taskId: 'writer', workspaceKey: 'shared', permissionMode: 'workspace-write',
+  })
+  const siblingState = deferredState(sibling)
+  gate.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(scheduler.snapshot().queued.length, 2)
+  assert.equal(siblingState.settled, false)
+  otherWriter.release()
+  await writer
+  ;(await sibling).release()
+  assert.equal(scheduler.snapshot().active.global, 0)
+})
+
+test('rejects unknown scheduler permissions', async () => {
+  await assert.rejects(new RunScheduler().acquire({
+    taskId: 'task', workspaceKey: 'workspace', permissionMode: 'unrestricted',
+  }), { message: 'RUN_SCHEDULER_PERMISSION_INVALID' })
+})
+
 test('grants later eligible work when an earlier request is blocked by a scoped limit', async () => {
   const scheduler = new RunScheduler({ taskLimit: 1, workspaceLimit: 3, globalLimit: 2 })
   const active = await scheduler.acquire({ taskId: 'same-task', workspaceKey: 'workspace-a' })

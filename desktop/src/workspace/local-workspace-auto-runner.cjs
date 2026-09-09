@@ -2459,7 +2459,10 @@ class LocalWorkspaceAutoRunner {
       return ''
     })
     if (ambiguous || /(?<![A-Za-z0-9_/@\\])@[\p{L}\p{N}][\p{L}\p{N}_-]*(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])/u.test(remaining)) {
-      return { status: 'invalid', kinds: [] }
+      return {
+        status: 'invalid',
+        kinds: participants.filter(kind => selected.has(kind)),
+      }
     }
     if (!selected.size) return { status: 'none', kinds: [] }
     return { status: 'valid', kinds: participants.filter(kind => selected.has(kind)) }
@@ -2668,15 +2671,6 @@ class LocalWorkspaceAutoRunner {
         .filter(kind => kind !== message.agentKind)
     )))
     if (!selected.size) return []
-    // Rebuild fairness from committed turns so recovery makes the same routing decision.
-    const recent = [round - 2, round - 1, round].flatMap(value => (
-      this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, value)
-    ))
-    if (round >= 4) {
-      for (const kind of activeKinds) {
-        if (!recent.some(message => message.agentKind === kind)) selected.add(kind)
-      }
-    }
     return activeKinds.filter(kind => selected.has(kind))
   }
 
@@ -2728,7 +2722,7 @@ class LocalWorkspaceAutoRunner {
     const {
       targetKinds, activeKinds: initialActiveKinds, writerKind, batchId,
       snapshot, snapshotRecord, snapshotHash, slots: initialSlots, receiptRecords,
-      checkpointPhase, removePhaseFailures,
+      checkpointPhase, removePhaseFailures, addRoundLimitNotice,
     } = input
     let activeKinds = [...initialActiveKinds]
     let slots = initialSlots
@@ -2739,7 +2733,10 @@ class LocalWorkspaceAutoRunner {
       ? (controller.orchestration.pendingKinds || []).filter(kind => activeKinds.includes(kind))
       : [...activeKinds]
     if (!pendingKinds.length && controller.orchestration?.phase === 'discussion') {
-      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) return 'completed'
+      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+        addRoundLimitNotice()
+        return 'round-limit'
+      }
       round += 1
       pendingKinds = [...activeKinds]
     }
@@ -2790,7 +2787,10 @@ class LocalWorkspaceAutoRunner {
         }
         pendingKinds = remainingKinds.filter(agentKind => activeKinds.includes(agentKind))
       }
-      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) return 'completed'
+      if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
+        addRoundLimitNotice()
+        return 'round-limit'
+      }
       round += 1
       controller.currentRound = round
       pendingKinds = [...activeKinds]
@@ -2823,7 +2823,10 @@ class LocalWorkspaceAutoRunner {
     if (!proposalComplete) {
       return activeKinds.some(kind => Boolean(latestFor('proposal', kind))) ? 'partial' : 'failed'
     }
-    if (!controller.unlimitedRounds && (controller.maxRounds || 6) <= 1) return 'completed'
+    if (!controller.unlimitedRounds && (controller.maxRounds || 6) <= 1) {
+      addRoundLimitNotice()
+      return 'round-limit'
+    }
 
     let nextKinds = []
     if (controller.orchestration?.phase === 'discussion') {

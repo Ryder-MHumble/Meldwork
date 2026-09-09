@@ -110,9 +110,42 @@ test('Natural sequential V4 runs every Agent once per round in configured CLI or
     '3:codex', '3:hermes', '3:workbuddy',
   ])
   const record = ledger.get(controller.runId)
-  assert.equal(record.status, 'completed', record.reason)
+  assert.equal(record.status, 'round-limit', record.reason)
   assert.equal(record.orchestration.discussionStyle, 'sequential')
+  assert.equal(workspace.snapshot().messages.filter(message => (
+    message.threadRootId === controller.threadRootId
+      && message.system?.key === 'system.autoRoundLimit'
+  )).length, 1)
 })
+
+for (const discussionStyle of ['sequential', 'agent-led']) {
+  test(`Natural ${discussionStyle} V4 reports a one-round budget stop without claiming delivery`, async (t) => {
+    const { directory, options } = fixture()
+    t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+    const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+    options.runLedger = ledger
+    options.naturalAgentResponses = true
+    const calls = []
+    options.runAgent = async (agent) => {
+      calls.push(agent.kind)
+      return { text: 'The requested deliverable is still missing. More work is needed.' }
+    }
+    const workspace = new LocalWorkspace(options)
+    await workspace.refreshAgents()
+    const group = workspace.createGroup({
+      name: 'Unfinished delivery', agentKinds: ['codex', 'hermes'],
+      workdir: directory, allowWrite: false,
+    })
+    const controller = await runDiscussion(workspace, group, { discussionStyle, maxRounds: 1 })
+    const record = ledger.get(controller.runId)
+    assert.equal(record.status, 'round-limit', record.reason)
+    assert.deepEqual([...calls].sort(), ['codex', 'hermes'])
+    assert.equal(workspace.snapshot().messages.filter(message => (
+      message.threadRootId === controller.threadRootId
+        && message.system?.key === 'system.autoRoundLimit'
+    )).length, 1)
+  })
+}
 
 test('Natural Agent-led V4 uses the full first-round transcript and inline mentions', async (t) => {
   const { directory, options } = fixture()
@@ -237,6 +270,10 @@ test('Natural Agent-led routing reads inline canonical mentions but excludes quo
       activeKinds,
     ).status, 'invalid')
     assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
+      'Continue.\n\n@hermes check the result; @ghost is unavailable.',
+      activeKinds,
+    ), ['hermes'])
+    assert.deepEqual(workspace.autoRunner.v4MentionedNextKinds(
       'Continue.\n\n@hermes，@workbuddy；@hermes',
       activeKinds,
     ), ['hermes', 'workbuddy'])
@@ -264,7 +301,7 @@ test('Natural Agent-led routing reads inline canonical mentions but excludes quo
   }
 })
 
-test('Natural Agent-led V4 includes neglected peers and supplies multiple rounds of context', async (t) => {
+test('Natural Agent-led V4 preserves chosen peers without forced participation and supplies recent context', async (t) => {
   const { directory, options } = fixture()
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   options.naturalAgentResponses = true
@@ -283,12 +320,13 @@ test('Natural Agent-led V4 includes neglected peers and supplies multiple rounds
   const workspace = new LocalWorkspace(options)
   await workspace.refreshAgents()
   const group = workspace.createGroup({
-    name: 'Fair peer routing', agentKinds: ['codex', 'hermes', 'workbuddy'],
+    name: 'Agent-selected routing', agentKinds: ['codex', 'hermes', 'workbuddy'],
     workdir: directory, allowWrite: false,
   })
   await runDiscussion(workspace, group, { discussionStyle: 'agent-led', maxRounds: 5 })
-  const peer = calls.find(call => call.kind === 'workbuddy' && call.phase === 'discussion')
-  assert.ok(peer, 'A repeated two-peer exchange must include the neglected participant')
+  assert.equal(calls.some(call => call.kind === 'workbuddy' && call.phase === 'discussion'), false)
+  const peer = calls.at(-1)
+  assert.equal(peer.kind, 'hermes')
   assert.match(peer.prompt, /Round 2 - @codex/)
   assert.match(peer.prompt, /Round 3 - @hermes/)
   assert.match(peer.prompt, /Round 4 - @codex/)
@@ -610,7 +648,7 @@ async function assertSequentialRecoveryWindow(t, crashWindow) {
   await recoveredController.done
 
   const recoveredRecord = recoveryLedger.get(crashRecord.runId)
-  assert.equal(recoveredRecord.status, 'completed', recoveredRecord.reason)
+  assert.equal(recoveredRecord.status, 'round-limit', recoveredRecord.reason)
   assert.deepEqual(recoveryCalls, ['discussion:hermes'])
   const messages = recovered.snapshot().messages.filter(message => (
     message.role === 'agent' && message.threadRootId === crashRecord.threadRootId
@@ -833,7 +871,7 @@ test('Natural sequential V4 recovers its unfinished cursor without duplicate rou
   await recoveredController.done
 
   const recoveredRecord = recoveryLedger.get(crashRecord.runId)
-  assert.equal(recoveredRecord.status, 'completed', recoveredRecord.reason)
+  assert.equal(recoveredRecord.status, 'round-limit', recoveredRecord.reason)
   assert.deepEqual(recoveryCalls.map(call => call.kind), ['hermes', 'codex', 'hermes'])
   assert.deepEqual(recoveryCalls.map(call => call.sessionRef), [
     'hermes-task-session', 'codex-task-session', 'hermes-task-session',
@@ -1221,7 +1259,7 @@ test('Natural Agent-led V4 recovers a completed proposal harness run before mess
   await recoveredController.done
 
   const recoveredRecord = recoveryLedger.get(crashRecord.runId)
-  assert.equal(recoveredRecord.status, 'completed', recoveredRecord.reason)
+  assert.equal(recoveredRecord.status, 'round-limit', recoveredRecord.reason)
   assert.deepEqual(recoveryCalls, ['proposal:hermes'])
   const messages = recovered.snapshot().messages.filter(message => (
     message.role === 'agent' && message.threadRootId === crashRecord.threadRootId

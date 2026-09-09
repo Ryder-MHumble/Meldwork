@@ -695,6 +695,9 @@ describe('Meldwork workbench', () => {
     await flushPromises()
     expect(wrapper.find('.run-status-panel.history').exists()).toBe(true)
 
+    expect(wrapper.get('.run-status-panel.history .run-status-meta').text()).toContain('Latest topic run')
+    expect(wrapper.get('.run-status-panel.history .run-status-meta').text()).not.toContain('Running topic')
+
     const rootDelete = () => wrapper.get('#message-root-1 .message-delete-button')
     await rootDelete().trigger('click')
     expect(bridge.localWorkspace.deleteMessage).not.toHaveBeenCalled()
@@ -853,6 +856,8 @@ describe('Meldwork workbench', () => {
 
     expect(wrapper.get('.message-row.agent').text()).toContain('Final answer remains visible.')
     expect(wrapper.get('#message-root-1').classes()).toContain('active-topic')
+    expect(wrapper.get('.run-status-panel .run-status-meta').text()).toContain('Running topic')
+    expect(wrapper.get('.run-status-panel .run-status-meta').text()).not.toContain('Latest topic run')
     expect(scrollIntoView).toHaveBeenCalled()
     expect(wrapper.get('.run-status-panel.group.solo').text()).toContain('Codex')
     expect(wrapper.get('.run-status-panel').text()).not.toContain('Hermes')

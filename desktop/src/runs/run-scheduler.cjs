@@ -58,6 +58,7 @@ class RunScheduler {
     this.activeGlobal = 0
     this.activeTasks = new Map()
     this.activeWorkspaces = new Map()
+    this.activeWorkspaceWriters = new Set()
     this.queue = []
     this.sequence = 0
     schedulerPauseTokens.set(this, new Map())
@@ -69,6 +70,8 @@ class RunScheduler {
 
   canGrant(entry) {
     return taskPauseAllows(this, entry)
+      && (entry.permissionMode !== 'workspace-write'
+        || !this.activeWorkspaceWriters.has(entry.workspaceKey))
       && belowLimit(this.activeGlobal, this.limits.global)
       && belowLimit(this.resourceCount(this.activeTasks, entry.taskId), this.limits.task)
       && belowLimit(this.resourceCount(this.activeWorkspaces, entry.workspaceKey), this.limits.workspace)
@@ -84,12 +87,14 @@ class RunScheduler {
     this.activeGlobal += 1
     this.changeCount(this.activeTasks, entry.taskId, 1)
     this.changeCount(this.activeWorkspaces, entry.workspaceKey, 1)
+    if (entry.permissionMode === 'workspace-write') this.activeWorkspaceWriters.add(entry.workspaceKey)
     entry.signal?.removeEventListener('abort', entry.abortHandler)
     let released = false
     const lease = Object.freeze({
       leaseId: entry.requestId,
       taskId: entry.taskId,
       workspaceKey: entry.workspaceKey,
+      permissionMode: entry.permissionMode,
       queuedAt: entry.queuedAt,
       acquiredAt: this.now(),
       release: () => {
@@ -98,6 +103,7 @@ class RunScheduler {
         this.activeGlobal -= 1
         this.changeCount(this.activeTasks, entry.taskId, -1)
         this.changeCount(this.activeWorkspaces, entry.workspaceKey, -1)
+        if (entry.permissionMode === 'workspace-write') this.activeWorkspaceWriters.delete(entry.workspaceKey)
         this.drain()
         return true
       },
@@ -105,6 +111,7 @@ class RunScheduler {
     schedulerLeaseBindings.set(lease, Object.freeze({
       taskId: entry.taskId,
       workspaceKey: entry.workspaceKey,
+      permissionMode: entry.permissionMode,
       signal: entry.signal,
     }))
     entry.resolve(lease)
@@ -129,9 +136,13 @@ class RunScheduler {
   #enqueueAcquire(input = {}, pauseToken = null) {
     let taskId
     let workspaceKey
+    const permissionMode = input.permissionMode == null ? 'read-only' : input.permissionMode
     try {
       taskId = resourceKey(input.taskId, 'RUN_SCHEDULER_TASK_REQUIRED')
       workspaceKey = resourceKey(input.workspaceKey, 'RUN_SCHEDULER_WORKSPACE_REQUIRED')
+      if (!['read-only', 'workspace-write'].includes(permissionMode)) {
+        throw schedulerError('RUN_SCHEDULER_PERMISSION_INVALID')
+      }
     } catch (error) {
       return Promise.reject(error)
     }
@@ -142,6 +153,7 @@ class RunScheduler {
         requestId: `lease-${++this.sequence}`,
         taskId,
         workspaceKey,
+        permissionMode,
         queuedAt: this.now(),
         signal,
         resolve,
@@ -176,6 +188,7 @@ class RunScheduler {
       get leaseId() { return activeLease?.leaseId || '' },
       get taskId() { return activeLease?.taskId || '' },
       get workspaceKey() { return activeLease?.workspaceKey || '' },
+      get permissionMode() { return activeLease?.permissionMode || '' },
       get queuedAt() { return activeLease?.queuedAt || 0 },
       get acquiredAt() { return activeLease?.acquiredAt || 0 },
       release: () => {

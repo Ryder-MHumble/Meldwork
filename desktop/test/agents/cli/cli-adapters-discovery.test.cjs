@@ -48,7 +48,7 @@ test('capability timeouts retry once and remain inconclusive when both attempts 
         if (!recover || timeouts.length === 1) {
           throw Object.assign(new Error('timeout'), { killed: true })
         }
-        return { stdout: 'Pi help' }
+        return { stdout: '--mode json --print --session --tools --approve --no-approve' }
       },
     })
     assert.deepEqual(timeouts, [8000, 16000])
@@ -98,6 +98,25 @@ test('Agent detection does not promote an inconclusive capability check to compa
   assert.equal(agent.kind, 'pi')
   assert.equal(agent.compatibilityState, 'unknown')
   assert.equal(agent.incompatibilityReason, 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT')
+})
+
+test('Pi detection rejects same-name programs and CLIs missing required permission controls', async () => {
+  for (const [name, help, expected] of [
+    ['unrelated', 'Pi help: calculate digits of pi', 'incompatible'],
+    ['no-permission-controls', '--mode json --print --session --tools', 'incompatible'],
+    ['required-protocol', '--mode json --print --session --tools --approve --no-approve', 'compatible'],
+  ]) {
+    const [agent] = await detectAgents({
+      env: {},
+      resolveExecutableFn: async kind => kind === 'pi' ? `/test/pi-${name}/pi` : null,
+      execFileFn: async (_command, args) => ({ stdout: args[0] === '--version' ? '0.84.2' : help }),
+    })
+    assert.equal(agent.kind, 'pi')
+    assert.equal(agent.compatibilityState, expected, name)
+    if (expected === 'incompatible') {
+      assert.equal(agent.incompatibilityReason, 'LOCAL_AGENT_REQUIRED_CAPABILITY_MISSING', name)
+    }
+  }
 })
 
 test('Agent discovery scans independent Agent kinds concurrently', async () => {
