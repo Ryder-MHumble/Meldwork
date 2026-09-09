@@ -179,3 +179,17 @@
 - 最终 `MELDWORK_TEST_CLAUDE_EXECUTABLE=... npm --prefix desktop test`：1536/1536，跳过 0，退出码 0，约 317 秒；日志 `/tmp/meldwork-105-outcomes-desktop.log`。`git diff --check` 通过；本轮未执行 Web 构建或打包，桌面构建与运行结果如上。
 
 本检查点不改变 AI 的完成判断，不代表人类采用；needs-human 续跑、路由语义和剩余启动检测问题继续开发。尚未更新包版本或打包。
+
+## 原生 shell 配置缓存与手动刷新
+
+2026-09-09：复现相同 PATH 下修改合成认证配置仍返回旧缓存值。原缓存只绑定平台、HOME、shell 与 PATH，手动刷新也不会重新采集 shell 配置，可能继续使用最多 30 秒的旧配置。现在缓存键包含允许传递环境的 SHA-256 摘要，不保存原始凭据作为键；环境值变更、移除和显式清空都会改变缓存身份。串行 Agent 刷新在检测与认证检查前强制重新采集原生 shell 配置，同一轮后续调用共享新缓存。
+
+验证与边界：
+
+- readiness 与 Main 安全测试 87/87，覆盖真实 shell 配置文件修改、显式刷新、缓存复用、环境清空及刷新顺序；日志 `/tmp/meldwork-105-shell-refresh-focused.log`。
+- Agent 套件共 460 项，459 通过、1 项可选真实 Claude 集成测试因未配置 executable 跳过，失败 0；日志 `/tmp/meldwork-105-shell-refresh-agents.log`。不能把该结果写成全部真实 CLI 均已完成调用。
+- `/tmp/meldwork-105-shell-refresh-ui.cjs` 使用隔离 Electron 配置、临时 shell 和合成本机地址，通过真实 preload refreshAgents 验证：修改文件后刷新前仍为缓存地址，手动刷新后立即读到新地址，前后 12 个 Agent 条目一致且包含 OpenClaw。首次成功配置 `/tmp/meldwork-105-shell-refresh-CGjibK`，脚本退出 0，Electron 正常关闭，没有模型调用，也没有修改日常 shell 配置。已查看 `/tmp/meldwork-105-shell-refresh.png`。
+- 前期验证脚本因 Playwright 求值环境没有 require、process.mainModule 不存在及绝对路径导入 Electron 得到包路径而失败，均未执行到产品刷新断言；最终改用隔离启动器提供只读取合成地址的验证函数，不新增产品接口。
+- 修改前两次真实版本/能力扫描为 2343ms 与 1935ms，均返回 12 个条目；这是基线，不是提速证据。本次不改变探测调度或能力缓存策略。
+
+本检查点未重跑完整桌面或前端套件、构建与打包，之前 1536/1536 桌面全量结果对应本次缓存改动之前。群聊语义路由、可恢复 needs-human 与最终版本验收仍未完成，版本号尚未更新。

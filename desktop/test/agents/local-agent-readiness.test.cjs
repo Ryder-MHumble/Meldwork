@@ -12,6 +12,39 @@ const {
   resolveNativeShellEnvironment,
 } = require('../../src/agents/local-agent-readiness.cjs')
 
+test('native environment cache observes credential and proxy changes without a PATH change', async () => {
+  const base = { platform: 'win32', home: 'C:\\meldwork-cache-test', env: { PATH: 'C:\\bin',
+    ANTHROPIC_API_KEY: 'synthetic-before', HTTPS_PROXY: 'http://before.example:8080' } }
+  const before = await resolveNativeShellEnvironment(base)
+  const after = await resolveNativeShellEnvironment({ ...base, env: { ...base.env,
+    ANTHROPIC_API_KEY: 'synthetic-after', HTTPS_PROXY: '' } })
+  assert.equal(before.env.ANTHROPIC_API_KEY, 'synthetic-before')
+  assert.equal(after.env.ANTHROPIC_API_KEY, 'synthetic-after')
+  assert.equal(after.env.HTTPS_PROXY, '')
+  const removed = await resolveNativeShellEnvironment({ ...base, env: { PATH: base.env.PATH } })
+  assert.equal(removed.env.ANTHROPIC_API_KEY, undefined)
+  assert.equal(removed.env.HTTPS_PROXY, undefined)
+})
+
+test('explicit refresh replaces cached native shell settings and subsequent calls share the new result', {
+  skip: process.platform === 'win32',
+}, async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-shell-refresh-'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const shell = path.join(home, 'sh')
+  const settings = path.join(home, 'native-env')
+  fs.writeFileSync(shell, '#!/bin/sh\n. "$HOME/native-env"\nexec /bin/sh "$@"\n', { mode: 0o700 })
+  fs.writeFileSync(settings, 'export ANTHROPIC_BASE_URL=https://before.example\n', { mode: 0o600 })
+  const options = { home, shell, platform: 'linux', env: { PATH: '/usr/bin:/bin' } }
+  const first = await resolveNativeShellEnvironment(options)
+  assert.equal(first.env.ANTHROPIC_BASE_URL, 'https://before.example')
+  fs.writeFileSync(settings, 'export ANTHROPIC_BASE_URL=https://after.example\n', { mode: 0o600 })
+  assert.strictEqual(await resolveNativeShellEnvironment(options), first)
+  const refreshed = await resolveNativeShellEnvironment({ ...options, refresh: true })
+  assert.equal(refreshed.env.ANTHROPIC_BASE_URL, 'https://after.example')
+  assert.strictEqual(await resolveNativeShellEnvironment(options), refreshed)
+})
+
 function openClawModelsCatalog(apiKey, baseUrl = 'https://provider.example/v1') {
   return JSON.stringify({
     providers: {

@@ -2131,6 +2131,26 @@ test('OpenClaw native auth is routed through the app-owned isolated runtime', as
   })
 })
 
+test('manual Agent refresh updates native shell settings before detection and credential checks', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-refresh-environment-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  let configured = 'before'
+  let cached = 'before'
+  const refreshes = []
+  const { harness } = loadMain(directory, {
+    nativeShellEnvironment: input => {
+      if (input.refresh) { cached = configured; refreshes.push(cached) }
+      return { env: { ANTHROPIC_API_KEY: `synthetic-${cached}` }, source: 'native-shell' }
+    },
+    onRefresh: async () => { assert.equal(cached, configured) },
+  })
+  await harness.ready()
+  configured = 'after'
+  await harness.ipcHandlers.get('local-workspace:refresh-agents')(harness.event())
+  assert.deepEqual(refreshes, ['after'])
+  assert.equal(harness.workspaceInstances[0].refreshCount, 1)
+})
+
 test('manual Agent refreshes remain serialized', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-refresh-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

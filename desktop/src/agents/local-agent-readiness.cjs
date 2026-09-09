@@ -1,4 +1,5 @@
 const { execFile } = require('node:child_process')
+const { createHash } = require('node:crypto')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
@@ -261,9 +262,12 @@ function resolveNativeShellEnvironment(options = {}) {
   const platform = options.platform || process.platform
   const home = options.home || os.homedir()
   const shell = String(options.shell || source.SHELL || '')
-  const key = [platform, home, shell, String(source.PATH || '')].join('\u0000')
+  const environmentHash = createHash('sha256')
+    .update(JSON.stringify(allowedShellEnvironment(source, platform))).digest('hex')
+  const key = [platform, home, shell, environmentHash].join('\u0000')
   const now = Date.now()
-  if (shellEnvironmentCache?.key === key && shellEnvironmentCache.expiresAt > now) {
+  if (options.refresh !== true && shellEnvironmentCache?.key === key
+      && shellEnvironmentCache.expiresAt > now) {
     return shellEnvironmentCache.promise
   }
   const promise = queryNativeShellEnvironment(options)

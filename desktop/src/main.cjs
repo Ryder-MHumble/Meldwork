@@ -239,9 +239,9 @@ function providerOptions(kind, context = {}) {
   )
 }
 
-async function nativeShellEnvironment() {
+async function nativeShellEnvironment(options = {}) {
   const home = app.getPath('home')
-  const resolved = await resolveNativeShellEnvironment({ home })
+  const resolved = await resolveNativeShellEnvironment({ home, refresh: options.refresh === true })
   return {
     ...resolved,
     env: { ...process.env, ...resolved.env },
@@ -678,6 +678,7 @@ async function refreshLocalAgentState() {
   if (!target) return null
   const task = localAgentRefreshQueue.then(async () => {
     if (workspace !== target) return workspace?.snapshot() || null
+    await nativeShellEnvironment({ refresh: true })
     const snapshot = await target.refreshAgents()
     if (workspace !== target) return workspace?.snapshot() || null
     return snapshot
