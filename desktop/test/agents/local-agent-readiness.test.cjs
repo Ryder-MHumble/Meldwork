@@ -768,6 +768,104 @@ test('Claude auth status overrides a stale credential file', async () => {
   }
 })
 
+test('Claude probes native auth with cloud configuration even when a direct API key exists', async () => {
+  let calls = 0
+  const env = {
+    ANTHROPIC_API_KEY: 'unused-direct-key', CLAUDE_CODE_USE_BEDROCK: '1',
+    AWS_PROFILE: 'native-profile', AWS_REGION: 'us-east-1',
+    AWS_SESSION_TOKEN: 'native-session-token', GITHUB_TOKEN: 'unrelated-secret',
+  }
+  const result = await resolveNativeCredentialState('claude', {
+    env, executable: '/tmp/claude',
+    execFileFn: async (command, args, options) => {
+      calls += 1
+      assert.deepEqual(args, ['auth', 'status', '--json'])
+      assert.equal(options.env.AWS_PROFILE, env.AWS_PROFILE)
+      assert.equal(options.env.AWS_SESSION_TOKEN, env.AWS_SESSION_TOKEN)
+      assert.equal(options.env.CLAUDE_CODE_USE_BEDROCK, '1')
+      assert.equal(options.env.GITHUB_TOKEN, undefined)
+      return { stdout: JSON.stringify({ loggedIn: false }) }
+    },
+  })
+  assert.equal(calls, 1)
+  assert.deepEqual(result, { state: 'missing', source: 'native-auth-status' })
+})
+
+test('Claude API key status remains configuration evidence rather than verified authentication', async () => {
+  const result = await resolveNativeCredentialState('claude', {
+    env: { ANTHROPIC_API_KEY: 'unverified-api-key' }, executable: '/tmp/claude',
+    execFileFn: async () => ({ stdout: JSON.stringify({ loggedIn: true, authMethod: 'api_key' }) }),
+  })
+  assert.deepEqual(result, { state: 'ready', source: 'native-credential' })
+})
+
+test('Claude cloud provider recognition alone does not verify SDK credentials', async () => {
+  for (const apiProvider of ['bedrock', 'vertex', 'foundry']) {
+    const result = await resolveNativeCredentialState('claude', {
+      env: { ANTHROPIC_API_KEY: 'unused-direct-key' }, executable: '/tmp/claude',
+      execFileFn: async () => ({ stdout: JSON.stringify({
+        loggedIn: true, authMethod: 'third_party', apiProvider,
+      }) }),
+    })
+    assert.deepEqual(result, { state: 'unknown', source: 'unverified' })
+  }
+})
+
+test('real shell extraction preserves explicit empty cloud and credential overrides', {
+  skip: process.platform === 'win32',
+}, async () => {
+  const execFile = require('node:util').promisify(require('node:child_process').execFile)
+  const result = await resolveNativeShellEnvironment({
+    cache: false, platform: 'linux', shell: '/bin/sh',
+    env: { AWS_PROFILE: 'stale-profile', ANTHROPIC_API_KEY: 'stale-key', PATH: '/usr/bin:/bin' },
+    execFileFn: (command, args, options) => execFile(command, ['-c',
+      "export AWS_PROFILE='' ANTHROPIC_API_KEY='' CLAUDE_CODE_USE_BEDROCK='0'\n" + args[1],
+    ], options),
+  })
+  assert.equal(result.source, 'native-shell')
+  assert.equal(result.env.AWS_PROFILE, '')
+  assert.equal(result.env.ANTHROPIC_API_KEY, '')
+  assert.equal(result.env.CLAUDE_CODE_USE_BEDROCK, '0')
+  assert.deepEqual(nativeCredentialEnvironment('claude', result.env), {
+    AWS_PROFILE: '', ANTHROPIC_API_KEY: '', CLAUDE_CODE_USE_BEDROCK: '0',
+  })
+  const fallback = await resolveNativeShellEnvironment({
+    cache: false, platform: 'win32', env: { AWS_PROFILE: '', ANTHROPIC_API_KEY: '' },
+  })
+  assert.equal(fallback.env.AWS_PROFILE, '')
+  assert.equal(fallback.env.ANTHROPIC_API_KEY, '')
+})
+
+test('native cloud configuration is forwarded only to compatible Agents', () => {
+  const cloud = {
+    CLAUDE_CODE_USE_VERTEX: '1', AWS_PROFILE: 'native', AWS_ACCESS_KEY_ID: 'access-key',
+    AWS_SECRET_ACCESS_KEY: 'secret-key', AZURE_CLIENT_SECRET: 'azure-secret',
+    GOOGLE_APPLICATION_CREDENTIALS: '/tmp/adc.json', GOOGLE_CLOUD_PROJECT: 'native-project',
+    CLOUD_ML_REGION: 'us-east5', ANTHROPIC_FOUNDRY_RESOURCE: 'native-resource',
+  }
+  assert.deepEqual(nativeCredentialEnvironment('claude', cloud), cloud)
+  assert.deepEqual(nativeCredentialEnvironment('gemini', cloud), {
+    GOOGLE_APPLICATION_CREDENTIALS: '/tmp/adc.json', GOOGLE_CLOUD_PROJECT: 'native-project',
+  })
+  assert.deepEqual(nativeCredentialEnvironment('codex', cloud), {})
+})
+
+test('selected Provider retains native configuration roots without native credentials or selectors', () => {
+  const env = {
+    CLAUDE_CONFIG_DIR: '/tmp/claude-config', CODEX_HOME: '/tmp/codex-config',
+    PI_CODING_AGENT_DIR: '/tmp/pi-config', AWS_PROFILE: 'native',
+    CLAUDE_CODE_USE_BEDROCK: '1', ANTHROPIC_API_KEY: 'native-key',
+    ANTHROPIC_BASE_URL: 'https://native.example', OPENAI_API_KEY: 'other-key',
+  }
+  for (const [kind, root] of [
+    ['claude', 'CLAUDE_CONFIG_DIR'], ['codex', 'CODEX_HOME'], ['pi', 'PI_CODING_AGENT_DIR'],
+  ]) {
+    assert.deepEqual(nativeCredentialEnvironment(kind, env, { providerConfigured: true }), {
+      [root]: env[root],
+    })
+  }
+})
+
 test('an installed Agent without credential evidence remains unverified', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-missing-readiness-'))
   try {

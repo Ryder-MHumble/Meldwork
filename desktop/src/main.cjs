@@ -398,7 +398,9 @@ async function runCoreAgent(agent, prompt, workdir, options = {}) {
   const nativeEnv = connectorCredentialIsolation || agent.kind === 'openclaw'
     ? {}
     : {
-        ...nativeCredentialEnvironment(agent.kind, shellEnvironment.env),
+        ...nativeCredentialEnvironment(agent.kind, shellEnvironment.env, {
+          providerConfigured: status.configured,
+        }),
         ...(shellEnvironment.env.PATH ? { PATH: shellEnvironment.env.PATH } : {}),
       }
   const callerEnv = connectorCredentialIsolation || agent.kind !== 'openclaw'

@@ -1033,6 +1033,26 @@ test('Claude uses partial stream JSON and resumes its native session', () => {
   assert.equal(spec.promptArg, true)
 })
 
+test('Claude selected Provider overrides native cloud selection without credentials in argv', () => {
+  const spec = invocation('claude', '/tmp/claude', '/tmp/work', 'native-session', {
+    provider: { id: 'anthropic', model: 'selected-model', baseUrl: 'https://selected.example' },
+    env: { ANTHROPIC_API_KEY: 'selected-secret-key' },
+  })
+  const settings = JSON.parse(spec.args[spec.args.indexOf('--settings') + 1])
+  assert.equal(settings.env.ANTHROPIC_BASE_URL, 'https://selected.example')
+  assert.equal(settings.env.ANTHROPIC_API_KEY, '')
+  assert.equal(settings.env.ANTHROPIC_AUTH_TOKEN, '')
+  assert.equal(settings.env.CLAUDE_CODE_OAUTH_TOKEN, '')
+  assert.equal(settings.env.ANTHROPIC_CUSTOM_HEADERS, '')
+  assert.match(settings.apiKeyHelper, /MELDWORK_PROVIDER_API_KEY/)
+  for (const flag of ['BEDROCK', 'VERTEX', 'FOUNDRY', 'MANTLE']) {
+    assert.equal(settings.env[`CLAUDE_CODE_USE_${flag}`], '0')
+  }
+  assert.equal(spec.args[spec.args.indexOf('--model') + 1], 'selected-model')
+  assert.equal(spec.args[spec.args.indexOf('--resume') + 1], 'native-session')
+  assert.equal(JSON.stringify(spec.args).includes('selected-secret-key'), false)
+})
+
 test('MiMo uses ACP by default and declares its JSON setup fallback', () => {
   const spec = invocation('mimo', '/tmp/mimo', '/tmp/work', 'mimo-session', {
     sandbox: 'workspace-write',

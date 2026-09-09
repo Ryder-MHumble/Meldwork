@@ -38,7 +38,7 @@ function childSecrets(env) {
   const secrets = new Set()
   for (const [name, value] of Object.entries(env || {})) {
     if (typeof value !== 'string' || !value) continue
-    if (/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
+    if (/(?:API[_-]?KEY|ACCESS[_-]?KEY|TOKEN|SECRET|PASSWORD|AUTHORIZATION)/i.test(name)
         && utf8ByteLength(value) >= 8) secrets.add(value)
     if (!/^(?:https?|all)_proxy$/i.test(name)) continue
     if (value.includes('@')) secrets.add(value)

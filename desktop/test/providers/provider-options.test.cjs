@@ -59,6 +59,7 @@ test('Provider options map native Agent credential names without dropping generi
     },
     claude: {
       ANTHROPIC_API_KEY: 'provider-key',
+      MELDWORK_PROVIDER_API_KEY: 'provider-key',
       ANTHROPIC_BASE_URL: 'https://api.example.com/v1',
       ANTHROPIC_MODEL: 'example-model',
     },
@@ -71,6 +72,7 @@ test('Provider options map native Agent credential names without dropping generi
 
   for (const [kind, values] of Object.entries(expected)) {
     assert.deepEqual(providerOptionsFor(kind, GENERIC), {
+      ...(kind === 'claude' ? { provider: { id: 'anthropic', model: 'example-model', baseUrl: GENERIC.OPENAI_BASE_URL } } : {}),
       env: { ...GENERIC, ...values },
     })
   }

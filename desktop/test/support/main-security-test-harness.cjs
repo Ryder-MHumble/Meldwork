@@ -825,7 +825,7 @@ function loadMain(userData, options = {}) {
     './agents/custom-agent-store.cjs': { CustomAgentStore: TestCustomAgentStore },
     './attachments/attachment-store.cjs': { AttachmentStore: TestAttachmentStore },
     './agents/local-agent-readiness.cjs': {
-      nativeCredentialEnvironment: kind => options.nativeEnvironment?.(kind) || {},
+      nativeCredentialEnvironment: (...args) => options.nativeEnvironment?.(...args) || {},
       resolveNativeShellEnvironment: async input => options.nativeShellEnvironment?.(input) || ({
         env: { PATH: process.env.PATH || '' },
         source: 'process',

@@ -127,3 +127,22 @@
 - 最终再次执行 `npm --prefix desktop test`：1515/1515，退出码 0，约 308 秒；日志 `/tmp/meldwork-105-desktop-final.log`。之前未确认全量通过的 Gate/ACP 重启路径也在本次全套中通过。`git diff --check` 通过。本检查点未更新包版本或重新打包。
 
 此检查点仍未实现自然讨论按原生 Session 的确认状态去重发送，也未完成可恢复 `needs-human`、剩余 CLI 环境问题或最终版本验收。
+
+## 原生云认证环境与显式 Provider 检查点
+
+2026-09-09：原生调用现在按 Agent 协议白名单传递 Claude 的 Bedrock、Vertex、Foundry、OAuth/API 认证与模型配置，以及 Gemini 的 Google Cloud 项目和 ADC 配置路径。登录 shell 采集及回退均保留显式空值，避免用户清空的配置又被旧进程环境覆盖。云 SDK 配置的存在不直接证明认证成功，新增 AWS access key 也进入完整结果与流式分片脱敏。
+
+选择 Meldwork Provider 后，原生环境只保留当前 Agent 的配置根，排除其他原生凭据和 Provider 选择；网络与 PATH 继续独立传递。真实 Claude CLI 进一步证明 `settings.json.env` 优先于进程环境：仅注入云开关为 0，仍选择原生云 Provider；原生 API 地址和密钥也会覆盖所选值。Claude 协议适配器因此使用高优先级 `--settings` 指定非秘密地址、清除冲突认证选择，并通过原生 `apiKeyHelper` 从子进程环境读取所选密钥。密钥不写入 argv 或临时配置文件，不改写用户原生配置，也不关闭全部设置或 Skills。此处属于必要协议适配，没有新增品牌或 Skill 驱动的业务调度。
+
+认证探测区分证据强度：真实 CLI 在没有实际云凭据时也会返回 `loggedIn: true / third_party`，现在仅标记尚未验证；`api_key` 的肯定状态仍是凭据配置证据，不当作一次实际认证成功。两者均不能在刷新时立即抹去近期运行鉴权失败；没有近期失败时仍允许用户尝试原生运行。
+
+验证与边界：
+
+- 首批 readiness、Provider、CLI 协议和 Main 安全测试 189/189；完善云状态和空值后 Agent 套件 454/454。加入实际 Provider 密钥 helper 后 Agent 套件再次 454/454，Main/Provider 60/60。
+- 新增 `cli-claude-provider.test.cjs`：通过 `MELDWORK_TEST_CLAUDE_EXECUTABLE` 指向实际 Claude CLI 的可选集成测试，与两项 helper 测试合计 3/3。使用本机 HTTP/SSE 模拟服务、合成凭据和隔离 HOME，实际 `runAgent` 请求在冲突原生配置下到达所选地址、携带所选密钥并返回 `LOCAL_PROVIDER_OK`；原生设置字节不变。默认未指定真实 CLI 时该集成项明确跳过。
+- shell helper 对包含命令替换、引号和控制运算符的合成密钥按数据输出，不执行其中的 shell 文本。Windows helper 使用系统 PowerShell 读取环境变量，已有参数断言，但未在 Windows 主机实测。
+- `/tmp/meldwork-105-provider-electron.cjs` 在独立配置 `/tmp/meldwork-105-provider-ui-DBsHOV` 完成真实 Electron 的保存 Provider、刷新 Agent、创建直聊及收取回复。会话 `946a2fac-8177-4471-bc5c-b0ec64eba92c` 显示 `LOCAL_PROVIDER_UI_OK`；两次模拟服务请求均使用所选地址与密钥，原生配置未变。已查看 `/tmp/meldwork-105-provider-ui.png`，脚本退出码 0，Electron 正常关闭。
+- 最后补充 API key 配置证据不能清除近期运行失败的修正后，readiness 与 Agent catalog 回归 53/53。完整桌面测试结果另记于下方，不能把不同批次相加为一次全量结果。
+- `MELDWORK_TEST_CLAUDE_EXECUTABLE=... npm --prefix desktop test`：1525/1525，跳过 0，退出码 0，约 290 秒；日志 `/tmp/meldwork-105-cloud-desktop.log`。该批次启动后新增了上述 API key 证据分类及两项回归，因此全量数字对应分类修正前的状态；最终分类行为由随后 53/53 的针对性测试覆盖。`git diff --check` 通过，尚未在最终分类修正后重跑整个桌面套件。
+
+未使用真实 AWS、Azure、Vertex 凭据进行外部模型调用；云状态实测证明配置优先级和证据边界，不证明账户权限、配额或模型可用性。动态 `VERTEX_REGION_<MODEL>` 尚未纳入固定环境白名单，其他 Agent 的云 SDK 环境支持仍需核查；也未证明所有 Agent 原生配置均无法覆盖显式 Provider。本检查点未更新版本、重新打包或替换日常应用，完整 V1.0.5 目标仍在开发中。

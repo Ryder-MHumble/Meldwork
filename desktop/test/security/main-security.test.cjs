@@ -1996,12 +1996,11 @@ test('configured Provider is injected only through local Agent execution options
   const { harness } = loadMain(directory, {
     providerConfigured: true,
     nativeShellEnvironment: () => ({
-      env: { PATH: '/opt/native-agent/bin:/usr/bin', https_proxy: 'http://proxy.example:3128', NO_PROXY: 'localhost,127.0.0.1' },
+      env: { PATH: '/opt/native-agent/bin:/usr/bin', https_proxy: 'http://proxy.example:3128', NO_PROXY: 'localhost,127.0.0.1', ANTHROPIC_API_KEY: 'native-hermes-key' },
       source: 'native-shell',
     }),
-    nativeEnvironment: kind => kind === 'hermes'
-      ? { ANTHROPIC_API_KEY: 'native-hermes-key' }
-      : {},
+    nativeEnvironment: (...args) => require('../../src/agents/local-agent-readiness.cjs')
+      .nativeCredentialEnvironment(...args),
   })
   await harness.ready()
 
@@ -2017,7 +2016,7 @@ test('configured Provider is injected only through local Agent execution options
   assert.equal(options.env.OPENAI_MODEL, PROVIDER_METADATA.model)
   assert.equal(options.env.HERMES_INFERENCE_PROVIDER, 'openai-api')
   assert.equal(options.env.HERMES_INFERENCE_MODEL, PROVIDER_METADATA.model)
-  assert.equal(options.env.ANTHROPIC_API_KEY, 'native-hermes-key')
+  assert.equal(options.env.ANTHROPIC_API_KEY, undefined)
   assert.equal(options.env.CURRENT_RUN, '1')
   assert.equal(options.env.PATH, '/opt/native-agent/bin:/usr/bin')
   assert.equal(options.env.https_proxy, 'http://proxy.example:3128')

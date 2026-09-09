@@ -102,9 +102,11 @@ function providerOptionsFor(kind, generic, context = {}, status = {}) {
   }
   if (kind === 'claude') {
     return {
+      provider: { id: 'anthropic', model: generic.OPENAI_MODEL, baseUrl: generic.OPENAI_BASE_URL },
       env: {
         ...generic,
         ANTHROPIC_API_KEY: generic.OPENAI_API_KEY,
+        MELDWORK_PROVIDER_API_KEY: generic.OPENAI_API_KEY,
         ANTHROPIC_BASE_URL: generic.OPENAI_BASE_URL,
         ANTHROPIC_MODEL: generic.OPENAI_MODEL,
       },

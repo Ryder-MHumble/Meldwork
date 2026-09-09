@@ -312,6 +312,26 @@ test('recent runtime authentication failures stay blocked during the retry coold
   assert.equal(agents()[0].availabilitySource, 'runtime-auth-failure')
 })
 
+test('Claude API key and cloud status cannot erase a recent runtime authentication failure', async () => {
+  const { resolveNativeCredentialState } = require('../../src/agents/local-agent-readiness.cjs')
+  for (const authMethod of ['api_key', 'third_party']) {
+    const { agents, catalog, state } = fixture({
+      detectAgents: async () => [{ kind: 'claude', compatibilityState: 'compatible' }],
+      credentialState: () => resolveNativeCredentialState('claude', {
+        executable: '/tmp/claude', env: { ANTHROPIC_API_KEY: 'unverified-key' },
+        execFileFn: async () => ({ stdout: JSON.stringify({ loggedIn: true, authMethod }) }),
+      }),
+    })
+    state.agentRuntime.claude = {
+      credentialState: 'missing', checkedAt: '2026-08-02T23:59:45.000Z',
+    }
+    await catalog.refresh()
+    assert.equal(agents()[0].invocable, false)
+    assert.equal(agents()[0].availabilitySource, 'runtime-auth-failure')
+    assert.equal(state.agentRuntime.claude.credentialState, 'missing')
+  }
+})
+
 test('configured credentials do not make an Agent invocable when runtime prerequisites fail', async () => {
   const { agents, catalog } = fixture({
     detectAgents: async () => [{

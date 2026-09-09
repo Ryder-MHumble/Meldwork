@@ -527,6 +527,22 @@ test('terminal reconciliation never reconstructs an exact 8-byte child secret', 
   }
 })
 
+test('AWS access keys are redacted across every streaming boundary', () => {
+  const secret = 'AKIATESTACCESSKEY1234'
+  for (let split = 1; split < secret.length; split += 1) {
+    const emitted = []
+    const runtimeEvents = createRuntimeEventEmitter(
+      { onEvent: event => emitted.push(event) }, { AWS_ACCESS_KEY_ID: secret },
+    )
+    runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: secret.slice(0, split) })
+    runtimeEvents.emit({ type: 'answer_delta', status: 'running', delta: secret.slice(split) })
+    runtimeEvents.emitFinalAnswer(secret)
+    assert.equal(JSON.stringify(emitted).includes(secret), false)
+    assert.equal(emitted.filter(event => event.type === 'answer_delta')
+      .map(event => event.delta).join('').includes(secret), false)
+  }
+})
+
 test('runtime answer delivery reconciles empty and incomplete deltas with the terminal answer', () => {
   for (const deltas of [[], [''], ['authoritative ']]) {
     const emitted = []

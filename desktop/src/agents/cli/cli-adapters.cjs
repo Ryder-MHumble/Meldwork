@@ -123,6 +123,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
     ? options.hermesAcpAvailable
     : agent.acpAvailable
   const spec = invocation(agent.kind, agent.executable, workdir, sessionRef, {
+    platform,
     sandbox: options.sandbox,
     provider: options.provider,
     attachments: options.attachments,

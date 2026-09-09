@@ -43,6 +43,11 @@ const CREDENTIAL_ENV_KEYS = Object.freeze({
   opencode: ['OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY'],
   opencodereview: ['OCR_LLM_TOKEN', 'OPENAI_API_KEY'],
 })
+const GOOGLE_CLOUD_ENV_KEYS = [
+  'GOOGLE_APPLICATION_CREDENTIALS', 'GOOGLE_CLOUD_PROJECT', 'GCLOUD_PROJECT',
+  'GOOGLE_CLOUD_LOCATION', 'GOOGLE_CLOUD_QUOTA_PROJECT', 'CLOUDSDK_CONFIG',
+]
+const NATIVE_CONFIG_ROOT_KEYS = new Set(['CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'PI_CODING_AGENT_DIR'])
 const RUNTIME_ENV_KEYS = Object.freeze({
   codex: ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL', 'CODEX_HOME'],
   hermes: [
@@ -65,9 +70,25 @@ const RUNTIME_ENV_KEYS = Object.freeze({
     'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL',
   ],
   mimo: ['MIMO_API_KEY', 'MIMO_BASE_URL', 'MIMO_MODEL'],
-  claude: ['ANTHROPIC_API_KEY', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR'],
+  claude: [
+    'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN',
+    'ANTHROPIC_BASE_URL', 'ANTHROPIC_MODEL', 'CLAUDE_CONFIG_DIR',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_USE_MANTLE',
+    'AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_BEARER_TOKEN_BEDROCK',
+    'AWS_PROFILE', 'AWS_REGION', 'AWS_DEFAULT_REGION', 'AWS_CONFIG_FILE', 'AWS_SHARED_CREDENTIALS_FILE',
+    'AWS_ROLE_ARN', 'AWS_ROLE_SESSION_NAME', 'AWS_WEB_IDENTITY_TOKEN_FILE',
+    'ANTHROPIC_BEDROCK_BASE_URL', 'ANTHROPIC_BEDROCK_MANTLE_BASE_URL', 'ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION',
+    ...GOOGLE_CLOUD_ENV_KEYS,
+    'CLOUD_ML_REGION', 'ANTHROPIC_VERTEX_PROJECT_ID', 'ANTHROPIC_VERTEX_BASE_URL',
+    'ANTHROPIC_FOUNDRY_RESOURCE', 'ANTHROPIC_FOUNDRY_BASE_URL',
+    'ANTHROPIC_FOUNDRY_API_KEY', 'ANTHROPIC_FOUNDRY_AUTH_TOKEN',
+    'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_CLIENT_SECRET', 'AZURE_AUTHORITY_HOST',
+    'AZURE_CLIENT_CERTIFICATE_PATH', 'AZURE_CLIENT_CERTIFICATE_PASSWORD', 'AZURE_FEDERATED_TOKEN_FILE',
+    'AZURE_CONFIG_DIR',
+  ],
   qwen: ['DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'OPENAI_MODEL'],
-  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_MODEL'],
+  gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GEMINI_MODEL', ...GOOGLE_CLOUD_ENV_KEYS],
   opencode: [
     'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENROUTER_API_KEY',
     'OPENAI_BASE_URL', 'OPENAI_MODEL',
@@ -136,10 +157,11 @@ function textContainsCredential(filename) {
   }
 }
 
-function nativeCredentialEnvironment(kind, env = process.env) {
+function nativeCredentialEnvironment(kind, env = process.env, options = {}) {
   const result = {}
   for (const key of RUNTIME_ENV_KEYS[kind] || []) {
-    if (typeof env[key] === 'string' && env[key].trim()) result[key] = env[key]
+    if (options.providerConfigured && !NATIVE_CONFIG_ROOT_KEYS.has(key)) continue
+    if (typeof env[key] === 'string') result[key] = env[key]
   }
   return result
 }
@@ -157,8 +179,7 @@ function allowedShellEnvironment(env = process.env, platform = process.platform)
   const result = {}
   for (const key of SHELL_ENV_KEYS) {
     const value = source[key]
-    if (typeof value !== 'string' || (!value && !NETWORK_ENV_KEYS.includes(key))
-        || value.length > MAX_SHELL_ENV_BYTES) continue
+    if (typeof value !== 'string' || value.length > MAX_SHELL_ENV_BYTES) continue
     result[key] = value
   }
   return result
@@ -190,8 +211,7 @@ function parseNativeShellEnvironment(output) {
     if (separator <= 0) continue
     const key = entry.slice(0, separator)
     const value = entry.slice(separator + 1)
-    if (!allowed.has(key) || (!value && !NETWORK_ENV_KEYS.includes(key))
-        || value.length > MAX_SHELL_ENV_BYTES) continue
+    if (!allowed.has(key) || value.length > MAX_SHELL_ENV_BYTES) continue
     result[key] = value
   }
   return result
@@ -357,6 +377,13 @@ function probeEnvironment(kind, options = {}) {
 function claudeAuthState(output) {
   try {
     const status = JSON.parse(String(output || '').trim())
+    // Cloud status recognizes a provider selection without checking SDK credentials.
+    if (status?.loggedIn === true && status.authMethod === 'third_party') {
+      return { state: 'unknown', source: 'unverified' }
+    }
+    if (status?.loggedIn === true && status.authMethod === 'api_key') {
+      return { state: 'ready', source: 'native-credential' }
+    }
     if (status?.loggedIn === true) return { state: 'ready', source: 'native-auth-status' }
     if (status?.loggedIn === false) return { state: 'missing', source: 'native-auth-status' }
   } catch { /* keep the file-based result */ }
@@ -681,8 +708,7 @@ async function resolveNativeCredentialState(kind, options = {}) {
       ? status.credentialState
       : { state: 'unknown', source: 'native-runtime-unavailable' }
   }
-  if (kind !== 'claude' || !options.executable
-      || Object.keys(nativeCredentialKeyEnvironment(kind, options.env)).length) return current
+  if (kind !== 'claude' || !options.executable) return current
 
   const platform = options.platform || process.platform
   const prepareCommandFn = options.prepareCommandFn || prepareCommand
