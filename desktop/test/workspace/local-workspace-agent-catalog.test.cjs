@@ -62,6 +62,42 @@ test('one credential probe failure retains that installation and does not hide h
   assert.equal(agents[0].availabilitySource, 'native-probe-failed')
 })
 
+test('unreadable selected Provider overrides historical success without losing installation or native auth', async () => {
+  let locked = true
+  const { catalog, state } = fixture({
+    detectAgents: async () => ['hermes', 'codex'].map(kind => ({ kind, compatibilityState: 'compatible' })),
+    credentialState: async kind => kind === 'hermes' && locked
+      ? { state: 'unknown', source: 'provider-credential-unavailable' }
+      : { state: 'ready', source: 'native-auth-status' },
+    sharedProviderReady: kind => kind === 'hermes' && !locked,
+  })
+  state.messages.push({ role: 'agent', agentKind: 'hermes' })
+  const verified = { credentialState: 'ready', checkedAt: '2026-08-03T00:00:00.000Z' }
+  state.agentRuntime.hermes = verified
+
+  const first = await catalog.refresh()
+  const agent = first.agents[0]
+  assert.equal(agent.installed, true)
+  assert.equal(agent.configured, true)
+  assert.equal(agent.authenticated, false)
+  assert.equal(agent.invocable, false)
+  assert.equal(agent.available, false)
+  assert.equal(agent.recentlyVerified, false)
+  assert.equal(agent.credentialState, 'unknown')
+  assert.equal(agent.availabilitySource, 'provider-credential-unavailable')
+  assert.equal(first.agents[1].available, true)
+  assert.equal(state.agentRuntime.hermes, verified)
+  catalog.markRuntimeCredential('hermes', 'ready')
+  assert.equal(agent.available, false)
+  assert.equal(agent.credentialState, 'unknown')
+  assert.equal(agent.availabilitySource, 'provider-credential-unavailable')
+
+  locked = false
+  const second = await catalog.refresh()
+  assert.equal(second.agents[0].available, true)
+  assert.equal(second.agents[0].availabilitySource, 'shared-provider')
+})
+
 test('refresh starts credential checks concurrently and reads current runtime state after them', async () => {
   const codex = deferred()
   const hermes = deferred()

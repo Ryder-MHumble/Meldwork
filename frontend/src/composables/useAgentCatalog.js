@@ -158,6 +158,9 @@ export function useAgentCatalog({
       })[agent.incompatibilityReason] || 'agent.incompatible'
       return { label: t(reasonKey), tone: 'warning', icon: WarningOutline }
     }
+    if (agent.availabilitySource === 'provider-credential-unavailable') {
+      return { label: t('agent.providerCredentialUnavailable'), tone: 'warning', icon: WarningOutline }
+    }
     if (agent.credentialState === 'missing') return { label: t('agent.needsLogin'), tone: 'warning', icon: WarningOutline }
     return { label: t('agent.unverified'), tone: 'neutral', icon: WarningOutline }
   }

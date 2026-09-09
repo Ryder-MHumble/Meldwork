@@ -98,6 +98,7 @@ export default {
     'agent.installed': 'Installed',
     'agent.notInstalled': 'Not installed',
     'agent.needsLogin': 'Needs sign-in or Provider',
+    'agent.providerCredentialUnavailable': 'Provider credentials unavailable',
     'agent.unverified': 'Sign-in not verified',
     'agent.incompatible': 'Incompatible CLI',
     'agent.detectionTimedOut': 'Detection timed out; retry',

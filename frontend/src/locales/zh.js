@@ -98,6 +98,7 @@ export default {
     'agent.installed': '已安装',
     'agent.notInstalled': '未安装',
     'agent.needsLogin': '需要登录或配置 Provider',
+    'agent.providerCredentialUnavailable': 'Provider 凭证不可用',
     'agent.unverified': '尚未验证登录状态',
     'agent.incompatible': 'CLI 不兼容',
     'agent.detectionTimedOut': '检测超时，请重试',

@@ -580,6 +580,9 @@ function createWorkspace() {
     credentialState: async (kind, agent) => {
       if (customAgentStore.has(kind)) return { state: 'ready', source: 'custom-agent' }
       if (agentConnectors.has(kind)) return { state: 'ready', source: 'agent-connector' }
+      if (providerStore.status(kind).error) {
+        return { state: 'unknown', source: 'provider-credential-unavailable' }
+      }
       const shellEnvironment = await nativeShellEnvironment()
       return resolveNativeCredentialState(kind, {
         executable: agent?.executable,

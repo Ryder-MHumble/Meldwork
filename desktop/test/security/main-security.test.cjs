@@ -2030,12 +2030,18 @@ test('unreadable saved Provider credentials never silently fall back to native e
   const store = harness.providerInstances[0]
   const originalStatus = store.status.bind(store)
   store.status = () => ({ configured: false, error: true, activePreset: 'custom' })
+  assert.deepEqual(await harness.workspaceInstances[0].input.credentialState('hermes'), {
+    state: 'unknown', source: 'provider-credential-unavailable',
+  })
   await assert.rejects(harness.workspaceInstances[0].input.runAgent(
     { kind: 'hermes', executable: '/tmp/hermes' }, 'hello', directory,
   ), { message: 'PROVIDER_CREDENTIAL_UNAVAILABLE' })
   assert.equal(harness.runAgentCalls.length, 0)
 
   store.status = originalStatus
+  assert.deepEqual(await harness.workspaceInstances[0].input.credentialState('hermes'), {
+    state: 'ready', source: 'native-credential',
+  })
   await harness.workspaceInstances[0].input.runAgent(
     { kind: 'hermes', executable: '/tmp/hermes' }, 'hello', directory,
   )
