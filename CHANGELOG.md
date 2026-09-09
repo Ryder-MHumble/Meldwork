@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.1.5 - 2026-09-09 (Meldwork-V1.0.5 prerelease)
+
+### Local Agent Reliability
+
+- Accept validated OpenClaw gateway configuration migrations without disabling path, permission, or credential isolation checks.
+- Keep installed Agents visible when credential or capability checks fail; isolate failed probes and refresh the catalog after current readiness settles.
+- Refresh native shell settings before manual detection and preserve supported proxy, CA, cloud Provider, and model-region settings without silently replacing a selected Provider.
+
+### Group Conversations
+
+- Route peer requests through explicit Agent decisions instead of interpreting prose mentions or media keywords as commands.
+- Persist AI task completion separately from individual invocation success and human adoption; support single-Agent automatic work and exact visible answers.
+- Resume human clarification gates after restart, reject conflicting responses, and prevent repeated responses from replaying calls.
+- Serialize workspace writers, recover interrupted writes through bound approvals, retain partial results, and send acknowledged session context incrementally.
+- Preserve completed and stopped task states after restart and show healthy contributions alongside failed participants.
+
+### Verification And Distribution
+
+- Frontend 343/343, desktop 1562/1562, and deterministic evaluation 6 cases / 18 results passed.
+- Web and desktop builds, packaging, real packaged Codex/OpenClaw group execution, cancellation, and restart acceptance passed on Apple silicon macOS.
+- DMG and ZIP are ad-hoc signed, without Apple Developer ID signing or notarization. No installed user application is replaced automatically.
+- Live coverage is limited to observed CLI versions and configurations; cloud credential forwarding is not cloud-account certification. Full evidence: `docs/releases/Meldwork-V1.0.5.md`.
+
 ## 0.1.4 - 2026-09-01 (Meldwork-V1.0.4 prerelease)
 
 ### Natural Group Discussions

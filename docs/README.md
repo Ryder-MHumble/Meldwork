@@ -35,6 +35,7 @@ Meldwork 的候选定位是 **本地优先、跨 Agent 的任务与交付工作�
 
 ## 发布、演示与传播
 
+- [V1.0.5 版本说明](releases/Meldwork-V1.0.5.md)：CLI 检测、群聊恢复与本地预发布验收。
 - [发布与分发清单](public-mvp-release.md)：预览版和公开分发门槛。
 - [macOS 签名与公证](macos-signing.md)：Developer ID、Notarization 和 Gatekeeper 验收。
 - [核心演示场景](demo-recording-scenarios.md)：当前产品证明与未来概念素材的边界。

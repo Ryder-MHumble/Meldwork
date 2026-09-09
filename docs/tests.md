@@ -1,6 +1,22 @@
 # Verification And Test Coverage
 
-This page records the V1.0.3 prerelease evidence available on 2026-08-18 for Apple silicon macOS. Repository tooling and CI require Node.js 22.12 or newer; the packaged desktop uses Electron's bundled runtime.
+Current verification is V1.0.5 / package 0.1.5 on 2026-09-09 for Apple silicon macOS. Repository tooling and CI require Node.js 22.12 or newer; the packaged desktop uses Electron's bundled runtime.
+
+## V1.0.5 Results
+
+- `npm --prefix frontend test`: 343/343 across 37 files.
+- `MELDWORK_TEST_CLAUDE_EXECUTABLE=... npm --prefix desktop test`: 1562/1562, no skips.
+- `npm --prefix desktop run eval:deterministic`: 6 cases, 18 results.
+- Web build, desktop renderer build, `pack`, and `dist` passed.
+- DMG/ZIP integrity and strict ad-hoc signature verification passed; 116 packaged source/JSON files matched the working tree.
+- Actual packaged Codex/OpenClaw group execution, active-task cancellation, repeated detection, and restart without replay passed in an isolated profile.
+- Development Electron acceptance additionally covers bound human input recovery, exact answers, and injected peer failure with a real healthy Codex participant.
+
+See [V1.0.5 release evidence](releases/Meldwork-V1.0.5.md) and [detailed progress](releases/Meldwork-V1.0.5-progress.md) for limitations and actual commands. These results do not certify every supported CLI, cloud account, or operating system.
+
+## V1.0.3 Historical Baseline
+
+All evidence below retains its original 2026-08-18 scope; it is not the current V1.0.5 result.
 
 The candidate is ad-hoc signed, not signed with an Apple Developer ID, and not notarized. Passing `codesign` proves bundle integrity only. Gatekeeper acceptance is not claimed, and `spctl` rejection is expected for this candidate.
 

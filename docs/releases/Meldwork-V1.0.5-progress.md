@@ -1,6 +1,6 @@
 # V1.0.5 开发记录
 
-日期：2026-09-09。分支：`feature/1.0.5`。状态：开发中，尚未完成整体目标；包版本仍为 `0.1.4`。
+日期：2026-09-09。分支：`feature/1.0.5`。当前包版本：`0.1.5`。本地预发布验收完成，见[最终版本说明](Meldwork-V1.0.5.md)及末节；以下早期检查点保留当时状态，不代表当前仍待实施。
 
 ## 已复现与修复
 
@@ -30,7 +30,7 @@
 - `/tmp/meldwork-105-provider-readiness.cjs`：独立 Electron 配置 `/tmp/meldwork-105-provider-rr3C5L` 使用合成不可解密数据，验证 Hermes 安装记录保留、不可调用且凭证状态未知，Codex 仍可用；设置页显示 `Provider credentials unavailable`，截图 `/tmp/meldwork-105-provider-readiness.png` 已查看。移除合成 Provider 后刷新，Hermes 恢复 `native-credential` 可用。未改日常配置、未调用模型；这验证解密失败处理，不是实际锁定用户 Keychain 的实验。
 - 最新全量前端测试 36 个文件、328/328 通过；全量桌面仍待最终重跑。
 
-## 待完成
+## 早期待办（历史快照）
 
 1. 群聊写权限：自然讨论的实际写入与未知结果恢复已完成本轮检查点，见末节；仍需纳入最终全量测试与打包验收。
 2. 群聊收尾：自然讨论已使用 AI 完成判断，`needs-human` 已接入可恢复输入 Gate。严格一行输出曾导致真实 Codex 漏回执；澄清回执与可见答案的边界后，Codex/OpenClaw 原要求复测均通过，见末节。仍需最终综合验收；人类采用与 AI 完成继续分开。
@@ -266,3 +266,17 @@ nextKinds 使用最多 32 个唯一标识，与现有 V4 成员上限一致；�
 - 最终 `/tmp/meldwork-105-region-electron.cjs` 使用真实 Electron 与隔离合成配置 `/tmp/meldwork-105-region-wJecRY` 验证动态键、空值、无 NODE_OPTIONS 透传及 Provider 隔离，采集约 15ms，退出 0；未调用外部模型。这是该次采集耗时，不是启动提速结论，也不是 AWS/Azure/Vertex 账户认证验收。
 
 上述两项尚未纳入新的全量桌面/前端构建与打包，包版本仍为 0.1.4，整体版本目标继续开发。
+
+## 最终本地版本验收
+
+2026-09-09：前端、桌面与对应 lockfile 的项目版本更新为 0.1.5，没有升级依赖。最终全量桌面 1562/1562、跳过 0、退出 0，约 311 秒；前端 37 文件 343/343；确定性评测 6 案例、18 结果。日志分别为 `/tmp/meldwork-105-final-desktop.log`、`/tmp/meldwork-105-final-frontend.log`、`/tmp/meldwork-105-final-eval.log`。测试启动后未修改产品源码。
+
+Web 与 desktop 构建、pack 和 dist 全部退出 0。产物为 desktop/dist 下 0.1.5 arm64 DMG/ZIP，归档检查与 codesign strict 通过。app.asar 中 116 个源码/JSON 文件与最终工作树一致，Info.plist 和包元数据版本均为 0.1.5。Developer ID 缺失、未公证及 chunk 体积提示保留，不把 ad-hoc 完整性校验称为 Apple 信任认证。
+
+`/tmp/meldwork-105-packaged-acceptance.cjs` 直接启动打包应用，不更改 fuse，通过 Chromium 调试端口连接窄 preload。已验证 --user-data-dir 指向隔离目录；首次路径检查因 /tmp 被标准化成 /private/tmp 而断言失败，改用 realpath 比较后通过。最终配置 `/tmp/meldwork-105-packaged-NMVmMY` 连续两轮刷新保留 12 个 Agent；真实 Codex/OpenClaw 手动群聊两次调用 completed。后续自动任务进入活动调用后取消，stopped 且一次调用；关闭重开后两个任务的运行标识、状态、调用数完全一致。脚本退出 0，自己启动的进程均已退出。已查看 packaged-completed 和 packaged-restarted 截图。
+
+`/tmp/meldwork-105-isolation-ui.cjs` 在开发版 Electron 的隔离配置 `/tmp/meldwork-105-isolation-1LGae5` 注入 OpenClaw 成员的进程错误，Codex 仍使用真实模型。进程错误按既有 protocol 重试策略共尝试四次，然后隔离；两次 Codex 调用完成、答案保留、成员仍在、整项 partial。此为受控故障注入，不能描述为真实 OpenClaw 本身发生故障或断言不可重试错误被多次执行。脚本退出 0，已查看 failure-isolation 截图，应用正常关闭。
+
+原生写入/readback、等待人类输入重启续跑、无副作用媒体路由和精确输出证据见前述检查点；最终全量包含这些路径。未使用真实云账户认证、未修复用户损坏的 Pi 安装、未认证所有 CLI 组合或其他操作系统，也没有宣称普遍启动提速。以上是明确的验证边界，不以增加未验证环境作为本地版本已完成的证据。
+
+最终版本说明及 CHANGELOG 已同步。构建产物不提交 Git；未推送、合并或替换日常应用。
