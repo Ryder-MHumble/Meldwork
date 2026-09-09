@@ -64,6 +64,25 @@ test('persists a pending gate and resumes its live waiter after one decision', a
   assert.deepEqual(events.map(value => value.split(':', 1)[0]), ['waiting', 'resumed'])
 })
 
+test('repeated decisions return the persisted result without replaying resume callbacks', async t => {
+  let resumed = 0
+  let orphaned = 0
+  let tick = 0
+  const { coordinator, store } = fixture(t, {
+    now: () => new Date(Date.UTC(2026, 7, 4, 0, 0, tick++)).toISOString(),
+    onResumed: () => { resumed += 1 },
+    onOrphanDecision: () => { orphaned += 1 },
+  })
+  const gate = store.create({ ...request(), createdAt: '2026-08-04T00:00:00.000Z' })
+  const first = coordinator.decide(gate.gateId, { optionId: 'allow-once' })
+  assert.deepEqual(coordinator.decide(gate.gateId, { optionId: 'allow-once' }), first)
+  await coordinator.resumePromises.get(gate.gateId)
+  assert.deepEqual(coordinator.decide(gate.gateId, { optionId: 'allow-once' }), first)
+  assert.equal(resumed, 1)
+  assert.equal(orphaned, 1)
+  assert.throws(() => coordinator.decide(gate.gateId, { optionId: 'reject-once' }))
+})
+
 test('aborting a waiter rejects the request and durably selects a reject option', async (t) => {
   const { coordinator } = fixture(t)
   const controller = new AbortController()

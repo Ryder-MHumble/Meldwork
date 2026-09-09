@@ -67,7 +67,7 @@ const CONTINUATION_V4_PHASES = new Set([
 ])
 const CONTINUATION_GATE_TYPES = new Set(['permission', 'budget', 'decision', 'retry', 'input'])
 const CONTINUATION_RESUME_KINDS = new Set([
-  'agent_slot', 'role_review_decision', 'v4_human_gate', 'v4_synthesis_recovery',
+  'agent_slot', 'role_review_decision', 'v4_human_gate', 'v4_synthesis_recovery', 'v4_task_decision',
 ])
 const CONTINUATION_STATES = new Set([
   'pending', 'ready', 'resuming', 'completed', 'failed', 'cancelled',
@@ -405,16 +405,18 @@ function normalizeContinuation(input) {
       || !CONTINUATION_STATES.has(state) || !agentRunId || !agentKind
       || (hasPublicAgentRunId && !publicAgentRunId)
       || (resumeKind === 'role_review_decision' && gateType !== 'decision')
+      || (resumeKind === 'v4_task_decision'
+        && (gateType !== 'input' || !hasInvocationBinding || phase !== 'discussion'))
       || (resumeKind === 'v4_human_gate'
         && (gateType !== 'decision' || !hasStateEpoch || stateEpoch < 1))
       || (resumeKind === 'v4_synthesis_recovery'
         && (gateType !== 'decision' || !hasStateEpoch))
       || (!['v4_human_gate', 'v4_synthesis_recovery'].includes(resumeKind) && hasStateEpoch)
       || (invocationFieldCount > 0 && !hasInvocationBinding)
-      || (hasInvocationBinding && (resumeKind !== 'agent_slot'
+      || (hasInvocationBinding && (!['agent_slot', 'v4_task_decision'].includes(resumeKind)
         || !CONTINUATION_V4_PHASES.has(phase) || !slotId || !operationId
         || !SHA256.test(snapshotHash)))
-      || (gateType === 'input' && !hasRequestBinding)
+      || (gateType === 'input' && resumeKind !== 'v4_task_decision' && !hasRequestBinding)
       || (!hasRequestBinding && [requestId, requestHash, sessionRefHash, sessionProvenanceHash]
         .some(Boolean))) return undefined
   return {
@@ -443,7 +445,8 @@ function continuationBindingMatchesOrchestration(continuation, orchestration) {
   }
   const hasBinding = CONTINUATION_INVOCATION_FIELDS.every(field => hasOwn(continuation || {}, field))
   if (!hasBinding) return true
-  if (continuation.resumeKind !== 'agent_slot' || orchestration?.version !== 4) return false
+  if (!['agent_slot', 'v4_task_decision'].includes(continuation.resumeKind)
+      || orchestration?.version !== 4) return false
   if (!['pending', 'ready', 'resuming'].includes(continuation.state)) return true
   const slots = orchestration.slots.filter(slot => slot.slotId === continuation.slotId)
   const orchestrationRound = orchestration.workflow === 'manual'

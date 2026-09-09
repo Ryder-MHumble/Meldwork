@@ -110,6 +110,8 @@ class LocalWorkspaceAutoRunner {
     this.requestHumanGate = typeof options.requestHumanGate === 'function'
       ? options.requestHumanGate
       : null
+    this.requestTaskDecision = options.requestTaskDecision || null
+    this.taskDecisionResponses = options.taskDecisionResponses || (() => [])
     this.completeHumanGateContinuation = typeof options.completeHumanGateContinuation === 'function'
       ? options.completeHumanGateContinuation
       : null
@@ -2668,12 +2670,16 @@ class LocalWorkspaceAutoRunner {
   v4NaturalPhasePrompt(group, kind, phase, snapshot, receiptRecords, activeKinds, options = {}) {
     const transcript = String(options.transcript || '')
     const agentList = activeKinds.map(agentKind => `@${agentKind}`).join(', ')
+    const humanResponses = options.runId ? this.taskDecisionResponses(options.runId) : []
     return [
       v4Prompt({
         group, kind, phase, snapshot, role: 'participant',
         skillHints: options.skillHints, naturalResponse: true,
       }),
       transcript ? `Completed peer turns:\n${transcript}` : '',
+      humanResponses.length
+        ? `Human responses for this task (clarification, not a change to workspace permissions):\n${packNaturalDiscussionTranscript(humanResponses)}`
+        : '',
       phase === 'discussion' && options.writerKind
         ? (kind === options.writerKind
           ? 'You are the designated workspace writer for this task. Perform only writes required by the user task within the authorized workspace, and verify the resulting deliverables. Other participants are read-only.'
@@ -2742,7 +2748,7 @@ class LocalWorkspaceAutoRunner {
     return owner
   }
 
-  v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds) {
+  async v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds) {
     const messages = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
     const owner = this.v4NaturalOwner(group, controller, threadRootId)
     const routes = messages.map(message => this.v4NaturalRouteDecision(
@@ -2772,6 +2778,14 @@ class LocalWorkspaceAutoRunner {
     }
     if (decision.status === 'completed') {
       return { status: controller.failedKinds.length ? 'partial' : 'completed' }
+    }
+    if (decision.status === 'needs-human' && this.requestTaskDecision) {
+      const response = await this.requestTaskDecision(group, controller, ownerMessage)
+      if (response?.status === 'approved') return { nextKinds: [owner], ownerReview: true }
+      if (response?.status === 'rejected') {
+        controller.stopReason = 'human_gate_rejected'
+        return { status: 'stopped' }
+      }
     }
     this.addMessage(group.id, 'system', decision.reason, '', threadRootId, {
       key: decision.status === 'needs-human' ? 'system.autoTaskNeedsHuman' : 'system.autoTaskBlocked',
@@ -2851,7 +2865,7 @@ class LocalWorkspaceAutoRunner {
       ? (controller.orchestration.pendingKinds || []).filter(kind => activeKinds.includes(kind))
       : [...activeKinds]
     if (!pendingKinds.length && controller.orchestration?.phase === 'discussion') {
-      const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+      const outcome = await this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
       if (outcome.status) return outcome.status
       if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
         addRoundLimitNotice()
@@ -2890,6 +2904,7 @@ class LocalWorkspaceAutoRunner {
           disableDeliveryPrompt: true,
           promptBuilder: ({ kind: promptKind, transcript }) => this.v4NaturalPhasePrompt(
             group, promptKind, 'discussion', snapshot, receiptRecords, activeKinds, {
+              runId: controller.runId,
               transcript: transcript ?? this.v4NaturalThreadTranscript(
                 group, threadRootId, { controller },
               ),
@@ -2911,7 +2926,7 @@ class LocalWorkspaceAutoRunner {
         }
         pendingKinds = remainingKinds.filter(agentKind => activeKinds.includes(agentKind))
       }
-      const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+      const outcome = await this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
       if (outcome.status) return outcome.status
       if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
         addRoundLimitNotice()
@@ -2963,7 +2978,7 @@ class LocalWorkspaceAutoRunner {
         if (this.v4NaturalStopRepeatingDiscussion(
           group, controller, threadRootId, round, activeKinds,
         )) return 'partial'
-        const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+        const outcome = await this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
         if (outcome.status) return outcome.status
         nextKinds = outcome.nextKinds
         if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {
@@ -3005,6 +3020,7 @@ class LocalWorkspaceAutoRunner {
         disableDeliveryPrompt: true,
         promptBuilder: ({ kind, transcript }) => this.v4NaturalPhasePrompt(
           group, kind, 'discussion', snapshot, receiptRecords, activeKinds, {
+            runId: controller.runId,
             transcript: transcript ?? this.v4NaturalThreadTranscript(group, threadRootId, { controller }),
             skillHints: context.rootSkillsByKind.get(kind) || [],
             allowRouting: true,
@@ -3023,7 +3039,7 @@ class LocalWorkspaceAutoRunner {
       if (this.v4NaturalStopRepeatingDiscussion(
         group, controller, threadRootId, round, activeKinds,
       )) return 'partial'
-      const outcome = this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
+      const outcome = await this.v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds)
       if (outcome.status) return outcome.status
       nextKinds = outcome.nextKinds
       if (!controller.unlimitedRounds && round >= (controller.maxRounds || 6)) {

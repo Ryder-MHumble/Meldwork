@@ -208,9 +208,11 @@ class HumanGateCoordinator {
       status,
       optionId: option.optionId,
       actorId: input.actorId || 'local-user',
-      decidedAt: input.decidedAt || this.now(),
+      decidedAt: input.decidedAt || current.decision?.decidedAt || this.now(),
       ...(response ? { response } : {}),
     })
+    // Recovery owns recorded decisions; repeated submissions must not dispatch them again.
+    if (current.status !== 'pending') return publicHumanGate(record)
     this.clearExpiry(record.gateId)
     try {
       this.onResumed(record, record.decision)

@@ -138,7 +138,7 @@ test('Natural routing retains a request beyond the stored message excerpt', asyn
   assert.deepEqual(turns, ['codex', 'hermes', 'codex'])
 })
 
-for (const status of ['completed', 'blocked', 'needs-human']) {
+for (const status of ['completed', 'blocked']) {
   test(`Natural single-Agent task persists the owner's ${status} judgment`, async (t) => {
     const { directory, options } = fixture()
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

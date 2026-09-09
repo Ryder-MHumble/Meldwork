@@ -212,3 +212,19 @@ nextKinds 使用最多 32 个唯一标识，与现有 V4 成员上限一致；�
 - `git diff --check` 通过。本轮未改前端源码，未重跑前端测试、构建或打包；桌面实际运行与历史重开验证如上。
 
 本检查点未改变人类采用的含义，needs-human 仍待接入可恢复人类决定流程。尚未更新版本号、构建、打包或替换日常应用。
+
+## 自然讨论的人类输入与重启恢复
+
+2026-09-09：交付负责人返回 needs-human 后，通过现有输入 Gate 等待用户澄清，回复后继续同一任务，不再直接结束为 partial。新增 v4_task_decision continuation，绑定实际已完成的来源调用、讨论轮次、slot、operation、任务快照和判断哈希；重启恢复验证来源与当前负责人，避免重放已完成的提问。原生 CLI 暂停输入仍使用既有 session/request 绑定，用户澄清不会增加工作区写权限。
+
+重复提交已记录 Gate 决定时保留原决定时间，并在校验内容一致后返回，不重复触发恢复回调；冲突决定仍被拒绝。关闭应用时保留待输入 Gate，取消输入则停止任务。已批准的回答经来源校验后进入现有有界上下文打包。
+
+验证：
+
+- 新增任务输入测试 7/7，覆盖 agent-led/sequential、取消、等待时重启、来源与选项篡改、批准后分发前恢复、重复提交，以及 continuation 检查点后下一次调用前恢复。Gate/账本/任务输入针对性验证 74/74。
+- 最终桌面全量 1549/1549，失败和跳过均为 0，退出码 0，约 311 秒。命令为 `MELDWORK_TEST_CLAUDE_EXECUTABLE=/Users/rydersun/.local/opt/npm-global/bin/claude npm --prefix desktop test`，日志 `/tmp/meldwork-105-human-task-desktop.log`；该轮包含最终产品代码。
+- 真实 Electron 脚本 `/tmp/meldwork-105-human-task-ui.cjs /tmp/meldwork-105-human-task-3UxpAQ` 退出 0，正常关闭应用。复用已有任务，两次调用完成后账本 waiting；关闭并重开仍保留输入，界面提交后仅新增一次调用，答案为 HUMAN_DECISION_105_OK，任务和 continuation 均 completed。重复通过真实 preload 提交相同回答，调用总数仍为 3；群组 allowWrite 仍为 false。
+- 已查看 `/tmp/meldwork-105-human-task-waiting.png` 和 `/tmp/meldwork-105-human-task-completed.png`，确认恢复后的输入入口与最终完成卡片。等待截图捕获在面板过渡过程中，不能用其透明度判断静止界面样式。
+- 前期验证脚本曾因 onboarding 遮挡、异步 waitForFunction 判断及误读活动快照 status 而退出或超时，未计入成功。最终使用真实账本及 waitingGateIds 判断，并复用已有等待任务，没有重发任务制造新样本。
+
+本检查点未修改前端源码，未重新构建或打包，版本仍为 0.1.4。剩余通用调度耦合、CLI 环境覆盖与最终版本验收继续推进；此输入流程不代表人类采用或写入授权。

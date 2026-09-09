@@ -343,6 +343,8 @@ class LocalWorkspace extends EventEmitter {
       hasRunLedger: () => Boolean(this.runLedger),
       requestHumanGate: (...args) => this.requestHumanGate(...args),
       completeHumanGateContinuation: (...args) => this.completeHumanGateContinuation(...args),
+      requestTaskDecision: (...args) => this.requestV4TaskDecision(...args),
+      taskDecisionResponses: runId => this.v4TaskDecisionResponses(runId),
       retryContract: kind => ({
         idempotencyMode: this.detectedAgents.find(agent => agent.kind === kind)?.idempotencyMode
           === 'durable'
@@ -806,7 +808,7 @@ class LocalWorkspace extends EventEmitter {
     const invocationFields = ['phase', 'slotId', 'operationId', 'snapshotHash']
     const invocationFieldCount = invocationFields.filter(field => Object.hasOwn(input, field)).length
     if (invocationFieldCount > 0
-        && (input.resumeKind !== 'agent_slot'
+        && (!['agent_slot', 'v4_task_decision'].includes(input.resumeKind)
           || invocationFieldCount !== invocationFields.length)) {
       throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
     }
@@ -1141,6 +1143,103 @@ class LocalWorkspace extends EventEmitter {
     return { ...match, state: continuation.state }
   }
 
+  v4TaskDecisionSource(durable, gate, request) {
+    if (durable?.mode !== 'auto' || durable.orchestration?.version !== 4
+        || gate.type !== 'input' || gate.runId !== durable.runId
+        || !request || Object.keys(request).length !== 7
+        || request.source !== 'task-decision' || request.phase !== 'discussion'
+        || request.snapshotHash !== durable.orchestration.snapshotHash) return null
+    const sources = durable.agentRuns.filter(attempt => (
+      attempt.agentRunId === gate.agentRunId && attempt.kind === gate.agentKind
+      && attempt.status === 'completed' && attempt.round === request.round
+      && attempt.context?.operationId === request.operationId
+      && attempt.context?.snapshotHash === request.snapshotHash
+      && attempt.context?.taskDecision?.status === 'needs-human'
+      && hashValue(attempt.context.taskDecision) === request.decisionHash
+    ))
+    if (sources.length !== 1 || request.operationId !== this.autoRunner.v4OperationId(
+      durable, gate.agentKind, `discussion:${request.round}`, request.slotId, request.round,
+    )) return null
+    return sources[0]
+  }
+
+  canResumeV4TaskDecision(durable, gate, request) {
+    const source = this.v4TaskDecisionSource(durable, gate, request)
+    const continuation = durable.continuation
+    const cursor = durable.orchestration
+    const group = this.state.groups.find(item => item.id === durable.groupId)
+    const slot = cursor?.slots.find(item => item.slotId === request?.slotId)
+    return Boolean(source && group && gate.options.length === 2
+      && gate.options[0].optionId === 'respond' && gate.options[0].kind === 'respond'
+      && gate.options[1].optionId === 'cancel' && gate.options[1].kind === 'reject'
+      && continuation?.resumeKind === 'v4_task_decision'
+      && cursor.phase === 'discussion' && cursor.round === request.round
+      && durable.currentRound === request.round && continuation.round === request.round
+      && continuation.slotId === request.slotId
+      && continuation.operationId === request.operationId
+      && continuation.snapshotHash === request.snapshotHash
+      && slot?.agentRunId === source.agentRunId && slot.agentKind === source.kind
+      && slot.operationId === request.operationId && slot.commitStatus === 'committed'
+      && this.autoRunner.v4NaturalOwner(group, durable, durable.threadRootId) === source.kind)
+  }
+
+  v4TaskDecisionResponses(runId) {
+    const durable = this.runLedger?.get?.(runId)
+    if (!durable) return []
+    return this.humanGateStore.list({ runId }).flatMap(item => {
+      if (item.type !== 'input' || item.status !== 'approved') return []
+      try {
+        const gate = this.humanGateStore.get(item.gateId)
+        const request = this.humanGateStore.request(item.gateId)
+        const source = this.v4TaskDecisionSource(durable, gate, request)
+        return source && gate.decision?.response ? [{
+          id: gate.gateId, round: source.round, agentKind: 'human',
+          text: gate.decision.response,
+        }] : []
+      } catch { return [] }
+    })
+  }
+
+  async requestV4TaskDecision(group, controller, message) {
+    const durable = this.runLedger?.get?.(controller.runId)
+    if (!durable) return null
+    const source = durable.agentRuns.find(attempt => (
+      attempt.agentRunId === message.trace?.agentRunId && attempt.kind === message.agentKind
+    ))
+    const slot = durable.orchestration?.slots.find(item => item.agentRunId === source?.agentRunId)
+    if (!source || !slot || source.context?.taskDecision?.status !== 'needs-human'
+        || slot.commitStatus !== 'committed') throw new Error('LOCAL_RUN_CONTINUATION_INVALID')
+    const request = {
+      source: 'task-decision', phase: 'discussion', round: source.round,
+      slotId: slot.slotId, operationId: slot.operationId,
+      snapshotHash: durable.orchestration.snapshotHash,
+      decisionHash: hashValue(source.context.taskDecision),
+    }
+    const decision = await this.requestHumanGate({
+      type: 'input', runId: durable.runId, agentRunId: source.agentRunId, agentKind: source.kind,
+      createdAt: new Date(slot.finishedAt).toISOString(),
+      summary: source.context.taskDecision.reason,
+      options: [
+        { optionId: 'respond', name: 'Respond', kind: 'respond' },
+        { optionId: 'cancel', name: 'Cancel', kind: 'reject' },
+      ],
+      request,
+    }, {
+      signal: controller.signal,
+      preserveOnAbort: () => controller.stopReason === 'shutdown',
+      continuation: {
+        resumeKind: 'v4_task_decision', agentRunId: source.agentRunId, agentKind: source.kind,
+        round: source.round, phase: 'discussion', slotId: slot.slotId,
+        operationId: slot.operationId, snapshotHash: durable.orchestration.snapshotHash,
+      },
+    })
+    if (this.completeHumanGateContinuation(durable.runId, decision.gateId,
+      decision.status === 'approved' ? 'completed' : 'cancelled') !== true) {
+      throw new Error('LOCAL_RUN_PERSIST_FAILED')
+    }
+    return decision
+  }
+
   async requestHumanGate(input, options = {}) {
     const runId = String(input?.runId || '')
     const previous = this.humanGateWaitTails.get(runId) || Promise.resolve()
@@ -1248,6 +1347,11 @@ class LocalWorkspace extends EventEmitter {
     if (continuation.state !== 'pending' && gate.status === 'pending') return false
     try {
       const request = this.humanGateStore.request(gate.gateId)
+      if (continuation.resumeKind === 'v4_task_decision') {
+        const pack = this.contextPackStore.get(runRecord.contextPackId)
+        return pack.taskId === runRecord.taskId
+          && this.canResumeV4TaskDecision(runRecord, gate, request)
+      }
       const connectorBound = gate.type === 'input' || request?.source === 'connector'
       if (connectorBound && (
         continuation.requestId !== request.requestId
@@ -1760,6 +1864,11 @@ class LocalWorkspace extends EventEmitter {
     try {
       controller = this.runCoordinator.resume(durable)
       const group = this.getGroup(durable.groupId)
+      if (durable.continuation.resumeKind === 'v4_task_decision') {
+        const finalStatus = await this.autoRunner.resume(group, durable, controller)
+        await this.finishRun(durable.groupId, controller, finalStatus)
+        return
+      }
       const resumableManual = this.canResumeManualOrchestration(durable)
       const resumableAuto = this.canResumeAutoOrchestration(durable)
       const resumableV4ManualSlot = this.canResumeV4ManualAgentSlot(durable, gate)
