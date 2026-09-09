@@ -639,6 +639,8 @@ input.on('line', (line) => {
     },
   })
   const events = []
+  let receivedStream
+  const streamReceived = new Promise(resolve => { receivedStream = resolve })
   let resolved = false
   resultPromise = adapters.runAgent(
     { kind: 'openclaw', executable: cli, name: 'OpenClaw' },
@@ -647,7 +649,10 @@ input.on('line', (line) => {
     {
       ...runtime,
       sessionRef: stableSessionRef,
-      onEvent: event => events.push(event),
+      onEvent: event => {
+        events.push(event)
+        if (events.length === 5) receivedStream()
+      },
     },
   ).then((result) => {
     resolved = true
@@ -655,6 +660,8 @@ input.on('line', (line) => {
   })
 
   await within(readWhenReady(readyFile))
+  // The child's file write does not guarantee the parent has consumed stdout.
+  await within(streamReceived)
   assert.equal(resolved, false)
   assert.deepEqual(events.map(event => event.type), [
     'tool_start', 'tool_update', 'tool_result_summary',

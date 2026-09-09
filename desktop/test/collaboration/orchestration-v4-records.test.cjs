@@ -2396,6 +2396,20 @@ test('round-trips bounded recipient delivery acknowledgement without a native Se
   })
   assert.equal(record.deliveryState?.length, 1)
   assert.deepEqual(parseOrchestrationV4(record, { targetKinds: ['codex', 'hermes'] }), record)
+  const natural = parseOrchestrationV4({
+    ...record,
+    deliveryState: [{ ...record.deliveryState[0], sourceMessages: [{ id: 'message-1', hash: '5'.repeat(64) }] }],
+  }, { targetKinds: ['codex', 'hermes'] })
+  assert.deepEqual(natural.deliveryState[0].sourceMessages, [{ id: 'message-1', hash: '5'.repeat(64) }])
+  for (const sourceMessages of [
+    [], [{ id: 'message-1', hash: 'bad' }], [{ id: 'message-1', hash: '5'.repeat(64), text: 'do not persist' }],
+    Array.from({ length: 101 }, (_, index) => ({ id: `message-${index}`, hash: '5'.repeat(64) })),
+    [{ id: 'message-1', hash: '5'.repeat(64) }, { id: 'message-1', hash: '6'.repeat(64) }],
+  ]) {
+    assert.throws(() => parseOrchestrationV4({
+      ...record, deliveryState: [{ ...record.deliveryState[0], sourceMessages }],
+    }, { targetKinds: ['codex', 'hermes'] }), { code: 'ORCHESTRATION_V4_DELIVERY_STATE_INVALID' })
+  }
   assert.throws(() => parseOrchestrationV4({
     ...record,
     deliveryState: [{ ...record.deliveryState[0], sessionRef: 'must-not-persist' }],

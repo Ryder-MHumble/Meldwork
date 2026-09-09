@@ -444,7 +444,11 @@ test('Natural Agent-led V4 preserves chosen peers without forced participation a
   assert.equal(calls.some(call => call.kind === 'workbuddy' && call.phase === 'discussion'), false)
   const peer = calls.at(-1)
   assert.equal(peer.kind, 'hermes')
-  assert.match(peer.prompt, /Round 2 - @codex/)
+  const firstPeerTurn = calls.find(call => call.kind === 'hermes' && call.phase === 'discussion')
+  assert.match(firstPeerTurn.prompt, /Round 2 - @codex/)
+  assert.match(firstPeerTurn.prompt, /workbuddy proposes an independent approach/)
+  assert.doesNotMatch(peer.prompt, /Round 2 - @codex/)
+  assert.match(peer.prompt, /Previously delivered turns are not repeated/)
   assert.match(peer.prompt, /Round 3 - @hermes/)
   assert.match(peer.prompt, /Round 4 - @codex/)
   assert.match(peer.prompt, /beside its concrete question/)
@@ -977,8 +981,8 @@ test('Natural sequential V4 recovers its unfinished cursor without duplicate rou
     ...options,
     storagePath: recoveryStoragePath,
     runLedger: recoveryLedger,
-    runAgent: async (agent, _prompt, _workdir, runOptions) => {
-      recoveryCalls.push({ kind: agent.kind, sessionRef: runOptions.sessionRef })
+    runAgent: async (agent, prompt, _workdir, runOptions) => {
+      recoveryCalls.push({ kind: agent.kind, sessionRef: runOptions.sessionRef, prompt })
       return {
         text: decisionReply(`${agent.kind} continues after restart.`, 'continue'),
         sessionRef: runOptions.sessionRef || `${agent.kind}-task-session`,
@@ -997,6 +1001,12 @@ test('Natural sequential V4 recovers its unfinished cursor without duplicate rou
   assert.deepEqual(recoveryCalls.map(call => call.sessionRef), [
     'hermes-task-session', 'codex-task-session', 'hermes-task-session',
   ])
+  assert.doesNotMatch(recoveryCalls[0].prompt, /Round 1 - @codex/)
+  assert.match(recoveryCalls[0].prompt, /Round 1 - @hermes/)
+  assert.match(recoveryCalls[0].prompt, /Round 2 - @codex/)
+  assert.doesNotMatch(recoveryCalls[1].prompt, /Round 1 - @codex|Round 1 - @hermes/)
+  assert.match(recoveryCalls[1].prompt, /Round 2 - @hermes/)
+  assert.doesNotMatch(recoveryCalls[2].prompt, /Round 1 - @codex|Round 2 - @codex/)
   const turns = recovered.snapshot().messages.filter(message => (
     message.role === 'agent' && message.threadRootId === crashRecord.threadRootId
   )).map(message => `${message.trace.round}:${message.agentKind}`)

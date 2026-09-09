@@ -56,9 +56,11 @@ function unlimitedReviewContract(enabled = false) {
   return enabled ? UNLIMITED_REVIEW_CONTRACT : ''
 }
 
-function packNaturalDiscussionTranscript(entries) {
+function packNaturalDiscussionTranscript(entries, options = {}) {
+  const prefix = String(options.prefix || '')
   const latestByKind = new Map(entries.map((entry, index) => [entry.agentKind, index]))
   let excerpted = entries.some(entry => entry.partial === true)
+  const completeBodies = new Map()
   const packed = packContextEntries(entries.map((entry, index) => {
     const heading = `Round ${Number(entry.round) || 0} - @${entry.agentKind}\n`
     let text = String(entry.text || '').trim()
@@ -71,6 +73,8 @@ function packNaturalDiscussionTranscript(entries) {
       const tail = text.slice(-edge).replace(/^[\uDC00-\uDFFF]/u, '')
       text = `${head}${marker}${tail}`
       excerpted = true
+    } else if (!entry.partial) {
+      completeBodies.set(entry.id, `${heading}${text}`)
     }
     return {
       id: entry.id,
@@ -79,14 +83,21 @@ function packNaturalDiscussionTranscript(entries) {
         : latestByKind.get(entry.agentKind) === index ? 2 : 1,
     }
   }), {
-    budget: NATURAL_TRANSCRIPT_TEXT_LIMIT - NATURAL_TRANSCRIPT_OMISSION_NOTICE.length - 1,
+    budget: NATURAL_TRANSCRIPT_TEXT_LIMIT - NATURAL_TRANSCRIPT_OMISSION_NOTICE.length - prefix.length - 2,
     entryLimit: NATURAL_TRANSCRIPT_ENTRY_LIMIT,
     maxEntries: 100,
   })
-  return [
+  const text = [
+    prefix,
     excerpted || packed.omittedCount ? NATURAL_TRANSCRIPT_OMISSION_NOTICE : '',
     packed.text,
   ].filter(Boolean).join('\n')
+  return options.withEntries ? {
+    text,
+    completeMessageIds: packed.sourceEntries.filter(entry => (
+      completeBodies.get(entry.id) === entry.text
+    )).map(entry => entry.id),
+  } : text
 }
 
 function v4Snapshot({

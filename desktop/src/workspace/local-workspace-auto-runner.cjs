@@ -43,6 +43,7 @@ const {
 } = require('../collaboration/orchestration-v4-records.cjs')
 const { createReviewerFindingRecord } = require('../collaboration/outcome-records.cjs')
 const { canonicalJson } = require('../collaboration/context-pack-records.cjs')
+const { parseTaskDecision } = require('../collaboration/task-decision.cjs')
 const {
   packNaturalDiscussionTranscript,
   restoreV4SnapshotSkills,
@@ -2291,26 +2292,7 @@ class LocalWorkspaceAutoRunner {
         updatedAt: Date.now(),
       })),
     } : null
-    if (delivery) {
-      const replaced = new Set(delivery.entries.map(entry => [
-        entry.recipientKind, entry.sessionRefHash, entry.sessionProvenanceHash,
-        entry.sourceAgentKind, entry.sourcePhase,
-      ].join('\u0000')))
-      const deliveryState = [
-        ...(controller.orchestration?.deliveryState || []).filter(entry => !replaced.has([
-          entry.recipientKind, entry.sessionRefHash, entry.sessionProvenanceHash,
-          entry.sourceAgentKind, entry.sourcePhase,
-        ].join('\u0000'))),
-        ...delivery.entries,
-      ].sort((left, right) => [
-        left.recipientKind, left.sessionRefHash, left.sessionProvenanceHash,
-        left.sourceAgentKind, left.sourcePhase,
-      ].join('\u0000').localeCompare([
-        right.recipientKind, right.sessionRefHash, right.sessionProvenanceHash,
-        right.sourceAgentKind, right.sourcePhase,
-      ].join('\u0000')))
-      this.checkpointOrchestration(group, controller, { deliveryState })
-    }
+    this.v4PrepareDelivery(group, controller, delivery)
     return {
       prompt: this.v4PhasePrompt(group, kind, phase, snapshot, receiptRecords, role, {
         reviewTarget: options.reviewTarget,
@@ -2324,6 +2306,33 @@ class LocalWorkspaceAutoRunner {
     }
   }
 
+  v4PrepareDelivery(group, controller, delivery) {
+    if (delivery) {
+      const replaced = new Set(delivery.entries.map(entry => [
+        entry.recipientKind, entry.sessionRefHash, entry.sessionProvenanceHash,
+        entry.sourceAgentKind, entry.sourcePhase,
+      ].join('\u0000')))
+      const deliveryState = [
+        ...(controller.orchestration?.deliveryState || []).filter(entry => (
+          (!delivery.natural || entry.recipientKind !== delivery.entries[0].recipientKind
+            || (entry.sessionRefHash === delivery.entries[0].sessionRefHash
+              && entry.sessionProvenanceHash === delivery.entries[0].sessionProvenanceHash))
+          && !replaced.has([
+          entry.recipientKind, entry.sessionRefHash, entry.sessionProvenanceHash,
+          entry.sourceAgentKind, entry.sourcePhase,
+        ].join('\u0000')))),
+        ...delivery.entries,
+      ].sort((left, right) => [
+        left.recipientKind, left.sessionRefHash, left.sessionProvenanceHash,
+        left.sourceAgentKind, left.sourcePhase,
+      ].join('\u0000').localeCompare([
+        right.recipientKind, right.sessionRefHash, right.sessionProvenanceHash,
+        right.sourceAgentKind, right.sourcePhase,
+      ].join('\u0000')))
+      this.checkpointOrchestration(group, controller, { deliveryState })
+    }
+  }
+
   v4SetDeliveryStatus(group, controller, delivery, status, binding = null) {
     if (!delivery?.entries?.length) return
     const deliveryState = (controller.orchestration?.deliveryState || []).map(entry => {
@@ -2331,8 +2340,21 @@ class LocalWorkspaceAutoRunner {
         && candidate.sourceAgentKind === entry.sourceAgentKind
         && candidate.sourcePhase === entry.sourcePhase
         && entry.status === 'prepared')
+      let sourceMessages = entry.sourceMessages
+      if (matched && sourceMessages && status === 'acknowledged'
+          && binding?.sessionRefHash === entry.sessionRefHash
+          && binding?.sessionProvenanceHash === entry.sessionProvenanceHash) {
+        const previous = delivery.previousEntries?.find(candidate => (
+          candidate.sourceAgentKind === entry.sourceAgentKind
+          && candidate.sourcePhase === entry.sourcePhase
+        ))
+        sourceMessages = [...new Map([
+          ...(previous?.sourceMessages || []), ...sourceMessages,
+        ].map(message => [message.id, message])).values()].slice(-100)
+      }
       return matched ? {
         ...entry,
+        ...(sourceMessages ? { sourceMessages } : {}),
         ...(binding ? {
           sessionRefHash: binding.sessionRefHash,
           sessionProvenanceHash: binding.sessionProvenanceHash,
@@ -2511,7 +2533,7 @@ class LocalWorkspaceAutoRunner {
     return { text, partial: true }
   }
 
-  v4NaturalThreadTranscript(group, threadRootId, options = {}) {
+  v4NaturalThreadEntries(group, threadRootId, options = {}) {
     const rounds = Array.isArray(options.rounds) ? new Set(options.rounds) : null
     const entries = this.state().messages.filter(message => (
       message.groupId === group.id
@@ -2527,10 +2549,71 @@ class LocalWorkspaceAutoRunner {
       id: message.id,
       agentKind: message.agentKind,
       round: Number(message.trace?.round) || 0,
+      phase: message.trace?.phase || 'proposal',
+      operationId: message.trace?.context?.operationId || '',
     })).map(entry => ({
       ...entry, text: this.v4SanitizeDeliveryText(entry.text, Number.MAX_SAFE_INTEGER),
     }))
-    return packNaturalDiscussionTranscript(entries)
+    return entries.map(entry => ({ ...entry, hash: hashValue(entry) }))
+  }
+
+  v4NaturalThreadTranscript(group, threadRootId, options = {}) {
+    return packNaturalDiscussionTranscript(this.v4NaturalThreadEntries(group, threadRootId, options))
+  }
+
+  v4NaturalDeliveryPrompt(group, controller, threadRootId, kind, slot, binding, promptBuilder) {
+    const entries = this.v4NaturalThreadEntries(group, threadRootId, { controller })
+    const previousEntries = binding.hasSession && !binding.sessionRotated
+      ? (controller.orchestration?.deliveryState || []).filter(entry => (
+          entry.recipientKind === kind && entry.status === 'acknowledged'
+          && entry.sessionRefHash === binding.sessionRefHash
+          && entry.sessionProvenanceHash === binding.sessionProvenanceHash
+          && entry.snapshotHash === controller.orchestration.snapshotHash
+          && entry.sourceMessages
+        ))
+      : []
+    const seen = new Set(previousEntries.flatMap(entry => entry.sourceMessages.map(message => (
+      [entry.sourceAgentKind, entry.sourcePhase, message.id, message.hash].join('\u0000')
+    ))))
+    const unseen = entries.filter(entry => !seen.has([
+      entry.agentKind, entry.phase, entry.id, entry.hash,
+    ].join('\u0000')))
+    const packed = packNaturalDiscussionTranscript(unseen, {
+      withEntries: true,
+      prefix: unseen.length < entries.length
+        ? 'Previously delivered turns are not repeated here. They were supplied to this native session; ask peers to restate missing evidence if your current context is incomplete. Their omission does not imply agreement or task completion.'
+        : '',
+    })
+    const included = new Set(packed.completeMessageIds)
+    const sources = new Map()
+    for (const entry of unseen) {
+      if (!included.has(entry.id)) continue
+      const key = `${entry.agentKind}\u0000${entry.phase}`
+      const source = sources.get(key) || {
+        sourceAgentKind: entry.agentKind, sourcePhase: entry.phase,
+        watermark: 0, operationId: entry.operationId, sourceMessages: [],
+      }
+      source.watermark = Math.max(source.watermark, entry.round)
+      source.sourceMessages.push({ id: entry.id, hash: entry.hash })
+      sources.set(key, source)
+    }
+    const packageHash = hashValue(packed.text)
+    const deliveryId = `delivery-${hashValue({
+      runId: controller.runId, kind, operationId: slot.operationId,
+      packageHash, binding, now: Date.now(),
+    })}`
+    const delivery = sources.size ? {
+      natural: true, previousEntries, packageHash, deliveryId,
+      entries: [...sources.values()].map(source => ({
+        ...source, recipientKind: kind,
+        sessionRefHash: binding.sessionRefHash,
+        sessionProvenanceHash: binding.sessionProvenanceHash,
+        snapshotHash: controller.orchestration.snapshotHash,
+        packageHash, deliveryId, status: 'prepared', updatedAt: Date.now(),
+      })),
+    } : null
+    this.v4PrepareDelivery(group, controller, delivery)
+    return { prompt: promptBuilder(packed.text), delivery }
   }
 
   v4NaturalRecoveredPhaseResult(group, controller, threadRootId, phase, kind, slot) {
@@ -2828,9 +2911,9 @@ class LocalWorkspaceAutoRunner {
           sessionPolicy: null,
           resumedGate: input.resumedGate,
           disableDeliveryPrompt: true,
-          promptBuilder: ({ kind: promptKind }) => this.v4NaturalPhasePrompt(
+          promptBuilder: ({ kind: promptKind, transcript }) => this.v4NaturalPhasePrompt(
             group, promptKind, 'discussion', snapshot, receiptRecords, activeKinds, {
-              transcript: this.v4NaturalThreadTranscript(
+              transcript: transcript ?? this.v4NaturalThreadTranscript(
                 group, threadRootId, { controller },
               ),
               skillHints: context.rootSkillsByKind.get(promptKind) || [],
@@ -2943,9 +3026,9 @@ class LocalWorkspaceAutoRunner {
         sessionPolicy: null,
         resumedGate: input.resumedGate,
         disableDeliveryPrompt: true,
-        promptBuilder: ({ kind }) => this.v4NaturalPhasePrompt(
+        promptBuilder: ({ kind, transcript }) => this.v4NaturalPhasePrompt(
           group, kind, 'discussion', snapshot, receiptRecords, activeKinds, {
-            transcript: this.v4NaturalThreadTranscript(group, threadRootId, { controller }),
+            transcript: transcript ?? this.v4NaturalThreadTranscript(group, threadRootId, { controller }),
             skillHints: context.rootSkillsByKind.get(kind) || [],
             allowRouting: true,
             ownerKind: this.v4NaturalOwner(group, controller, threadRootId),
@@ -3200,6 +3283,13 @@ class LocalWorkspaceAutoRunner {
         refs: [finding.reviewerFindingId],
       }))
     }
+    const taskDecision = raw.taskDecision ? parseTaskDecision(raw.taskDecision) : null
+    // Public receipts exclude paths; the Agent run retains its original decision.
+    if (taskDecision) {
+      taskDecision.reason = publicCollaborationText(taskDecision.reason, 1600)
+      taskDecision.deliverables = taskDecision.deliverables
+        .map(value => publicCollaborationText(value, 800))
+    }
     const receipt = createCollaborationReceipt({
       phase,
       agentKind: kind,
@@ -3208,7 +3298,7 @@ class LocalWorkspaceAutoRunner {
       status,
       summary,
       conclusion: '',
-      ...(raw.taskDecision ? { taskDecision: raw.taskDecision } : {}),
+      ...(taskDecision ? { taskDecision } : {}),
       artifactIds,
       evidenceIds,
       findingIds,
@@ -4049,7 +4139,10 @@ class LocalWorkspaceAutoRunner {
         skillHints: context.rootSkillsByKind.get(kind) || [],
       }
       const prompt = typeof phaseInput.promptBuilder === 'function'
-        ? phaseInput.promptBuilder({ kind, slot, role, options: promptOptions })
+        ? phaseInput.promptBuilder({
+            kind, slot, role, options: promptOptions,
+            ...(phaseInput.disableDeliveryPrompt === true ? { transcript: '' } : {}),
+          })
         : this.v4PhasePrompt(
           group,
           kind,
@@ -4144,7 +4237,16 @@ class LocalWorkspaceAutoRunner {
               })
             },
             ...(phaseInput.disableDeliveryPrompt === true
-              ? {}
+              ? {
+                  v4PromptBuilder: sessionBinding => {
+                    const built = this.v4NaturalDeliveryPrompt(
+                      group, controller, threadRootId, kind, slot, sessionBinding,
+                      transcript => phaseInput.promptBuilder({ kind, slot, role, options: promptOptions, transcript }),
+                    )
+                    preparedDelivery = built.delivery
+                    return built
+                  },
+                }
               : {
                   v4PromptBuilder: (sessionBinding) => {
                     const built = this.v4DeliveryPrompt(group, controller, {

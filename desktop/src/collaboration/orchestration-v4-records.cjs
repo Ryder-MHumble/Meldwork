@@ -830,7 +830,7 @@ function normalizeDeliveryState(input, targetKinds, index) {
   if (!isRecord(input) || !exactFields(input, [
     'recipientKind', 'sessionRefHash', 'sessionProvenanceHash',
     'sourceAgentKind', 'sourcePhase', 'watermark', 'snapshotHash', 'operationId',
-    'packageHash', 'deliveryId', 'status', 'updatedAt',
+    'packageHash', 'deliveryId', 'status', 'updatedAt', 'sourceMessages',
   ])) fail('ORCHESTRATION_V4_DELIVERY_STATE_INVALID')
   const recipientKind = cleanId(input.recipientKind)
   const sourceAgentKind = cleanId(input.sourceAgentKind)
@@ -842,6 +842,20 @@ function normalizeDeliveryState(input, targetKinds, index) {
   const packageHash = String(input.packageHash || '')
   const deliveryId = cleanId(input.deliveryId)
   const status = String(input.status || '')
+  let sourceMessages
+  if (hasOwn(input, 'sourceMessages')) {
+    if (!Array.isArray(input.sourceMessages) || !input.sourceMessages.length
+        || input.sourceMessages.length > 100) fail('ORCHESTRATION_V4_DELIVERY_STATE_INVALID')
+    sourceMessages = input.sourceMessages.map(message => {
+      if (!isRecord(message) || !exactFields(message, ['id', 'hash'])
+          || !cleanId(message.id) || cleanId(message.id) !== message.id
+          || typeof message.hash !== 'string' || !SHA256.test(message.hash)) fail('ORCHESTRATION_V4_DELIVERY_STATE_INVALID')
+      return { id: message.id, hash: message.hash }
+    })
+    if (new Set(sourceMessages.map(message => message.id)).size !== sourceMessages.length) {
+      fail('ORCHESTRATION_V4_DELIVERY_STATE_INVALID')
+    }
+  }
   if (!recipientKind || !sourceAgentKind || !targetKinds.includes(recipientKind)
       || !targetKinds.includes(sourceAgentKind) || !V4_PHASES.has(sourcePhase)
       || !Number.isSafeInteger(input.watermark) || input.watermark < 0
@@ -862,6 +876,7 @@ function normalizeDeliveryState(input, targetKinds, index) {
     packageHash,
     deliveryId,
     status,
+    ...(sourceMessages ? { sourceMessages } : {}),
     updatedAt: safeTimestamp(input.updatedAt, index),
   }
 }
