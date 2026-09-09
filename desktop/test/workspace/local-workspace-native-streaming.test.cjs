@@ -144,7 +144,14 @@ test('Natural V4 keeps Hermes, OpenCode, and Claude Code on one Session per grou
       if (['hermes', 'opencode'].includes(agent.kind)) {
         await runOptions.onSessionRef(sessionRef, { transport: 'acp' })
       }
-      return { text: `${agent.kind} round response`, sessionRef, outcome: 'completed' }
+      const taskDecision = agent.kind === 'hermes' ? `\n[[MELDWORK_COLLABORATION:${JSON.stringify({
+        summary: 'Continue the session-continuity exercise.',
+        taskDecision: {
+          status: 'continue', reason: 'Continue the requested rounds until the configured round budget is reached.',
+          deliverables: [],
+        },
+      })}]]` : ''
+      return { text: `${agent.kind} round response${taskDecision}`, sessionRef, outcome: 'completed' }
     }
 
     const workspace = new LocalWorkspace(options)

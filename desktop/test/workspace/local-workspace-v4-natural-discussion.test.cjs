@@ -59,6 +59,59 @@ function assertTurnParity(record, messages) {
   }
 }
 
+test('Natural V4 bounds oversized peer context while persisting full answers and the original task', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  const longAnswer = `OPENING_FINDING\n${'x'.repeat(100000)}\nCLOSING_EVIDENCE`
+  let discussionPrompt = ''
+  const workspace = new LocalWorkspace({
+    ...options, runLedger: ledger, naturalAgentResponses: true,
+    runAgent: async (_agent, prompt) => {
+      if (naturalPhase(prompt) === 'proposal') {
+        return { outcome: 'completed', text: longAnswer, sessionRef: 'natural-long-session' }
+      }
+      discussionPrompt = prompt
+      return { outcome: 'completed', text: decisionReply('The task remains blocked on missing evidence.', 'blocked') }
+    },
+  })
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({ name: 'Bounded transcript', agentKinds: ['codex'], workdir: directory, allowWrite: false })
+  const controller = await runDiscussion(workspace, group, { discussionStyle: 'agent-led', maxRounds: 3 })
+  assert.match(discussionPrompt, /Discuss the implementation direction\./u)
+  assert.match(discussionPrompt, /OPENING_FINDING/u)
+  assert.match(discussionPrompt, /CLOSING_EVIDENCE/u)
+  assert.match(discussionPrompt, /This transcript is partial/u)
+  assert.ok(discussionPrompt.length < 60000)
+  const proposal = workspace.snapshot().messages.find(message => message.trace?.phase === 'proposal')
+  assert.equal(workspace.autoRunner.v4NaturalMessageContent(proposal).text, longAnswer)
+  assert.equal(ledger.get(controller.runId).status, 'partial')
+  const reopened = new LocalWorkspace({ ...options, naturalAgentResponses: true })
+  const restored = reopened.snapshot().messages.find(message => message.id === proposal.id)
+  assert.equal(reopened.autoRunner.v4NaturalMessageContent(restored).text, longAnswer)
+})
+
+test('Natural routing retains a request beyond the stored message excerpt', async (t) => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const turns = []
+  const workspace = new LocalWorkspace({
+    ...options, naturalAgentResponses: true,
+    runAgent: async (agent, prompt) => {
+      if (naturalPhase(prompt) === 'proposal') return { outcome: 'completed', text: 'Initial contribution.' }
+      turns.push(agent.kind)
+      return { outcome: 'completed', text: turns.length === 1
+        ? `${'x'.repeat(21000)}\n@hermes Please verify the missing evidence.`
+        : turns.length === 2 ? 'The evidence is unavailable.'
+          : decisionReply('Required evidence is unavailable.', 'blocked') }
+    },
+  })
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({ name: 'Long route', agentKinds: ['codex', 'hermes'], workdir: directory, allowWrite: false })
+  await runDiscussion(workspace, group, { discussionStyle: 'agent-led', maxRounds: 4 })
+  assert.deepEqual(turns, ['codex', 'hermes', 'codex'])
+})
+
 for (const status of ['completed', 'blocked', 'needs-human']) {
   test(`Natural single-Agent task persists the owner's ${status} judgment`, async (t) => {
     const { directory, options } = fixture()

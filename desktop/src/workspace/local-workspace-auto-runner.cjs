@@ -1,4 +1,5 @@
 const { createHash } = require('node:crypto')
+const { MAX_MESSAGE_TEXT_CHARS } = require('./local-workspace-contracts.cjs')
 
 const {
   cleanText,
@@ -43,6 +44,7 @@ const {
 const { createReviewerFindingRecord } = require('../collaboration/outcome-records.cjs')
 const { canonicalJson } = require('../collaboration/context-pack-records.cjs')
 const {
+  packNaturalDiscussionTranscript,
   restoreV4SnapshotSkills,
   unlimitedReviewContract,
   v4Prompt,
@@ -2490,9 +2492,28 @@ class LocalWorkspaceAutoRunner {
       && message.trace?.context?.snapshotHash === snapshotHash
   }
 
+  v4NaturalMessageContent(message) {
+    const text = String(message.content || '')
+    if (text.length < MAX_MESSAGE_TEXT_CHARS && message.trace?.truncated !== true) {
+      return { text, partial: false }
+    }
+    for (const artifactId of message.trace?.context?.outcomeRefs?.artifactIds || []) {
+      try {
+        const { artifact, content } = this.v4ArtifactIdentity(artifactId)
+        if (artifact.name !== `${message.agentKind}-conclusion.txt`
+            || artifact.producedBy?.runId !== message.trace?.runId
+            || artifact.producedBy?.agentRunId !== message.trace?.agentRunId
+            || artifact.producedBy?.agentKind !== message.agentKind
+            || !content.startsWith(text)) continue
+        return { text: content, partial: false }
+      } catch { /* Historical blobs may be unavailable; identify the excerpt below. */ }
+    }
+    return { text, partial: true }
+  }
+
   v4NaturalThreadTranscript(group, threadRootId, options = {}) {
     const rounds = Array.isArray(options.rounds) ? new Set(options.rounds) : null
-    const blocks = this.state().messages.filter(message => (
+    const entries = this.state().messages.filter(message => (
       message.groupId === group.id
       && message.threadRootId === threadRootId
       && message.role === 'agent'
@@ -2501,11 +2522,15 @@ class LocalWorkspaceAutoRunner {
       && (!options.controller || this.v4NaturalMessageMatchesBinding(
         message, options.controller,
       ))
-    )).map(message => [
-      `Round ${Number(message.trace?.round) || 0} - @${message.agentKind}`,
-      String(message.content || '').trim(),
-    ].filter(Boolean).join('\n'))
-    return this.v4SanitizeDeliveryText(blocks.join('\n\n'), Number.MAX_SAFE_INTEGER)
+    )).map(message => ({
+      ...this.v4NaturalMessageContent(message),
+      id: message.id,
+      agentKind: message.agentKind,
+      round: Number(message.trace?.round) || 0,
+    })).map(entry => ({
+      ...entry, text: this.v4SanitizeDeliveryText(entry.text, Number.MAX_SAFE_INTEGER),
+    }))
+    return packNaturalDiscussionTranscript(entries)
   }
 
   v4NaturalRecoveredPhaseResult(group, controller, threadRootId, phase, kind, slot) {
@@ -2618,6 +2643,7 @@ class LocalWorkspaceAutoRunner {
         ? [
             'Read the completed peer turns across recent rounds. Decide who should contribute next from their earlier evidence, unresolved questions, and work still needed; do not automatically reply only to whoever last mentioned you.',
             `Address peers naturally inside your explanation using exact mentions: ${agentList}. Put each mention beside its concrete question or requested contribution; no separate final-line mention list is needed.`,
+            'Selected peers are external Meldwork participants; their @handles are not addresses for your native agent messaging or wait tools. Meldwork dispatches requested peers only after this invocation completes. Put the request in your final response and finish this invocation so they can run; do not wait inside this invocation for their reply.',
             'Use one mention for a single next Agent or multiple mentions for a concurrent batch. Do not mention yourself. Quote historical mentions in blockquotes or code so they are not interpreted as new requests.',
             'Avoid repeating the same handoff or conclusions. Invite a peer who has not recently contributed when their earlier proposal can resolve the issue, and state what new evidence or decision you need.',
             'Mention a peer only when you need their contribution. You may finish your own contribution without mentioning another Agent; the delivery owner will judge overall task completion.',
@@ -2664,7 +2690,9 @@ class LocalWorkspaceAutoRunner {
   v4NaturalRoundOutcome(group, controller, threadRootId, round, activeKinds) {
     const messages = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
     const owner = this.v4NaturalOwner(group, controller, threadRootId)
-    const routes = messages.map(message => this.v4NaturalRouteDecision(message.content, activeKinds))
+    const routes = messages.map(message => this.v4NaturalRouteDecision(
+      this.v4NaturalMessageContent(message).text, activeKinds,
+    ))
     const nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
     if (nextKinds.length) return { nextKinds, ownerReview: false }
     if (!activeKinds.includes(owner)) return { status: 'partial' }
@@ -2695,7 +2723,7 @@ class LocalWorkspaceAutoRunner {
   v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds) {
     const current = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
     const selected = new Set(current.flatMap(message => (
-      this.v4NaturalRouteDecision(message.content, activeKinds).kinds
+      this.v4NaturalRouteDecision(this.v4NaturalMessageContent(message).text, activeKinds).kinds
         .filter(kind => kind !== message.agentKind)
     )))
     if (!selected.size) return []
@@ -2717,7 +2745,9 @@ class LocalWorkspaceAutoRunner {
           || message.role !== 'agent' || message.trace?.phase !== 'discussion'
           || message.trace?.runId !== controller.runId || messageRound < 2
           || messageRound > round || !this.v4NaturalMessageMatchesBinding(message, controller)) continue
-      const content = String(message.content || '')
+      const contribution = this.v4NaturalMessageContent(message)
+      if (contribution.partial) return false
+      const content = contribution.text
         .replace(/@[A-Za-z0-9][A-Za-z0-9_-]*/gu, '')
         .replace(/\s+/gu, ' ').trim()
       if (previous.has(message.agentKind) && previous.get(message.agentKind) !== content) {

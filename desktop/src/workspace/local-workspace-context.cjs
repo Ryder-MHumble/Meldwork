@@ -26,6 +26,9 @@ const CONTINUATION_STABLE_CONTEXT_TEXT_LIMIT = 1400
 const CONTINUATION_RECENT_CONTEXT_TEXT_LIMIT = 4600
 const CURRENT_TASK_TEXT_LIMIT = 6000
 const V4_SNAPSHOT_HISTORY_LIMIT = 16
+const NATURAL_TRANSCRIPT_TEXT_LIMIT = 48000
+const NATURAL_TRANSCRIPT_ENTRY_LIMIT = 20000
+const NATURAL_TRANSCRIPT_OMISSION_NOTICE = 'This transcript is partial: some turns or parts of turns were omitted to fit the context budget. Omission is not evidence of agreement or completion. Ask peers to restate any missing evidence needed to judge the original task.'
 const V4_SNAPSHOT_FIELDS = [
   'group', 'history', 'messageId', 'phase', 'snapshotHash',
   'skillHintsByKind', 'targetKinds', 'taskId', 'taskText', 'version', 'writerKind',
@@ -51,6 +54,39 @@ const UNLIMITED_REVIEW_CONTRACT = Object.freeze([
 
 function unlimitedReviewContract(enabled = false) {
   return enabled ? UNLIMITED_REVIEW_CONTRACT : ''
+}
+
+function packNaturalDiscussionTranscript(entries) {
+  const latestByKind = new Map(entries.map((entry, index) => [entry.agentKind, index]))
+  let excerpted = entries.some(entry => entry.partial === true)
+  const packed = packContextEntries(entries.map((entry, index) => {
+    const heading = `Round ${Number(entry.round) || 0} - @${entry.agentKind}\n`
+    let text = String(entry.text || '').trim()
+    const limit = NATURAL_TRANSCRIPT_ENTRY_LIMIT - heading.length
+    if (text.length > limit) {
+      const marker = '\n[Middle of this turn omitted]\n'
+      const edge = Math.floor((limit - marker.length) / 2)
+      // Preserve closing requests as well as opening findings, without inventing a summary.
+      const head = text.slice(0, edge).replace(/[\uD800-\uDBFF]$/u, '')
+      const tail = text.slice(-edge).replace(/^[\uDC00-\uDFFF]/u, '')
+      text = `${head}${marker}${tail}`
+      excerpted = true
+    }
+    return {
+      id: entry.id,
+      text: `${heading}${text}`,
+      priority: index === entries.length - 1 ? 3
+        : latestByKind.get(entry.agentKind) === index ? 2 : 1,
+    }
+  }), {
+    budget: NATURAL_TRANSCRIPT_TEXT_LIMIT - NATURAL_TRANSCRIPT_OMISSION_NOTICE.length - 1,
+    entryLimit: NATURAL_TRANSCRIPT_ENTRY_LIMIT,
+    maxEntries: 100,
+  })
+  return [
+    excerpted || packed.omittedCount ? NATURAL_TRANSCRIPT_OMISSION_NOTICE : '',
+    packed.text,
+  ].filter(Boolean).join('\n')
 }
 
 function v4Snapshot({
@@ -275,6 +311,9 @@ function v4Prompt({
       skillHintsPrompt(frozenSkillHints),
       history !== '(none)' ? `Relevant prior context:\n${history}` : '',
       phaseInstruction,
+      phase === 'proposal'
+        ? 'This invocation is read-only. Its deliverable is your initial analysis and proposed next actions. Return that contribution when ready; any workspace changes belong to a later invocation that explicitly grants write permission. Do not attempt or delegate writes from this invocation, or wait here for write permission.'
+        : '',
       'Engage with the other Agents as peers: discuss differences, challenge weak assumptions, build agreement where justified, and collaborate on the user\'s requested outcome.',
       'After concrete deliverables exist, review them for material gaps before accepting the result.',
       phase === 'discussion'
@@ -843,6 +882,7 @@ function promptFor({
 }
 
 module.exports = {
+  packNaturalDiscussionTranscript,
   clearSessionState,
   openClawSessionRef,
   packedPromptContext,
