@@ -2,6 +2,25 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 const { parseTaskDecision } = require('../../src/collaboration/task-decision.cjs')
 
+test('explicit next participants survive normalization without changing legacy decisions', () => {
+  const legacy = { status: 'continue', reason: 'More evidence is needed.', deliverables: [] }
+  assert.deepEqual(parseTaskDecision(legacy), legacy)
+  for (const nextKinds of [[], ['hermes'], ['hermes', 'codex']]) {
+    const decision = { ...legacy, nextKinds }
+    assert.deepEqual(parseTaskDecision(decision), decision)
+    assert.notStrictEqual(parseTaskDecision(decision).nextKinds, nextKinds)
+  }
+  assert.deepEqual(parseTaskDecision({ ...legacy, nextKinds: ['OpenClaw'] }).nextKinds, ['openclaw'])
+  const fullGroup = Array.from({ length: 32 }, (_, i) => `agent-${i}`)
+  assert.deepEqual(parseTaskDecision({ ...legacy, nextKinds: fullGroup }).nextKinds, fullGroup)
+  for (const nextKinds of ['hermes', ['@hermes'], ['hermes', 'HERMES'], [null], [''], ['two words'],
+    [...fullGroup, 'agent-32']]) {
+    assert.throws(() => parseTaskDecision({ ...legacy, nextKinds }), /LOCAL_RUN_TASK_DECISION_INVALID/)
+  }
+  assert.throws(() => parseTaskDecision({ ...legacy, status: 'completed',
+    deliverables: ['Result'], nextKinds: ['hermes'] }), /LOCAL_RUN_TASK_DECISION_INVALID/)
+})
+
 test('completion requires an explicit reason and deliverable evidence', () => {
   const decision = { status: 'completed', reason: 'Checked the requested output.', deliverables: ['result.txt'] }
   assert.deepEqual(parseTaskDecision(decision), decision)

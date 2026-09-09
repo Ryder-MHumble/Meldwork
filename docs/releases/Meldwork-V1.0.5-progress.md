@@ -193,3 +193,22 @@
 - 修改前两次真实版本/能力扫描为 2343ms 与 1935ms，均返回 12 个条目；这是基线，不是提速证据。本次不改变探测调度或能力缓存策略。
 
 本检查点未重跑完整桌面或前端套件、构建与打包，之前 1536/1536 桌面全量结果对应本次缓存改动之前。群聊语义路由、可恢复 needs-human 与最终版本验收仍未完成，版本号尚未更新。
+
+## 自然讨论的明确协作请求
+
+2026-09-09：移除 Agent 回复正文中的 @ 正则派发。自然讨论使用已有 taskDecision 回执中的可选 nextKinds 表达下一批请求成员；正文可以自由讨论、引用或否定提及，不触发新调用。请求由 Agent 决定，运行层仅校验成员标识、活动参与者和状态契约。没有请求时仍由交付负责人判断继续、完成或阻塞，不将空列表解释为任务成功；用户输入的 @ 选择不受此改动影响。
+
+nextKinds 使用最多 32 个唯一标识，与现有 V4 成员上限一致；大小写统一为小写，不接受空标识、命令文本或不存在的参与者。非空列表要求 continue；未知参与者混入时整批不派发，也不当作接受结果。字段沿用现有调用上下文、回执和账本持久化，恢复时读取绑定的请求，不重新解析正文。旧判断不包含 nextKinds 时仍可读，不改写既有理由、交付物或历史规范化结果。
+
+验证与实际失败：
+
+- 新增中英文否定提及、历史未知成员、空/缺省请求、成员大小写、重复及越界请求测试。原有顺序、并发、预算、会话连续性与恢复测试的模拟 Agent 改为显式请求回执；保留原调用顺序和账本断言。最终针对性协议/否定提及/路由恢复文件筛选 6/6。
+- 第一轮完整桌面 1542 项，1541 通过、1 项可选 Claude 集成跳过、失败 0，日志 `/tmp/meldwork-105-routing-desktop.log`。运行期间补充了成员标识大小写规范化，因此不能以这轮结果证明最后代码的全部覆盖。
+- 首次真实 Electron 样本 `/tmp/meldwork-105-auto-writer-124GBI` 已写出正确文件，但 Codex 请求标识为 OpenClaw，原严格小写解析触发 LOCAL_RUN_TASK_DECISION_INVALID，运行 `ea88ef57-c9cc-48e7-8113-9baa93df8454` 为 partial，脚本退出 1。该失败未计为通过；依据原始最终回复增加通用大小写规范化，并在提示中列出准确标识，没有按品牌分支。
+- 修正后 `/tmp/meldwork-105-auto-writer-HE04nu` 的运行 `bfeec25e-2202-4180-9d38-9afcd3188181` 完成两位成员提案、Codex 写入与 readback、OpenClaw 独立回读、Codex 最终判断。5 次调用均 completed，文件精确为 `MELDWORK_AUTO_105_OK\n` 共 21 字节，账本任务 completed。两次 nextKinds 分别为 openclaw、codex，最终为空。负责人最终正文包含描述性的 @openclaw，没有再次派发。
+- `/tmp/meldwork-105-auto-writer.cjs` 退出 0，Electron 正常关闭；已查看 `/tmp/meldwork-105-auto-writer.png`，正文不泄露回执、整项完成卡片可见。单次实际任务不证明所有 Agent 组合稳定。
+- `/tmp/meldwork-105-outcome-ui.cjs /tmp/meldwork-105-auto-writer-HE04nu` 重开已完成任务，完成卡片仍正确显示，运行标识与调用数量不变，无新模型调用；脚本退出 0，已查看 `/tmp/meldwork-105-outcome-bfeec25e-2202-4180-9d38-9afcd3188181.png`。
+- 第二轮 `MELDWORK_TEST_CLAUDE_EXECUTABLE=... npm --prefix desktop test`：1542/1542，跳过 0，退出 0，约 319 秒；日志 `/tmp/meldwork-105-routing-final-desktop.log`。该轮启动后仅将 nextKinds 上限从 16 对齐现有 32 成员上限并补充边界断言，最终协议和完整自然讨论文件再次 37/37，退出 0，日志 `/tmp/meldwork-105-routing-final-focused.log`。不将不同批次计数相加。
+- `git diff --check` 通过。本轮未改前端源码，未重跑前端测试、构建或打包；桌面实际运行与历史重开验证如上。
+
+本检查点未改变人类采用的含义，needs-human 仍待接入可恢复人类决定流程。尚未更新版本号、构建、打包或替换日常应用。

@@ -2452,49 +2452,18 @@ class LocalWorkspaceAutoRunner {
     ].filter(Boolean).join('\n\n')
   }
 
-  v4NaturalRouteDecision(text, activeKinds) {
+  v4NaturalRouteDecision(decision, activeKinds) {
     const participants = Array.isArray(activeKinds) ? activeKinds : []
-    // Quoted history and code examples are evidence, not new requests to peers.
-    const prose = String(text || '')
-      .replace(/^\s*(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\s*\1\s*$/gmu, '')
-      .replace(/^\s*>.*$/gmu, '')
-      .replace(/(`+)[\s\S]*?\1/gu, '')
-      .replace(/!?\[[^\]\n]*\]\([^\n)]*\)/gu, '')
-    if (!prose || !participants.length) return { status: 'none', kinds: [] }
-    const aliases = new Map()
-    for (const kind of participants) {
-      const label = String(this.agentLabel?.(kind) || kind).trim()
-      for (const alias of new Set([kind, label, label.replace(/\s+(?:code|cli|agent)$/iu, '')])) {
-        const key = alias.toLowerCase()
-        if (!key) continue
-        aliases.set(key, aliases.has(key) && aliases.get(key) !== kind ? null : kind)
-      }
+    if (decision == null) return { status: 'none', kinds: [] }
+    let parsed
+    try { parsed = parseTaskDecision(decision) }
+    catch { return { status: 'invalid', kinds: [] } }
+    const requested = parsed.nextKinds || []
+    if (requested.some(kind => !participants.includes(kind))) {
+      return { status: 'invalid', kinds: [] }
     }
-    const alternatives = [...aliases.keys()].sort((a, b) => b.length - a.length)
-      .map(alias => alias.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'))
-    const mentionPattern = new RegExp(
-      `(?<![A-Za-z0-9_/@\\\\])@(${alternatives.join('|')})(?![A-Za-z0-9_/-]|\\.[A-Za-z0-9])`, 'giu',
-    )
-    const selected = new Set()
-    let ambiguous = false
-    const remaining = prose.replace(mentionPattern, (_match, alias) => {
-      const kind = aliases.get(alias.toLowerCase())
-      if (kind) selected.add(kind)
-      else ambiguous = true
-      return ''
-    })
-    if (ambiguous || /(?<![A-Za-z0-9_/@\\])@[\p{L}\p{N}][\p{L}\p{N}_-]*(?![A-Za-z0-9_/-]|\.[A-Za-z0-9])/u.test(remaining)) {
-      return {
-        status: 'invalid',
-        kinds: participants.filter(kind => selected.has(kind)),
-      }
-    }
-    if (!selected.size) return { status: 'none', kinds: [] }
-    return { status: 'valid', kinds: participants.filter(kind => selected.has(kind)) }
-  }
-
-  v4MentionedNextKinds(text, activeKinds) {
-    return this.v4NaturalRouteDecision(text, activeKinds).kinds
+    if (!requested.length) return { status: 'none', kinds: [] }
+    return { status: 'valid', kinds: participants.filter(kind => requested.includes(kind)) }
   }
 
   v4NaturalMessageMatchesBinding(message, controller) {
@@ -2716,7 +2685,7 @@ class LocalWorkspaceAutoRunner {
             kind === options.ownerKind
               ? [
                   'You are responsible for judging progress against the original user task and the actual available deliverables. Decide whether to continue work, report a blocker, request a human decision, or declare completion. Silence from peers is not evidence of completion. You may continue working yourself; another reviewer is optional.',
-                  'After your natural answer append exactly one receipt: [[MELDWORK_COLLABORATION:{"summary":"concise result","taskDecision":{"status":"completed|continue|blocked|needs-human","reason":"basis for the decision, remaining work or blocker","deliverables":["actual delivered result and its supporting observation"]}}]]. Use an empty deliverables array when no deliverable exists. A completed judgment requires actual deliverables. This is your task judgment, not human adoption or independent system verification.',
+                  'In your final collaboration receipt use taskDecision.status completed, continue, blocked or needs-human to judge the whole task. A completed judgment requires actual deliverables. This is your task judgment, not human adoption or independent system verification.',
                   'To hand off responsibility, use status continue and add handoffTo with one exact selected Agent kind inside taskDecision. Do not hand off to an absent participant. Append nothing after the receipt.',
                 ].join('\n')
               : 'Contribute freely and request peers when useful. Only the current delivery owner can decide task completion or hand off that responsibility.',
@@ -2725,12 +2694,15 @@ class LocalWorkspaceAutoRunner {
       phase === 'discussion' && options.allowRouting === true
         ? [
             'Read the completed peer turns across recent rounds. Decide who should contribute next from their earlier evidence, unresolved questions, and work still needed; do not automatically reply only to whoever last mentioned you.',
-            `Address peers naturally inside your explanation using exact mentions: ${agentList}. Put each mention beside its concrete question or requested contribution; no separate final-line mention list is needed.`,
+            `Address peers naturally inside your explanation: ${agentList}. Put each request beside its concrete question or requested contribution. Prose mentions are discussion only; they do not dispatch peers.`,
             'Selected peers are external Meldwork participants; their @handles are not addresses for your native agent messaging or wait tools. Meldwork dispatches requested peers only after this invocation completes. Put the request in your final response and finish this invocation so they can run; do not wait inside this invocation for their reply.',
-            'Use one mention for a single next Agent or multiple mentions for a concurrent batch. Do not mention yourself. Quote historical mentions in blockquotes or code so they are not interpreted as new requests.',
+            `In taskDecision.nextKinds list the selected Agent identifiers whose contribution you actually request next, chosen from ${JSON.stringify(activeKinds)}, or [] when none is needed. Use status continue for a nonempty list. Multiple kinds request a concurrent batch. Do not request yourself or absent participants. Historical, negated and explanatory mentions do not belong in nextKinds.`,
             'Avoid repeating the same handoff or conclusions. Invite a peer who has not recently contributed when their earlier proposal can resolve the issue, and state what new evidence or decision you need.',
-            'Mention a peer only when you need their contribution. You may finish your own contribution without mentioning another Agent; the delivery owner will judge overall task completion.',
+            'Request a peer only when you need their contribution. You may finish your own contribution with nextKinds: []; the delivery owner will judge overall task completion.',
           ].join('\n')
+        : '',
+      phase === 'discussion'
+        ? 'After your natural answer append exactly one receipt: [[MELDWORK_COLLABORATION:{"summary":"concise result","taskDecision":{"status":"continue","reason":"what you accomplished and what remains","deliverables":[],"nextKinds":[]}}]]. List actual deliverables when available. Only the current delivery owner judges the whole task; other participants report their contribution and may request peers with nextKinds. Merge any owner judgment or handoffTo into this same receipt. Append nothing after it.'
         : '',
     ].filter(Boolean).join('\n\n')
   }
@@ -2774,8 +2746,13 @@ class LocalWorkspaceAutoRunner {
     const messages = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
     const owner = this.v4NaturalOwner(group, controller, threadRootId)
     const routes = messages.map(message => this.v4NaturalRouteDecision(
-      this.v4NaturalMessageContent(message).text, activeKinds,
+      message.trace?.context?.taskDecision, activeKinds,
     ))
+    if (routes.some(route => route.status === 'invalid')) {
+      this.addMessage(group.id, 'system', 'Discussion stopped without a valid task completion decision.',
+        '', threadRootId, { key: 'system.autoTaskDecisionMissing' })
+      return { status: 'partial' }
+    }
     const nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
     if (nextKinds.length) return { nextKinds, ownerReview: false }
     if (!activeKinds.includes(owner)) return { status: 'partial' }
@@ -2788,7 +2765,7 @@ class LocalWorkspaceAutoRunner {
     const sawAllContributions = messages.length === 1
       || (controller.discussionStyle === 'sequential' && messages.at(-1)?.agentKind === owner)
     if (!ownerMessage || !sawAllContributions) return { nextKinds: [owner], ownerReview: true }
-    if (routes.some(route => route.status === 'invalid') || !decision) {
+    if (!decision) {
       this.addMessage(group.id, 'system', 'Discussion stopped without a valid task completion decision.',
         '', threadRootId, { key: 'system.autoTaskDecisionMissing' })
       return { status: 'partial' }
@@ -2806,7 +2783,7 @@ class LocalWorkspaceAutoRunner {
   v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds) {
     const current = this.v4NaturalDiscussionRoundMessages(group, controller, threadRootId, round)
     const selected = new Set(current.flatMap(message => (
-      this.v4NaturalRouteDecision(this.v4NaturalMessageContent(message).text, activeKinds).kinds
+      this.v4NaturalRouteDecision(message.trace?.context?.taskDecision, activeKinds).kinds
         .filter(kind => kind !== message.agentKind)
     )))
     if (!selected.size) return []
