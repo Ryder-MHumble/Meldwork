@@ -36,15 +36,26 @@ test('packaged application carries the open-source and commercial licensing noti
 
 test('DMG uses the branded background and fixed drag layout', () => {
   const dmg = desktopPackage.build.dmg
-  assert.equal(dmg.background, 'build/dmg-background-ai-v3.png')
+  assert.equal(desktopPackage.build.afterAllArtifactBuild, 'scripts/after-all-artifact-build.cjs')
+  assert.equal(dmg.background, 'build/dmg-background-ai-v4.png')
+  assert.equal(dmg.icon, null)
+  assert.equal(dmg.writeUpdateInfo, false)
   assert.deepEqual(dmg.window, { width: 640, height: 420 })
   assert.equal(dmg.iconSize, 112)
   assert.deepEqual(dmg.contents, [
-    { x: 175, y: 245, type: 'file' },
-    { x: 465, y: 245, type: 'link', path: '/Applications' },
+    { x: 110, y: 205, type: 'file' },
+    { x: 520, y: 205, type: 'link', path: '/Applications' },
   ])
 
   const background = fs.readFileSync(path.join(__dirname, '..', '..', dmg.background))
   assert.equal(background.readUInt32BE(16), 640)
   assert.equal(background.readUInt32BE(20), 420)
+
+  assert.equal(
+    desktopPackage.build.extraResources.some(entry => (
+      entry.from === 'build/dmg-background-ai-v4.tiff'
+      && entry.to === 'dmg-background.tiff'
+    )),
+    true,
+  )
 })

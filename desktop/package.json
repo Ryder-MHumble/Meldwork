@@ -38,6 +38,7 @@
     "productName": "Meldwork",
     "artifactName": "Meldwork-${version}-${arch}.${ext}",
     "afterPack": "scripts/after-pack.cjs",
+    "afterAllArtifactBuild": "scripts/after-all-artifact-build.cjs",
     "files": [
       "src/**/*",
       "samples/**/*",
@@ -59,6 +60,10 @@
       {
         "from": "../COMMERCIAL_USE.md",
         "to": "COMMERCIAL_USE.md"
+      },
+      {
+        "from": "build/dmg-background-ai-v4.tiff",
+        "to": "dmg-background.tiff"
       }
     ],
     "mac": {
@@ -70,7 +75,9 @@
       ]
     },
     "dmg": {
-      "background": "build/dmg-background-ai-v3.png",
+      "background": "build/dmg-background-ai-v4.png",
+      "icon": null,
+      "writeUpdateInfo": false,
       "window": {
         "width": 640,
         "height": 420
@@ -78,13 +85,13 @@
       "iconSize": 112,
       "contents": [
         {
-          "x": 175,
-          "y": 245,
+          "x": 110,
+          "y": 205,
           "type": "file"
         },
         {
-          "x": 465,
-          "y": 245,
+          "x": 520,
+          "y": 205,
           "type": "link",
           "path": "/Applications"
         }
