@@ -70,21 +70,21 @@
       ]
     },
     "dmg": {
-      "background": "build/dmg-background-ai-v2.png",
+      "background": "build/dmg-background-ai-v3.png",
       "window": {
-        "width": 540,
-        "height": 380
+        "width": 640,
+        "height": 420
       },
-      "iconSize": 128,
+      "iconSize": 112,
       "contents": [
         {
-          "x": 145,
-          "y": 210,
+          "x": 175,
+          "y": 245,
           "type": "file"
         },
         {
-          "x": 395,
-          "y": 210,
+          "x": 465,
+          "y": 245,
           "type": "link",
           "path": "/Applications"
         }

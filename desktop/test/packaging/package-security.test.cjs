@@ -36,15 +36,15 @@ test('packaged application carries the open-source and commercial licensing noti
 
 test('DMG uses the branded background and fixed drag layout', () => {
   const dmg = desktopPackage.build.dmg
-  assert.equal(dmg.background, 'build/dmg-background-ai-v2.png')
-  assert.deepEqual(dmg.window, { width: 540, height: 380 })
-  assert.equal(dmg.iconSize, 128)
+  assert.equal(dmg.background, 'build/dmg-background-ai-v3.png')
+  assert.deepEqual(dmg.window, { width: 640, height: 420 })
+  assert.equal(dmg.iconSize, 112)
   assert.deepEqual(dmg.contents, [
-    { x: 145, y: 210, type: 'file' },
-    { x: 395, y: 210, type: 'link', path: '/Applications' },
+    { x: 175, y: 245, type: 'file' },
+    { x: 465, y: 245, type: 'link', path: '/Applications' },
   ])
 
   const background = fs.readFileSync(path.join(__dirname, '..', '..', dmg.background))
-  assert.equal(background.readUInt32BE(16), 540)
-  assert.equal(background.readUInt32BE(20), 380)
+  assert.equal(background.readUInt32BE(16), 640)
+  assert.equal(background.readUInt32BE(20), 420)
 })
