@@ -641,12 +641,14 @@ function stableUserInstructions(state, groupId, threadRootId = '', contextOption
 function recentTranscriptEntries(state, groupId, afterAgentKind = '', contextOptions = {}) {
   const messages = scopedConversationMessages(state, groupId, contextOptions)
   let afterIndex = -1
+  const afterMessageId = cleanText(contextOptions.afterMessageId, 100)
+  if (afterMessageId) afterIndex = messages.findIndex(message => message.id === afterMessageId)
   if (afterAgentKind) {
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index]
       if (message.agentKind === afterAgentKind
           && (message.role === 'agent' || isTracedAgentTerminalMessage(message))) {
-        afterIndex = index
+        afterIndex = Math.max(afterIndex, index)
         break
       }
     }
@@ -693,11 +695,13 @@ function packedPromptContext({
   excludeResponseVersionRootId = '',
   focusUserMessageId = '',
   omitAgentThreadRootId = '',
+  afterMessageId = '',
 }) {
   const contextOptions = {
     beforeMessageId,
     excludeResponseVersionRootId,
     focusUserMessageId,
+    afterMessageId: cleanText(afterMessageId, 100),
   }
   const scopedMessages = scopedConversationMessages(state, groupId, contextOptions)
   const focusId = cleanText(focusUserMessageId, 100)
@@ -789,6 +793,7 @@ function packedPromptContext({
     currentTaskText,
     latestUserLanguage: responseLanguageFromText(latestUserMessage?.content),
     latestUserMessageId: latestUserMessage?.id || '',
+    latestMessageId: scopedMessages.at(-1)?.id || '',
     ...bootstrapSelection,
     continuationSourceMessageIds: continuationSelection.sourceMessageIds,
     continuationSourceEntries: continuationSelection.sourceEntries,

@@ -138,6 +138,35 @@ test('Natural routing retains a request beyond the stored message excerpt', asyn
   assert.deepEqual(turns, ['codex', 'hermes', 'codex'])
 })
 
+test('Natural discussion does not complete when a peer reports an explicit blocker', async t => {
+  const { directory, options } = fixture()
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ledger = new RunLedger({ storagePath: path.join(directory, 'run-ledger.json') })
+  options.runLedger = ledger
+  options.naturalAgentResponses = true
+  let codexDiscussionTurns = 0
+  options.runAgent = async (agent, prompt) => {
+    if (naturalPhase(prompt) === 'proposal') return { outcome: 'completed', text: `${agent.kind} proposal.` }
+    if (agent.kind === 'codex') codexDiscussionTurns += 1
+    return agent.kind === 'codex' && codexDiscussionTurns === 1
+      ? { outcome: 'completed', text: decisionReply('Please verify the required files.', 'continue', { nextKinds: ['hermes'] }) }
+      : agent.kind === 'codex'
+        ? { outcome: 'completed', text: decisionReply('The owner says the task is complete.') }
+      : { outcome: 'completed', text: decisionReply('I cannot access the required workspace files.', 'blocked') }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const group = workspace.createGroup({
+    name: 'Peer blocker', agentKinds: ['codex', 'hermes'], workdir: directory, allowWrite: false,
+  })
+  const controller = await runDiscussion(workspace, group, { discussionStyle: 'agent-led', maxRounds: 4 })
+  assert.equal(ledger.get(controller.runId).status, 'partial')
+  assert.equal(workspace.snapshot().messages.some(message => (
+    message.system?.key === 'system.autoTaskBlocked'
+    && message.threadRootId === controller.threadRootId
+  )), true)
+})
+
 for (const discussionStyle of ['agent-led', 'sequential']) {
   for (const answer of ['EXACT_ANSWER_OK', '{"ok":true}']) {
     test(`Natural ${discussionStyle} preserves exact visible ${answer.startsWith('{') ? 'JSON' : 'text'} separately from completion`, async t => {

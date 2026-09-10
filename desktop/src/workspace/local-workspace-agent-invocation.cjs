@@ -812,7 +812,11 @@ class LocalWorkspaceAgentInvocation {
     }
     const knownSessionHistory = group.conversationType === 'direct'
       || sessionProvenance.completeness !== 'unknown-legacy'
+    const sameTaskSession = !taskId
+      || taskId === sessionMeta.originTaskId
+      || (Array.isArray(sessionMeta.inheritedTaskIds) && sessionMeta.inheritedTaskIds.includes(taskId))
     let transcriptAfterKind = knownSessionHistory && !sessionRotated && storedSessionRef && storedSessionRef === sessionRef
+      && (!sessionMeta.lastDeliveredMessageId || !sameTaskSession)
       ? kind
       : ''
     // Group Sessions already contain the immutable bootstrap instructions after
@@ -825,6 +829,9 @@ class LocalWorkspaceAgentInvocation {
       && sessionMeta.turns > 0
       ? 'continuation'
       : 'bootstrap'
+    const sessionContextOptions = (!isolated && !frozen && promptMode === 'continuation' && sameTaskSession)
+      ? { ...(context.contextOptions || {}), afterMessageId: sessionMeta.lastDeliveredMessageId || '' }
+      : (context.contextOptions || {})
     let packedContext = isolated || frozen
       ? {
           text: v4Prompt,
@@ -845,7 +852,7 @@ class LocalWorkspaceAgentInvocation {
           continuationText: v4Prompt,
         }
       : this.packedPromptContext(
-          group.id, transcriptAfterKind, threadRootId, context.contextOptions || {},
+          group.id, transcriptAfterKind, threadRootId, sessionContextOptions,
         )
     if (!isolated && !frozen) {
       packedContext = withCollaborationPackage(
@@ -1890,6 +1897,7 @@ class LocalWorkspaceAgentInvocation {
           replyChars: reply.text.length,
           rotated: sessionRotated,
           transport: sessionTransport,
+          lastDeliveredMessageId: packedContext.latestMessageId || sessionMeta.lastDeliveredMessageId,
           },
         ))
       }

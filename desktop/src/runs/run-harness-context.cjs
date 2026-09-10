@@ -122,6 +122,8 @@ function normalizeSessionMeta(input) {
     meta.inheritedTaskIds = inheritedTaskIds
     meta.provenanceCompleteness = provenanceCompleteness
   }
+  const lastDeliveredMessageId = cleanId(input.lastDeliveredMessageId)
+  if (lastDeliveredMessageId) meta.lastDeliveredMessageId = lastDeliveredMessageId
   return meta
 }
 
@@ -157,6 +159,8 @@ function nextSessionMeta(meta, usage = {}) {
     if (Object.hasOwn(usage, field)) next[field] = usage[field]
     else if (Object.hasOwn(previous, field)) next[field] = previous[field]
   }
+  if (usage.lastDeliveredMessageId) next.lastDeliveredMessageId = usage.lastDeliveredMessageId
+  else if (previous.lastDeliveredMessageId) next.lastDeliveredMessageId = previous.lastDeliveredMessageId
   return normalizeSessionMeta(next)
 }
 

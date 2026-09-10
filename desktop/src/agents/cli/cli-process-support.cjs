@@ -1,6 +1,6 @@
 const path = require('node:path')
 const { searchPath, systemChildEnvironment } = require('./cli-discovery.cjs')
-const { networkEnvironment } = require('./cli-network-environment.cjs')
+const { NETWORK_ENV_KEYS, networkEnvironment } = require('./cli-network-environment.cjs')
 const { redactChildSecrets } = require('./cli-runtime-events.cjs')
 const { agentRuntimeError, terminalAuthenticationDiagnostic } = require('../agent-runtime-contract.cjs')
 const { validateOpenClawRuntimeGuard } = require('./openclaw-runtime.cjs')
@@ -22,6 +22,8 @@ const OPENCLAW_RUNTIME_PATH_KEYS = Object.freeze([
   'OPENCLAW_CONFIG_PATH',
   'OPENCLAW_WORKSPACE_DIR',
 ])
+const CONTROLLED_RUNTIME_ENV = /^(?:AWS_|AZURE_|GOOGLE_|GEMINI_|ANTHROPIC_|OPENAI_|OPENROUTER_|CODEBUDDY_|HERMES_|PI_|KIMI_|MIMO_|DASHSCOPE_|CLAUDE_|OCR_|CLOUDSDK_|VERTEX_|CLOUD_ML_|MOONSHOT_|CONNECTOR_TEST_|MELDWORK_TEST_)/
+const BLOCKED_RUNTIME_ENV = /^(?:NODE_OPTIONS|NODE_PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_|ELECTRON_RUN_AS_NODE)$/
 
 function agentExecutionError(code, diagnostic = '') {
   return agentRuntimeError(code, diagnostic)
@@ -111,9 +113,14 @@ function childEnvironment(agent, workdir, options, platform) {
     ? { OPENCODE_PERMISSION: OPENCODE_READ_ONLY_PERMISSION }
     : {}
   const source = { ...process.env, ...options.env }
+  const controlled = Object.fromEntries(Object.entries(options.env || {}).filter(([key, value]) => (
+    typeof value === 'string'
+      && (CONTROLLED_RUNTIME_ENV.test(key) || NETWORK_ENV_KEYS.includes(key))
+      && !BLOCKED_RUNTIME_ENV.test(key)
+  )))
   return {
     ...systemChildEnvironment(process.env, platform),
-    ...options.env,
+    ...controlled,
     ...hermesSafetyEnv,
     ...openCodeSafetyEnv,
     PATH: searchPath({ platform, env: source }),

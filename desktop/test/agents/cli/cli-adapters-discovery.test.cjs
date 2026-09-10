@@ -48,14 +48,20 @@ test('capability timeouts retry once and remain inconclusive when both attempts 
         if (!recover || timeouts.length === 1) {
           throw Object.assign(new Error('timeout'), { killed: true })
         }
-        return { stdout: '--mode json --print --session --tools --approve --no-approve' }
+        return { stdout: argsForProbe(_command, _args) }
       },
     })
-    assert.deepEqual(timeouts, [8000, 16000])
+    assert.deepEqual(timeouts, recover ? [8000, 8000, 16000] : [8000, 8000, 16000, 16000])
     assert.equal(result.compatibilityState, recover ? 'compatible' : 'unknown')
     if (!recover) assert.equal(result.incompatibilityReason, 'LOCAL_AGENT_CAPABILITY_PROBE_TIMEOUT')
   }
 })
+
+function argsForProbe(_command, args) {
+  return args.includes('--mode')
+    ? '{"type":"session","id":"probe-session"}'
+    : '--mode json --print --session --tools --approve --no-approve'
+}
 
 test('only unchanged recently verified executables survive inconclusive capability probes', async () => {
   const executable = '/test/cached-workbuddy'

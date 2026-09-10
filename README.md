@@ -14,11 +14,13 @@
   <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
 </p>
 
-# Meldwork builds the organization layer for AI agents.
+# Meldwork — Local-first multi-agent orchestration for AI coding agents
 
-**Most tools help humans run more agents. Meldwork is built for a different job: make multi-agent work legible, accountable, and reusable.**
+**Coordinate Codex, Claude Code, Gemini CLI, and 9 more agent CLIs from one desktop workspace. Stop manually copying context between terminals — Meldwork freezes one task snapshot, sends it to every selected agent, captures their independent findings as evidence, and gates workspace writes behind your approval.**
 
-The current preview is a local work cell for supported Agent CLIs. It keeps participants explicit, context scoped, collaboration bounded, run state inspectable, and human review in the loop. Selected Agents can now respond concurrently or move through independent proposals, peer negotiation, responsibility-based work, single-writer integration, and independent verification around one goal.
+Meldwork is a local-first multi-agent orchestration desktop app for macOS (Apple silicon). It connects the AI coding agent CLIs you already have installed — Codex, Claude Code, Hermes, OpenCode, Gemini CLI, Qwen Code, Kimi Code, MiMo Code, Pi Agent, OpenClaw, OpenCodeReview, and WorkBuddy — into one reviewable workspace where you can run Direct sessions, Concurrent Responses (same task, multiple agents, independent replies), or Auto Discussion V4 (agents propose, challenge, negotiate responsibilities, and verify results across rounds).
+
+Unlike terminal multiplexers (tmux, zellij) that show raw output side by side, Meldwork preserves every finding as structured evidence (Finding → Evidence → Decision → Disposition), keeps a human adoption gate before any file changes, and makes multi-agent work inspectable and reusable across sessions.
 
 <p align="center">
   <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg"><strong>Download Meldwork V1.0.4 for Apple silicon macOS</strong></a>
@@ -30,9 +32,10 @@ The current preview is a local work cell for supported Agent CLIs. It keeps part
 
 Use Meldwork when you:
 
-- already have multiple local Agent CLIs and need one task to span them;
+- run multiple AI coding agents (Codex, Claude Code, Gemini CLI, Hermes, OpenCode, etc.) and want to coordinate them without manually passing context between terminals;
 - need independent review for code, research, or product analysis before choosing a path;
-- need inspectable traces, evidence, and human review before workspace writes.
+- want to compare multiple agents' responses to the same task side by side, with evidence trails and a human approval gate before any workspace writes;
+- need inspectable traces, evidence, and human review for multi-agent coding sessions — so you can resume, audit, and reuse work across sessions.
 
 ## Workflow
 
@@ -53,20 +56,21 @@ Participants are always selected by the user. Automatic selection from a larger 
 
 ## How Meldwork differs
 
-Meldwork is a local-first AI Agent workspace for multi-Agent review and decision traceability, not a terminal, cloud Agent fleet, communication network, or programmable orchestration framework. It connects the local Agent tools you already use to a decision-ready review workflow and keeps independent findings, evidence, responsibility, and the human adoption decision visible in one local work cell.
+Meldwork is a local-first multi-agent orchestration desktop app — not a terminal multiplexer, cloud agent fleet, communication network, or programmable orchestration framework. It connects the local Agent CLIs you already use to a decision-ready review workflow and keeps independent findings, evidence, responsibility, and the human adoption decision visible in one local workspace.
 
-| Project | Category | What it focuses on | Meldwork's difference |
-| --- | --- | --- | --- |
-| [Buzz](https://github.com/block/buzz) | Agent communication network | Identity, channels, events, and persistent collaboration. | Case-scoped independent judgments with evidence-backed Decision and Disposition. |
-| [Pragma](https://github.com/pqpo/pragma) | Method and workflow runtime | Reusable Expert, Flow, Memory, Evaluation, and DSL assets. | Keeps disagreement, re-checks, and adoption records visible before a workflow is fixed. |
-| [Munder Difflin](https://github.com/chaitanyagiri/munder-difflin) | Visual Agent company | Boss -> Manager -> Workers, with task and activity status. | Tracks Finding -> Evidence -> Decision -> Disposition without hiding dissent behind a central manager. |
-| [Superset](https://github.com/superset-sh/superset) / [Conductor](https://www.conductor.build/) / [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | Parallel coding workspaces | Parallel coding Agents, isolated workspaces, diffs, and merges. | Local-first review across heterogeneous CLIs, not terminal count, worktree throughput, or cloud sandboxes. |
-| [cmux](https://github.com/manaflow-ai/cmux) | Agent-native terminal | Low-friction terminals, notifications, and multitasking. | Adds frozen context, independent results, and a human adoption gate. |
-| [Nimbalyst](https://github.com/nimbalyst/nimbalyst) | Agent and artifact workspace | Parallel Agents with Markdown, mockups, and diagrams. | Places evidence and accountable decisions alongside artifacts. |
-| [Paperclip](https://github.com/paperclipai/paperclip) | Agent organization management | Companies, roles, budgets, approvals, and org charts. | Grounds responsibility in real findings and outcomes, not a virtual company. |
-| [MCP Agent Mail](https://github.com/Dicklesworthstone/mcp_agent_mail) | Agent communication infrastructure | Identity, inboxes, threads, and advisory file leases. | Preserves Case and review semantics above the transport layer. |
-| LangGraph / CrewAI / AutoGen / OpenAI Agents SDK / Google ADK | Programmable multi-Agent frameworks | Graphs, roles, routing, tools, and approvals for developers. | Delivers a desktop review workflow without requiring teams to build an orchestration framework. |
-| Warp Oz / Devin / Factory / OpenHands Cloud | Cloud Agent control planes | Hosted sandboxes, remote execution, and Agent fleets. | Runs in the user's local Electron work cell with existing CLIs and local data boundaries. |
+If you're comparing Meldwork to other multi-agent orchestration tools, here's where it fits:
+
+| Tool | What it does | What Meldwork adds |
+| --- | --- | --- |
+| tmux / zellij | Terminal multiplexer — run agents in panes, manually copy context between them | Frozen task snapshots, evidence trails, human adoption gate, no manual context passing |
+| Claude Code Agent Teams | Native subagent spawning within Claude Code only | Cross-CLI: mix Codex, Claude Code, Hermes, OpenCode and 8 more in one workspace |
+| Claude Squad / amux / Conductor | Parallel agent runners with git worktree isolation | Evidence-backed review (Finding → Evidence → Decision → Disposition), not just parallel execution |
+| CrewAI / AutoGen / LangGraph | Programmable multi-agent frameworks you build yourself | Ready-to-use desktop workflow — no orchestration code to write |
+| Conductor (conductor.build) | macOS desktop for parallel Claude Code + Codex | Heterogeneous CLI support (12+ agents), evidence trails, human gate before writes |
+| Emdash | Electron desktop for 22+ CLI agents | Decision traceability, evidence-aware runs, structured adoption records |
+| Bernstein | Deterministic orchestrator with pre-merge verification | Human-in-the-loop adoption gate, not just automated CI checks |
+| Buzz / Pragma / Paperclip | Agent communication / workflow / org management | Case-scoped independent judgments with evidence-backed decisions, not identity or org charts |
+| Warp Oz / Devin / Factory / OpenHands Cloud | Cloud-hosted agent execution platforms | Runs locally in your Electron work cell with existing CLIs — no cloud dependency |
 
 ## See it in action
 
@@ -83,7 +87,7 @@ Meldwork is a local-first AI Agent workspace for multi-Agent review and decision
   </tr>
 </table>
 
-Example: give Codex, Claude Code, and Gemini CLI the same change-review context, compare their independent findings, then adopt only the evidence-backed result you approve.
+Example: give Codex, Claude Code, and Gemini CLI the same task — review a PR, analyze a bug, or compare implementation approaches. Meldwork freezes the task context, sends it to all three agents simultaneously, captures their independent findings as evidence, and lets you adopt only the result you approve. No manual context copying between terminals.
 
 ## Supported local Agent CLIs
 
@@ -137,7 +141,7 @@ npm --prefix desktop test
 
 ## Current boundary
 
-Meldwork is a local Electron app, not a hosted Agent fleet or a general Agent framework. The current preview does not provide remote/cloud/channel Agent execution, automatic participant selection, enterprise SSO/RBAC/governance, or an Outcome Network. Local-first does not mean fully offline: a selected Agent may send prompts, attachments, or Skills to its configured Provider. Workspace writes are opt-in workflow controls, not an operating-system sandbox.
+Meldwork is a local Electron desktop app for multi-agent orchestration and review — not a hosted agent fleet or a general agent framework. The current preview does not provide remote/cloud agent execution, automatic participant selection, enterprise SSO/RBAC/governance, or an Outcome Network. Local-first does not mean fully offline: a selected Agent may send prompts, attachments, or Skills to its configured Provider. Workspace writes are opt-in workflow controls, not an operating-system sandbox.
 
 ## Docs
 

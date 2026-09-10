@@ -2,7 +2,7 @@
 
 ## Product Boundary
 
-Meldwork is a local Electron desktop product for direct and multi-Agent work with explicitly selected Skill, image, and knowledge-source context. It has no account system, tenant model, required application server, remote conversation store, email delivery, scheduled jobs, or public SEO surface. Optional Agent, Cloud, and Channel Connectors run behind the Electron main-process trust boundary and are disabled until explicitly configured.
+Meldwork is a local Electron desktop product for multi-agent orchestration and review with explicitly selected Skill, image, and knowledge-source context. It has no account system, tenant model, required application server, remote conversation store, email delivery, scheduled jobs, or hosted web surface. Optional Agent, Cloud, and Channel Connectors run behind the Electron main-process trust boundary and are disabled until explicitly configured. The landing page at https://ryder-mhumble.github.io/Meldwork/ is the public marketing surface for search engine and AI assistant discoverability.
 
 The supported product surface is the packaged Electron application. The frontend is a renderer bundle; without the local preload bridge it shows a desktop-required state and cannot operate the workspace.
 
@@ -103,7 +103,7 @@ There is no Meldwork-hosted remote data store or application account namespace. 
 
 - No email sending, so there is no `emails.md`.
 - No cron or scheduled background work, so there is no `cron.md`.
-- No supported public or indexable routes, so there is no `seo.md`.
+- No supported public or indexable routes in the app itself, so there is no `seo.md`. The landing page at https://ryder-mhumble.github.io/Meldwork/ serves as the public discoverability surface for search engines and AI assistants.
 
 ## Related Documents
 

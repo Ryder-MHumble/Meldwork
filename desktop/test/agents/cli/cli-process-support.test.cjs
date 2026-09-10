@@ -7,6 +7,25 @@ const path = require('node:path')
 const { childEnvironment, failedAgentProcessError } = require('../../../src/agents/cli/cli-process-support.cjs')
 const { managedOpenClawOptions } = require('../../../src/agents/cli/openclaw-runtime.cjs')
 
+test('local Agent child environments keep supported runtime settings but reject process injection', () => {
+  const env = childEnvironment(
+    { kind: 'pi' }, '/tmp/workspace', {
+      env: {
+        OPENAI_BASE_URL: 'https://provider.example/v1',
+        HTTPS_PROXY: 'http://proxy.example:3128',
+        GITHUB_TOKEN: 'unrelated-secret',
+        NODE_OPTIONS: '--require=/tmp/injected.js',
+        DYLD_INSERT_LIBRARIES: '/tmp/injected.dylib',
+      },
+    }, 'darwin',
+  )
+  assert.equal(env.OPENAI_BASE_URL, 'https://provider.example/v1')
+  assert.equal(env.HTTPS_PROXY, 'http://proxy.example:3128')
+  assert.equal(Object.hasOwn(env, 'GITHUB_TOKEN'), false)
+  assert.equal(Object.hasOwn(env, 'NODE_OPTIONS'), false)
+  assert.equal(Object.hasOwn(env, 'DYLD_INSERT_LIBRARIES'), false)
+})
+
 test('process diagnostics require explicit authentication failure evidence', () => {
   for (const diagnostic of [
     'EACCES: permission denied opening auth-service.ts',

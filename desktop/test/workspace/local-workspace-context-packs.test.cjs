@@ -15,6 +15,7 @@ const {
 } = require('../../src/collaboration/outbound-payload.cjs')
 const { RunLedger } = require('../../src/runs/run-ledger.cjs')
 const { fixture } = require('../support/local-workspace-test-helpers.cjs')
+const { packedPromptContext } = require('../../src/workspace/local-workspace-context.cjs')
 
 function jsonBlob(workspace, ref) {
   return JSON.parse(workspace.contentBlobStore.read(ref).toString('utf8'))
@@ -63,6 +64,29 @@ function outboundPayload(prompt, transport = 'legacy') {
     promptMode: 'stdin',
   })
 }
+
+test('persistent group context watermark excludes already delivered peer turns', () => {
+  const state = {
+    groups: [{ id: 'group-watermark', conversationType: 'group' }],
+    messages: [
+      { id: 'user-1', groupId: 'group-watermark', role: 'user', content: 'Initial task' },
+      { id: 'agent-a-1', groupId: 'group-watermark', role: 'agent', agentKind: 'codex', content: 'First answer' },
+      { id: 'agent-b-1', groupId: 'group-watermark', role: 'agent', agentKind: 'hermes', content: 'Peer answer' },
+      { id: 'user-2', groupId: 'group-watermark', role: 'user', content: 'Follow-up task' },
+      { id: 'agent-a-2', groupId: 'group-watermark', role: 'agent', agentKind: 'codex', content: 'Latest answer' },
+    ],
+  }
+  const packed = packedPromptContext({
+    state,
+    groupId: 'group-watermark',
+    afterAgentKind: '',
+    afterMessageId: 'agent-b-1',
+  })
+  assert.equal(packed.latestMessageId, 'agent-a-2')
+  assert.equal(packed.recentText.includes('First answer'), false)
+  assert.equal(packed.recentText.includes('Peer answer'), false)
+  assert.equal(packed.recentText.includes('Latest answer'), true)
+})
 
 test('explicit Connector selections persist immutable knowledge and citation sources without Vault paths', async (t) => {
   const { directory, options } = fixture()

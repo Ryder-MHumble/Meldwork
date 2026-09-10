@@ -24,6 +24,22 @@ const v4NaturalDecisionMethods = {
         '', threadRootId, { key: 'system.autoTaskDecisionMissing' })
       return { status: 'partial' }
     }
+    // A peer's explicit blocker is a task outcome, not an empty routing choice.
+    // Without this guard the delivery owner could complete the run while a
+    // participant had already reported that the work was blocked.
+    const peerBlocker = messages.find(message => {
+      if (message.agentKind === owner) return false
+      const status = message.trace?.context?.taskDecision?.status
+      return status === 'blocked' || status === 'needs-human'
+    })
+    if (peerBlocker) {
+      const decision = peerBlocker.trace?.context?.taskDecision
+      this.addMessage(group.id, 'system', decision.reason, '', threadRootId, {
+        key: decision.status === 'needs-human' ? 'system.autoTaskNeedsHuman' : 'system.autoTaskBlocked',
+        params: { reason: decision.reason },
+      })
+      return { status: 'partial' }
+    }
     const nextKinds = this.v4NaturalNextKinds(group, controller, threadRootId, round, activeKinds)
     if (nextKinds.length) return { nextKinds, ownerReview: false }
     if (!activeKinds.includes(owner)) return { status: 'partial' }

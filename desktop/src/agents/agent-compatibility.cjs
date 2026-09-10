@@ -60,6 +60,13 @@ const AGENT_COMPATIBILITY = Object.freeze({
     probe('pi-cli', ['--help'], [
       '--mode', '--print', '--session', '--tools', '--approve', '--no-approve', 'json',
     ]),
+    probe('pi-json-protocol', ['--mode', 'json', '--print', '--no-approve', '--tools', 'read,grep,find,ls'], [],
+      output => output.split(/\r?\n/).some(line => {
+        try {
+          const event = JSON.parse(line)
+          return event?.type === 'session' || event?.type === 'message_update' || event?.type === 'message_end'
+        } catch { return false }
+      })),
   ]),
   kimi: profile('0.19.2', '0.32.0', [
     probe('kimi-stream', ['--help'], [
@@ -101,11 +108,12 @@ const AGENT_COMPATIBILITY = Object.freeze({
   ]),
 })
 
-function probe(id, args, requiredText) {
+function probe(id, args, requiredText, validateOutput = null) {
   return Object.freeze({
     id,
     args: Object.freeze([...args]),
     requiredText: Object.freeze([...requiredText]),
+    validateOutput,
   })
 }
 

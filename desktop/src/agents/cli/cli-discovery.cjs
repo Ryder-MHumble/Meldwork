@@ -367,7 +367,8 @@ async function probeAgentCapabilities(kind, executable, options = {}) {
     }
   }))
   const failed = results.find(result => !result.timedOut && (result.error
-    || result.probe.requiredText.some(value => !result.output.includes(value))))
+    || result.probe.requiredText.some(value => !result.output.includes(value))
+    || (result.probe.validateOutput && !result.probe.validateOutput(result.output))))
   if (failed) capabilityCache.delete(cacheKey)
   for (const result of results) {
     const { probe } = result
