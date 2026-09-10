@@ -350,7 +350,7 @@ async function probeAgentCapabilities(kind, executable, options = {}) {
   const recentCompatible = identity && prior?.identity === identity
     && Date.now() - prior.checkedAt < CAPABILITY_CACHE_TTL_MS
   const results = await Promise.all(capabilityProbes(kind).map(async (probe) => {
-    for (const timeout of [8000, 16000]) {
+    for (const timeout of probe.timeout ? [probe.timeout] : [8000, 16000]) {
       try {
         const command = prepareCommandFn(executable, probe.args, options)
         const result = await execFileFn(command.command, command.args, {

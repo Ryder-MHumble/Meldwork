@@ -66,7 +66,7 @@ const AGENT_COMPATIBILITY = Object.freeze({
           const event = JSON.parse(line)
           return event?.type === 'session' || event?.type === 'message_update' || event?.type === 'message_end'
         } catch { return false }
-      })),
+      }), 60000),
   ]),
   kimi: profile('0.19.2', '0.32.0', [
     probe('kimi-stream', ['--help'], [
@@ -108,12 +108,13 @@ const AGENT_COMPATIBILITY = Object.freeze({
   ]),
 })
 
-function probe(id, args, requiredText, validateOutput = null) {
+function probe(id, args, requiredText, validateOutput = null, timeout = null) {
   return Object.freeze({
     id,
     args: Object.freeze([...args]),
     requiredText: Object.freeze([...requiredText]),
     validateOutput,
+    timeout,
   })
 }
 
