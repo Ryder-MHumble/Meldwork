@@ -886,6 +886,11 @@ async function runAcpTurn(runtime, prompt, options, spec, profile) {
         ? 'timeout'
         : normalized.failure?.category === 'cancellation' ? 'stopped' : 'failed',
     })
+    if (promptStarted && options.sessionRef
+        && runtime.replyState.bytes === 0
+        && normalized.message === 'LOCAL_AGENT_REFUSED') {
+      throw agentExecutionError('LOCAL_AGENT_SESSION_INVALID')
+    }
     if (!promptStarted && normalized.message !== 'LOCAL_AGENT_SESSION_INVALID') {
       allowAcpSetupFallback(normalized)
     }

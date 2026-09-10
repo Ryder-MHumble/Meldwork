@@ -1891,6 +1891,36 @@ process.stdout.write(JSON.stringify({ type: 'agent_end' }) + '\\n')
   assert.equal(result.outcome, 'completed')
 })
 
+test('Pi keeps running after a tool turn until its agent loop ends', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-pi-tool-turn-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const cli = executable(directory, 'pi-tool-turn.cjs', `
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+send({ type: 'session', id: 'pi-tool-turn-session' })
+send({ type: 'message_update', assistantMessageEvent: {
+  type: 'text_delta', delta: 'Preparing evidence. ',
+} })
+send({ type: 'turn_end', message: { role: 'assistant', stopReason: 'toolUse' } })
+setTimeout(() => {
+  send({ type: 'message_update', assistantMessageEvent: {
+    type: 'text_delta', delta: 'Final answer.',
+  } })
+  send({ type: 'agent_end', messages: [{ role: 'assistant', stopReason: 'stop' }] })
+}, 400)
+`)
+
+  const result = await runAgent(
+    { kind: 'pi', executable: cli, name: 'Pi Agent' },
+    'research the current market',
+    directory,
+  )
+  assert.deepEqual(result, {
+    text: 'Preparing evidence. Final answer.',
+    sessionRef: 'pi-tool-turn-session',
+    outcome: 'completed',
+  })
+})
+
 test('runAgent strips partial Pi protocol and Harness record echoes', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-pi-partial-echo-'))
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))

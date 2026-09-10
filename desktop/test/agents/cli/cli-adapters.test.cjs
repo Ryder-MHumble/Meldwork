@@ -1195,6 +1195,39 @@ input.on('line', (line) => {
   assert.equal(answerEvents.at(-1).replace, true)
 })
 
+test('a reused ACP session that refuses before any output is recoverable as stale', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-stale-refusal-'))
+  const cli = executable(directory, 'acp-stale-refusal.cjs', `
+const readline = require('node:readline')
+const input = readline.createInterface({ input: process.stdin })
+const send = value => process.stdout.write(JSON.stringify(value) + '\\n')
+input.on('close', () => process.exit(0))
+input.on('line', line => {
+  const message = JSON.parse(line)
+  if (message.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: message.id, result: { protocolVersion: 1 } })
+  } else if (message.method === 'session/resume') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/set_mode') {
+    send({ jsonrpc: '2.0', id: message.id, result: {} })
+  } else if (message.method === 'session/prompt') {
+    send({ jsonrpc: '2.0', id: message.id, result: { stopReason: 'refusal' } })
+  }
+})
+`)
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+
+  await assert.rejects(
+    runAgent(
+      { kind: 'hermes', executable: cli, name: 'Hermes' },
+      'continue the group task',
+      directory,
+      { sessionRef: 'stale-session', sessionTransport: 'acp', hermesAcpAvailable: true },
+    ),
+    error => error.message === 'LOCAL_AGENT_SESSION_INVALID',
+  )
+})
+
 test('ACP terminal stop reasons preserve exact outcome and failure semantics', async (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'meldwork-acp-stop-reasons-'))
   const cli = executable(directory, 'acp-stop-reasons.cjs', `

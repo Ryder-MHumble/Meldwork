@@ -314,7 +314,7 @@ async function runAgent(agent, prompt, workdir, options = {}) {
       if (terminalObserved || !event || typeof event !== 'object') return
       const terminal = (
         (['workbuddy', 'claude', 'qwen'].includes(agent.kind) && event.type === 'result')
-        || (agent.kind === 'pi' && ['turn_end', 'agent_end'].includes(event.type))
+        || (agent.kind === 'pi' && event.type === 'agent_end')
         || (agent.kind === 'codex' && event.type === 'turn.completed')
         || (['mimo', 'opencode'].includes(agent.kind) && event.type === 'step_finish')
         || (agent.kind === 'gemini' && event.type === 'result')
