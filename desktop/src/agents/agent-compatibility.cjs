@@ -60,7 +60,7 @@ const AGENT_COMPATIBILITY = Object.freeze({
     probe('pi-cli', ['--help'], [
       '--mode', '--print', '--session', '--tools', '--approve', '--no-approve', 'json',
     ]),
-    probe('pi-json-protocol', ['--mode', 'json', '--print', '--no-approve', '--tools', 'read,grep,find,ls'], [],
+    probe('pi-json-protocol', ['--mode', 'json', '--print', '--no-approve', '--tools', 'read,grep,find,ls', 'ping'], [],
       output => output.split(/\r?\n/).some(line => {
         try {
           const event = JSON.parse(line)
