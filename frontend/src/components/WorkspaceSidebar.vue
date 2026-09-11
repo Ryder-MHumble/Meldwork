@@ -32,6 +32,18 @@
         <ChevronForwardOutline v-if="sidebarCollapsed" />
         <ChevronBackOutline v-else />
       </button>
+      <div class="brand-preference-actions" aria-label="Workspace preferences">
+        <button class="icon-button" type="button" :title="t('nav.settings')" :aria-label="t('nav.settings')" @click="openSystemSettings('agents')">
+          <SettingsOutline />
+        </button>
+        <button class="icon-button" type="button" :title="t('common.languageTarget')" :aria-label="t('common.language')" @click="toggleLocale">
+          <LanguageOutline />
+        </button>
+        <button class="icon-button" type="button" :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')" :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')" @click="toggleTheme">
+          <SunnyOutline v-if="theme === 'dark'" />
+          <MoonOutline v-else />
+        </button>
+      </div>
     </header>
 
     <button class="new-group-button" type="button" :title="t('nav.newGroup')" @click="openNewGroup">
@@ -276,52 +288,6 @@
       </button>
     </div>
 
-    <footer class="sidebar-footer">
-      <button
-        class="sidebar-settings-entry"
-        :class="{ active: activeView === 'settings' }"
-        type="button"
-        :title="t('nav.settings')"
-        :aria-current="activeView === 'settings' ? 'page' : undefined"
-        @click="openSystemSettings('agents')"
-      >
-        <SettingsOutline />
-        <span>{{ t('nav.settings') }}</span>
-      </button>
-      <div class="sidebar-footer-actions">
-        <button
-          class="icon-button"
-          type="button"
-          :title="t('common.languageTarget')"
-          :aria-label="t('common.language')"
-          @click="toggleLocale"
-        >
-          <span class="preference-icon-frame" aria-hidden="true">
-            <Transition name="preference-icon">
-              <span :key="t('common.languageTarget')" class="preference-icon">
-                <LanguageOutline />
-              </span>
-            </Transition>
-          </span>
-        </button>
-        <button
-          class="icon-button"
-          type="button"
-          :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-          :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-          @click="toggleTheme"
-        >
-          <span class="preference-icon-frame" aria-hidden="true">
-            <Transition name="preference-icon">
-              <span :key="theme" class="preference-icon">
-                <SunnyOutline v-if="theme === 'dark'" />
-                <MoonOutline v-else />
-              </span>
-            </Transition>
-          </span>
-        </button>
-      </div>
-    </footer>
   </aside>
 
   <Teleport to="body">

@@ -18,8 +18,31 @@
 }
 
 .brand-button,
-.sidebar-toggle {
+.sidebar-toggle,
+.brand-preference-actions {
   -webkit-app-region: no-drag;
+}
+
+.brand-preference-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.brand-preference-actions .icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.brand-preference-actions .icon-button:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .brand-button {
