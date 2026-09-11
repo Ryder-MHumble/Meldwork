@@ -288,6 +288,13 @@
       </button>
     </div>
 
+    <footer class="sidebar-footer legacy-preference-hooks" aria-hidden="true">
+      <button class="sidebar-settings-entry" type="button" @click="openSystemSettings('agents')"><SettingsOutline /><span>{{ t('nav.settings') }}</span></button>
+      <div class="sidebar-footer-actions">
+        <button class="icon-button" type="button" @click="toggleLocale"><LanguageOutline /></button>
+        <button class="icon-button" type="button" @click="toggleTheme"><SunnyOutline v-if="theme === 'dark'" /><MoonOutline v-else /></button>
+      </div>
+    </footer>
   </aside>
 
   <Teleport to="body">
