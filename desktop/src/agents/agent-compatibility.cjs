@@ -60,13 +60,6 @@ const AGENT_COMPATIBILITY = Object.freeze({
     probe('pi-cli', ['--help'], [
       '--mode', '--print', '--session', '--tools', '--approve', '--no-approve', 'json',
     ]),
-    probe('pi-json-protocol', ['--mode', 'json', '--print', '--no-approve', '--tools', 'read,grep,find,ls', 'ping'], [],
-      output => output.split(/\r?\n/).some(line => {
-        try {
-          const event = JSON.parse(line)
-          return event?.type === 'session' || event?.type === 'message_update' || event?.type === 'message_end'
-        } catch { return false }
-      }), 60000),
   ]),
   kimi: profile('0.19.2', '0.32.0', [
     probe('kimi-stream', ['--help'], [
