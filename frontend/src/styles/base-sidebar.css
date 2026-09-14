@@ -25,9 +25,16 @@
 
 .brand-preference-actions {
   display: inline-flex;
+  position: fixed;
+  top: 4px;
+  right: 76px;
+  z-index: 20;
   align-items: center;
   gap: 2px;
   flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 9px;
+  -webkit-app-region: no-drag;
 }
 
 .brand-preference-actions .icon-button {
