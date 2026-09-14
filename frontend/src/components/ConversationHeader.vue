@@ -83,40 +83,6 @@
         <FolderOpenOutline />
         <span>{{ compactPath(activeGroup.workdir) }}</span>
       </button>
-      <div
-        ref="shortcutMenu"
-        class="shortcut-menu-anchor"
-        @mouseenter="openShortcutMenu"
-        @mouseleave="scheduleShortcutMenuClose"
-        @focusin="openShortcutMenu"
-        @focusout="closeShortcutMenuAfterFocus"
-      >
-        <button
-          class="icon-button"
-          type="button"
-          :title="t('shortcut.title')"
-          :aria-label="t('shortcut.title')"
-          :aria-expanded="String(shortcutMenuOpen)"
-          aria-controls="keyboard-shortcut-menu"
-        >
-          <span class="keyboard-shortcut-icon" aria-hidden="true"><span /></span>
-        </button>
-        <section
-          v-if="shortcutMenuOpen"
-          id="keyboard-shortcut-menu"
-          class="shortcut-menu"
-          role="tooltip"
-          :aria-label="t('shortcut.title')"
-        >
-          <header>{{ t('shortcut.title') }}</header>
-          <ul>
-            <li v-for="shortcut in shortcutDefinitions" :key="shortcut.labelKey">
-              <span>{{ t(shortcut.labelKey) }}</span>
-              <kbd>{{ shortcut.keys }}</kbd>
-            </li>
-          </ul>
-        </section>
-      </div>
       <button
         class="icon-button"
         type="button"
@@ -125,20 +91,20 @@
         :disabled="Boolean(activeRun) || sending"
         @click="openGroupSettings"
       >
-        <SettingsOutline />
+        <OptionsOutline />
       </button>
     </div>
   </header>
 </template>
 
 <script setup>
-import { onBeforeUnmount, ref } from 'vue'
+import { ref } from 'vue'
 import {
   CheckmarkCircleOutline,
   CloseOutline,
   FolderOpenOutline,
   PencilOutline,
-  SettingsOutline,
+  OptionsOutline,
 } from '@vicons/ionicons5'
 import { agentLogo } from '../catalog.js'
 
@@ -164,8 +130,6 @@ const {
   saveInlineTitle,
   saving,
   sending,
-  shortcutDefinitions,
-  shortcutMenuOpen,
   t,
   theme,
 } = props.controller
@@ -173,23 +137,6 @@ const {
 const titleBlock = ref(null)
 const titleInput = ref(null)
 const titleButton = ref(null)
-const shortcutMenu = ref(null)
-let shortcutMenuCloseTimer = null
-
-function openShortcutMenu() {
-  clearTimeout(shortcutMenuCloseTimer)
-  shortcutMenuCloseTimer = null
-  shortcutMenuOpen.value = true
-}
-
-function scheduleShortcutMenuClose() {
-  clearTimeout(shortcutMenuCloseTimer)
-  shortcutMenuCloseTimer = setTimeout(() => {
-    shortcutMenuOpen.value = false
-    shortcutMenuCloseTimer = null
-  }, 90)
-}
-
 function focusTitleBlock() {
   titleBlock.value?.focus?.()
 }
@@ -203,19 +150,7 @@ function focusTitleButton() {
   titleButton.value?.focus?.()
 }
 
-function containsShortcutTarget(target) {
-  return shortcutMenu.value?.contains(target) === true
-}
-
-function closeShortcutMenuAfterFocus(event) {
-  if (shortcutMenu.value?.contains(event.relatedTarget)) return
-  scheduleShortcutMenuClose()
-}
-
-onBeforeUnmount(() => clearTimeout(shortcutMenuCloseTimer))
-
 defineExpose({
-  containsShortcutTarget,
   focusTitleBlock,
   focusTitleButton,
   focusTitleInput,

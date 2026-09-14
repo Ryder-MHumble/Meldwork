@@ -19,15 +19,15 @@
 
 .brand-button,
 .sidebar-toggle,
-.brand-preference-actions {
+.titlebar-actions {
   -webkit-app-region: no-drag;
 }
 
-.brand-preference-actions {
+.titlebar-actions {
   display: inline-flex;
   position: fixed;
-  top: 4px;
-  right: 76px;
+  top: 6px;
+  right: 12px;
   z-index: 20;
   align-items: center;
   gap: 2px;
@@ -37,7 +37,7 @@
   -webkit-app-region: no-drag;
 }
 
-.brand-preference-actions .icon-button {
+.titlebar-actions .icon-button {
   width: 28px;
   height: 28px;
   padding: 0;
@@ -46,7 +46,7 @@
   color: var(--muted);
 }
 
-.brand-preference-actions .icon-button:hover {
+.titlebar-actions .icon-button:hover {
   border-color: var(--border);
   background: var(--surface-hover);
   color: var(--text);
@@ -751,3 +751,7 @@
 .group-avatar.stack img:nth-child(1) { top: 0; left: 0; }
 .group-avatar.stack img:nth-child(2) { right: 0; bottom: 0; }
 .group-avatar.stack img:nth-child(3) { left: 0; bottom: 0; }
+
+.titlebar-preferences { display: flex; gap: 2px; }
+.app-shell:not([data-platform="darwin"]) { --desktop-titlebar-height: 32px; }
+.titlebar-actions .shortcut-menu { top: calc(100% + 8px); right: 0; }

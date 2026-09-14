@@ -22,6 +22,10 @@
     </section>
 
     <template v-else>
+      <WindowTitlebar ref="windowTitlebar" v-model:shortcut-menu-open="shortcutMenuOpen"
+        :t="t" :theme="theme" :active-view="activeView" :blocked="contentInteractionBlocked"
+        :open-system-settings="openSystemSettings" :toggle-locale="toggleLocale" :toggle-theme="toggleTheme"
+        :shortcut-definitions="shortcutDefinitions" />
       <transition name="agent-discovery" appear>
         <section
           v-if="agentDiscoveryPending"
@@ -188,6 +192,7 @@ import {
   WarningOutline,
 } from '@vicons/ionicons5'
 import ConversationComposer from './components/ConversationComposer.vue'
+import WindowTitlebar from './components/WindowTitlebar.vue'
 import ConversationHeader from './components/ConversationHeader.vue'
 import ConversationTimelineView from './components/ConversationTimelineView.vue'
 import HomeDashboard from './components/HomeDashboard.vue'
@@ -270,6 +275,7 @@ const installConfirmKind = ref('')
 const focusedAgentKind = ref('')
 const shortcutMenuOpen = ref(false)
 const conversationHeader = ref(null)
+const windowTitlebar = ref(null)
 const workspaceModalContent = ref(null)
 const onboardingDialog = ref(null)
 const modalDialog = ref(null)
@@ -912,7 +918,7 @@ useAppWindowInteractions({
   collapsedGroupMenuButton,
   collapsedGroupMenuOpen,
   completeOnboarding,
-  conversationHeader,
+  windowTitlebar,
   customAgentDeleteArmed,
   deleteArmed,
   messageDeleteArmedId,

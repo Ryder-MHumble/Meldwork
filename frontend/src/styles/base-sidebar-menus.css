@@ -206,8 +206,6 @@
   padding: 9px 8px 12px;
 }
 
-.legacy-preference-hooks { display: none; }
-
 .sidebar-footer button {
   height: 38px;
   display: grid;

@@ -40,7 +40,6 @@ export function createWorkspaceControllers({
     openConversationRename: conversationActions.openConversationRename,
     openNewGroup: conversationActions.openNewGroup,
     openSidebarConversationDelete: conversationActions.openSidebarConversationDelete,
-    openSystemSettings: app.openSystemSettings,
     productMark: app.productMark,
     remainingDirectGroupsCount: conversationNavigation.remainingDirectGroupsCount,
     remainingGroupGroupsCount: conversationNavigation.remainingGroupGroupsCount,
@@ -59,8 +58,6 @@ export function createWorkspaceControllers({
     toggleCollapsedGroupMenu: collapsedGroupMenu.toggleCollapsedGroupMenu,
     toggleDirectSessionListExpanded: conversationNavigation.toggleDirectSessionListExpanded,
     toggleGroupSessionListExpanded: conversationNavigation.toggleGroupSessionListExpanded,
-    toggleLocale: app.toggleLocale,
-    toggleTheme: app.toggleTheme,
     visibleDirectGroupsFor: conversationNavigation.visibleDirectGroupsFor,
     visibleGroupGroups: conversationNavigation.visibleGroupGroups,
   }

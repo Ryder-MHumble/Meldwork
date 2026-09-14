@@ -926,7 +926,7 @@ describe('Meldwork workbench', () => {
     expect(runningStep.text()).toBe('Running')
     expect(runningStep.classes()).toContain('running')
 
-    await wrapper.findAll('.sidebar-footer-actions button')[0].trigger('click')
+    await wrapper.findAll('.titlebar-preferences button')[0].trigger('click')
     const detailsText = wrapper.findAll('.execution-details').map(details => details.text()).join(' ')
     expect(detailsText).toContain('运行进程')
     expect(detailsText).toContain('写入文件')
