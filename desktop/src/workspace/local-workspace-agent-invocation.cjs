@@ -770,7 +770,7 @@ class LocalWorkspaceAgentInvocation {
     const hermesNeedsLegacy = kind === 'hermes' && sessionTransport === 'acp'
       && (!HERMES_WORKSPACE_ACP_ENABLED
         || agent.acpAvailable === false
-        || (context.attachments || []).length > 0)
+      )
     if (resumedPermission && hermesNeedsLegacy) {
       throw new Error('LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE')
     }
