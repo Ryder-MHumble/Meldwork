@@ -217,6 +217,13 @@ class LocalWorkspace extends EventEmitter {
     })
     this.runLedgerCoordinator = new LocalWorkspaceRunLedger({
       runLedger: this.runLedger,
+      discardAttachments: ids => {
+        const referenced = new Set(this.state.messages.flatMap(message => (
+          Array.isArray(message.attachments) ? message.attachments : []
+        )).map(attachment => attachment?.id).filter(Boolean))
+        const orphaned = ids.filter(id => !referenced.has(id))
+        if (orphaned.length) this.contentBlobStore.discard(orphaned)
+      },
       state: () => this.state,
       save: () => this.save(),
       createId: () => this.createId(),
