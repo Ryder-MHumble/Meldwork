@@ -1952,7 +1952,7 @@ class LocalWorkspaceAgentInvocation {
               ? agentStoppedError()
               : caughtError
       if (credentialFailure(error) && context.deferCredentialFailure !== true) {
-        this.markRuntimeCredential(kind, 'missing')
+        this.markRuntimeCredential(kind, 'unknown')
       }
       const status = parentTimedOut
         ? 'timeout'
