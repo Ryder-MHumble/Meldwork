@@ -1272,8 +1272,11 @@ class LocalWorkspaceAgentInvocation {
           ].join('\n')
       const buildPrompt = (afterKind, contextPackage) => isolated || frozen
         ? v4Prompt
-        : group.conversationType === 'direct'
-          ? contextPackage.currentTaskText
+          : group.conversationType === 'direct'
+          ? (sessionRotated
+            ? (contextPackage.continuationText || contextPackage.stableText
+              || contextPackage.currentTaskText)
+            : contextPackage.currentTaskText)
         : [
             context.v4 === true && v4Prompt
               ? v4Prompt
