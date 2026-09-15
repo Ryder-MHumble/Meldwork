@@ -2514,24 +2514,45 @@ class LocalWorkspace extends EventEmitter {
   }
 
   persistSessionState(key, sessionRef, meta) {
+    const canonicalKey = this.canonicalConversationSessionKey(key)
     const nextRef = normalizeSessionRef(sessionRef)
-    if (!SESSION_KEY.test(String(key || '')) || !nextRef) return false
-    const hadSession = Object.hasOwn(this.state.sessions, key)
-    const hadMeta = Object.hasOwn(this.state.sessionMeta, key)
-    const previousSession = this.state.sessions[key]
-    const previousMeta = this.state.sessionMeta[key]
-    this.state.sessions[key] = nextRef
-    this.state.sessionMeta[key] = normalizeSessionMeta(meta)
+    if (!SESSION_KEY.test(String(canonicalKey || '')) || !nextRef) return false
+    const hadSession = Object.hasOwn(this.state.sessions, canonicalKey)
+    const hadMeta = Object.hasOwn(this.state.sessionMeta, canonicalKey)
+    const hadLegacySession = Object.hasOwn(this.state.sessions, key)
+    const hadLegacyMeta = Object.hasOwn(this.state.sessionMeta, key)
+    const previousLegacySession = this.state.sessions[key]
+    const previousLegacyMeta = this.state.sessionMeta[key]
+    const previousSession = this.state.sessions[canonicalKey]
+    const previousMeta = this.state.sessionMeta[canonicalKey]
+    this.state.sessions[canonicalKey] = nextRef
+    this.state.sessionMeta[canonicalKey] = normalizeSessionMeta(meta)
+    if (canonicalKey !== key) {
+      delete this.state.sessions[key]
+      delete this.state.sessionMeta[key]
+    }
     try {
       this.save()
     } catch (error) {
-      if (hadSession) this.state.sessions[key] = previousSession
-      else delete this.state.sessions[key]
-      if (hadMeta) this.state.sessionMeta[key] = previousMeta
-      else delete this.state.sessionMeta[key]
+      if (hadSession) this.state.sessions[canonicalKey] = previousSession
+      else delete this.state.sessions[canonicalKey]
+      if (hadMeta) this.state.sessionMeta[canonicalKey] = previousMeta
+      else delete this.state.sessionMeta[canonicalKey]
+      if (canonicalKey !== key) {
+        if (hadLegacySession) this.state.sessions[key] = previousLegacySession
+        else delete this.state.sessions[key]
+        if (hadLegacyMeta) this.state.sessionMeta[key] = previousLegacyMeta
+        else delete this.state.sessionMeta[key]
+      }
       throw error
     }
     return true
+  }
+
+  canonicalConversationSessionKey(key) {
+    const value = String(key || '')
+    const match = value.match(/^([^:]+):task:[^:]+:([^:]+)$/)
+    return match ? `${match[1]}:${match[2]}` : value
   }
 
   persistSessionRef(key, sessionRef) {
