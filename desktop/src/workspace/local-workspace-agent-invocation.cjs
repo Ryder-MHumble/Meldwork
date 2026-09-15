@@ -49,6 +49,12 @@ const OUTCOME_REF_FIELDS = Object.freeze([
   'workflowOutcomeRefs',
 ])
 
+function extractReportedOutputPaths(text) {
+  if (typeof text !== 'string') return []
+  const matches = text.match(/(?:\/(?:Users|home|tmp|private\/tmp)\/[^\s"'<>`\]\[)]+)/g) || []
+  return [...new Set(matches.map(value => value.replace(/[.,;:!?]+$/, '')))]
+}
+
 function mergeOutcomeRefs(sources, options = {}) {
   const merged = {}
   const seen = new Map(OUTCOME_REF_FIELDS.map(field => [field, new Set()]))
@@ -1788,6 +1794,7 @@ class LocalWorkspaceAgentInvocation {
             baseline: outputBaseline,
             startedAt,
             agentKind: kind,
+            reportedPaths: extractReportedOutputPaths(reply.text),
             signal: agentController.signal,
           }))
           importPromise.catch(() => {})

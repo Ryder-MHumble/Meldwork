@@ -145,6 +145,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--output-format', 'stream-json',
         '--include-partial-messages',
         '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
+        ...(options.sandbox === 'workspace-write' ? ['--dangerously-skip-permissions'] : []),
         ...(maxTurns ? ['--max-turns', String(maxTurns)] : []),
         ...(sessionRef ? ['--resume', sessionRef] : []),
       ],
