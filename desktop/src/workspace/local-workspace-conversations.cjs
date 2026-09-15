@@ -23,7 +23,6 @@ class LocalWorkspaceConversations {
     this.isGroupBusy = options.isGroupBusy
     this.clearSessionState = options.clearSessionState
     this.runLedger = options.runLedger
-    this.discardAttachments = options.discardAttachments
     this.agentLabel = options.agentLabel
     this.createId = options.createId
     this.now = options.now
@@ -153,17 +152,11 @@ class LocalWorkspaceConversations {
     if (!state.groups.some(group => group.id === groupId)) {
       throw new Error('LOCAL_GROUP_NOT_FOUND')
     }
-    const attachmentIds = [...new Set(state.messages
-      .filter(message => message.groupId === groupId)
-      .flatMap(message => Array.isArray(message.attachments) ? message.attachments : [])
-      .map(attachment => attachment?.id)
-      .filter(id => typeof id === 'string'))]
     this.commit(() => {
       this.clearSessionState(groupId)
       state.groups = state.groups.filter(group => group.id !== groupId)
       state.messages = state.messages.filter(message => message.groupId !== groupId)
     }, () => this.runLedger?.deleteGroup?.(groupId))
-    this.discardAttachments?.(attachmentIds)
   }
 
   deleteMessage(groupId, messageId) {
