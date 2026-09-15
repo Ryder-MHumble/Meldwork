@@ -699,9 +699,9 @@ class LocalWorkspaceAgentInvocation {
         }
       : null
     const idempotencyMode = agent.idempotencyMode === 'durable' ? 'durable' : 'none'
-    const resolvedSession = reviewOnly || isolated
+    const resolvedSession = reviewOnly
       ? {
-          key: this.sessionKey(group.id, kind, group.conversationType === 'direct' ? '' : taskId),
+          key: this.sessionKey(group.id, kind),
           sessionRef: '',
           sessionMeta: {},
           provenance: createdSessionProvenance(group, taskId, true),
@@ -1433,7 +1433,7 @@ class LocalWorkspaceAgentInvocation {
         onSessionRef: (nextSessionRef, metadata = {}) => {
           if (agentCallbacksClosed || agentController.signal.aborted) return
           noteWatchdogProgress()
-          if (reviewOnly || isolated) return
+          if (reviewOnly) return
           const transport = ['legacy', 'acp'].includes(metadata?.transport)
             ? metadata.transport
             : ''
@@ -1446,7 +1446,7 @@ class LocalWorkspaceAgentInvocation {
           }))
         },
         onSessionInvalidated: () => {
-          if (kind !== 'hermes' || isolated || resumedPermission) return null
+          if (kind !== 'hermes' || reviewOnly || resumedPermission) return null
           return { prompt: rebuildFreshSession() }
         },
         signal: agentController.signal,
@@ -1895,7 +1895,7 @@ class LocalWorkspaceAgentInvocation {
             pendingMessage.metadata,
           )
         : null
-      if (!reviewOnly && !isolated) {
+      if (!reviewOnly) {
         this.persistSessionState(key, result.sessionRef || sessionRef, completedSessionMeta(
           sessionMeta, sessionProvenance, taskId, {
           promptChars: prompt.length,
