@@ -42,6 +42,20 @@ test('catalog preserves an inconclusive timeout without hiding the installed CLI
   assert.equal(agent.incompatibilityProbe, 'codex-exec')
 })
 
+test('catalog exposes install versus update action and permits updating an older CLI', async () => {
+  const service = installer({
+    detectAgents: async () => [{ kind: 'pi', version: '0.80.0', compatibilityState: 'compatible' }],
+    runProcess: async () => {},
+  })
+  const pi = (await service.catalog()).agents.find(agent => agent.kind === 'pi')
+  assert.equal(pi.installed, true)
+  assert.equal(pi.installAction, 'update')
+  assert.equal(pi.targetVersion, '0.84.2')
+  await service.start('pi')
+  await service.waitForIdle()
+  assert.equal(service.state().errorCode, 'INSTALL_AGENT_VERIFY_FAILED')
+})
+
 async function readWhenReady(filename, timeoutMs = 2000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

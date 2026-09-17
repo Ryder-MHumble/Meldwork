@@ -1399,6 +1399,7 @@ test('direct conversations force manual mode and reuse their group Agent session
   assert.equal(direct.directAgentKind, 'codex')
   assert.deepEqual(calls.map(call => call.agent.kind), ['codex', 'codex'])
   assert.deepEqual(calls.map(call => call.runOptions.sessionRef), ['', 'codex-session'])
+  assert.deepEqual(calls.map(call => call.prompt), ['第一条', '第二条'])
   assert.equal(calls.some(call => call.prompt.includes('MELDWORK_CONSENSUS')), false)
   assert.equal(workspace.snapshot().messages.some(message => message.threadRootId), false)
   const restored = new LocalWorkspace(options)

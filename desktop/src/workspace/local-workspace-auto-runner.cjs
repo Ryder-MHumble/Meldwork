@@ -522,10 +522,10 @@ class LocalWorkspaceAutoRunner {
         }
         if (control) return { result: null, removed: false, control, error }
         if (!unauthorizedFailure(error)) {
-          if (credentialFailure(error)) this.markRuntimeCredential(kind, 'missing')
+          if (credentialFailure(error)) this.markRuntimeCredential(kind, 'unknown')
           throw error
         }
-        this.markRuntimeCredential(kind, 'missing')
+        this.markRuntimeCredential(kind, 'unknown')
         this.recordAttempt(group, controller, {
           agentKind: kind,
           phase,

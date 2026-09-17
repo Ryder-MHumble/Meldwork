@@ -426,13 +426,32 @@ function importAgentOutputs(input, attachmentStore) {
     && !Array.isArray(input.baseline.files)
     ? input.baseline.files
     : {}
-  const candidates = outputFiles(safeOutputDirectory(workdirRealPath))
+  const controlledCandidates = outputFiles(safeOutputDirectory(workdirRealPath))
     .filter(file => !sameFileState(baselineFiles[file.name], file))
     .filter(file => Math.max(file.mtimeMs, file.ctimeMs) >= startedAt - 2000)
     .sort((left, right) => (
       Math.max(right.mtimeMs, right.ctimeMs) - Math.max(left.mtimeMs, left.ctimeMs)
       || left.name.localeCompare(right.name)
     ))
+
+  const reportedCandidates = []
+  const reportedPaths = Array.isArray(input.reportedPaths) ? input.reportedPaths : []
+  for (const reportedPath of reportedPaths.slice(0, MAX_SCANNED_ENTRIES)) {
+    if (typeof reportedPath !== 'string' || !path.isAbsolute(reportedPath)) continue
+    try {
+      const realPath = fs.realpathSync(reportedPath)
+      const stat = fs.statSync(realPath)
+      const extension = path.extname(realPath).toLowerCase()
+      if (!stat.isFile() || !SUPPORTED_EXTENSIONS.has(extension)
+          || stat.size > 64 * 1024 * 1024 || !isInside(workdirRealPath, realPath)) continue
+      reportedCandidates.push({
+        name: path.basename(realPath), path: realPath, size: stat.size,
+        mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs,
+      })
+    } catch { /* reported paths are best effort */ }
+  }
+  const candidates = [...controlledCandidates, ...reportedCandidates]
+    .filter((file, index, all) => all.findIndex(candidate => candidate.path === file.path) === index)
 
   const imported = []
   if (input.signal?.aborted) return imported

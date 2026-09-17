@@ -92,7 +92,7 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.sidebar-settings-entry').attributes('aria-current')).toBe('page')
     expect(wrapper.get('.brand-button').attributes()).not.toHaveProperty('aria-current')
 
-    const controls = wrapper.findAll('.sidebar-footer-actions button')
+    const controls = wrapper.findAll('.titlebar-preferences button')
     await controls[0].trigger('click')
     expect(wrapper.get('.system-settings-header h1').text()).toBe('设置')
     expect(wrapper.get('.system-settings-header p').text()).toContain('知识库')
@@ -307,7 +307,7 @@ describe('Meldwork workbench', () => {
     await flushPromises()
     expect(wrapper.get('.conversation-empty-copy').text()).toContain('再把 Agent 们叫到一起')
 
-    await wrapper.findAll('.sidebar-footer-actions button')[1].trigger('click')
+    await wrapper.findAll('.titlebar-preferences button')[1].trigger('click')
     expect(wrapper.get('.conversation-empty-wordmark').attributes('src')).toBe('./logos/meldwork-wordmark-v3-dark.svg')
 
     await wrapper.get('.conversation-link').trigger('click')
@@ -478,8 +478,8 @@ describe('Meldwork workbench', () => {
     const { wrapper } = await mountApp()
 
     expect(wrapper.find('.brand-actions').exists()).toBe(false)
-    expect(wrapper.findAll('.sidebar-footer-actions button')).toHaveLength(2)
-    expect(wrapper.findAll('.sidebar-footer-actions .preference-icon-frame')).toHaveLength(2)
+    expect(wrapper.findAll('.titlebar-preferences button')).toHaveLength(2)
+    expect(wrapper.findAll('.titlebar-preferences .preference-icon-frame')).toHaveLength(2)
     expect(wrapper.findAll('.nav-heading svg')).toHaveLength(0)
     expect(wrapper.findAll('.sidebar-agent-main img')).toHaveLength(AGENTS.length)
     const [agentsToggle, groupsToggle] = wrapper.findAll('.nav-heading')
@@ -736,7 +736,7 @@ describe('Meldwork workbench', () => {
     wrapper.unmount()
   })
 
-  it('lists core shortcuts beside conversation settings and handles sidebar toggle', async () => {
+  it('lists core shortcuts in the global titlebar and handles sidebar toggle', async () => {
     const { wrapper } = await mountApp(({ state }) => {
       state.groups.push({
         id: 'group-shortcuts',
@@ -752,7 +752,11 @@ describe('Meldwork workbench', () => {
     })
 
     await wrapper.get('.conversation-link').trigger('click')
-    const shortcutButton = wrapper.get('[aria-label="Keyboard shortcuts"]')
+    expect(wrapper.find('.sidebar .titlebar-actions').exists()).toBe(false)
+    expect(wrapper.find('.conversation-header .shortcut-menu-anchor').exists()).toBe(false)
+    expect(wrapper.findAll('.titlebar-actions button')).toHaveLength(4)
+    expect(wrapper.get('[aria-label="Conversation settings"] svg').html()).not.toBe(wrapper.get('.titlebar-actions .sidebar-settings-entry svg').html())
+    const shortcutButton = wrapper.get('.titlebar-actions [aria-label="Keyboard shortcuts"]')
     expect(shortcutButton.find('.keyboard-shortcut-icon').exists()).toBe(true)
     await wrapper.get('.shortcut-menu-anchor').trigger('mouseenter')
     expect(wrapper.get('#keyboard-shortcut-menu').attributes('role')).toBe('tooltip')
@@ -1379,7 +1383,7 @@ describe('Meldwork workbench', () => {
     expect(wrapper.get('.system-message .markdown-body').text()).toBe('Recovered conclusion before timeout.')
     expect(wrapper.get('.system-message').text()).not.toContain('Hermes failed: LOCAL_AGENT_TIMEOUT')
 
-    await wrapper.findAll('.sidebar-footer-actions button')[0].trigger('click')
+    await wrapper.findAll('.titlebar-preferences button')[0].trigger('click')
     expect(wrapper.get('.conversation-link').text()).toContain('Agent 群聊')
     expect(wrapper.get('.system-message').text()).toContain('Hermes 调用失败：该 Agent 响应超时')
     expect(wrapper.get('.system-message .markdown-body').text()).toBe('Recovered conclusion before timeout.')

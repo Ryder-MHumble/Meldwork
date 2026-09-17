@@ -18,8 +18,38 @@
 }
 
 .brand-button,
-.sidebar-toggle {
+.sidebar-toggle,
+.titlebar-actions {
   -webkit-app-region: no-drag;
+}
+
+.titlebar-actions {
+  display: inline-flex;
+  position: fixed;
+  top: 6px;
+  right: 12px;
+  z-index: 20;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 9px;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-actions .icon-button {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.titlebar-actions .icon-button:hover {
+  border-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .brand-button {
@@ -721,3 +751,7 @@
 .group-avatar.stack img:nth-child(1) { top: 0; left: 0; }
 .group-avatar.stack img:nth-child(2) { right: 0; bottom: 0; }
 .group-avatar.stack img:nth-child(3) { left: 0; bottom: 0; }
+
+.titlebar-preferences { display: flex; gap: 2px; }
+.app-shell:not([data-platform="darwin"]) { --desktop-titlebar-height: 32px; }
+.titlebar-actions .shortcut-menu { top: calc(100% + 8px); right: 0; }

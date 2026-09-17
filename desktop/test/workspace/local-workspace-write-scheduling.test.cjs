@@ -82,6 +82,35 @@ test('read-only group invocations retain parallel execution in the same director
   await Promise.all(runs)
 })
 
+test('writable direct chats do not block another Agent in the same directory', { timeout: 10000 }, async (t) => {
+  const { directory, options } = fixture()
+  const release = deferred()
+  const bothStarted = deferred()
+  t.after(() => {
+    release.resolve()
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  options.runScheduler = new RunScheduler()
+  const calls = []
+  options.runAgent = async (agent, _prompt, _cwd, runOptions) => {
+    calls.push({ kind: agent.kind, sandbox: runOptions.sandbox })
+    if (calls.length === 2) bothStarted.resolve()
+    await release.promise
+    return { text: `${agent.kind} completed.` }
+  }
+  const workspace = new LocalWorkspace(options)
+  await workspace.refreshAgents()
+  const groups = ['codex', 'hermes'].map(kind => workspace.createGroup({
+    name: `${kind} direct`, agentKinds: [kind], directAgentKind: kind,
+    conversationType: 'direct', workdir: directory, allowWrite: true,
+  }))
+  const runs = groups.map(group => workspace.sendMessage({ groupId: group.id, text: 'Run independently.' }))
+  await bothStarted.promise
+  assert.deepEqual(calls.map(call => call.sandbox), ['workspace-write', 'workspace-write'])
+  release.resolve()
+  await Promise.all(runs)
+})
+
 test('Manual V4 retains parallel readers alongside its single writer and stable message order', { timeout: 10000 }, async (t) => {
   const { directory, options } = fixture()
   const release = deferred()

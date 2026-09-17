@@ -73,9 +73,10 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'hermes') {
-    const legacySessionRef = options.sessionTransport === 'acp' ? '' : sessionRef
+    // Hermes uses the same native conversation identifier across its ACP and
+    // legacy transports. Keep it when an attachment requires the legacy path.
+    const legacySessionRef = sessionRef
     const useAcp = options.invocationTransport !== 'legacy'
-      && !attachments.length
       && options.hermesAcpAvailable !== false
       && (!sessionRef || options.sessionTransport === 'acp')
     if (useAcp) {
@@ -144,6 +145,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
         '--output-format', 'stream-json',
         '--include-partial-messages',
         '--permission-mode', options.sandbox === 'workspace-write' ? 'acceptEdits' : 'plan',
+        ...(options.sandbox === 'workspace-write' ? ['--dangerously-skip-permissions'] : []),
         ...(maxTurns ? ['--max-turns', String(maxTurns)] : []),
         ...(sessionRef ? ['--resume', sessionRef] : []),
       ],
@@ -187,7 +189,7 @@ function invocation(kind, executable, workdir, sessionRef = '', options = {}) {
     }
   }
   if (kind === 'mimo') {
-    if (options.invocationTransport !== 'json') {
+    if (!attachments.length && options.invocationTransport !== 'json') {
       return {
         command: executable,
         args: ['acp', '--pure', '--cwd', workdir],

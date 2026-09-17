@@ -167,6 +167,9 @@ class AgentInstaller extends EventEmitter {
       agents: AGENT_CATALOG.map(profile => {
         const agent = installed.get(profile.kind)
         const recipe = installRecipe(profile.kind, this.platform)
+        const targetVersion = recipe?.detectedVersion || recipe?.version || ''
+        const currentVersion = String(agent?.version || '')
+        const upToDate = Boolean(agent && targetVersion && currentVersion.includes(targetVersion))
         let installSupported = Boolean(recipe)
         let installErrorCode = ''
         if (!recipe) {
@@ -180,6 +183,8 @@ class AgentInstaller extends EventEmitter {
           ...profile,
           installed: Boolean(agent),
           version: agent?.version || '',
+          targetVersion,
+          installAction: agent ? (upToDate ? 'current' : 'update') : 'install',
           ...publicCompatibility(agent),
           installSupported,
           installErrorCode,
@@ -233,7 +238,10 @@ class AgentInstaller extends EventEmitter {
     this.invalidateDetectionCache()
     const installed = await abortable(this.detectedAgents(), signal)
     if (signal.aborted) throw abortError()
-    if (installed.some(agent => agent.kind === profile.kind)) {
+    const current = installed.find(agent => agent.kind === profile.kind)
+    const targetVersion = recipe.detectedVersion || recipe.version
+    if (current && (current.compatibilityState !== 'compatible'
+      || String(current.version || '').includes(targetVersion))) {
       throw installerError('INSTALL_AGENT_ALREADY_INSTALLED')
     }
     let command = recipe.interpreter || ''

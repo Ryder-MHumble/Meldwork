@@ -220,7 +220,8 @@ class LocalWorkspaceAgentCatalog {
       checkedAt: this.now(),
     }
     const agent = this.detectedAgents().find(item => item.kind === kind)
-    if (agent && agent.availabilitySource !== 'provider-credential-unavailable') {
+    if (agent && agent.availabilitySource !== 'provider-credential-unavailable'
+        && !(credentialState === 'unknown' && agent.authenticated === true)) {
       agent.credentialState = credentialState
       agent.versionIdentified = agentVersionIdentified(agent)
       agent.compatible = agentCompatible(agent)

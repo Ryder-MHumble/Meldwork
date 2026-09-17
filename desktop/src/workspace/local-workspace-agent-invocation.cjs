@@ -11,7 +11,6 @@ const {
   nextSessionMeta,
   normalizeOutcomeRefs,
   normalizeSessionMeta,
-  shouldRotateSession,
 } = require('../runs/run-harness.cjs')
 const {
   canonicalJson,
@@ -49,6 +48,12 @@ const OUTCOME_REF_FIELDS = Object.freeze([
   'adoptionIds',
   'workflowOutcomeRefs',
 ])
+
+function extractReportedOutputPaths(text) {
+  if (typeof text !== 'string') return []
+  const matches = text.match(/(?:\/(?:Users|home|tmp|private\/tmp)\/[^\s"'<>`\]\[)]+)/g) || []
+  return [...new Set(matches.map(value => value.replace(/[.,;:!?]+$/, '')))]
+}
 
 function mergeOutcomeRefs(sources, options = {}) {
   const merged = {}
@@ -547,8 +552,13 @@ class LocalWorkspaceAgentInvocation {
     if (!taskId) throw new Error('LOCAL_RUN_TASK_INVALID')
     let workspacePath = group.workdir ? path.resolve(group.workdir) : group.id
     try { workspacePath = fs.realpathSync(workspacePath) } catch { /* runtime validates unavailable directories */ }
+    // Direct chats are independent execution surfaces. Scope their scheduler
+    // resource to the chat so one writable chat cannot block another Agent.
+    const schedulerWorkspaceKey = group.conversationType === 'direct'
+      ? `${workspacePath}\u0000direct:${group.id}`
+      : workspacePath
     const workspaceKey = createHash('sha256')
-      .update(String(workspacePath))
+      .update(String(schedulerWorkspaceKey))
       .digest('hex')
     const writerKind = cleanText(context.singleWriterKind || context.writerKind, 80)
     const permissionMode = group.allowWrite === true
@@ -695,9 +705,9 @@ class LocalWorkspaceAgentInvocation {
         }
       : null
     const idempotencyMode = agent.idempotencyMode === 'durable' ? 'durable' : 'none'
-    const resolvedSession = reviewOnly || isolated
+    const resolvedSession = reviewOnly
       ? {
-          key: this.sessionKey(group.id, kind, group.conversationType === 'direct' ? '' : taskId),
+          key: this.sessionKey(group.id, kind),
           sessionRef: '',
           sessionMeta: {},
           provenance: createdSessionProvenance(group, taskId, true),
@@ -719,10 +729,9 @@ class LocalWorkspaceAgentInvocation {
       && !resumedConnectorGate
       ? context.resumedGate
       : null
-    const preserveGroupSession = group.conversationType !== 'direct'
-    const sessionNeedsRotation = sessionRef
-      && shouldRotateSession(sessionMeta)
-      && !preserveGroupSession
+    // A conversation owns one native session for its lifetime. Rebuild only
+    // when the Agent reports that the existing native session is invalid.
+    const sessionNeedsRotation = false
     if (resumedPermission) {
       const requestHash = sha256(canonicalJson(resumedPermission.request))
       const persistedBinding = {
@@ -767,7 +776,7 @@ class LocalWorkspaceAgentInvocation {
     const hermesNeedsLegacy = kind === 'hermes' && sessionTransport === 'acp'
       && (!HERMES_WORKSPACE_ACP_ENABLED
         || agent.acpAvailable === false
-        || (context.attachments || []).length > 0)
+      )
     if (resumedPermission && hermesNeedsLegacy) {
       throw new Error('LOCAL_RUN_PERMISSION_RESUME_UNAVAILABLE')
     }
@@ -1269,6 +1278,11 @@ class LocalWorkspaceAgentInvocation {
           ].join('\n')
       const buildPrompt = (afterKind, contextPackage) => isolated || frozen
         ? v4Prompt
+          : group.conversationType === 'direct'
+          ? (sessionRotated
+            ? (contextPackage.continuationText || contextPackage.stableText
+              || contextPackage.currentTaskText)
+            : contextPackage.currentTaskText)
         : [
             context.v4 === true && v4Prompt
               ? v4Prompt
@@ -1428,7 +1442,7 @@ class LocalWorkspaceAgentInvocation {
         onSessionRef: (nextSessionRef, metadata = {}) => {
           if (agentCallbacksClosed || agentController.signal.aborted) return
           noteWatchdogProgress()
-          if (reviewOnly || isolated) return
+          if (reviewOnly) return
           const transport = ['legacy', 'acp'].includes(metadata?.transport)
             ? metadata.transport
             : ''
@@ -1441,7 +1455,7 @@ class LocalWorkspaceAgentInvocation {
           }))
         },
         onSessionInvalidated: () => {
-          if (kind !== 'hermes' || isolated || resumedPermission) return null
+          if (kind !== 'hermes' || reviewOnly || resumedPermission) return null
           return { prompt: rebuildFreshSession() }
         },
         signal: agentController.signal,
@@ -1780,6 +1794,7 @@ class LocalWorkspaceAgentInvocation {
             baseline: outputBaseline,
             startedAt,
             agentKind: kind,
+            reportedPaths: extractReportedOutputPaths(reply.text),
             signal: agentController.signal,
           }))
           importPromise.catch(() => {})
@@ -1890,7 +1905,7 @@ class LocalWorkspaceAgentInvocation {
             pendingMessage.metadata,
           )
         : null
-      if (!reviewOnly && !isolated) {
+      if (!reviewOnly) {
         this.persistSessionState(key, result.sessionRef || sessionRef, completedSessionMeta(
           sessionMeta, sessionProvenance, taskId, {
           promptChars: prompt.length,
@@ -1944,7 +1959,7 @@ class LocalWorkspaceAgentInvocation {
               ? agentStoppedError()
               : caughtError
       if (credentialFailure(error) && context.deferCredentialFailure !== true) {
-        this.markRuntimeCredential(kind, 'missing')
+        this.markRuntimeCredential(kind, 'unknown')
       }
       const status = parentTimedOut
         ? 'timeout'

@@ -276,52 +276,7 @@
       </button>
     </div>
 
-    <footer class="sidebar-footer">
-      <button
-        class="sidebar-settings-entry"
-        :class="{ active: activeView === 'settings' }"
-        type="button"
-        :title="t('nav.settings')"
-        :aria-current="activeView === 'settings' ? 'page' : undefined"
-        @click="openSystemSettings('agents')"
-      >
-        <SettingsOutline />
-        <span>{{ t('nav.settings') }}</span>
-      </button>
-      <div class="sidebar-footer-actions">
-        <button
-          class="icon-button"
-          type="button"
-          :title="t('common.languageTarget')"
-          :aria-label="t('common.language')"
-          @click="toggleLocale"
-        >
-          <span class="preference-icon-frame" aria-hidden="true">
-            <Transition name="preference-icon">
-              <span :key="t('common.languageTarget')" class="preference-icon">
-                <LanguageOutline />
-              </span>
-            </Transition>
-          </span>
-        </button>
-        <button
-          class="icon-button"
-          type="button"
-          :title="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-          :aria-label="theme === 'dark' ? t('common.themeLight') : t('common.themeDark')"
-          @click="toggleTheme"
-        >
-          <span class="preference-icon-frame" aria-hidden="true">
-            <Transition name="preference-icon">
-              <span :key="theme" class="preference-icon">
-                <SunnyOutline v-if="theme === 'dark'" />
-                <MoonOutline v-else />
-              </span>
-            </Transition>
-          </span>
-        </button>
-      </div>
-    </footer>
+
   </aside>
 
   <Teleport to="body">
@@ -408,12 +363,8 @@ import {
   ChevronBackOutline,
   ChevronForwardOutline,
   CloudOutline,
-  LanguageOutline,
-  MoonOutline,
   PencilOutline,
   PeopleOutline,
-  SettingsOutline,
-  SunnyOutline,
   TrashOutline,
 } from '@vicons/ionicons5'
 import { agentLogo } from '../catalog.js'
@@ -451,7 +402,6 @@ const {
   openConversationRename,
   openNewGroup,
   openSidebarConversationDelete,
-  openSystemSettings,
   productMark,
   remainingDirectGroupsCount,
   remainingGroupGroupsCount,
@@ -470,8 +420,6 @@ const {
   toggleCollapsedGroupMenu,
   toggleDirectSessionListExpanded,
   toggleGroupSessionListExpanded,
-  toggleLocale,
-  toggleTheme,
   visibleDirectGroupsFor,
   visibleGroupGroups,
 } = props.controller
