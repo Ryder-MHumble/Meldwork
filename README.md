@@ -23,7 +23,7 @@ Meldwork is a local-first multi-agent orchestration desktop app for macOS (Apple
 Unlike terminal multiplexers (tmux, zellij) that show raw output side by side, Meldwork preserves every finding as structured evidence (Finding → Evidence → Decision → Disposition), keeps a human adoption gate before any file changes, and makes multi-agent work inspectable and reusable across sessions.
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg"><strong>Download Meldwork V1.0.4 for Apple silicon macOS</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.5/Meldwork-0.1.5-arm64.dmg"><strong>Download Meldwork V1.0.5 for Apple silicon macOS</strong></a>
   · <a href="architecture.md">Architecture</a>
   · <a href="LICENSE">License</a>
 </p>
@@ -118,7 +118,7 @@ Approved Agent Connectors can be added through the [Agent Connector SDK](docs/ag
 
 ### Apple silicon macOS preview
 
-Download [`Meldwork-0.1.4-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg) from the [official V1.0.4 prerelease](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4), move Meldwork to Applications, and install at least one supported local Agent CLI. The prerelease is ad-hoc signed and not notarized; macOS may require **Open Anyway** in **System Settings -> Privacy & Security** on first launch.
+Download [`Meldwork-0.1.5-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.5/Meldwork-0.1.5-arm64.dmg) from the [official V1.0.5 prerelease](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.5), move Meldwork to Applications, and install at least one supported local Agent CLI. The prerelease is ad-hoc signed and not notarized; macOS may require **Open Anyway** in **System Settings -> Privacy & Security** on first launch.
 
 ### Run from source
 

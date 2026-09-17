@@ -21,7 +21,7 @@
 当前预览版是一个面向已支持本地 Agent CLI 的本地工作单元。它把参与者、上下文、协作边界、运行状态和人类复核放在同一个工作空间里。已选 Agent 现在可以并发回复，也可以围绕同一目标先独立提案，再根据讨论互相指定下一位参与者，最后协作完成工作并进行复核。
 
 <p align="center">
-  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg"><strong>下载 Meldwork V1.0.4 Apple 芯片 macOS 版</strong></a>
+  <a href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.5/Meldwork-0.1.5-arm64.dmg"><strong>下载 Meldwork V1.0.5 Apple 芯片 macOS 版</strong></a>
   · <a href="architecture.md">架构</a>
   · <a href="LICENSE">许可证</a>
 </p>
@@ -114,7 +114,7 @@ Meldwork 是面向多 Agent 评审与决策可追溯性的本地优先 AI Agent 
 
 ### Apple 芯片 macOS 预览版
 
-从[官方 V1.0.4 预发布页](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4)下载 [`Meldwork-0.1.4-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg)，将 Meldwork 移入“应用程序”，并至少安装一个受支持的本地 Agent CLI。该预发布版使用 ad-hoc 临时签名且未公证；首次启动时，macOS 可能要求你在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
+从[官方 V1.0.5 预发布页](https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.5)下载 [`Meldwork-0.1.5-arm64.dmg`](https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.5/Meldwork-0.1.5-arm64.dmg)，将 Meldwork 移入“应用程序”，并至少安装一个受支持的本地 Agent CLI。该预发布版使用 ad-hoc 临时签名且未公证；首次启动时，macOS 可能要求你在“系统设置 -> 隐私与安全性”中选择“仍要打开 / Open Anyway”。
 
 ### 从源码运行
 
