@@ -3,92 +3,97 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <title>Meldwork · The organization layer for AI agents</title>
-  <meta name="description" content="Meldwork is a local-first work cell for AI coding agents — orchestrate Codex, Claude Code, Gemini CLI and 9 more agent CLIs around one frozen task snapshot, with evidence trails and a human adoption gate before any workspace change." />
-  <meta property="og:title" content="Meldwork · The organization layer for AI agents" />
-  <meta property="og:description" content="A local-first work cell for AI coding agents. Orchestrate the agent CLIs you already run, keep every finding as evidence, and gate workspace writes behind human adoption." />
+  <title>Meldwork — A Local-First Workspace for General Agents</title>
+  <meta name="description" content="Meldwork is a local-first General Agent workspace for macOS. Coordinate research, analysis, writing, review, planning, and implementation across 12+ local Agent tools with shared context, evidence, and a human adoption gate." />
+  <meta name="keywords" content="General Agent workspace, local-first Agent workspace, multi-agent collaboration, Agent review, evidence-backed decisions, local Agent tools, human-in-the-loop Agent review, Meldwork" />
+  <meta property="og:title" content="Meldwork — A Local-First Workspace for General Agents" />
+  <meta property="og:description" content="Coordinate General Agents from one local workspace. Shared context, independent findings, evidence-backed decisions, and a human adoption gate before workspace changes." />
   <meta property="og:image" content="assets/meldwork-readme-banner-en.png" />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://ryder-mhumble.github.io/Meldwork/" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Meldwork — A Local-First Workspace for General Agents" />
+  <meta name="twitter:description" content="Coordinate General Agents from one local workspace with shared context, evidence-backed decisions, and a human adoption gate." />
+  <meta name="twitter:image" content="assets/meldwork-readme-banner-en.png" />
   <meta name="theme-color" content="#000000" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://ryder-mhumble.github.io/Meldwork/" />
 
   <script type="application/ld+json">
-{
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "SoftwareApplication",
-      "name": "Meldwork",
-      "applicationCategory": "DeveloperApplication",
-      "operatingSystem": "macOS (Apple silicon)",
-      "softwareVersion": "1.0.4",
-      "description": "Meldwork is a local-first work cell for AI coding agents. It orchestrates agent CLIs such as Codex, Claude Code, and Gemini CLI around one frozen task snapshot, records every finding as evidence, and puts a human adoption gate before any workspace change.",
-      "featureList": "Local Agent discovery, Multi-agent review, Auto Discussion V4, Direct mode, Human Gate, Evidence Trail, Frozen Context",
-      "offers": {
-        "@type": "Offer",
-        "price": "0",
-        "priceCurrency": "USD"
-      },
-      "author": {
-        "@type": "Organization",
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
         "name": "Meldwork",
-        "url": "https://github.com/Ryder-MHumble/Meldwork"
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "macOS (Apple silicon)",
+        "softwareVersion": "1.0.5",
+        "description": "Meldwork is a local-first General Agent workspace for macOS. It coordinates local Agent tools for research, analysis, writing, planning, review, and implementation, while preserving shared task context, independent findings, evidence, decisions, and a human adoption gate before workspace changes.",
+        "featureList": "General Agent workspace, Concurrent Responses, Auto Discussion V4, frozen task snapshots, Finding-Evidence-Decision-Disposition review record, Human Gate for workspace writes, native session continuity, local-first Electron desktop, multimodal attachments, selected knowledge sources, Agent Connector SDK",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "author": { "@type": "Organization", "name": "Meldwork", "url": "https://github.com/Ryder-MHumble/Meldwork" },
+        "downloadUrl": "https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.5",
+        "softwareRequirements": "macOS with Apple silicon. At least one supported local Agent CLI installed (Codex, Claude Code, Gemini CLI, Hermes, OpenCode, or another listed Agent)."
       },
-      "downloadUrl": "https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4"
-    },
-    {
-      "@type": "FAQPage",
-      "mainEntity": [
-        {
-          "@type": "Question",
-          "name": "What is Meldwork?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Meldwork is a local-first desktop workspace for multi-Agent research and review. It connects user-selected Agent CLIs through direct conversations, concurrent responses, and multi-round discussion."
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "What is Meldwork and what does it do?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Meldwork is a local-first General Agent workspace for macOS. It lets you coordinate local Agent tools for research, analysis, writing, planning, review, and implementation. Meldwork freezes one task snapshot, sends it to every selected Agent, captures independent findings as evidence, and requires your approval (Human Gate) before any workspace changes are written." }
+          },
+          {
+            "@type": "Question",
+            "name": "How is Meldwork different from tmux or zellij for running multiple AI agents?",
+            "acceptedAnswer": { "@type": "Answer", "text": "tmux and zellij are terminal multiplexers that show agent output side by side but require you to manually copy context between agents. Meldwork freezes one task snapshot and delivers it to all selected agents automatically, then captures their responses as structured evidence (Finding → Evidence → Decision → Disposition) with a human adoption gate before any file changes. It also preserves session state across restarts, so you can resume interrupted multi-agent work." }
+          },
+          {
+            "@type": "Question",
+            "name": "Which General Agents does Meldwork support?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Twelve agents today — Codex, Claude Code, Gemini CLI, Qwen Code, Kimi Code, MiMo Code, OpenCode, OpenCodeReview, Hermes, Pi Agent, OpenClaw, and WorkBuddy. Approved Agent Connectors can be added through the Agent Connector SDK; custom executables use the desktop custom-Agent path." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can Meldwork run Codex and Claude Code at the same time on the same task?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. In Concurrent Responses mode, Meldwork sends the same frozen task snapshot to Codex, Claude Code, and any other selected agents simultaneously. Each agent returns an independent response, and you compare their findings side by side before deciding which result to adopt. In Auto Discussion V4 mode, agents can also propose, challenge each other's proposals, negotiate responsibilities, and verify results across multiple rounds." }
+          },
+          {
+            "@type": "Question",
+            "name": "What does Auto Discussion V4 actually do?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Selected Agents independently propose, then critique with evidence, negotiate responsibilities, execute dependency-aware work, and verify the result. Every round is preserved — you can read the full Case later and adopt only the parts you approve." }
+          },
+          {
+            "@type": "Question",
+            "name": "How is Meldwork different from Claude Code Agent Teams or CrewAI?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Claude Code Agent Teams only works within Claude Code — you cannot mix Codex, Hermes, or OpenCode. CrewAI is a Python framework you build yourself. Meldwork is a ready-to-use desktop app that orchestrates 12+ heterogeneous agent CLIs from different vendors in one workspace, with evidence trails, a human adoption gate, and no orchestration code to write." }
+          },
+          {
+            "@type": "Question",
+            "name": "Is Meldwork free? What's the license?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Source-available under the Meldwork Non-Commercial Source License 1.0. You can inspect, run, modify, and share it for non-commercial purposes. Commercial use requires prior written permission." }
+          },
+          {
+            "@type": "Question",
+            "name": "Does Meldwork work on Intel macOS, Windows, or Linux?",
+            "acceptedAnswer": { "@type": "Answer", "text": "The current V1.0.5 preview targets Apple silicon macOS (ad-hoc signed, not notarized — open Open Anyway in System Settings → Privacy & Security on first launch). Cross-platform builds are on the roadmap; the app is Electron so the same source compiles everywhere once those targets land." }
           }
-        },
-        {
-          "@type": "Question",
-          "name": "What do I need before I start?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "An Apple silicon Mac and at least one supported Agent CLI installed and authenticated. The preview includes 12 built-in Agent adapters. Detection and capabilities depend on the installed CLI and its compatible version; model access and usage charges remain with your chosen provider."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "How does Auto Discussion work?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "You choose the participants. Agents begin with independent proposals, then continue in sequence or route the next turn to selected peers in Agent-led mode. Native sessions continue when the adapter supports them. You can inspect each Agent's replies and run status."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Does local-first mean fully offline?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "No. Meldwork stores its conversations and run records locally and has no Meldwork-hosted conversation service. Selected Agents or connectors may send prompts, attachments, or Skills to their configured providers. Their data handling and network access follow their own configuration and terms."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Can Agents change my files?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "Workspace writes are opt-in. Set the working directory and permissions before a run, and respond to any Human Gate that requires your input. These are workflow controls, not an operating-system sandbox; enforcement also depends on the selected CLI."
-          }
-        },
-        {
-          "@type": "Question",
-          "name": "Which platforms and license does the preview support?",
-          "acceptedAnswer": {
-            "@type": "Answer",
-            "text": "V1.0.4 is an Apple silicon macOS preview, ad-hoc signed and not notarized. Other platforms are not supported packaged targets in this preview. Meldwork uses Apache License 2.0, which permits commercial use under its terms. Agent CLIs, providers, and third-party assets may have separate terms."
-          }
-        }
-      ]
-    }
-  ]
-}
+        ]
+      },
+      {
+        "@type": "HowTo",
+        "name": "How to coordinate General Agents with Meldwork",
+        "description": "Steps to use Meldwork to coordinate local General Agents on one Case with shared context, evidence, and a human adoption decision.",
+        "step": [
+          { "@type": "HowToStep", "name": "Select Agents", "text": "Open Meldwork and select the local General Agents you want to participate — for example Codex, Claude Code, and Gemini CLI." },
+          { "@type": "HowToStep", "name": "Scope the task", "text": "Define the goal, working directory, context, and permissions. Meldwork freezes this as a task snapshot." },
+          { "@type": "HowToStep", "name": "Run collaboration mode", "text": "Choose Direct (one agent), Concurrent Responses (all agents get the same frozen snapshot and respond independently), or Auto Discussion V4 (agents propose, challenge, negotiate, and verify)." },
+          { "@type": "HowToStep", "name": "Review and adopt", "text": "Inspect each agent's findings, evidence, and any Human Gate prompts. Adopt only the result you approve — workspace writes are opt-in." }
+        ]
+      }
+    ]
+  }
   </script>
 
   <link rel="icon" type="image/png" sizes="32x32" href="assets/meldwork-favicon-32.png" />
@@ -108,7 +113,6 @@
 
   <!-- ================= NAV ================= -->
   <header class="topnav" id="topnav">
-    <div class="nav-start">
     <a class="logo-badge" href="#top" aria-label="Meldwork home">
       <img src="assets/meldwork-mark-v3-dark.svg" alt="" width="52" height="52" data-theme-src="assets/meldwork-mark-v3.svg" />
     </a>
@@ -120,21 +124,16 @@
       <a href="#compare" class="nav-link" data-spy="compare"><span>How it differs</span></a>
       <a href="#faq" class="nav-link" data-spy="faq"><span>FAQ</span></a>
     </nav>
-    <button type="button" class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenu">
-      <span class="burger-bar"></span><span class="burger-bar"></span><span class="burger-bar"></span>
-    </button>
-    </div>
-    <div class="nav-actions">
-    <a class="cta-dark" href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4" target="_blank" rel="noopener" aria-label="Download V1.0.4">
-      <span class="cta-status"></span><span class="nav-download-label">Download V1.0.4</span>
-      <svg class="nav-download-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <a class="cta-dark magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.5" target="_blank" rel="noopener">
+      <span class="cta-status"></span> Download V1.0.5
     </a>
     <button type="button" class="theme-toggle" id="themeToggle" aria-label="Toggle theme">
       <svg class="sun-icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path></svg>
       <svg class="moon-icon" viewBox="0 0 24 24"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
     </button>
-    <a class="locale-toggle" id="localeToggle" href="?lang=en" aria-label="Switch to English">EN</a>
-    </div>
+    <button type="button" class="burger" id="burger" aria-label="Menu" aria-expanded="false" aria-controls="mobileMenu">
+      <span class="burger-bar"></span><span class="burger-bar"></span><span class="burger-bar"></span>
+    </button>
   </header>
 
   <div class="overlay" id="overlay" hidden></div>
@@ -145,7 +144,7 @@
     <a href="#scenario" class="m-link"><span>In a run</span></a>
     <a href="#compare" class="m-link"><span>How it differs</span></a>
     <a href="#faq" class="m-link"><span>FAQ</span></a>
-    <a href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4" target="_blank" rel="noopener" class="m-link m-signin"><span>Download V1.0.4</span></a>
+    <a href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.5" target="_blank" rel="noopener" class="m-link m-signin"><span>Download V1.0.5</span></a>
   </nav>
 
   <!-- ================= HERO ================= -->
@@ -164,19 +163,19 @@
     </div>
 
     <div class="hero-inner">
-      <p class="eyebrow" data-decrypt data-text="LOCAL-FIRST · MULTI-AGENT WORK CELL">LOCAL-FIRST · MULTI-AGENT WORK CELL</p>
+      <p class="eyebrow" data-decrypt data-text="LOCAL-FIRST · GENERAL AGENT WORKSPACE">LOCAL-FIRST · GENERAL AGENT WORKSPACE</p>
 
       <h1 class="headline" id="headline" data-split>
-        <span class="hl-line">Multi-Agent Work,</span>
+        <span class="hl-line">General Agent Work,</span>
         <span class="hl-line">Legible &amp; Accountable</span>
       </h1>
 
-      <p class="subhead">Meldwork builds the <strong>organization layer</strong> for AI agents — a local work cell that keeps participants explicit, context scoped, run state inspectable, and human review in the loop.</p>
+      <p class="subhead">Meldwork is a <strong>local-first General Agent workspace</strong> — coordinate research, analysis, writing, planning, review, and implementation across the Agent tools you already run. Shared task snapshots, independent findings, evidence-backed decisions, and a human adoption gate keep every Case inspectable.</p>
 
       <div class="cta-row">
-        <a class="cta-primary magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg">
+        <a class="cta-primary magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.5/Meldwork-0.1.5-arm64.dmg">
           <span class="cta-label">Download for macOS</span>
-          <span class="cta-meta">V1.0.4 · Apple silicon</span>
+          <span class="cta-meta">V1.0.5 · Apple silicon</span>
         </a>
         <a class="cta-ghost" href="https://github.com/Ryder-MHumble/Meldwork" target="_blank" rel="noopener">View on GitHub <span aria-hidden="true">↗</span></a>
       </div>
@@ -221,15 +220,10 @@
   </section>
 
   <!-- ================= AGENT LOGO LOOP ================= -->
-  <div class="chapter-scene" aria-hidden="true"><canvas id="chapterCanvas"></canvas></div>
-  <button class="chapter-motion-toggle" id="chapterMotionToggle" type="button" aria-label="Pause background animation" aria-pressed="false" hidden>
-    <svg class="pause-icon" viewBox="0 0 512 512" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="32" d="M176 96h16v320h-16z M320 96h16v320h-16z" /></svg>
-    <svg class="play-icon" viewBox="0 0 512 512" aria-hidden="true"><path d="M112 111v290c0 17.44 17 28.52 31 20.16l247.9-148.37c12.12-7.25 12.12-26.33 0-33.58L143 90.84c-14-8.36-31 2.72-31 20.16z" fill="none" stroke="currentColor" stroke-miterlimit="10" stroke-width="32" /></svg>
-  </button>
   <section class="section agents" id="agents">
     <p class="eyebrow reveal" data-reveal>DETECTED ON YOUR MACHINE</p>
     <h2 class="section-title reveal" data-reveal>Works with the agents you already run.</h2>
-    <p class="section-sub reveal" data-reveal>Meldwork detects an installed command when its adapter and the CLI version are compatible. Approved Agent Connectors can be added through the Agent Connector SDK.</p>
+    <p class="section-sub reveal" data-reveal>Meldwork detects a compatible local Agent command and exposes its readiness, capabilities, and session behavior. Approved Agent Connectors can be added through the Agent Connector SDK.</p>
     <div class="marquee" data-marquee aria-hidden="true">
       <div class="marquee-track">
         <span class="logo-chip"><img src="assets/agents/codex.svg" alt="" />Codex</span>
@@ -254,7 +248,7 @@
     <h2 class="section-title reveal" data-reveal>What is Meldwork?</h2>
     <div class="geo-bento">
       <article class="geo-tile geo-tile--def spotlight reveal" data-reveal style="--d:0s">
-        <p class="geo-def-text">Meldwork is a <span class="gradient-text">local-first work cell for AI coding agents</span> — it orchestrates the agent CLIs you already run around one frozen task snapshot, records every finding as evidence, and puts a <strong>human adoption gate</strong> before any workspace change.</p>
+        <p class="geo-def-text">Meldwork is a <span class="gradient-text">local-first General Agent workspace</span> for research, analysis, writing, planning, review, and implementation. It freezes task context, captures independent findings as evidence, and puts a <strong>human adoption gate</strong> before any workspace change.</p>
       </article>
       <article class="geo-tile geo-tile--wide spotlight reveal" data-reveal style="--d:0.08s">
         <span class="geo-kicker">Supported agents</span>
@@ -383,49 +377,82 @@
     </div>
   </section>
 
-  <!-- ================= COLLABORATION DEMO ================= -->
+  <!-- ================= SCENARIO (animated stepper) ================= -->
   <section class="section scenario" id="scenario">
-    <p class="eyebrow" data-en="INSIDE A REAL RUN" data-zh="协作进行时">INSIDE A REAL RUN</p>
-    <h2 class="section-title" data-en="One task. Three ways forward." data-zh="同一个任务，三种协作方式。">One task. Three ways forward.</h2>
-    <p class="section-sub" data-en="A focused conversation, independent perspectives, or Agents building on each other's work." data-zh="与一个 Agent 深入对话，让多个 Agent 独立作答，或让它们接续彼此的工作。">A focused conversation, independent perspectives, or Agents building on each other's work.</p>
-    <div class="run-demo" data-run-demo data-mode="auto" data-phase="0">
-      <div class="run-tabs" role="tablist" aria-label="Collaboration modes">
-        <button id="run-direct" class="run-tab" role="tab" aria-selected="false" aria-controls="run-panel" tabindex="-1" data-run-mode="direct">
-          <span class="run-tab-number">01</span><span data-en="Direct" data-zh="直接会话">Direct</span>
-          <small data-en="You + one Agent" data-zh="你与一个 Agent">You + one Agent</small>
-        </button>
-        <button id="run-concurrent" class="run-tab" role="tab" aria-selected="false" aria-controls="run-panel" tabindex="-1" data-run-mode="concurrent">
-          <span class="run-tab-number">02</span><span data-en="Concurrent Responses" data-zh="并发回复">Concurrent Responses</span>
-          <small data-en="One brief, independent replies" data-zh="同一任务，独立回复">One brief, independent replies</small>
-        </button>
-        <button id="run-auto" class="run-tab" role="tab" aria-selected="true" aria-controls="run-panel" data-run-mode="auto">
-          <span class="run-tab-number">03</span><span data-en="Auto Discussion" data-zh="自动讨论">Auto Discussion</span>
-          <small data-en="Agents lead the next turn" data-zh="Agent 自主接续讨论">Agents lead the next turn</small>
-        </button>
+    <p class="eyebrow reveal" data-reveal>INSIDE A REAL RUN</p>
+    <h2 class="section-title reveal" data-reveal>Launch Readiness Council — three rounds, one gate.</h2>
+    <p class="section-sub reveal" data-reveal>Below: the actual evidence from a V1.0.3 session where Codex, Hermes, and OpenCodeReview reviewed a private-beta release decision. Scroll or wait — the timeline advances on its own.</p>
+
+    <div class="scenario-stage reveal" data-reveal data-scenario>
+      <div class="mac-titlebar">
+        <span class="mac-lights" aria-hidden="true"><i class="light-r"></i><i class="light-y"></i><i class="light-g"></i></span>
+        <div class="scenario-meta">
+          <span class="meta-pill"><span class="meta-dot"></span> Auto Discussion V4</span>
+          <span class="meta-name">Launch Readiness Council</span>
+        </div>
+        <div class="titlebar-right">
+          <span class="meta-round" data-round>Round 1 · Propose</span>
+          <div class="seg-control" role="group" aria-label="Playback mode">
+            <button type="button" class="seg-btn is-on" data-mode="auto">Auto</button>
+            <button type="button" class="seg-btn" data-mode="order">Sequence</button>
+          </div>
+        </div>
       </div>
-      <div id="run-panel" class="run-panel" role="tabpanel" aria-labelledby="run-auto" tabindex="0">
-        <div class="run-explanation">
-          <p data-run-description></p>
-          <span class="run-example-label" data-en="Illustrative workflow" data-zh="协作流程示意">Illustrative workflow</span>
-        </div>
-        <div class="run-window">
-          <div class="run-window-bar" aria-hidden="true">
-            <span class="run-window-lights"><i></i><i></i><i></i></span>
-            <span class="run-window-title" data-en="Local run window" data-zh="本地协作窗口">Local run window</span>
+
+      <div class="scenario-body">
+        <div class="timeline-track" data-timeline>
+          <div class="timeline-rail" aria-hidden="true">
+            <span class="rail-line"></span>
+            <span class="rail-progress" data-rail></span>
           </div>
-          <div class="run-window-body">
-            <div class="run-chat" tabindex="0" aria-label="Example conversation">
-              <ol class="run-messages" data-run-messages></ol>
-            </div>
-          </div>
+          <ol class="timeline" data-timeline-list>
+            <li class="t-step is-active" data-step="0">
+              <span class="t-node" data-node></span>
+              <span class="t-time">R1 · 05:34</span>
+              <div class="t-bubble t-bubble-codex">
+                <header><img src="assets/agents/codex.svg" alt="" /><strong>Codex</strong><span class="t-role">Proposal</span></header>
+                <p>Ship a <strong>private, invitation-only preview</strong> with one promise: keep a real task coherent while users move between Agents. Don't market workflow automation, universal compatibility, or public distribution readiness yet.</p>
+              </div>
+            </li>
+            <li class="t-step" data-step="1">
+              <span class="t-node" data-node></span>
+              <span class="t-time">R1 · 05:38</span>
+              <div class="t-bubble t-bubble-hermes">
+                <header><img src="assets/agents/hermes.svg" alt="" /><strong>Hermes</strong><span class="t-role">Evidence challenge</span></header>
+                <p>The beta should <strong>test behavior</strong>, not enthusiasm. Measure whether users resume the same task, bring in a second Agent for a clear reason, and use the trace before accepting a result. Without those signals, the category story is still unproven.</p>
+              </div>
+            </li>
+            <li class="t-step" data-step="2">
+              <span class="t-node" data-node></span>
+              <span class="t-time">R2 · 05:44</span>
+              <div class="t-bubble t-bubble-ocr">
+                <header><img src="assets/agents/opencodereview.svg" alt="" /><strong>OpenCodeReview</strong><span class="t-role">Engineering review</span></header>
+                <p>The MVP <strong>is</strong> stable enough for a controlled evaluation, but not for a public download. Tests and packaging pass; the blocker is trusted macOS signing and notarization. Keep the first release private and label unsupported platforms explicitly.</p>
+              </div>
+            </li>
+            <li class="t-step" data-step="3">
+              <span class="t-node" data-node></span>
+              <span class="t-time">R2 · 05:52</span>
+              <div class="t-bubble t-bubble-you">
+                <header><span class="you-dot">You</span><strong>You</strong><span class="t-role">Reconciliation</span></header>
+                <p>Round 2: reconcile the disagreement. Keep only decisions we can verify this week and give me <strong>one acceptance gate</strong>.</p>
+              </div>
+            </li>
+            <li class="t-step" data-step="4">
+              <span class="t-node" data-node></span>
+              <span class="t-time">Adoption</span>
+              <div class="t-bubble t-bubble-gate">
+                <header><span class="gate-dot"></span><strong>Human Gate</strong><span class="t-role">Decision</span></header>
+                <p>Ship V1.0.3 to the private preview only. <strong>No-Go for public release.</strong> Reopen after Developer ID signing and notarization pass on a clean Mac.</p>
+              </div>
+            </li>
+          </ol>
         </div>
-        <div class="run-playback">
-          <div class="run-progress" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
-          <span data-run-status></span>
-          <button class="run-play-toggle" type="button" aria-label="Pause demo" title="Pause demo" aria-pressed="false" data-run-pause>
-            <svg class="pause-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H5v16h4zM19 4h-4v16h4z" fill="currentColor"/></svg>
-            <svg class="play-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 4 14 8-14 8z" fill="currentColor"/></svg>
-          </button>
+
+        <div class="scenario-controls">
+          <button type="button" class="rail-btn" data-prev aria-label="Previous step">‹</button>
+          <span class="rail-status" data-status>1 / 5</span>
+          <button type="button" class="rail-btn" data-next aria-label="Next step">›</button>
         </div>
       </div>
     </div>
@@ -475,7 +502,7 @@
         </div>
       </div>
     </div>
-    <p class="product-foot reveal" data-reveal>Example: give Codex, Claude Code, and Gemini CLI the same change-review context, compare their independent findings, then adopt only the evidence-backed result you approve.</p>
+    <p class="product-foot reveal" data-reveal>Example: give Codex, Claude Code, and Gemini CLI the same task — review a PR, analyze a bug, or compare implementation approaches. Meldwork freezes the task context, sends it to all three agents, captures their independent findings as evidence, and lets you adopt only the result you approve. No manual context copying between terminals.</p>
   </section>
 
   <!-- ================= WHY / DIFFER ================= -->
@@ -483,8 +510,8 @@
     <div class="why-grid">
       <div class="why-left">
         <p class="eyebrow reveal" data-reveal>HOW MELDWORK DIFFERS</p>
-        <h2 class="section-title reveal" data-reveal>An organization layer, not another runner.</h2>
-        <p class="section-sub reveal" data-reveal>Meldwork connects the local Agent tools you already use to a decision-ready review workflow — and keeps independent findings, evidence, responsibility, and the human adoption decision visible in one local work cell.</p>
+        <h2 class="section-title reveal" data-reveal>A General Agent workspace, not another terminal runner.</h2>
+        <p class="section-sub reveal" data-reveal>Meldwork is a <strong>local-first General Agent workspace</strong> for macOS. Coordinate research, analysis, writing, planning, review, and implementation across the Agent tools you already run, with no manual context copying between terminals.</p>
       </div>
       <ul class="why-list">
         <li class="reveal" data-reveal style="--d:0s">
@@ -510,8 +537,8 @@
   <!-- ================= COMPARISON TABLE ================= -->
   <section class="section compare" id="compare">
     <p class="eyebrow reveal" data-reveal>WHERE MELDWORK FITS</p>
-    <h2 class="section-title reveal" data-reveal>The categories you usually compare against.</h2>
-    <p class="section-sub reveal" data-reveal>A condensed map of how Meldwork positions itself next to terminal runners, cloud fleets, communication networks, and framework-based orchestrators. Full per-project comparison lives in the <a href="https://github.com/Ryder-MHumble/Meldwork#how-meldwork-differs" target="_blank" rel="noopener">README ↗</a>.</p>
+        <h2 class="section-title reveal" data-reveal>How Meldwork compares to other Agent workspaces.</h2>
+    <p class="section-sub reveal" data-reveal>A condensed map of how Meldwork positions itself next to terminal runners, cloud fleets, communication networks, and framework-based orchestrators like CrewAI, LangGraph, and Claude Code Agent Teams. Full per-project comparison lives in the <a href="https://github.com/Ryder-MHumble/Meldwork#how-meldwork-differs" target="_blank" rel="noopener">README ↗</a>.</p>
 
     <div class="cmp-table reveal" data-reveal role="table">
       <div class="cmp-row cmp-head" role="row">
@@ -520,314 +547,133 @@
         <div role="columnheader">Meldwork's difference</div>
       </div>
       <div class="cmp-row" role="row">
-        <div role="cell" class="cmp-cat">Terminal / IDE runners</div>
-        <div role="cell">Run a command, view output, navigate worktrees.</div>
-        <div role="cell">Adds evidence-backed review and a human adoption gate on top of the same CLIs.</div>
+        <div role="cell" class="cmp-cat">Terminal / IDE runners<br><small>tmux, zellij, Claude Code, Codex CLI</small></div>
+        <div role="cell">Run a command, view output, navigate worktrees. Manual context copying between agents.</div>
+        <div role="cell">Adds evidence-backed review, frozen task snapshots, and a human adoption gate on top of the same CLIs.</div>
       </div>
       <div class="cmp-row" role="row">
-        <div role="cell" class="cmp-cat">Cloud Agent fleets</div>
+        <div role="cell" class="cmp-cat">Cloud Agent fleets<br><small>Devin, Factory, OpenHands Cloud</small></div>
         <div role="cell">Hosted sandboxes, remote execution, multi-tenant routing.</div>
-        <div role="cell">Local Electron work cell using the CLIs already installed on your machine.</div>
+        <div role="cell">Local Electron desktop app using the CLIs already installed on your machine.</div>
       </div>
       <div class="cmp-row" role="row">
-        <div role="cell" class="cmp-cat">Agent communication networks</div>
+        <div role="cell" class="cmp-cat">Agent communication networks<br><small>Buzz, MCP Agent Mail</small></div>
         <div role="cell">Identity, channels, events, persistent collaboration.</div>
         <div role="cell">Case-scoped independent judgments, each attached to evidence and a Decision / Disposition.</div>
       </div>
       <div class="cmp-row" role="row">
-        <div role="cell" class="cmp-cat">Parallel coding workspaces</div>
-        <div role="cell">Multiple worktrees, parallel coding Agents, merge queues.</div>
-        <div role="cell">Review across heterogeneous CLIs — not worktree throughput.</div>
+        <div role="cell" class="cmp-cat">Parallel coding workspaces<br><small>Conductor, Claude Squad, amux, Emdash</small></div>
+        <div role="cell">Multiple workspaces, parallel Agents, and merge queues.</div>
+        <div role="cell">Review across heterogeneous CLIs — not just worktree throughput or parallel execution.</div>
       </div>
       <div class="cmp-row" role="row">
-        <div role="cell" class="cmp-cat">Multi-Agent frameworks</div>
-        <div role="cell">Graphs, routing, approvals, and DSLs you build yourself.</div>
-        <div role="cell">A ready-to-use review workflow — no orchestration framework to assemble.</div>
+        <div role="cell" class="cmp-cat">Multi-Agent frameworks<br><small>CrewAI, LangGraph, AutoGen, Claude Code Agent Teams</small></div>
+        <div role="cell">Graphs, routing, approvals, and DSLs you build yourself. Agent Teams only works within Claude Code.</div>
+        <div role="cell">A ready-to-use desktop workflow across 12+ heterogeneous CLIs — no orchestration framework to assemble.</div>
       </div>
     </div>
   </section>
 
   <!-- ================= TECH SPECS / BOUNDARY ================= -->
-  <section
-        class="section boundary"
-        id="boundary"
-        aria-labelledby="boundary-title"
-      >
-        <p
-          class="eyebrow"
-          data-en="ARCHITECTURE AND PERMISSIONS"
-          data-zh="架构与权限"
-        >
-          ARCHITECTURE AND PERMISSIONS
-        </p>
-        <h2
-          class="section-title"
-          id="boundary-title"
-          data-en="Local workspace. Explicit boundaries."
-          data-zh="工作空间在本地，权限边界说清楚。"
-        >
-          Local workspace. Explicit boundaries.
-        </h2>
-        <ol class="architecture-path">
-          <li>
-            <span class="architecture-step">01</span>
-            <h3 data-en="Meldwork on your Mac" data-zh="Mac 上的 Meldwork">
-              Meldwork on your Mac
-            </h3>
-            <p
-              data-en="The desktop app keeps conversations, run records, and user controls in local storage."
-              data-zh="桌面应用在本地保存会话、运行记录与用户设置。"
-            >
-              The desktop app keeps conversations, run records, and user
-              controls in local storage.
-            </p>
-            <span class="boundary-label" data-en="Local" data-zh="本地"
-              >Local</span
-            >
-          </li>
-          <li>
-            <span class="architecture-step">02</span>
-            <h3 data-en="Your selected Agent CLI" data-zh="你选择的 Agent CLI">
-              Your selected Agent CLI
-            </h3>
-            <p
-              data-en="A local process receives the scoped task and permissions through its adapter."
-              data-zh="本地进程通过适配器接收限定的任务与权限。"
-            >
-              A local process receives the scoped task and permissions through
-              its adapter.
-            </p>
-            <span
-              class="boundary-label"
-              data-en="Local process"
-              data-zh="本地进程"
-              >Local process</span
-            >
-          </li>
-          <li>
-            <span class="architecture-step">03</span>
-            <h3 data-en="Its configured provider" data-zh="它配置的模型服务商">
-              Its configured provider
-            </h3>
-            <p
-              data-en="Prompts, attachments, or Skills may be sent to external services under their own terms."
-              data-zh="提示词、附件或技能内容可能发送到外部服务，并受其条款约束。"
-            >
-              Prompts, attachments, or Skills may be sent to external services
-              under their own terms.
-            </p>
-            <span
-              class="boundary-label"
-              data-en="May be remote"
-              data-zh="可能在远端"
-              >May be remote</span
-            >
-          </li>
-        </ol>
-        <div class="bnd-grid">
-          <div class="bnd-col">
-            <h3 data-en="You choose the scope." data-zh="由你决定范围。">
-              You choose the scope.
-            </h3>
-            <ul>
-              <li
-                data-en="Select the participants and working directory."
-                data-zh="选择参与者与工作目录。"
-              >
-                Select the participants and working directory.
-              </li>
-              <li
-                data-en="Workspace writes are opt-in; Human Gates request input when required."
-                data-zh="工作区写入需主动启用；需要时通过人工审批门请求你的输入。"
-              >
-                Workspace writes are opt-in; Human Gates request input when
-                required.
-              </li>
-              <li
-                data-en="Inspect available replies, run states, and execution traces."
-                data-zh="查看可用的回复、运行状态与执行轨迹。"
-              >
-                Inspect available replies, run states, and execution traces.
-              </li>
-            </ul>
-          </div>
-          <div class="bnd-col">
-            <h3 data-en="Know the limits." data-zh="明确当前限制。">
-              Know the limits.
-            </h3>
-            <ul>
-              <li
-                data-en="Local-first does not mean fully offline."
-                data-zh="本地优先不等于完全离线。"
-              >
-                Local-first does not mean fully offline.
-              </li>
-              <li
-                data-en="Permission controls are not an operating-system sandbox."
-                data-zh="权限控制不是操作系统级沙箱。"
-              >
-                Permission controls are not an operating-system sandbox.
-              </li>
-              <li
-                data-en="The preview does not automatically select a team or provide enterprise SSO and RBAC."
-                data-zh="预览版不提供自动选人组队或企业级单点登录与角色权限治理。"
-              >
-                The preview does not automatically select a team or provide
-                enterprise SSO and RBAC.
-              </li>
-            </ul>
-          </div>
-        </div>
-        <a
-          class="text-link"
-          href="https://github.com/Ryder-MHumble/Meldwork/blob/main/architecture.md"
-          target="_blank"
-          rel="noopener"
-          data-en="Read the architecture and data boundaries"
-          data-zh="阅读架构与数据边界说明"
-          >Read the architecture and data boundaries</a
-        >
-      </section>
+  <section class="section boundary" id="boundary">
+    <p class="eyebrow reveal" data-reveal>THE BOUNDARY</p>
+    <h2 class="section-title reveal" data-reveal>What Meldwork is, and isn't.</h2>
+    <div class="bnd-grid">
+      <div class="bnd-col reveal" data-reveal style="--d:0s">
+        <h3><span class="bnd-glyph bnd-yes"></span> Is</h3>
+        <ul>
+          <li>A local-first Electron app for desktop review workflows.</li>
+          <li>A work cell that orchestrates the Agent CLIs you already have.</li>
+          <li>An evidence-first review record (Finding → Evidence → Decision → Disposition).</li>
+          <li>Workspace writes as opt-in workflow controls.</li>
+          <li>Source-available under the Meldwork Non-Commercial Source License 1.0.</li>
+        </ul>
+      </div>
+      <div class="bnd-col reveal" data-reveal style="--d:0.12s">
+        <h3><span class="bnd-glyph bnd-no"></span> Isn't</h3>
+        <ul>
+          <li>Not a hosted Agent fleet or general Agent framework.</li>
+          <li>Not automatic participant selection from a larger roster.</li>
+          <li>Not enterprise SSO / RBAC / governance tooling.</li>
+          <li>Not an operating-system sandbox — writes happen through your shell.</li>
+          <li>Not fully offline — a selected Agent may send prompts to its configured Provider.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
 
   <!-- ================= FAQ ================= -->
-  <section class="section faq" id="faq" aria-labelledby="faq-title">
-        <h2
-          class="section-title"
-          id="faq-title"
-          data-en="Before you get started."
-          data-zh="开始前，你可能想了解。"
-        >
-          Before you get started.
-        </h2>
-        <div class="faq-list">
-          <details class="faq-item">
-            <summary
-              class="faq-question"
-              data-en="What is Meldwork?"
-              data-zh="Meldwork 是什么？"
-            >
-              What is Meldwork?
-            </summary>
-            <div class="faq-answer">
-              <p
-                data-schema-description
-                data-en="Meldwork is a local-first desktop workspace for multi-Agent research and review. It connects user-selected Agent CLIs through direct conversations, concurrent responses, and multi-round discussion."
-                data-zh="Meldwork 是本地优先的多 Agent 研究与复核桌面工作空间，通过直接会话、并发回复和多轮讨论连接用户选择的 Agent CLI。"
-              >
-                Meldwork is a local-first desktop workspace for multi-Agent
-                research and review. It connects user-selected Agent CLIs
-                through direct conversations, concurrent responses, and
-                multi-round discussion.
-              </p>
-            </div>
-          </details>
-          <details class="faq-item">
-            <summary
-              class="faq-question"
-              data-en="What do I need before I start?"
-              data-zh="开始前需要准备什么？"
-            >
-              What do I need before I start?
-            </summary>
-            <div class="faq-answer">
-              <p
-                data-en="An Apple silicon Mac and at least one supported Agent CLI installed and authenticated. The preview includes 12 built-in Agent adapters. Detection and capabilities depend on the installed CLI and its compatible version; model access and usage charges remain with your chosen provider."
-                data-zh="一台 Apple 芯片 Mac，以及至少一个已安装并完成认证的受支持 Agent CLI。预览版内置 12 个 Agent 适配器，检测与能力取决于已安装的 CLI 及兼容版本；模型访问与使用费用由你选择的服务商提供和收取。"
-              >
-                An Apple silicon Mac and at least one supported Agent CLI
-                installed and authenticated. The preview includes 12 built-in
-                Agent adapters. Detection and capabilities depend on the
-                installed CLI and its compatible version; model access and usage
-                charges remain with your chosen provider.
-              </p>
-            </div>
-          </details>
-          <details class="faq-item">
-            <summary
-              class="faq-question"
-              data-en="How does Auto Discussion work?"
-              data-zh="自动讨论如何运行？"
-            >
-              How does Auto Discussion work?
-            </summary>
-            <div class="faq-answer">
-              <p
-                data-en="You choose the participants. Agents begin with independent proposals, then continue in sequence or route the next turn to selected peers in Agent-led mode. Native sessions continue when the adapter supports them. You can inspect each Agent's replies and run status."
-                data-zh="由你选择参与者。Agent 先形成独立提案，再按顺序继续，或在 Agent 主导模式下将下一轮交给已选参与者。适配器支持时会延续原生会话，你可以查看各 Agent 的回复与运行状态。"
-              >
-                You choose the participants. Agents begin with independent
-                proposals, then continue in sequence or route the next turn to
-                selected peers in Agent-led mode. Native sessions continue when
-                the adapter supports them. You can inspect each Agent's replies
-                and run status.
-              </p>
-            </div>
-          </details>
-          <details class="faq-item">
-            <summary
-              class="faq-question"
-              data-en="Does local-first mean fully offline?"
-              data-zh="本地优先是否意味着完全离线？"
-            >
-              Does local-first mean fully offline?
-            </summary>
-            <div class="faq-answer">
-              <p
-                data-en="No. Meldwork stores its conversations and run records locally and has no Meldwork-hosted conversation service. Selected Agents or connectors may send prompts, attachments, or Skills to their configured providers. Their data handling and network access follow their own configuration and terms."
-                data-zh="不是。Meldwork 在本地保存会话与运行记录，没有 Meldwork 托管的会话服务。所选 Agent 或连接器可能向配置的服务商发送提示词、附件或技能内容，其数据处理与网络访问遵循各自配置及条款。"
-              >
-                No. Meldwork stores its conversations and run records locally
-                and has no Meldwork-hosted conversation service. Selected Agents
-                or connectors may send prompts, attachments, or Skills to their
-                configured providers. Their data handling and network access
-                follow their own configuration and terms.
-              </p>
-            </div>
-          </details>
-          <details class="faq-item">
-            <summary
-              class="faq-question"
-              data-en="Can Agents change my files?"
-              data-zh="Agent 能修改我的文件吗？"
-            >
-              Can Agents change my files?
-            </summary>
-            <div class="faq-answer">
-              <p
-                data-en="Workspace writes are opt-in. Set the working directory and permissions before a run, and respond to any Human Gate that requires your input. These are workflow controls, not an operating-system sandbox; enforcement also depends on the selected CLI."
-                data-zh="工作区写入需主动启用。运行前请设置工作目录与权限，并处理需要你输入的人工审批门。这些是工作流控制，并非操作系统级沙箱，执行约束也取决于所选 CLI。"
-              >
-                Workspace writes are opt-in. Set the working directory and
-                permissions before a run, and respond to any Human Gate that
-                requires your input. These are workflow controls, not an
-                operating-system sandbox; enforcement also depends on the
-                selected CLI.
-              </p>
-            </div>
-          </details>
-          <details class="faq-item">
-            <summary
-              class="faq-question"
-              data-en="Which platforms and license does the preview support?"
-              data-zh="预览版支持哪些平台，使用什么许可证？"
-            >
-              Which platforms and license does the preview support?
-            </summary>
-            <div class="faq-answer">
-              <p
-                data-en="V1.0.4 is an Apple silicon macOS preview, ad-hoc signed and not notarized. Other platforms are not supported packaged targets in this preview. Meldwork uses Apache License 2.0, which permits commercial use under its terms. Agent CLIs, providers, and third-party assets may have separate terms."
-                data-zh="V1.0.4 是 Apple 芯片 macOS 预览版，使用临时签名且尚未公证；此预览版未提供其他平台的受支持安装包。Meldwork 使用 Apache License 2.0，按其条款允许商业使用。Agent CLI、服务商与第三方素材可能有各自条款。"
-              >
-                V1.0.4 is an Apple silicon macOS preview, ad-hoc signed and not
-                notarized. Other platforms are not supported packaged targets in
-                this preview. Meldwork uses Apache License 2.0, which permits
-                commercial use under its terms. Agent CLIs, providers, and
-                third-party assets may have separate terms.
-              </p>
-            </div>
-          </details>
-        </div>
-      </section>
+  <section class="section faq" id="faq">
+    <p class="eyebrow reveal" data-reveal>ANSWERS</p>
+    <h2 class="section-title reveal" data-reveal>Questions teams ask before adopting.</h2>
+    <p class="section-sub reveal" data-reveal>Short, honest answers — the long versions live in <a href="https://github.com/Ryder-MHumble/Meldwork/blob/main/architecture.md" target="_blank" rel="noopener">architecture.md ↗</a>.</p>
+
+    <ul class="acc-list">
+        <li class="acc-item reveal" data-reveal style="--d:0s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>What is Meldwork?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>Meldwork is a <strong>local-first General Agent workspace</strong> for macOS. It coordinates the Agent tools you already run from one workspace for research, analysis, writing, planning, review, and implementation. Meldwork freezes one task snapshot, captures independent findings as evidence, and puts a human adoption gate before any workspace change.</p>
+          </div>
+        </li>
+        <li class="acc-item reveal" data-reveal style="--d:0.06s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>Does Meldwork send my code to a remote service?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>No, not by itself. Meldwork runs locally in your Electron work cell. Selected Agents send prompts, attachments, or Skills to <em>their own</em> configured Provider — but Meldwork itself is a local review UI, not a cloud relay. Conversations stay on your machine.</p>
+          </div>
+        </li>
+        <li class="acc-item reveal" data-reveal style="--d:0.06s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>Which General Agents does Meldwork support?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>Twelve today — Codex, Claude Code, Gemini CLI, Qwen Code, Kimi Code, MiMo Code, OpenCode, OpenCodeReview, Hermes, Pi Agent, OpenClaw, and WorkBuddy. Approved Agent Connectors can be added through the Agent Connector SDK; custom executables use the desktop custom-Agent path.</p>
+          </div>
+        </li>
+        <li class="acc-item reveal" data-reveal style="--d:0.12s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>What does Auto Discussion V4 actually do?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>Selected Agents independently propose, then critique with evidence, negotiate responsibilities, execute dependency-aware work, and verify the result. Every round is preserved — you can read the full Case later and adopt only the parts you approve.</p>
+          </div>
+        </li>
+        <li class="acc-item reveal" data-reveal style="--d:0.18s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>How is Meldwork different from a terminal or IDE?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>A terminal runs <em>one</em> Agent at a time and shows raw output. tmux or zellij can show multiple agents side by side but require manual context copying between them. Meldwork scopes a single task across multiple agents, sends the same frozen snapshot to each, captures their independent findings as evidence, and keeps the human adoption decision visible as a first-class artifact. It also works across heterogeneous CLIs — you can mix Codex, Claude Code, Hermes, and OpenCode in one workspace, unlike Claude Code Agent Teams which only works within Claude Code.</p>
+          </div>
+        </li>
+        <li class="acc-item reveal" data-reveal style="--d:0.24s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>Is Meldwork free? What's the license?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>Source-available under the Meldwork Non-Commercial Source License 1.0. You can inspect, run, modify, and share it for non-commercial purposes. Commercial use requires prior written permission — see <a href="https://github.com/Ryder-MHumble/Meldwork/blob/main/COMMERCIAL_USE.md" target="_blank" rel="noopener">COMMERCIAL_USE.md ↗</a>.</p>
+          </div>
+        </li>
+        <li class="acc-item reveal" data-reveal style="--d:0.3s">
+          <button type="button" class="acc-trigger" aria-expanded="false">
+            <span>Does it work on Intel macOS, Windows, or Linux?</span>
+            <span class="acc-icon" aria-hidden="true"></span>
+          </button>
+          <div class="acc-panel">
+            <p>The current V1.0.5 preview targets Apple silicon macOS (ad-hoc signed, not notarized — open <em>Open Anyway</em> in <em>System Settings → Privacy &amp; Security</em> on first launch). Cross-platform builds are on the roadmap; the app is Electron so the same source compiles everywhere once those targets land.</p>
+          </div>
+        </li>
+      </ul>
+  </section>
 
   <!-- ================= VELOCITY MARQUEE ================= -->
   <div class="velocity" data-velocity aria-hidden="true">
@@ -838,99 +684,24 @@
   </div>
 
   <!-- ================= CTA / FOOTER ================= -->
-  <section class="cta-final" id="download" aria-labelledby="download-title">
-        <h2
-          class="final-title"
-          id="download-title"
-          data-en="Bring your next question to Meldwork."
-          data-zh="把下一个问题带到 Meldwork。"
-        >
-          Bring your next question to Meldwork.
-        </h2>
-        <p
-          class="final-sub"
-          data-en="Start with the Agents you already use. Choose a task, compare their perspectives, and decide your next step."
-          data-zh="从你已经在用的 Agent 开始，选择任务，比较不同判断，再决定下一步。"
-        >
-          Start with the Agents you already use. Choose a task, compare their
-          perspectives, and decide your next step.
-        </p>
-        <div class="cta-row">
-          <a
-            class="cta-primary"
-            href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.4/Meldwork-0.1.4-arm64.dmg"
-            ><span
-              class="cta-label"
-              data-en="Download for macOS"
-              data-zh="下载 macOS 版"
-              >Download for macOS</span
-            ><span
-              class="cta-meta"
-              data-en="V1.0.4 preview · Apple silicon"
-              data-zh="V1.0.4 预览版 · Apple 芯片"
-              >V1.0.4 preview · Apple silicon</span
-            ></a
-          ><a
-            class="cta-ghost"
-            href="https://github.com/Ryder-MHumble/Meldwork/releases/tag/Meldwork-V1.0.4"
-            target="_blank"
-            rel="noopener"
-            data-en="Release notes"
-            data-zh="发行说明"
-            >Release notes</a
-          >
-        </div>
-        <p
-          class="download-note"
-          data-en="Ad-hoc signed and not notarized. On first launch, macOS may require Open Anyway in System Settings &gt; Privacy &amp; Security."
-          data-zh="使用临时签名，尚未公证。首次打开时，macOS 可能需要在「系统设置 &gt; 隐私与安全性」中选择「仍要打开」。"
-        >
-          Ad-hoc signed and not notarized. On first launch, macOS may require
-          Open Anyway in System Settings &gt; Privacy &amp; Security.
-        </p>
-      </section>
-    <footer class="foot-meta">
-      <a
-        href="#top"
-        aria-label="Meldwork home"
-        data-en-aria-label="Meldwork home"
-        data-zh-aria-label="Meldwork 首页"
-        ><img
-          class="foot-wordmark"
-          src="assets/meldwork-wordmark-v3-dark.svg"
-          alt="Meldwork"
-          data-theme-src="assets/meldwork-wordmark-v3.svg"
-      /></a>
-      <a
-        class="foot-link"
-        href="https://github.com/Ryder-MHumble/Meldwork/blob/main/LICENSE"
-        target="_blank"
-        rel="noopener"
-        data-en="Apache License 2.0"
-        data-zh="Apache 2.0 许可证"
-        >Apache License 2.0</a
-      >
-      <a
-        class="foot-link"
-        href="https://github.com/Ryder-MHumble/Meldwork/blob/main/architecture.md"
-        target="_blank"
-        rel="noopener"
-        data-en="Architecture"
-        data-zh="产品架构"
-        >Architecture</a
-      >
-      <a
-        class="foot-link"
-        href="https://github.com/Ryder-MHumble/Meldwork"
-        target="_blank"
-        rel="noopener"
-        >GitHub</a
-      >
-    </footer>
+  <footer class="cta-final" id="download">
+    <h2 class="final-title" data-split>Coordinate your agents. Keep the evidence.</h2>
+    <p class="final-sub">Download the Apple silicon macOS preview — or read the architecture and see how Meldwork coordinates General Agents through a local, evidence-backed review workflow.</p>
+    <div class="cta-row">
+      <a class="cta-primary magnet" href="https://github.com/Ryder-MHumble/Meldwork/releases/download/Meldwork-V1.0.5/Meldwork-0.1.5-arm64.dmg">
+        <span class="cta-label">Download V1.0.5</span>
+        <span class="cta-meta">Apple silicon · 119 MB</span>
+      </a>
+      <a class="cta-ghost" href="https://github.com/Ryder-MHumble/Meldwork#readme" target="_blank" rel="noopener">Read the README <span aria-hidden="true">↗</span></a>
+    </div>
+    <div class="foot-meta">
+      <img class="foot-wordmark" src="assets/meldwork-wordmark-v3-dark.svg" alt="Meldwork" data-theme-src="assets/meldwork-wordmark-v3.svg" />
+      <span>Source-available · Meldwork Non-Commercial Source License 1.0</span>
+      <span>Local-first · Electron · macOS preview</span>
+      <a class="foot-link" href="https://github.com/Ryder-MHumble/Meldwork" target="_blank" rel="noopener">github.com/Ryder-MHumble/Meldwork</a>
+    </div>
+  </footer>
 
-  <script src="locale.js" defer></script>
   <script src="main.js" defer></script>
-  <script src="chapter-scene.js" defer></script>
-  <script src="run-demo.js" defer></script>
 </body>
 </html>

@@ -76,7 +76,7 @@ Do:
 - Use coral only for acceptance/active/focus moments — it must stay rare.
 - Keep the trace-line metaphor consistent: continuous rounded line, round terminals, one bright end point.
 - Respect `prefers-reduced-motion`: static frame, final states, no marquee.
-- Ground every claim in README facts (12 CLIs, 3 modes, local-first, human gate, V1.0.4).
+- Ground every claim in README facts (12 CLIs, 3 modes, local-first, human gate, V1.0.3).
 
 Don't:
 - No gradient/shimmer headlines; no glassmorphism everywhere; no neon multi-color.
